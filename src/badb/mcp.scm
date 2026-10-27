@@ -171,46 +171,35 @@ using json-string->scm. Skips empty lines. Returns EOF object on EOF."
   "Send a JSON-RPC 2.0 request to CLIENT, read the response, verify that the
 response ID matches, and return the 'result' member or raise an 'mcp-error
 on a JSON-RPC error response."
-  (let
-      ((req-id (mcp-send-request! client method params)))
-    (let loop
-      ()
+  (let ((req-id (mcp-send-request! client method params)))
+    (let loop ()
       (let ((msg (mcp-read-message client)))
         (cond
-          ((eof-object? msg)
-            (error "mcp-call: unexpected EOF waiting for response to request" req-id))
-          ((not (list? msg)) (error "mcp-call: expected JSON object from server" msg))
-          (else
-            (let
-                ((id-pair (or (assoc "id" msg) (assoc 'id msg))))
-              ;; Skip notifications from server (which have no "id" member)
-              (if (not id-pair)
-                (loop)
-                (let
-                    ((resp-id (cdr id-pair))
-                     (err-pair (or (assoc "error" msg) (assoc 'error msg)))
-                     (res-pair (or (assoc "result" msg) (assoc 'result msg))))
+         ((eof-object? msg)
+          (error "mcp-call: unexpected EOF waiting for response to request" req-id))
+         ((not (list? msg)) (error "mcp-call: expected JSON object from server" msg))
+         (else
+          (let ((id-pair (or (assoc "id" msg) (assoc 'id msg))))
+            ;; Skip notifications from server (which have no "id" member)
+            (if id-pair
+                (let ((resp-id (cdr id-pair))
+                      (err-pair (or (assoc "error" msg) (assoc 'error msg)))
+                      (res-pair (or (assoc "result" msg) (assoc 'result msg))))
                   (unless (equal? resp-id req-id)
                     (error "mcp-call: response ID mismatch" req-id resp-id msg))
                   (if err-pair
-                    (let*
-                        ((err (cdr err-pair))
-                         (code
-                           (if (list? err)
-                             (prop-ref err 'code 0)
-                             0))
-                         (message
-                           (if (list? err)
-                             (prop-ref err 'message "unknown error")
-                             "unknown error")))
-                      (scm-error 'mcp-error
-                                 "mcp-call"
-                                 "JSON-RPC error ~a: ~a"
-                                 (list code message)
-                                 (list err)))
-                    (if res-pair
-                      (cdr res-pair)
-                      (error "mcp-call: response missing both 'result' and 'error'" msg))))))))))))
+                      (let* ((err (cdr err-pair))
+                             (code (if (list? err) (prop-ref err 'code 0) 0))
+                             (message (if (list? err) (prop-ref err 'message "unknown error") "unknown error")))
+                        (scm-error 'mcp-error
+                                   "mcp-call"
+                                   "JSON-RPC error ~a: ~a"
+                                   (list code message)
+                                   (list err)))
+                      (if res-pair
+                          (cdr res-pair)
+                          (error "mcp-call: response missing both 'result' and 'error'" msg))))
+                (loop)))))))))
 
 ;;;
 ;;; MCP High-Level Protocol Operations
@@ -245,7 +234,7 @@ initialization result."
 
 (define (mcp-call-tool client tool-name arguments)
   "Call 'tools/call' with NAME and ARGUMENTS and return the 'content' field."
-  (let* ((name-str (if (symbol? tool-name) (symbol->string tool-name) tool-name))
+  (let* ((name-str (ensure-string tool-name))
          (params `((name . ,name-str)
                    (arguments . ,(or arguments '()))))
          (result (mcp-call client "tools/call" params)))
@@ -458,10 +447,9 @@ Supports both (mcp-manager-add-server! mgr spec-alist) and
 (define (mcp-manager-start-server! mgr name)
   "Spawn, initialize, and discover tools for MCP server NAME.
 Returns (values client tools-list error-or-#f)."
-  (let* ((name-str (if (symbol? name) (symbol->string name) name))
+  (let* ((name-str (ensure-string name))
          (entry (assoc name-str (mcp-manager-servers mgr))))
-    (if (not entry)
-        (values #f '() (format #f "MCP server '~a' is not configured" name-str))
+    (if entry
         (let* ((data (cdr entry))
                (status (assoc-ref data 'status))
                (client (assoc-ref data 'client))
@@ -472,7 +460,7 @@ Returns (values client tools-list error-or-#f)."
                 (catch #t
                   (lambda ()
                     (let* ((new-client (mcp-spawn-client full-args))
-                           (init-res (mcp-initialize new-client))
+                           (_ (mcp-initialize new-client))
                            (raw-tools (catch #t
                                         (lambda () (mcp-list-tools new-client))
                                         (lambda _ '())))
@@ -482,11 +470,12 @@ Returns (values client tools-list error-or-#f)."
                   (lambda (key . err-args)
                     (let ((err-msg (format #f "Failed to start server '~a' (~a): ~s" name-str key err-args)))
                       (mcp-manager-update-server-state! mgr name-str spec #f "error" '() err-msg)
-                      (values #f '() err-msg))))))))))
+                      (values #f '() err-msg)))))))
+        (values #f '() (format #f "MCP server '~a' is not configured" name-str)))))
 
 (define (mcp-manager-stop-server! mgr name)
   "Stop running MCP server NAME and release resources."
-  (let* ((name-str (if (symbol? name) (symbol->string name) name))
+  (let* ((name-str (ensure-string name))
          (entry (assoc name-str (mcp-manager-servers mgr))))
     (and entry
          (let* ((data (cdr entry))
