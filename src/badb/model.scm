@@ -8,10 +8,12 @@
   #:use-module (web uri)
   #:use-module (web response)
   #:use-module (web http)
+  #:use-module (ice-9 popen)
   #:use-module (ice-9 rdelim)
   #:use-module (ice-9 optargs)
   #:use-module (rnrs bytevectors)
   #:use-module (json)
+  #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-9)
   #:export (<model-client>
             make-model-client
@@ -395,8 +397,55 @@ Returns a list of tool call alists: ((id . \"...\") (name . \"...\") (arguments 
 ;;; HTTP Request Execution
 ;;;
 
+(define* (curl-http-post uri #:key body headers (streaming? #f))
+  "Execute an HTTP POST using curl subprocess. Used as a transparent fallback
+when Guile GnuTLS is not available for HTTPS requests."
+  (let* ((url (if (string? uri) uri (uri->string uri)))
+         (header-args
+          (append-map
+           (lambda (h)
+             (let* ((key (car h))
+                    (val (cdr h))
+                    (str-val (cond
+                              ((string? val) val)
+                              ((and (eq? key 'authorization) (pair? val))
+                               (format #f "Bearer ~a" (cadr val)))
+                              ((eq? key 'content-type)
+                               "application/json; charset=utf-8")
+                              ((eq? key 'accept)
+                               (if streaming? "text/event-stream" "application/json"))
+                              (else (format #f "~a" val)))))
+               (list "-H" (format #f "~a: ~a" key str-val))))
+           (or headers '())))
+         (body-str (cond
+                    ((string? body) body)
+                    ((bytevector? body) (utf8->string body))
+                    (else "")))
+         (cmd-args (append (list "curl" "-s" "-X" "POST" url)
+                           (if streaming? (list "-N") '())
+                           header-args
+                           (list "-d" body-str))))
+    (if streaming?
+        (let ((pipe (apply open-pipe* OPEN_READ cmd-args)))
+          (values (build-response #:code 200) pipe))
+        (let* ((pipe (apply open-pipe* OPEN_READ cmd-args))
+               (out (read-string pipe))
+               (status (close-pipe pipe)))
+          (values (build-response #:code 200) out)))))
+
+(define* (default-http-post uri #:key body headers (streaming? #f))
+  "Dispatch HTTP POST to web client, falling back to curl if gnutls is not available."
+  (catch #t
+    (lambda ()
+      (http-post uri #:body body #:headers headers #:streaming? streaming?))
+    (lambda (key . args)
+      (if (or (eq? key 'gnutls-not-available)
+              (and (pair? args) (string? (car args)) (string-contains (car args) "gnutls")))
+          (curl-http-post uri #:body body #:headers headers #:streaming? streaming?)
+          (apply throw key args)))))
+
 (define current-http-post
-  (make-parameter http-post))
+  (make-parameter default-http-post))
 
 (define (build-headers api-key streaming?)
   (let ((base (list (cons 'content-type
