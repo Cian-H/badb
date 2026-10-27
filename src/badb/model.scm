@@ -181,23 +181,17 @@ Optional keyword arguments:
   #:max-tokens  - Integer maximum tokens to generate
   #:as-alist    - When true, returns the Scheme alist instead of JSON string."
   (let* ((msgs (normalize-messages messages))
-         (entries (list (cons "messages" msgs)))
-         (entries (if model (cons (cons "model" model) entries) entries))
-         (entries (if (number? temperature)
-                      (cons (cons "temperature" temperature) entries)
-                      entries))
-         (entries (if (number? max-tokens)
-                      (cons (cons "max_tokens" max-tokens) entries)
-                      entries))
-         (entries (if (and tools (or (pair? tools) (vector? tools)))
-                      (cons (cons "tools" (if (list? tools) (list->vector tools) tools)) entries)
-                      entries))
-         (entries (if tool-choice
-                      (cons (cons "tool_choice" tool-choice) entries)
-                      entries))
-         (entries (cons (cons "allow_missing_thinking" #t) entries))
-         (entries (cons (cons "stream" (if stream #t #f)) entries))
-         (alist (reverse entries)))
+         (alist (filter pair?
+                        (list
+                         (cons "messages" msgs)
+                         (and model (cons "model" model))
+                         (and (number? temperature) (cons "temperature" temperature))
+                         (and (number? max-tokens) (cons "max_tokens" max-tokens))
+                         (and (and tools (or (pair? tools) (vector? tools)))
+                              (cons "tools" (if (list? tools) (list->vector tools) tools)))
+                         (and tool-choice (cons "tool_choice" tool-choice))
+                         (cons "allow_missing_thinking" #t)
+                         (cons "stream" (if stream #t #f))))))
     (if as-alist
         alist
         (scm->json-string alist))))
@@ -279,44 +273,50 @@ Returns 'done when [DONE] is encountered, or 'eof upon reaching EOF."
 
 (define (json-ref obj key)
   "Lookup KEY in OBJ where KEY may be a string or symbol, and OBJ is an alist."
-  (if (not (pair? obj))
-      #f
-      (or (assoc-ref obj key)
-          (and (string? key) (assoc-ref obj (string->symbol key)))
-          (and (symbol? key) (assoc-ref obj (symbol->string key))))))
+  (and (pair? obj)
+       (or (assoc-ref obj key)
+           (and (string? key) (assoc-ref obj (string->symbol key)))
+           (and (symbol? key) (assoc-ref obj (symbol->string key))))))
 
-(define (extract-chat-delta chunk)
-  "Extract the textual delta string from an SSE chunk (parsed JSON alist or JSON string).
-Supports OpenAI, Anthropic, Ollama, and OpenRouter formats.
-Returns the string delta, or #f if no content is found."
-  (let ((obj (if (string? chunk)
-                 (catch #t (lambda () (json-string->scm chunk)) (lambda _ chunk))
-                 chunk)))
-    (if (not (pair? obj))
-        (if (string? obj) obj #f)
-        (or
-         ;; OpenAI style: choices[0].delta.content or reasoning_content or text
-         (let ((choices (json-ref obj "choices")))
-           (and (vector? choices)
-                (> (vector-length choices) 0)
-                (let* ((choice (vector-ref choices 0))
-                       (delta (json-ref choice "delta")))
-                  (and (pair? delta)
-                       (or (json-ref delta "content")
-                           (json-ref delta "reasoning_content")
-                           (json-ref delta "text"))))))
-         ;; Anthropic style: delta.text or delta.content
-         (let ((delta (json-ref obj "delta")))
+(define (extract-openai-delta-item obj)
+  "Extract delta item from OpenAI-format choice payload."
+  (let ((choices (json-ref obj "choices")))
+    (and (vector? choices)
+         (> (vector-length choices) 0)
+         (let* ((choice (vector-ref choices 0))
+                (delta (json-ref choice "delta")))
            (and (pair? delta)
-                (or (json-ref delta "text")
-                    (json-ref delta "content"))))
-         ;; Ollama native style: message.content
-         (let ((msg (json-ref obj "message")))
-           (and (pair? msg)
-                (json-ref msg "content")))
-         ;; Direct content or text
-         (json-ref obj "content")
-         (json-ref obj "text")))))
+                (cond
+                 ((or (json-ref delta "reasoning_content")
+                      (json-ref delta "reasoning"))
+                  => (lambda (rc) (cons 'thought rc)))
+                 ((json-ref delta "content")
+                  => (lambda (c) (cons 'content c)))
+                 ((json-ref delta "text")
+                  => (lambda (t) (cons 'content t)))
+                 (else #f)))))))
+
+(define (extract-anthropic-delta-item obj)
+  "Extract delta item from Anthropic-format delta payload."
+  (let ((delta (json-ref obj "delta")))
+    (and (pair? delta)
+         (cond
+          ((or (json-ref delta "thinking") (json-ref delta "thought"))
+           => (lambda (th) (cons 'thought th)))
+          ((or (json-ref delta "text") (json-ref delta "content"))
+           => (lambda (c) (cons 'content c)))
+          (else #f)))))
+
+(define (extract-ollama-delta-item obj)
+  "Extract delta item from Ollama-format message payload."
+  (let ((msg (json-ref obj "message")))
+    (and (pair? msg)
+         (cond
+          ((or (json-ref msg "reasoning_content") (json-ref msg "thinking"))
+           => (lambda (rc) (cons 'thought rc)))
+          ((json-ref msg "content")
+           => (lambda (c) (cons 'content c)))
+          (else #f)))))
 
 (define (extract-chat-delta-item chunk)
   "Extract structured delta info from an SSE chunk (parsed JSON alist or JSON string).
@@ -326,50 +326,24 @@ Returns a pair '(thought . text) or '(content . text) or #f."
                  chunk)))
     (if (not (pair? obj))
         (and (string? obj) (cons 'content obj))
-        (or
-         ;; OpenAI style: choices[0].delta
-         (let ((choices (json-ref obj "choices")))
-           (and (vector? choices)
-                (> (vector-length choices) 0)
-                (let* ((choice (vector-ref choices 0))
-                       (delta (json-ref choice "delta")))
-                  (and (pair? delta)
-                       (cond
-                        ((or (json-ref delta "reasoning_content")
-                             (json-ref delta "reasoning"))
-                         => (lambda (rc) (cons 'thought rc)))
-                        ((json-ref delta "content")
-                         => (lambda (c) (cons 'content c)))
-                        ((json-ref delta "text")
-                         => (lambda (t) (cons 'content t)))
-                        (else #f))))))
-         ;; Anthropic style: delta.thinking or delta.text or delta.content
-         (let ((delta (json-ref obj "delta")))
-           (and (pair? delta)
-                (cond
-                 ((or (json-ref delta "thinking") (json-ref delta "thought"))
-                  => (lambda (th) (cons 'thought th)))
-                 ((or (json-ref delta "text") (json-ref delta "content"))
-                  => (lambda (c) (cons 'content c)))
-                 (else #f))))
-         ;; Ollama style: message.thinking or message.content
-         (let ((msg (json-ref obj "message")))
-           (and (pair? msg)
-                (cond
-                 ((or (json-ref msg "reasoning_content") (json-ref msg "thinking"))
-                  => (lambda (rc) (cons 'thought rc)))
-                 ((json-ref msg "content")
-                  => (lambda (c) (cons 'content c)))
-                 (else #f))))
-         ;; Direct content or text
-         (cond
-          ((or (json-ref obj "reasoning_content") (json-ref obj "thinking"))
-           => (lambda (rc) (cons 'thought rc)))
-          ((json-ref obj "content")
-           => (lambda (c) (cons 'content c)))
-          ((json-ref obj "text")
-           => (lambda (t) (cons 'content t)))
-          (else #f))))))
+        (or (extract-openai-delta-item obj)
+            (extract-anthropic-delta-item obj)
+            (extract-ollama-delta-item obj)
+            (cond
+             ((or (json-ref obj "reasoning_content") (json-ref obj "thinking"))
+              => (lambda (rc) (cons 'thought rc)))
+             ((json-ref obj "content")
+              => (lambda (c) (cons 'content c)))
+             ((json-ref obj "text")
+              => (lambda (t) (cons 'content t)))
+             (else #f))))))
+
+(define (extract-chat-delta chunk)
+  "Extract the textual delta string from an SSE chunk (parsed JSON alist or JSON string).
+Supports OpenAI, Anthropic, Ollama, and OpenRouter formats.
+Returns the string delta, or #f if no content is found."
+  (let ((item (extract-chat-delta-item chunk)))
+    (and (pair? item) (cdr item))))
 
 (define (clean-json-string val)
   "Convert JSON string value to string or #f (treating null/nil as #f)."
@@ -386,6 +360,36 @@ Returns a pair '(thought . text) or '(content . text) or #f."
         val))
    (else (format #f "~a" val))))
 
+(define (extract-openai-content obj)
+  "Extract content from OpenAI-format choices array."
+  (let ((choices (json-ref obj "choices")))
+    (and (vector? choices)
+         (> (vector-length choices) 0)
+         (let* ((c0 (vector-ref choices 0))
+                (msg (json-ref c0 "message")))
+           (or (and (pair? msg)
+                    (let ((c (json-ref msg "content")))
+                      (if (or (not c) (eq? c 'null) (null? c))
+                          (or (json-ref msg "reasoning_content")
+                              (json-ref msg "reasoning"))
+                          c)))
+               (json-ref c0 "text"))))))
+
+(define (extract-anthropic-content obj)
+  "Extract content from Anthropic-format response payload."
+  (let ((content (json-ref obj "content")))
+    (cond
+     ((string? content) content)
+     ((and (vector? content) (> (vector-length content) 0))
+      (let ((b0 (vector-ref content 0)))
+        (and (pair? b0) (json-ref b0 "text"))))
+     (else #f))))
+
+(define (extract-ollama-content obj)
+  "Extract content from Ollama-format message payload."
+  (let ((msg (json-ref obj "message")))
+    (and (pair? msg) (json-ref msg "content"))))
+
 (define (extract-chat-content response-obj)
   "Extract the assistant message text from a non-streaming chat response.
 Supports OpenAI, Anthropic, Ollama, and OpenRouter formats.
@@ -396,35 +400,12 @@ Returns the string content, or #f if not found."
     (if (not (pair? obj))
         (clean-json-string obj)
         (clean-json-string
-         (or
-          ;; OpenAI style: choices[0].message.content
-          (let ((choices (json-ref obj "choices")))
-            (and (vector? choices)
-                 (> (vector-length choices) 0)
-                 (let* ((c0 (vector-ref choices 0))
-                        (msg (json-ref c0 "message")))
-                   (or (and (pair? msg)
-                            (let ((c (json-ref msg "content")))
-                              (if (or (not c) (eq? c 'null) (null? c))
-                                  (or (json-ref msg "reasoning_content")
-                                      (json-ref msg "reasoning"))
-                                  c)))
-                       (json-ref c0 "text")))))
-          ;; Anthropic style: content[0].text or content string
-          (let ((content (json-ref obj "content")))
-            (cond
-             ((string? content) content)
-             ((and (vector? content) (> (vector-length content) 0))
-              (let ((b0 (vector-ref content 0)))
-                (and (pair? b0) (json-ref b0 "text"))))
-             (else #f)))
-          ;; Ollama style: message.content or response
-          (let ((msg (json-ref obj "message")))
-            (and (pair? msg) (json-ref msg "content")))
-          (json-ref obj "response")
-          ;; Direct content or text
-          (json-ref obj "content")
-          (json-ref obj "text"))))))
+         (or (extract-openai-content obj)
+             (extract-anthropic-content obj)
+             (extract-ollama-content obj)
+             (json-ref obj "response")
+             (json-ref obj "content")
+             (json-ref obj "text"))))))
 
 (define (extract-chat-tool-calls response-obj)
   "Extract tool calls from a chat completion response (parsed JSON alist or JSON string).
