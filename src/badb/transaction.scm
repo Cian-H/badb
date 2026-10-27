@@ -17,6 +17,8 @@
                #:use-module
                (ice-9 format)
                #:use-module
+               (badb util)
+               #:use-module
                (badb registry)
                #:use-module
                (badb journal)
@@ -97,26 +99,6 @@ if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed mod
    ((symbol? id) (symbol->string id))
    (else (format #f "~a" id))))
 
-(define (format-exception key args)
-  "Format an exception key and args into a human-readable diagnostic string."
-  (cond
-   ((and (eq? key 'misc-error)
-         (pair? args) (pair? (cdr args)) (string? (cadr args)))
-    (catch #t
-      (lambda ()
-        (let* ((msg-fmt (cadr args))
-               (msg-args (if (and (pair? (cddr args)) (pair? (caddr args)))
-                             (caddr args)
-                             (cddr args))))
-          (if (list? msg-args)
-              (apply format #f msg-fmt msg-args)
-              (format #f "~a" msg-fmt))))
-      (lambda _ (format #f "~a: ~s" key args))))
-   ((and (pair? args) (string? (car args)))
-    (car args))
-   (else
-    (format #f "~a: ~s" key args))))
-
 (define (merge-metadata old-meta new-meta)
         "Merge OLD-META with NEW-META, with NEW-META entries taking precedence."
         (let
@@ -145,24 +127,6 @@ if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed mod
                       (add-old (cdr o-rest) res)
                       (add-old (cdr o-rest) (cons entry res))))))
               (loop (cdr rest) (cons (car rest) acc))))))
-
-(define (sanitize-for-json val)
-  "Sanitize nested data structures so they can be JSON-serialized."
-  (cond
-   ((or (string? val) (number? val) (boolean? val) (null? val))
-    val)
-   ((symbol? val)
-    (symbol->string val))
-   ((pair? val)
-    (if (and (or (symbol? (car val)) (string? (car val)))
-             (not (pair? (cdr val)))
-             (not (null? (cdr val))))
-        (cons (if (symbol? (car val)) (symbol->string (car val)) (car val))
-              (sanitize-for-json (cdr val)))
-        (map sanitize-for-json val)))
-   ((module? val) "#<module>")
-   ((procedure? val) "#<procedure>")
-   (else (format #f "~a" val))))
 
 (define (log-journal! journal entry)
         "Append an entry to the journal if configured."

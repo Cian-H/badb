@@ -12,7 +12,6 @@
 ;;;
 ;;; 1. Coercion & Identifier Normalization
 ;;;
-
 (test-group "util-coercion"
   (test-equal "ensure-string from string"
     "hello"
@@ -54,7 +53,6 @@
 ;;;
 ;;; 2. Property & Alist Accessors
 ;;;
-
 (test-group "util-properties"
   (let ((al '((name . "badb") ("model" . "gpt-4") (port 8080) (#:verbose #t))))
     (test-equal "prop-ref with symbol key on symbol alist"
@@ -96,7 +94,6 @@
 ;;;
 ;;; 3. Safe JSON Serialization & Parsing
 ;;;
-
 (test-group "util-json"
   (test-equal "safe-json-string preserves string"
     "already a string"
@@ -117,7 +114,6 @@
 ;;;
 ;;; 4. Environment Normalization & Exec Strings
 ;;;
-
 (test-group "util-environment"
   (let* ((raw '(("API_KEY" . "sec123") (PORT . 3000) "DEBUG=true"))
          (normalized (normalize-env-alist raw))
@@ -135,7 +131,6 @@
 ;;;
 ;;; 5. Filesystem Helpers
 ;;;
-
 (test-group "util-filesystem"
   (let* ((tmp-dir (string-append "/tmp/badb-util-test-" (number->string (current-time))))
          (nested-dir (string-append tmp-dir "/sub1/sub2"))
@@ -144,5 +139,19 @@
       (begin
         (ensure-parent-directory! target-file)
         (file-exists? nested-dir)))))
+
+(test-group "util-helpers"
+            (test-equal
+              "split-words trims and splits whitespace"
+              '("alpha" "beta" "gamma")
+              (split-words "  alpha   beta   gamma  "))
+            (test-equal "split-words empty string" '() (split-words ""))
+            (test-equal
+              "format-exception misc-error formatted"
+              "value is 42"
+              (format-exception 'misc-error (list #f "value is ~a" (list 42))))
+            (test-equal "sanitize-for-json nested symbols"
+                        '(("cmd" . "run") ("flag" . "true"))
+                        (sanitize-for-json '((cmd . "run") (flag . "true")))))
 
 (test-end "badb-util")

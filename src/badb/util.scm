@@ -8,6 +8,8 @@
 (define-module (badb util) #:use-module
                (ice-9 format)
                #:use-module
+               (ice-9 rdelim)
+               #:use-module
                (json)
                #:use-module
                (srfi srfi-1)
@@ -22,6 +24,9 @@
                         prop-set
                         safe-json-string
                         safe-json-parse
+                        sanitize-for-json
+                        format-exception
+                        split-words
                         normalize-env-alist
                         env-alist->exec-strings))
 
@@ -200,3 +205,55 @@
   (map (lambda (pair)
          (format #f "~a=~a" (ensure-string (car pair)) (ensure-string (cdr pair))))
        env-alist))
+(define (split-words str)
+        "Split string STR on whitespace, discarding empty tokens."
+        (if (or (not (string? str)) (string-null? str))
+          '()
+          (filter
+            (lambda (s)
+              (not (string-null? s)))
+            (string-split (string-trim-both str) #\space))))
+
+(define (format-exception key args)
+        "Format an exception key and args into a human-readable diagnostic string."
+        (cond
+          ((and (eq? key 'misc-error)
+                (pair? args)
+                (pair? (cdr args))
+                (string? (cadr args)))
+            (catch #t
+              (lambda ()
+                (let*
+                    ((msg-fmt (cadr args))
+                     (msg-args
+                       (if
+                           (and (pair? (cddr args)) (pair? (caddr args)))
+                         (caddr args)
+                         (cddr args))))
+                  (if (list? msg-args)
+                    (apply format #f msg-fmt msg-args)
+                    (format #f "~a" msg-fmt))))
+              (lambda _
+                (format #f "~a: ~s" key args))))
+          ((and (pair? args) (string? (car args))) (car args))
+          (else (format #f "~a: ~s" key args))))
+
+(define (sanitize-for-json val)
+        "Sanitize nested data structures so they can be JSON-serialized."
+        (cond
+          ((or (string? val) (number? val) (boolean? val) (null? val)) val)
+          ((symbol? val) (symbol->string val))
+          ((pair? val)
+            (if
+                (and (or (symbol? (car val)) (string? (car val)))
+                     (not (pair? (cdr val)))
+                     (not (null? (cdr val))))
+              (cons
+                (if (symbol? (car val))
+                  (symbol->string (car val))
+                  (car val))
+                (sanitize-for-json (cdr val)))
+              (map sanitize-for-json val)))
+          ((module? val) "#<module>")
+          ((procedure? val) "#<procedure>")
+          (else (format #f "~a" val))))
