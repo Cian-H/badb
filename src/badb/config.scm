@@ -196,40 +196,21 @@
                      (args . ,(if (list? args) args (list args)))
                      (env . ,env)
                      (auto-start . ,auto-start))))
-         (current (badb-config-mcp-servers config))
-         (filtered (remove (lambda (e) (string=? (car e) name-str)) current)))
-    (set-badb-config-mcp-servers! config (cons (cons name-str spec) filtered))
+         (current (badb-config-mcp-servers config)))
+    (set-badb-config-mcp-servers! config (cons (cons name-str spec)
+                                               (alist-remove name-str current)))
     config))
 
 (define (badb-config-merge-mcp-servers! config new-entries)
   "Batch add or update a list of (NAME . SPEC) MCP server entries in CONFIG."
-  (if (null? new-entries)
-    config
-    (let*
-        ((new-table
-           (let
-               ((tbl (make-hash-table (length new-entries))))
-             (for-each
-               (lambda (e)
-                 (hash-set! tbl (car e) #t))
-               new-entries)
-             tbl))
-         (current (badb-config-mcp-servers config))
-         (filtered
-           (remove
-             (lambda (e)
-               (hash-ref new-table (car e)))
-             current)))
-      (set-badb-config-mcp-servers! config (append new-entries filtered))
-      config)))
+  (set-badb-config-mcp-servers! config
+                                (alist-merge (badb-config-mcp-servers config) new-entries))
+  config)
 
 (define (badb-config-remove-mcp-server! config name)
   "Remove MCP server NAME from CONFIG."
-  (let* ((name-str (ensure-string name))
-         (current (badb-config-mcp-servers config))
-         (filtered (remove (lambda (e) (string=? (car e) name-str)) current)))
-    (set-badb-config-mcp-servers! config filtered)
-    config))
+  (set-badb-config-mcp-servers! config (alist-remove name (badb-config-mcp-servers config)))
+  config)
 
 ;;;
 ;;; S-Expression Parsing and Serialization
@@ -412,22 +393,8 @@ unique base servers are retained."
                                  #:source-path
                                  (or (badb-config-source-path overlay) (badb-config-source-path base))))
              ;; Merge MCP servers: overlay servers take precedence over base servers with same name
-             (base-mcp (badb-config-mcp-servers base))
-             (overlay-mcp (badb-config-mcp-servers overlay))
-             (overlay-table
-               (let
-                   ((tbl (make-hash-table (length overlay-mcp))))
-                 (for-each
-                   (lambda (e)
-                     (hash-set! tbl (car e) #t))
-                   overlay-mcp)
-                 tbl))
-             (retained-base
-               (remove
-                 (lambda (e)
-                   (hash-ref overlay-table (car e)))
-                 base-mcp))
-             (combined-mcp (append overlay-mcp retained-base)))
+             (combined-mcp (alist-merge (badb-config-mcp-servers base)
+                                        (badb-config-mcp-servers overlay))))
           (set-badb-config-mcp-servers! merged combined-mcp)
           merged))
 

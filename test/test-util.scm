@@ -47,7 +47,21 @@
          (updated (prop-set al 'a 10))
          (added (prop-set updated "c" 3)))
     (test-equal "prop-set updates existing key" 10 (prop-ref updated 'a))
-    (test-equal "prop-set adds new key" 3 (prop-ref added 'c))))
+    (test-equal "prop-set adds new key" 3 (prop-ref added 'c)))
+
+  (let ((sample '(("x" . 10) (y . 20) ("z" . 30))))
+    (test-equal "alist-remove removes by string" '((y . 20) ("z" . 30)) (alist-remove "x" sample))
+    (test-equal "alist-remove removes by symbol" '(("x" . 10) ("z" . 30)) (alist-remove 'y sample))
+    (test-equal "alist-remove preserves on non-existent key" sample (alist-remove 'none sample))
+    (test-equal "alist-remove handles empty alist" '() (alist-remove 'k '())))
+
+  (let ((base '(("a" . 1) ("b" . 2)))
+        (overlay '(("b" . 20) ("c" . 30))))
+    (test-equal "alist-merge overlay takes precedence"
+      '(("b" . 20) ("c" . 30) ("a" . 1))
+      (alist-merge base overlay))
+    (test-equal "alist-merge with empty overlay returns base" base (alist-merge base '()))
+    (test-equal "alist-merge with empty base returns overlay" overlay (alist-merge '() overlay))))
 
 ;;;
 ;;; 3. Safe JSON Serialization & Parsing

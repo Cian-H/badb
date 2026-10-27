@@ -365,7 +365,7 @@ Supports both (mcp-manager-add-server! mgr spec-alist) and
          (existing (assoc name-str servers)))
     ;; If existing server is running, stop it
     (mcp-stop-entry-client! existing)
-    (let* ((filtered (remove (lambda (e) (string=? (car e) name-str)) servers))
+    (let* ((filtered (alist-remove name-str servers))
            (new-entry (cons name-str
                             `((spec . ,full-spec)
                               (client . #f)
@@ -388,8 +388,7 @@ Supports both (mcp-manager-add-server! mgr spec-alist) and
          (existing (assoc name-str servers)))
     (when existing
       (mcp-stop-entry-client! existing)
-      (set-mcp-manager-servers! mgr
-                                (remove (lambda (e) (string=? (car e) name-str)) servers))
+      (set-mcp-manager-servers! mgr (alist-remove name-str servers))
       (when (mcp-manager-config mgr)
         (badb-config-remove-mcp-server! (mcp-manager-config mgr) name-str)
         (mcp-manager-sync-config! mgr))

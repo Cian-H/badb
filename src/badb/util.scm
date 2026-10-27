@@ -23,6 +23,8 @@
                         get-prop
                         prop-ref
                         prop-set
+                        alist-remove
+                        alist-merge
                         safe-json-string
                         safe-json-parse
                         sanitize-for-json
@@ -145,18 +147,39 @@
                     (loop (cdr rest)))))))
       default))
 
+(define (alist-remove key alist)
+  "Return ALIST with all entries whose car matches KEY removed.
+Matches against string, symbol, or keyword forms via ensure-string."
+  (if (pair? alist)
+      (let ((key-str (ensure-string key)))
+        (remove (lambda (pair)
+                  (and (pair? pair)
+                       (string=? (ensure-string (car pair)) key-str)))
+                alist))
+      '()))
+
+(define (alist-merge base overlay)
+  "Merge association lists BASE and OVERLAY. Entries in OVERLAY take
+precedence over entries in BASE with matching keys (compared via ensure-string)."
+  (cond
+   ((null? overlay) (or base '()))
+   ((null? base) overlay)
+   (else
+    (let ((tbl (make-hash-table (length overlay))))
+      (for-each (lambda (e)
+                  (when (pair? e)
+                    (hash-set! tbl (ensure-string (car e)) #t)))
+                overlay)
+      (append overlay
+              (remove (lambda (e)
+                        (and (pair? e)
+                             (hash-ref tbl (ensure-string (car e)))))
+                      base))))))
+
 (define (prop-set alist key val)
   "Update or insert KEY with VAL in ALIST, preserving or using symbol representation."
-  (let* ((sym (ensure-symbol key))
-         (str (symbol->string sym))
-         (filtered (if (pair? alist)
-                       (remove (lambda (pair)
-                                 (and (pair? pair)
-                                      (or (equal? (car pair) sym)
-                                          (equal? (car pair) str))))
-                               alist)
-                       '())))
-    (cons (cons sym val) filtered)))
+  (let ((sym (ensure-symbol key)))
+    (cons (cons sym val) (alist-remove sym alist))))
 
 ;;;
 ;;; Safe JSON Serialization
