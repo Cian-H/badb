@@ -1497,6 +1497,10 @@ and core badb modules for interactive evaluation."
     (dynamic-wind
       (lambda () #t)
       (lambda ()
+        (define (clamp-selector-index!)
+          (when (selector-active? input-buffer)
+            (let ((matches (matching-slash-commands input-buffer)))
+              (set! selector-index (if (null? matches) 0 (min selector-index (- (length matches) 1)))))))
         (let loop ()
           (render!)
           (let ((ch (getch stdscr)))
@@ -1607,9 +1611,7 @@ and core badb modules for interactive evaluation."
               (cond
                ((> (string-length input-buffer) 0)
                 (set! input-buffer (substring input-buffer 0 (- (string-length input-buffer) 1)))
-                (when (selector-active? input-buffer)
-                  (let ((matches (matching-slash-commands input-buffer)))
-                    (set! selector-index (if (null? matches) 0 (min selector-index (- (length matches) 1)))))))
+                (clamp-selector-index!))
                ((not (eq? prompt-mode 'chat))
                 (set! prompt-mode 'chat)))
               (loop))
@@ -1629,9 +1631,7 @@ and core badb modules for interactive evaluation."
                  (else (set! input-buffer (string ch)) (loop))))
                (else
                 (set! input-buffer (string-append input-buffer (string ch)))
-                (when (selector-active? input-buffer)
-                  (let ((matches (matching-slash-commands input-buffer)))
-                    (set! selector-index (if (null? matches) 0 (min selector-index (- (length matches) 1))))))
+                (clamp-selector-index!)
                 (loop))))
              (else (loop))))))
       (lambda ()
