@@ -23,7 +23,6 @@
 ;;;
 ;;; Feature entry record
 ;;;
-
 (define-record-type <feature-entry>
   (make-feature-entry id implementation metadata)
   feature-entry?
@@ -34,7 +33,6 @@
 ;;;
 ;;; Indirection Registry record
 ;;;
-
 (define-record-type <registry>
   (%make-registry table mutex)
   registry?
@@ -48,7 +46,6 @@
 ;;;
 ;;; Feature ID normalization
 ;;;
-
 (define (canonical-feature-id id)
   "Convert feature-id (symbol or string) into canonical symbol key."
   (cond
@@ -66,69 +63,78 @@
 ;;;
 ;;; Registry operations
 ;;;
-
-(define* (registry-attach! reg feature-id implementation
-                           #:optional (meta-pos '())
-                           #:key (metadata '()))
+(define*
+  (registry-attach! reg
+                    feature-id
+                    implementation
+                    #:optional
+                    (meta-pos '())
+                    #:key
+                    (metadata '()))
   "Attach or hot-swap an IMPLEMENTATION under FEATURE-ID (symbol or string)
 with optional METADATA alist. Atomically replaces any prior attachment."
-  (unless (registry? reg)
-    (error "registry-attach!: expected <registry>" reg))
-  (let ((key (canonical-feature-id feature-id))
-        (meta (if (null? metadata) meta-pos metadata)))
+  (unless (registry? reg) (error "registry-attach!: expected <registry>" reg))
+  (let
+      ((key (canonical-feature-id feature-id))
+       (meta
+         (if (null? metadata)
+           meta-pos
+           metadata)))
     (with-mutex (registry-mutex reg)
-      (let ((entry (make-feature-entry feature-id implementation meta)))
-        (hash-set! (registry-table reg) key entry)
-        entry))))
+                (let
+                    ((entry (make-feature-entry feature-id implementation meta)))
+                  (hashq-set! (registry-table reg) key entry)
+                  entry))))
 
 (define (registry-detach! reg feature-id)
-  "Remove FEATURE-ID from REG. Returns #t if removed, #f if not found."
-  (unless (registry? reg)
-    (error "registry-detach!: expected <registry>" reg))
-  (let ((key (canonical-feature-id feature-id)))
-    (with-mutex (registry-mutex reg)
-      (let ((entry (hash-ref (registry-table reg) key)))
-        (if entry
-            (begin
-              (hash-remove! (registry-table reg) key)
-              #t)
-            #f)))))
+        "Remove FEATURE-ID from REG. Returns #t if removed, #f if not found."
+        (unless (registry? reg) (error "registry-detach!: expected <registry>" reg))
+        (let ((key (canonical-feature-id feature-id)))
+          (with-mutex (registry-mutex reg)
+                      (let
+                          ((entry (hashq-ref (registry-table reg) key)))
+                        (if entry
+                          (begin (hashq-remove! (registry-table reg) key) #t)
+                          #f)))))
 
 (define (registry-lookup reg feature-id)
-  "Look up FEATURE-ID in REG. Returns attached implementation or #f."
-  (unless (registry? reg)
-    (error "registry-lookup: expected <registry>" reg))
-  (let ((key (canonical-feature-id feature-id)))
-    (with-mutex (registry-mutex reg)
-      (let ((entry (hash-ref (registry-table reg) key)))
-        (if entry
-            (entry-implementation entry)
-            #f)))))
+        "Look up FEATURE-ID in REG. Returns attached implementation or #f."
+        (unless (registry? reg) (error "registry-lookup: expected <registry>" reg))
+        (let ((key (canonical-feature-id feature-id)))
+          (with-mutex (registry-mutex reg)
+                      (let
+                          ((entry (hashq-ref (registry-table reg) key)))
+                        (if entry
+                          (entry-implementation entry)
+                          #f)))))
 
 (define (registry-metadata reg feature-id)
-  "Look up metadata alist for FEATURE-ID in REG. Returns metadata alist or #f."
-  (unless (registry? reg)
-    (error "registry-metadata: expected <registry>" reg))
-  (let ((key (canonical-feature-id feature-id)))
-    (with-mutex (registry-mutex reg)
-      (let ((entry (hash-ref (registry-table reg) key)))
-        (if entry
-            (entry-metadata entry)
-            #f)))))
+        "Look up metadata alist for FEATURE-ID in REG. Returns metadata alist or #f."
+        (unless (registry? reg) (error "registry-metadata: expected <registry>" reg))
+        (let ((key (canonical-feature-id feature-id)))
+          (with-mutex (registry-mutex reg)
+                      (let
+                          ((entry (hashq-ref (registry-table reg) key)))
+                        (if entry
+                          (entry-metadata entry)
+                          #f)))))
 
 (define (registry-list reg)
-  "Return a sorted list of registered feature entries: ((id . <id>) (metadata . <metadata>))."
-  (unless (registry? reg)
-    (error "registry-list: expected <registry>" reg))
-  (with-mutex (registry-mutex reg)
-    (let ((entries (hash-map->list (lambda (k v) v) (registry-table reg))))
-      (map (lambda (entry)
-             (list (cons 'id (entry-id entry))
-                   (cons 'metadata (entry-metadata entry))))
-           (sort entries
-                 (lambda (a b)
-                   (string<? (entry-id->string (entry-id a))
-                             (entry-id->string (entry-id b)))))))))
+        "Return a sorted list of registered feature entries: ((id . <id>) (metadata . <metadata>))."
+        (unless (registry? reg) (error "registry-list: expected <registry>" reg))
+        (let
+            ((entries
+               (with-mutex (registry-mutex reg)
+                           (hash-map->list
+                             (lambda (k v)
+                               v)
+                             (registry-table reg)))))
+          (map
+            (lambda (entry)
+              (list (cons 'id (entry-id entry)) (cons 'metadata (entry-metadata entry))))
+            (sort entries
+                  (lambda (a b)
+                    (string<? (entry-id->string (entry-id a)) (entry-id->string (entry-id b))))))))
 
 (define (registry-dispatch reg feature-id . args)
   "Look up FEATURE-ID in REG and apply the attached procedure to ARGS.
@@ -145,7 +151,6 @@ Raises an error if the feature is not found or is not a procedure."
 ;;;
 ;;; Fresh Feature Module system
 ;;;
-
 (define (normalize-module-name name)
   "Normalize module name to a list of symbols, or #f for anonymous."
   (cond
