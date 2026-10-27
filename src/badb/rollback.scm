@@ -248,59 +248,55 @@ Returns an alist describing restoration results."
   (unless (rollback-manager? mgr)
     (error "rollback-to-checkpoint!: expected <rollback-manager>" mgr))
   (let ((chkpt (get-checkpoint mgr checkpoint-id)))
-    (if (not chkpt)
-      `((status . "error")
-        (error . ,(format #f "Checkpoint '~a' not found" checkpoint-id)))
-      (let*
-          ((ws (rollback-manager-workspace-dir mgr))
-           (reg (rollback-manager-registry mgr))
-           (jrn (rollback-manager-journal mgr))
-           (restored-files '())
-           (removed-files '()))
-        ;; 1. Restore files recorded in checkpoint
-        (for-each
-          (lambda (entry)
-            (let*
-                ((rel-path (car entry)) (existed? (cadr entry))
-                 (content (cddr entry))
-                 (full-path
-                   (if (string-prefix? "/" rel-path)
-                     rel-path
-                     (string-append ws "/" rel-path))))
-              (cond
+    (if chkpt
+        (let* ((ws (rollback-manager-workspace-dir mgr))
+               (reg (rollback-manager-registry mgr))
+               (jrn (rollback-manager-journal mgr))
+               (restored-files '())
+               (removed-files '()))
+          ;; 1. Restore files recorded in checkpoint
+          (for-each
+           (lambda (entry)
+             (let* ((rel-path (car entry))
+                    (existed? (cadr entry))
+                    (content (cddr entry))
+                    (full-path (if (string-prefix? "/" rel-path)
+                                   rel-path
+                                   (string-append ws "/" rel-path))))
+               (cond
                 (existed?
-                  (unless
-                      (and (file-exists? full-path)
-                           (let ((cur (read-file-content full-path))) (and cur (string=? cur content))))
-                    (write-file-content full-path content))
-                  (set! restored-files (cons rel-path restored-files)))
+                 (unless (and (file-exists? full-path)
+                              (let ((cur (read-file-content full-path)))
+                                (and cur (string=? cur content))))
+                   (write-file-content full-path content))
+                 (set! restored-files (cons rel-path restored-files)))
                 (else
-                  ;; File didn't exist at checkpoint: delete if it was created
-                  (when (file-exists? full-path)
-                    (delete-file full-path)
-                    (set! removed-files (cons rel-path removed-files)))))))
-          (checkpoint-files chkpt))
-        ;; 2. Restore Registry
-        (restore-registry! reg (checkpoint-registry-state chkpt))
-        ;; 3. Log to Journal
-        (when (and jrn (journal? jrn))
-          (catch #t
-            (lambda ()
-              (journal-append! jrn
-                               `((checkpoint . ,checkpoint-id)
-                                 (status . "rolled_back")
-                                 (feature-id . "rollback")
-                                 (details .
-                                          ((description . ,(checkpoint-description chkpt))
-                                           (restored-count . ,(length restored-files))
-                                           (removed-count . ,(length removed-files)))))))
-            (lambda _
-              #f)))
-        `((status . "rolled_back")
-          (checkpoint-id . ,checkpoint-id)
-          (description . ,(checkpoint-description chkpt))
-          (restored-files . ,(reverse restored-files))
-          (removed-files . ,(reverse removed-files)))))))
+                 ;; File didn't exist at checkpoint: delete if it was created
+                 (when (file-exists? full-path)
+                   (delete-file full-path)
+                   (set! removed-files (cons rel-path removed-files)))))))
+           (checkpoint-files chkpt))
+          ;; 2. Restore Registry
+          (restore-registry! reg (checkpoint-registry-state chkpt))
+          ;; 3. Log to Journal
+          (when (and jrn (journal? jrn))
+            (catch #t
+              (lambda ()
+                (journal-append! jrn
+                                 `((checkpoint . ,checkpoint-id)
+                                   (status . "rolled_back")
+                                   (feature-id . "rollback")
+                                   (details . ((description . ,(checkpoint-description chkpt))
+                                               (restored-count . ,(length restored-files))
+                                               (removed-count . ,(length removed-files)))))))
+              (lambda _ #f)))
+          `((status . "rolled_back")
+            (checkpoint-id . ,checkpoint-id)
+            (description . ,(checkpoint-description chkpt))
+            (restored-files . ,(reverse restored-files))
+            (removed-files . ,(reverse removed-files))))
+        `((status . "error")
+          (error . ,(format #f "Checkpoint '~a' not found" checkpoint-id))))))
 
 (define (rollback-latest! mgr)
   "Rollback to the most recent checkpoint."
