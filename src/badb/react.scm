@@ -7,6 +7,7 @@
 ;;; logs execution provenance to the journal, and drives agent tasks to completion.
 
 (define-module (badb react)
+  #:use-module (badb util)
   #:use-module (badb model)
   #:use-module (badb registry)
   #:use-module (badb journal)
@@ -389,13 +390,10 @@ Returns (values content reasoning)."
            (map
              (lambda (tc)
                (let*
-                   ((tc-id (or (assoc-ref tc 'id) (assoc-ref tc "id") "call_0"))
-                    (tc-name (or (assoc-ref tc 'name) (assoc-ref tc "name") ""))
-                    (raw-args (or (assoc-ref tc 'arguments) (assoc-ref tc "arguments") '()))
-                    (args-str
-                      (if (string? raw-args)
-                        raw-args
-                        (scm->json-string raw-args))))
+                   ((tc-id (or (prop-ref tc 'id) "call_0"))
+                    (tc-name (or (prop-ref tc 'name) ""))
+                    (raw-args (or (prop-ref tc 'arguments) '()))
+                    (args-str (safe-json-string raw-args)))
                  `((id . ,tc-id) (type . "function")
                    (function . ((name . ,tc-name) (arguments . ,args-str))))))
              tool-calls)))
@@ -408,7 +406,7 @@ Returns (values content reasoning)."
                    (or
                      (and (pair? tool-calls)
                           (let ((first-tc (car tool-calls)))
-                            (or (assoc-ref first-tc 'name) (assoc-ref first-tc "name"))))
+                            (or (prop-ref first-tc 'name) "")))
                      "tool")))))
     `((role . "assistant")
       (reasoning_content . ,eff-reasoning)
@@ -438,12 +436,9 @@ Returns (values content reasoning)."
         (lambda (res err?)
           (when (procedure? on-tool-result-fn) (on-tool-result-fn tc res err?))
           (let*
-              ((content-str
-                 (if (string? res)
-                   res
-                   (scm->json-string res)))
-               (tc-id (or (assoc-ref tc 'id) (assoc-ref tc "id") "call_0"))
-               (tc-name (or (assoc-ref tc 'name) (assoc-ref tc "name") ""))
+              ((content-str (safe-json-string res))
+               (tc-id (or (prop-ref tc 'id) "call_0"))
+               (tc-name (or (prop-ref tc 'name) ""))
                (tool-msg `((role . "tool") (tool_call_id . ,tc-id)
                            (name . ,tc-name)
                            (content . ,content-str))))

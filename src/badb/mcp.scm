@@ -4,6 +4,7 @@
 ;;; standard I/O ports or spawned subprocesses using JSON-RPC 2.0.
 
 (define-module (badb mcp)
+  #:use-module (badb util)
   #:use-module (json)
   #:use-module (ice-9 rdelim)
   #:use-module (ice-9 popen)
@@ -82,12 +83,7 @@ Optionally accepts a process ID PID if backed by a child process."
 (define (json-ref alist key)
   "Look up KEY (string or symbol) in ALIST. Returns the associated value,
 or #f if not present."
-  (and (list? alist)
-       (let* ((str-key (if (string? key) key (symbol->string key)))
-              (sym-key (if (symbol? key) key (string->symbol key)))
-              (entry (or (assoc str-key alist)
-                         (assoc sym-key alist))))
-         (and entry (cdr entry)))))
+  (prop-ref alist key))
 
 (define (tools->list tools)
   "Normalize TOOLS (which may be a vector or list) into a Scheme list."
@@ -398,30 +394,17 @@ Supports both (mcp-manager-add-server! mgr spec-alist) and
 
 (define (mcp-build-exec-arguments spec)
   "Resolve command line arguments and environment variables for an MCP server spec."
-  (let* ((cmd (or (assoc-ref spec 'command) ""))
-         (args (or (assoc-ref spec 'args) '()))
-         (env (or (assoc-ref spec 'env) '()))
-         (env-pairs (cond
-                     ((null? env) '())
-                     ((and (pair? env) (or (symbol? (car env)) (string? (car env))))
-                      (list env))
-                     ((list? env) env)
-                     (else '()))))
+  (let* ((cmd (or (prop-ref spec 'command) ""))
+         (args (or (prop-ref spec 'args) '()))
+         (env-pairs (normalize-env-alist (or (prop-ref spec 'env) '()))))
     (if (null? env-pairs)
         (cons cmd args)
-        (append (list "env")
-                (map (lambda (pair)
-                       (let ((k (if (symbol? (car pair))
-                                    (symbol->string (car pair))
-                                    (car pair)))
-                             (v (cdr pair)))
-                         (format #f "~a=~a" k v)))
-                     env-pairs)
+        (append (cons "env" (env-alist->exec-strings env-pairs))
                 (cons cmd args)))))
 
 (define (mcp-manager-update-server-state! mgr name spec client status tools error)
   "Update internal state record for server NAME in MGR."
-  (let* ((name-str (if (symbol? name) (symbol->string name) name))
+  (let* ((name-str (ensure-string name))
          (updated-data `((spec . ,spec)
                          (client . ,client)
                          (status . ,status)

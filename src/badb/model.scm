@@ -4,6 +4,7 @@
 ;;; OpenAI, Anthropic, local Ollama, and OpenRouter streaming APIs.
 
 (define-module (badb model)
+  #:use-module (badb util)
   #:use-module (web client)
   #:use-module (web uri)
   #:use-module (web response)
@@ -79,19 +80,13 @@ or with positional arguments:
 ;;; Chat Request Formatting
 ;;;
 
-(define (symbol-or-string->string x)
-  (cond
-   ((symbol? x) (symbol->string x))
-   ((string? x) x)
-   (else (object->string x))))
+(define symbol-or-string->string ensure-string)
 
 (define (single-message-alist? x)
   (and (pair? x)
        (pair? (car x))
-       (or (assoc-ref x "role")
-           (assoc-ref x 'role)
-           (assoc-ref x "content")
-           (assoc-ref x 'content))))
+       (or (prop-ref x "role")
+           (prop-ref x "content"))))
 
 (define (valid-api-message? msg)
   "Predicate to check if MSG is a valid OpenAI/Anthropic chat protocol message.
@@ -273,10 +268,7 @@ Returns 'done when [DONE] is encountered, or 'eof upon reaching EOF."
 
 (define (json-ref obj key)
   "Lookup KEY in OBJ where KEY may be a string or symbol, and OBJ is an alist."
-  (and (pair? obj)
-       (or (assoc-ref obj key)
-           (and (string? key) (assoc-ref obj (string->symbol key)))
-           (and (symbol? key) (assoc-ref obj (symbol->string key))))))
+  (prop-ref obj key))
 
 (define (extract-openai-delta-item obj)
   "Extract delta item from OpenAI-format choice payload."
