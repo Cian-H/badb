@@ -10,6 +10,7 @@
   #:use-module (badb transaction)
   #:use-module (badb journal)
   #:use-module (ice-9 format)
+  #:use-module (ice-9 popen)
   #:use-module (ice-9 rdelim)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-9)
@@ -17,7 +18,11 @@
   #:export (run-tui
             wrap-line
             wrap-text
-            parse-command))
+            parse-command
+            classify-input
+            make-repl-mod
+            eval-scheme-code
+            execute-shell-command))
 
 ;;;
 ;;; Text Formatting & Word Wrapping Helpers
@@ -63,6 +68,98 @@ breaking on whitespace when possible."
                     (string-trim-both (substring without-slash (+ space-pos 1))))
               (cons without-slash "")))
         #f)))
+
+;;;
+;;; Shell & REPL Execution Helpers
+;;;
+
+(define (classify-input input)
+  "Classify trimmed user INPUT into an action tag and payload:
+   '(slash cmd . arg)
+   '(shell . cmd-string)
+   '(scheme . code-string)
+   '(chat . text)
+   #f for empty or whitespace-only input"
+  (let ((trimmed (string-trim-both input)))
+    (cond
+     ((string-null? trimmed)
+      #f)
+     ((string-prefix? "!" trimmed)
+      (cons 'shell (string-trim-both (substring trimmed 1))))
+     ((string-prefix? "," trimmed)
+      (cons 'scheme (string-trim-both (substring trimmed 1))))
+     ((string-prefix? "(" trimmed)
+      (cons 'scheme trimmed))
+     ((string-prefix? "/" trimmed)
+      (let* ((without-slash (substring trimmed 1))
+             (space-pos (string-index without-slash #\space)))
+        (if space-pos
+            (list 'slash
+                  (substring without-slash 0 space-pos)
+                  (string-trim-both (substring without-slash (+ space-pos 1))))
+            (list 'slash without-slash ""))))
+     (else
+      (cons 'chat trimmed)))))
+
+(define (make-repl-mod reg jrn mgr client)
+  "Create an isolated user module pre-populated with kernel state bindings
+and core badb modules for interactive evaluation."
+  (let ((mod (make-fresh-user-module)))
+    (module-use! mod (resolve-interface '(guile)))
+    (module-use! mod (resolve-interface '(badb model)))
+    (module-use! mod (resolve-interface '(badb registry)))
+    (module-use! mod (resolve-interface '(badb transaction)))
+    (module-use! mod (resolve-interface '(badb journal)))
+    (catch #t
+      (lambda () (module-use! mod (resolve-interface '(badb mcp))))
+      (lambda _ #f))
+    (module-use! mod (resolve-interface '(ice-9 format)))
+    (module-use! mod (resolve-interface '(ice-9 rdelim)))
+    (module-use! mod (resolve-interface '(srfi srfi-1)))
+    (module-define! mod 'reg reg)
+    (module-define! mod 'jrn jrn)
+    (module-define! mod 'mgr mgr)
+    (module-define! mod 'client client)
+    mod))
+
+(define (eval-scheme-code code-str repl-mod)
+  "Evaluate CODE-STR in REPL-MOD and return (values result-string error-or-#f)."
+  (catch #t
+    (lambda ()
+      (let* ((p (open-input-string code-str))
+             (output-port (open-output-string)))
+        (let loop ()
+          (let ((expr (read p)))
+            (unless (eof-object? expr)
+              (let ((printed
+                     (with-output-to-string
+                       (lambda ()
+                         (call-with-values (lambda () (eval expr repl-mod))
+                           (lambda vals
+                             (for-each (lambda (v)
+                                         (format #t "=> ~s\n" v))
+                                       vals)))))))
+                (display printed output-port)
+                (loop)))))
+        (let ((res (string-trim-right (get-output-string output-port))))
+          (values (if (string-null? res) "=> #<unspecified>" res) #f))))
+    (lambda (key . args)
+      (values #f (format #f "Scheme error (~a): ~s" key args)))))
+
+(define (execute-shell-command cmd)
+  "Execute shell CMD and return (values output-string exit-code error-or-#f)."
+  (catch #t
+    (lambda ()
+      (let* ((pipe (open-pipe (string-append cmd " 2>&1") OPEN_READ))
+             (raw-out (read-string pipe))
+             (status (close-pipe pipe))
+             (exit-val (if (status:exit-val status) (status:exit-val status) 0))
+             (clean-out (if (or (eof-object? raw-out) (string-null? raw-out))
+                            ""
+                            (string-trim-right raw-out))))
+        (values clean-out exit-val #f)))
+    (lambda (key . args)
+      (values #f 1 (format #f "Shell error (~a): ~s" key args)))))
 
 ;;;
 ;;; Curses Safe Rendering Utilities
@@ -145,13 +242,17 @@ breaking on whitespace when possible."
     (define client (make-model-client #:endpoint cur-endpoint
                                       #:api-key cur-api-key
                                       #:model cur-model))
+    (define repl-mod (make-repl-mod reg jrn mgr client))
 
     ;; UI State
     (define messages (list
                       `((role . "system")
                         (content . ,(string-append
                                     "Welcome to badb microharness TUI!\n"
-                                    "Type a message to chat with the model, or /help for commands.")))))
+                                    "• Type a message to chat with the model\n"
+                                    "• Type !<cmd> to execute shell commands (e.g. !git status)\n"
+                                    "• Type ,<expr> or (<expr>) to evaluate Scheme (e.g. ,(+ 1 2))\n"
+                                    "• Type /help for all available commands.")))))
     (define input-buffer "")
     (define scroll-offset 0)
     (define status-text "READY")
@@ -216,6 +317,10 @@ breaking on whitespace when possible."
                                    ((string=? role "assistant") "• ")
                                    ((string=? role "system") "ℹ ")
                                    ((string=? role "error") "✗ ")
+                                   ((string=? role "shell-cmd") "$ ")
+                                   ((string=? role "shell-out") "  ")
+                                   ((string=? role "scheme-in") "λ> ")
+                                   ((string=? role "scheme-out") "  ")
                                    (else "* ")))
                           (wrapped (wrap-text content (- content-width (string-length prefix)))))
                      (if (null? wrapped)
@@ -263,17 +368,43 @@ breaking on whitespace when possible."
                   (attr-off! stdscr A_BOLD)
                   (set-color-attr! 5 #f))
 
+                 ((string=? role "shell-cmd")
+                  (set-color-attr! 6 #t)
+                  (attr-on! stdscr A_BOLD)
+                  (safe-addstr stdscr y 2 text content-width)
+                  (attr-off! stdscr A_BOLD)
+                  (set-color-attr! 6 #f))
+
+                 ((string=? role "shell-out")
+                  (safe-addstr stdscr y 2 text content-width))
+
+                 ((string=? role "scheme-in")
+                  (set-color-attr! 1 #t)
+                  (attr-on! stdscr A_BOLD)
+                  (safe-addstr stdscr y 2 text content-width)
+                  (attr-off! stdscr A_BOLD)
+                  (set-color-attr! 1 #f))
+
+                 ((string=? role "scheme-out")
+                  (set-color-attr! 3 #t)
+                  (safe-addstr stdscr y 2 text content-width)
+                  (set-color-attr! 3 #f))
+
                  (else
                   (safe-addstr stdscr y 2 text content-width))))
               (loop (cdr lines) (+ y 1)))))
 
         ;; 4. Separator line above input
         (safe-addstr stdscr (- maxy 3) 0 (make-string maxx #\─) maxx)
-        (let ((hint " [/help | /features | /journal | /test | /quit] "))
+        (let ((hint " [/help | !<cmd> | ,<expr> | /test | /quit] "))
           (safe-addstr stdscr (- maxy 3) (max 0 (- maxx (string-length hint) 2)) hint (string-length hint)))
 
-        ;; 5. Input Prompt Line
-        (let* ((prompt-prefix "badb> ")
+        ;; 5. Input Prompt Line (dynamic prefix based on active input mode)
+        (let* ((prompt-prefix
+                (cond
+                 ((string-prefix? "!" input-buffer) "sh!> ")
+                 ((or (string-prefix? "," input-buffer) (string-prefix? "(" input-buffer)) "schemeλ> ")
+                 (else "badb> ")))
                (avail-width (max 1 (- maxx (string-length prompt-prefix) 2)))
                (visible-input (if (> (string-length input-buffer) avail-width)
                                   (substring input-buffer (- (string-length input-buffer) avail-width))
@@ -322,6 +453,53 @@ breaking on whitespace when possible."
       (set! status-text "READY")
       (render!))
 
+    ;; Execute shell command and append results
+    (define (execute-shell! cmd)
+      (set! status-text "EXEC...")
+      (render!)
+      (if (string-null? cmd)
+          (set! messages (append messages
+                                 (list `((role . "system")
+                                         (content . "Usage: !<command> (e.g. !git status, !ls -la)")))))
+          (call-with-values (lambda () (execute-shell-command cmd))
+            (lambda (out exit-val err)
+              (cond
+               (err
+                (set! messages (append messages
+                                       (list `((role . "error") (content . ,err))))))
+               ((= exit-val 0)
+                (let ((display-text (if (string-null? out)
+                                        "(process completed with exit status 0)"
+                                        out)))
+                  (set! messages (append messages
+                                         (list `((role . "shell-out") (content . ,display-text)))))))
+               (else
+                (let ((display-text (if (string-null? out)
+                                        (format #f "[process exited with status ~a]" exit-val)
+                                        (format #f "[exit status ~a]\n~a" exit-val out))))
+                  (set! messages (append messages
+                                         (list `((role . "error") (content . ,display-text)))))))))))
+      (set! status-text "READY")
+      (render!))
+
+    ;; Execute Scheme code in live REPL environment and append results
+    (define (execute-scheme! code-str)
+      (set! status-text "EVAL...")
+      (render!)
+      (if (string-null? code-str)
+          (set! messages (append messages
+                                 (list `((role . "system")
+                                         (content . "Usage: ,<expr> or (<expr>) (e.g. ,(+ 1 2) or (registry-list reg))")))))
+          (call-with-values (lambda () (eval-scheme-code code-str repl-mod))
+            (lambda (res err)
+              (if err
+                  (set! messages (append messages
+                                         (list `((role . "error") (content . ,err)))))
+                  (set! messages (append messages
+                                         (list `((role . "scheme-out") (content . ,res)))))))))
+      (set! status-text "READY")
+      (render!))
+
     ;; Handle slash commands
     (define (handle-command! cmd-pair)
       (let ((cmd (car cmd-pair))
@@ -340,7 +518,11 @@ breaking on whitespace when possible."
                                             "  /journal          View recent checkpoint provenance\n"
                                             "  /test             Run the bootstrap test suite\n"
                                             "  /clear            Clear chat history\n"
-                                            "  /quit, /exit      Exit TUI")))))))
+                                            "  /quit, /exit      Exit TUI\n"
+                                            "  !<command>        Execute shell command (e.g. !git status)\n"
+                                            "  ,<expr> or (..)   Send Scheme code to live REPL (e.g. ,(+ 1 2))\n"
+                                            "  /sh <cmd>         Alias for !<command>\n"
+                                            "  /eval <expr>      Alias for ,<expr>")))))))
 
          ((string=? cmd "model")
           (if (string-null? arg)
@@ -352,6 +534,7 @@ breaking on whitespace when possible."
                 (set! client (make-model-client #:endpoint cur-endpoint
                                                 #:api-key cur-api-key
                                                 #:model cur-model))
+                (module-define! repl-mod 'client client)
                 (set! messages (append messages
                                        (list `((role . "system")
                                                (content . ,(format #f "Model switched to: ~a" cur-model)))))))))
@@ -366,9 +549,28 @@ breaking on whitespace when possible."
                 (set! client (make-model-client #:endpoint cur-endpoint
                                                 #:api-key cur-api-key
                                                 #:model cur-model))
+                (module-define! repl-mod 'client client)
                 (set! messages (append messages
                                        (list `((role . "system")
                                                (content . ,(format #f "Endpoint updated to: ~a" cur-endpoint)))))))))
+
+         ((or (string=? cmd "sh") (string=? cmd "shell"))
+          (if (string-null? arg)
+              (set! messages (append messages
+                                     (list `((role . "system")
+                                             (content . "Usage: /sh <command> (or !<command>)")))))
+              (begin
+                (set! messages (append messages (list `((role . "shell-cmd") (content . ,arg)))))
+                (execute-shell! arg))))
+
+         ((or (string=? cmd "eval") (string=? cmd "scheme"))
+          (if (string-null? arg)
+              (set! messages (append messages
+                                     (list `((role . "system")
+                                             (content . "Usage: /eval <scheme-code> (or ,<scheme-code> or (<scheme-code>))")))))
+              (begin
+                (set! messages (append messages (list `((role . "scheme-in") (content . ,arg)))))
+                (execute-scheme! arg))))
 
          ((string=? cmd "features")
           (let ((feats (registry-list reg)))
@@ -467,17 +669,31 @@ breaking on whitespace when possible."
                   (eqv? ch 10) (eqv? ch 13))
               (let ((trimmed (string-trim-both input-buffer)))
                 (set! input-buffer "")
-                (unless (string-null? trimmed)
-                  (let ((cmd (parse-command trimmed)))
-                    (if cmd
-                        (let ((res (handle-command! cmd)))
-                          (unless (eq? res 'exit)
-                            (loop)))
-                        ;; Regular prompt
-                        (begin
-                          (set! messages (append messages (list `((role . "user") (content . ,trimmed)))))
-                          (execute-chat-stream! trimmed)
-                          (loop)))))))
+                (if (string-null? trimmed)
+                    (loop)
+                    (let ((action (classify-input trimmed)))
+                      (case (car action)
+                        ((slash)
+                         (let* ((cmd (cadr action))
+                                (arg (caddr action))
+                                (res (handle-command! (cons cmd arg))))
+                           (unless (eq? res 'exit)
+                             (loop))))
+                        ((shell)
+                         (let ((shell-cmd (cdr action)))
+                           (set! messages (append messages (list `((role . "shell-cmd") (content . ,shell-cmd)))))
+                           (execute-shell! shell-cmd)
+                           (loop)))
+                        ((scheme)
+                         (let ((code-str (cdr action)))
+                           (set! messages (append messages (list `((role . "scheme-in") (content . ,code-str)))))
+                           (execute-scheme! code-str)
+                           (loop)))
+                        ((chat)
+                         (let ((user-text (cdr action)))
+                           (set! messages (append messages (list `((role . "user") (content . ,user-text)))))
+                           (execute-chat-stream! user-text)
+                           (loop))))))))
 
              ;; Backspace
              ((or (eqv? ch KEY_BACKSPACE) (eqv? ch #\backspace)

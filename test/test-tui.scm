@@ -5,6 +5,10 @@
 (define-module (test test-tui)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-64)
+  #:use-module (badb model)
+  #:use-module (badb registry)
+  #:use-module (badb transaction)
+  #:use-module (badb journal)
   #:use-module (badb tui))
 
 (test-begin "badb-tui")
@@ -93,5 +97,139 @@
 
   (test-assert "string with slash in middle returns #f"
     (not (parse-command "and/or question"))))
+
+;;;
+;;; 3. Input Classification (classify-input)
+;;;
+
+(test-group "tui-input-classifier"
+  ;; Shell commands with '!'
+  (test-equal "classify !ls"
+    '(shell . "ls -la")
+    (classify-input "!ls -la"))
+
+  (test-equal "classify ! with space"
+    '(shell . "git status")
+    (classify-input "! git status"))
+
+  (test-equal "classify ! with trailing spaces"
+    '(shell . "make test")
+    (classify-input "  ! make test   "))
+
+  (test-equal "classify bare !"
+    '(shell . "")
+    (classify-input "!"))
+
+  ;; Scheme expressions with ',' or '('
+  (test-equal "classify ,(+ 1 2)"
+    '(scheme . "(+ 1 2)")
+    (classify-input ",(+ 1 2)"))
+
+  (test-equal "classify , (+ 1 2) with space"
+    '(scheme . "(+ 1 2)")
+    (classify-input ", (+ 1 2)"))
+
+  (test-equal "classify bare ,"
+    '(scheme . "")
+    (classify-input ","))
+
+  (test-equal "classify direct s-expression"
+    '(scheme . "(define x 42)")
+    (classify-input "(define x 42)"))
+
+  (test-equal "classify s-expression with leading whitespace"
+    '(scheme . "(* x 2)")
+    (classify-input "   (* x 2)  "))
+
+  ;; Slash commands
+  (test-equal "classify /help"
+    '(slash "help" "")
+    (classify-input "/help"))
+
+  (test-equal "classify /model arg"
+    '(slash "model" "llama3")
+    (classify-input "/model llama3"))
+
+  ;; Regular chat inputs
+  (test-equal "classify chat message"
+    '(chat . "Why GNU Guile?")
+    (classify-input "Why GNU Guile?"))
+
+  (test-assert "classify empty string is #f"
+    (not (classify-input "")))
+
+  (test-assert "classify whitespace is #f"
+    (not (classify-input "    "))))
+
+;;;
+;;; 4. Scheme REPL Evaluation (eval-scheme-code & make-repl-mod)
+;;;
+
+(test-group "tui-scheme-eval"
+  (let* ((reg (make-registry))
+         (jrn (make-journal "/tmp/badb-test-tui-jrn.jsonl"))
+         (mgr (make-transaction-manager reg #:journal jrn))
+         (client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "dummy"))
+         (repl-mod (make-repl-mod reg jrn mgr client)))
+
+    ;; Simple arithmetic
+    (call-with-values (lambda () (eval-scheme-code "(+ 10 25)" repl-mod))
+      (lambda (res err)
+        (test-assert "eval arithmetic succeeds" (not err))
+        (test-equal "eval arithmetic result" "=> 35" res)))
+
+    ;; Definitions and state preservation across evaluations
+    (call-with-values (lambda () (eval-scheme-code "(define (double n) (* n 2))" repl-mod))
+      (lambda (res err)
+        (test-assert "eval define succeeds" (not err))))
+
+    (call-with-values (lambda () (eval-scheme-code "(double 21)" repl-mod))
+      (lambda (res err)
+        (test-assert "eval function call succeeds" (not err))
+        (test-equal "eval function call result" "=> 42" res)))
+
+    ;; Accessing kernel handles
+    (call-with-values (lambda () (eval-scheme-code "(registry? reg)" repl-mod))
+      (lambda (res err)
+        (test-assert "reg handle accessible" (not err))
+        (test-equal "reg handle is registry" "=> #t" res)))
+
+    (call-with-values (lambda () (eval-scheme-code "(journal? jrn)" repl-mod))
+      (lambda (res err)
+        (test-assert "jrn handle accessible" (not err))
+        (test-equal "jrn handle is journal" "=> #t" res)))
+
+    ;; Error handling: numerical overflow / division by zero
+    (call-with-values (lambda () (eval-scheme-code "(/ 1 0)" repl-mod))
+      (lambda (res err)
+        (test-assert "division by zero returns error string" (string? err))
+        (test-assert "error mentions numerical-overflow"
+          (string-contains err "numerical-overflow"))))
+
+    ;; Error handling: syntax error
+    (call-with-values (lambda () (eval-scheme-code "(+ 1" repl-mod))
+      (lambda (res err)
+        (test-assert "incomplete syntax returns error" (string? err))
+        (test-assert "error mentions read-error"
+          (string-contains err "read-error"))))))
+
+;;;
+;;; 5. Shell Execution (execute-shell-command)
+;;;
+
+(test-group "tui-shell-exec"
+  ;; Successful echo
+  (call-with-values (lambda () (execute-shell-command "echo 'hello badb shell'"))
+    (lambda (out exit-val err)
+      (test-assert "shell exec succeeds" (not err))
+      (test-equal "exit code is 0" 0 exit-val)
+      (test-equal "stdout captured" "hello badb shell" out)))
+
+  ;; Non-zero exit code
+  (call-with-values (lambda () (execute-shell-command "sh -c 'echo oops >&2; exit 42'"))
+    (lambda (out exit-val err)
+      (test-assert "shell exec captures exit" (not err))
+      (test-equal "exit code is 42" 42 exit-val)
+      (test-assert "stderr captured" (string-contains out "oops")))))
 
 (test-end "badb-tui")
