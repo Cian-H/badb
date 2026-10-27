@@ -5,59 +5,60 @@
 ;;; (.badb/config.scm) configurations. Supports model settings, MCP server
 ;;; declarations, checkpoint journal paths, and custom options.
 
-(define-module (badb config)
-  #:use-module (badb util)
-  #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-9)
-  #:use-module (ice-9 format)
-  #:use-module (ice-9 ftw)
-  #:use-module (ice-9 pretty-print)
-  #:export (make-badb-config
-            badb-config?
-            badb-config-model-name
-            badb-config-model-endpoint
-            badb-config-model-api-key
-            badb-config-model-temperature
-            badb-config-model-max-tokens
-            badb-config-journal-path
-            badb-config-mcp-servers
-            badb-config-options
-            badb-config-source-path
-            set-badb-config-model-name!
-            set-badb-config-model-endpoint!
-            set-badb-config-model-api-key!
-            set-badb-config-model-temperature!
-            set-badb-config-model-max-tokens!
-            set-badb-config-journal-path!
-            set-badb-config-mcp-servers!
-            set-badb-config-options!
-            set-badb-config-source-path!
-            badb-config-set-model-name!
-            badb-config-set-model-endpoint!
-            badb-config-set-model-api-key!
-            badb-config-set-model-temperature!
-            badb-config-set-model-max-tokens!
-            badb-config-set-journal-path!
-            badb-config-set-mcp-servers!
-            badb-config-set-options!
-            badb-config-set-source-path!
-
-            default-global-config-path
-            default-local-config-path
-
-            make-mcp-server-spec
-            badb-config-get-mcp-server
-            badb-config-add-mcp-server!
-            badb-config-remove-mcp-server!
-
-            parse-config-sexp
-            config->sexp
-            read-config-file
-            write-config-file
-            merge-configs
-            load-config
-            save-local-config!
-            save-global-config!))
+(define-module (badb config) #:use-module
+               (badb util)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 pretty-print)
+               #:export
+               (make-badb-config badb-config?
+                                 badb-config-model-name
+                                 badb-config-model-endpoint
+                                 badb-config-model-api-key
+                                 badb-config-model-temperature
+                                 badb-config-model-max-tokens
+                                 badb-config-journal-path
+                                 badb-config-mcp-servers
+                                 badb-config-options
+                                 badb-config-source-path
+                                 set-badb-config-model-name!
+                                 set-badb-config-model-endpoint!
+                                 set-badb-config-model-api-key!
+                                 set-badb-config-model-temperature!
+                                 set-badb-config-model-max-tokens!
+                                 set-badb-config-journal-path!
+                                 set-badb-config-mcp-servers!
+                                 set-badb-config-options!
+                                 set-badb-config-source-path!
+                                 badb-config-set-model-name!
+                                 badb-config-set-model-endpoint!
+                                 badb-config-set-model-api-key!
+                                 badb-config-set-model-temperature!
+                                 badb-config-set-model-max-tokens!
+                                 badb-config-set-journal-path!
+                                 badb-config-set-mcp-servers!
+                                 badb-config-set-options!
+                                 badb-config-set-source-path!
+                                 default-global-config-path
+                                 default-local-config-path
+                                 make-mcp-server-spec
+                                 badb-config-get-mcp-server
+                                 badb-config-add-mcp-server!
+                                 badb-config-merge-mcp-servers!
+                                 badb-config-remove-mcp-server!
+                                 parse-config-sexp
+                                 config->sexp
+                                 read-config-file
+                                 write-config-file
+                                 merge-configs
+                                 load-config
+                                 save-local-config!
+                                 save-global-config!))
 
 ;;;
 ;;; Configuration Record Definition
@@ -83,22 +84,18 @@
   (options badb-config-options set-badb-config-options!)
   (source-path badb-config-source-path set-badb-config-source-path!))
 
-(define* (make-badb-config #:key
-                           (model-name (or (getenv "BADB_MODEL_NAME")
-                                           "minicpm5-1b:gguf:q8"))
-                           (model-endpoint (or (getenv "BADB_MODEL_ENDPOINT")
-                                               "http://127.0.0.1:10100/inference/v1"))
-                           (model-api-key (or (getenv "BADB_API_KEY")
-                                              (getenv "OPENAI_API_KEY")
-                                              #f))
-                           (model-temperature 0.7)
-                           (model-max-tokens (or (and (getenv "BADB_MAX_TOKENS")
-                                                      (string->number (getenv "BADB_MAX_TOKENS")))
-                                                 4096))
-                           (journal-path ".badb/journal.jsonl")
-                           (mcp-servers '())
-                           (options '())
-                           (source-path #f))
+(define*
+  (make-badb-config #:key
+                    (model-name (or (getenv "BADB_MODEL_NAME") "minicpm5-1b:gguf:q8"))
+                    (model-endpoint
+                      (or (getenv "BADB_MODEL_ENDPOINT") "http://127.0.0.1:10100/inference/v1"))
+                    (model-api-key (or (getenv "BADB_API_KEY") (getenv "OPENAI_API_KEY") #f))
+                    (model-temperature 0.7)
+                    (model-max-tokens (or (and=> (getenv "BADB_MAX_TOKENS") string->number) 4096))
+                    (journal-path ".badb/journal.jsonl")
+                    (mcp-servers '())
+                    (options '())
+                    (source-path #f))
   "Create a new <badb-config> record instance with sensible defaults."
   (%make-badb-config model-name
                      model-endpoint
@@ -147,6 +144,29 @@
   "Return the standard path for badb's project-local configuration."
   ".badb/config.scm")
 
+;;;
+;;; Property Extraction Helper
+;;;
+(define (get-prop lst key default)
+  "Safely extract KEY from property list or alist LST, supporting both
+(key . val), (key val), and #:key val syntax."
+  (let* ((sym (if (symbol? key) key (string->symbol key)))
+         (str (symbol->string sym))
+         (kw (symbol->keyword sym)))
+    (let loop ((items lst))
+      (cond
+       ((null? items) default)
+       ((not (pair? items)) default)
+       ((and (pair? (car items))
+             (or (equal? (caar items) sym)
+                 (equal? (caar items) str)))
+        (let ((val (cdar items)))
+          (if (and (pair? val) (null? (cdr val)))
+              (car val)
+              val)))
+       ((and (keyword? (car items)) (equal? (car items) kw) (pair? (cdr items)))
+        (cadr items))
+       (else (loop (cdr items)))))))
 
 ;;;
 ;;; MCP Server Helpers
@@ -215,6 +235,29 @@
     (set-badb-config-mcp-servers! config (cons (cons name-str spec) filtered))
     config))
 
+(define
+  (badb-config-merge-mcp-servers! config new-entries)
+  "Batch add or update a list of (NAME . SPEC) MCP server entries in CONFIG."
+  (if (null? new-entries)
+    config
+    (let*
+        ((new-table
+           (let
+               ((tbl (make-hash-table (length new-entries))))
+             (for-each
+               (lambda (e)
+                 (hash-set! tbl (car e) #t))
+               new-entries)
+             tbl))
+         (current (badb-config-mcp-servers config))
+         (filtered
+           (remove
+             (lambda (e)
+               (hash-ref new-table (car e)))
+             current)))
+      (set-badb-config-mcp-servers! config (append new-entries filtered))
+      config)))
+
 (define (badb-config-remove-mcp-server! config name)
   "Remove MCP server NAME from CONFIG."
   (let* ((name-str (if (symbol? name) (symbol->string name) name))
@@ -234,7 +277,10 @@
                  (cdr body)
                  body)))
           (let
-              ((m (get-prop body 'name (get-prop body 'default (badb-config-model-name cfg))))
+              ((m
+                 (or (get-prop body 'name #f)
+                     (get-prop body 'default #f)
+                     (badb-config-model-name cfg)))
                (ep (get-prop body 'endpoint (badb-config-model-endpoint cfg)))
                (key (get-prop body 'api-key (badb-config-model-api-key cfg)))
                (temp (get-prop body 'temperature (badb-config-model-temperature cfg)))
@@ -269,10 +315,7 @@
                  ((list? servers-entry) servers-entry)
                  (else body)))
              (parsed (filter-map parse-mcp-server-spec entries)))
-          (for-each
-            (lambda (entry)
-              (badb-config-add-mcp-server! cfg (car entry) (cdr entry)))
-            parsed)))
+          (badb-config-merge-mcp-servers! cfg parsed)))
 
 (define*
   (parse-config-sexp sexp #:optional (base-config #f))
@@ -366,28 +409,39 @@
 ;;; File I/O
 ;;;
 (define (read-config-file path)
-  "Read and parse a configuration file from PATH. Returns <badb-config> or #f if not found."
-  (if (file-exists? path)
-      (catch #t
-        (lambda ()
-          (call-with-input-file path
-            (lambda (port)
-              (let loop ((sexps '()))
-                (let ((expr (read port)))
-                  (if (eof-object? expr)
-                      (let* ((combined (if (null? sexps) '() (car (reverse sexps))))
-                             (cfg (parse-config-sexp combined)))
-                        (set-badb-config-source-path! cfg path)
-                        cfg)
-                      (loop (cons expr sexps))))))))
-        (lambda (key . args)
-          (format (current-error-port) "Warning: error reading config file ~a: ~s\n" path args)
+        "Read and parse a configuration file from PATH. Returns <badb-config> or #f if not found."
+        (if (file-exists? path)
+          (catch #t
+            (lambda ()
+              (call-with-input-file path
+                                    (lambda (port)
+                                      (let loop
+                                        ((sexps '()))
+                                        (let ((expr (read port)))
+                                          (if (eof-object? expr)
+                                            (let*
+                                                ((combined
+                                                   (cond
+                                                     ((null? sexps) '())
+                                                     ((and (null? (cdr sexps)) (pair? (car sexps)) (eq? (caar sexps) 'badb-config))
+                                                       (car sexps))
+                                                     (else (reverse sexps))))
+                                                 (cfg (parse-config-sexp combined)))
+                                              (set-badb-config-source-path! cfg path)
+                                              cfg)
+                                            (loop (cons expr sexps))))))))
+            (lambda (key . args)
+              (format (current-error-port)
+                      "Warning: error reading config file ~a: ~s
+"
+                      path
+                      args)
+              #f))
           #f))
-      #f))
 
 (define (ensure-directory-for-file path)
-  "Ensure the parent directory for PATH exists."
-  (ensure-parent-directory! path))
+        "Ensure the parent directory for PATH exists."
+        (ensure-parent-directory! path))
 
 (define (write-config-file config path)
   "Serialize CONFIG to PATH as readable Scheme code."
@@ -404,34 +458,47 @@
 ;;; Configuration Merging & Discovery
 ;;;
 (define (merge-configs base overlay)
-  "Merge OVERLAY into BASE. Overlay scalar values override base values.
+        "Merge OVERLAY into BASE. Overlay scalar values override base values.
 MCP servers from overlay override base servers with the same name, while
 unique base servers are retained."
-  (let* ((merged (make-badb-config
-                  #:model-name (or (badb-config-model-name overlay)
-                                   (badb-config-model-name base))
-                  #:model-endpoint (or (badb-config-model-endpoint overlay)
-                                       (badb-config-model-endpoint base))
-                  #:model-api-key (or (badb-config-model-api-key overlay)
-                                      (badb-config-model-api-key base))
-                  #:model-temperature (or (badb-config-model-temperature overlay)
-                                          (badb-config-model-temperature base))
-                  #:model-max-tokens (or (badb-config-model-max-tokens overlay)
-                                         (badb-config-model-max-tokens base))
-                  #:journal-path (or (badb-config-journal-path overlay)
-                                     (badb-config-journal-path base))
-                  #:options (append (badb-config-options base)
-                                    (badb-config-options overlay))
-                  #:source-path (or (badb-config-source-path overlay)
-                                    (badb-config-source-path base))))
-         ;; Merge MCP servers: overlay servers take precedence over base servers with same name
-         (base-mcp (badb-config-mcp-servers base))
-         (overlay-mcp (badb-config-mcp-servers overlay))
-         (overlay-names (map car overlay-mcp))
-         (retained-base (remove (lambda (e) (member (car e) overlay-names)) base-mcp))
-         (combined-mcp (append overlay-mcp retained-base)))
-    (set-badb-config-mcp-servers! merged combined-mcp)
-    merged))
+        (let*
+            ((merged
+               (make-badb-config #:model-name
+                                 (or (badb-config-model-name overlay) (badb-config-model-name base))
+                                 #:model-endpoint
+                                 (or (badb-config-model-endpoint overlay) (badb-config-model-endpoint base))
+                                 #:model-api-key
+                                 (or (badb-config-model-api-key overlay) (badb-config-model-api-key base))
+                                 #:model-temperature
+                                 (or (badb-config-model-temperature overlay)
+                                     (badb-config-model-temperature base))
+                                 #:model-max-tokens
+                                 (or (badb-config-model-max-tokens overlay) (badb-config-model-max-tokens base))
+                                 #:journal-path
+                                 (or (badb-config-journal-path overlay) (badb-config-journal-path base))
+                                 #:options
+                                 (append (badb-config-options base) (badb-config-options overlay))
+                                 #:source-path
+                                 (or (badb-config-source-path overlay) (badb-config-source-path base))))
+             ;; Merge MCP servers: overlay servers take precedence over base servers with same name
+             (base-mcp (badb-config-mcp-servers base))
+             (overlay-mcp (badb-config-mcp-servers overlay))
+             (overlay-table
+               (let
+                   ((tbl (make-hash-table (length overlay-mcp))))
+                 (for-each
+                   (lambda (e)
+                     (hash-set! tbl (car e) #t))
+                   overlay-mcp)
+                 tbl))
+             (retained-base
+               (remove
+                 (lambda (e)
+                   (hash-ref overlay-table (car e)))
+                 base-mcp))
+             (combined-mcp (append overlay-mcp retained-base)))
+          (set-badb-config-mcp-servers! merged combined-mcp)
+          merged))
 
 (define* (load-config #:key
                       (global-path (default-global-config-path))
