@@ -6,6 +6,8 @@
 ;;; fast "System 1" models evaluating risk in real-time.
 
 (define-module (badb guardrail) #:use-module
+               (badb util)
+               #:use-module
                (badb model)
                #:use-module
                (badb journal)
@@ -91,10 +93,7 @@ NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wild
   (dangerous-operation? tool-name #:optional (args '()))
   "Return #t if TOOL-NAME and ARGS constitute a dangerous destructive operation."
   (let
-      ((name-str
-         (if (symbol? tool-name)
-           (symbol->string tool-name)
-           tool-name))
+      ((name-str (ensure-string tool-name))
        (args-str
          (if (string? args)
            args
@@ -110,10 +109,7 @@ NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wild
   (mutating-operation? tool-name #:optional (args '()))
   "Return #t if TOOL-NAME represents a state-mutating operation."
   (let
-      ((name-str
-         (if (symbol? tool-name)
-           (symbol->string tool-name)
-           tool-name)))
+      ((name-str (ensure-string tool-name)))
     (and
       (or (string-prefix? "write" name-str)
           (string-prefix? "edit" name-str)

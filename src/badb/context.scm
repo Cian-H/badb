@@ -6,6 +6,8 @@
 ;;; sliding-window recency, journal-checkpoint offloading, and composable pipelines.
 
 (define-module (badb context) #:use-module
+               (badb util)
+               #:use-module
                (badb model)
                #:use-module
                (badb journal)
@@ -55,24 +57,16 @@
         (and (string? str) (not (string-null? str))))
 
 (define (message-role msg)
-        "Extract normalized role string from MSG."
-        (let
-            ((role (or (assoc-ref msg "role") (assoc-ref msg 'role))))
-          (cond
-            ((symbol? role) (symbol->string role))
-            ((string? role) role)
-            (else ""))))
+  "Extract normalized role string from MSG."
+  (normalize-role (prop-ref msg 'role "")))
 
 (define (message-content msg)
-        "Extract content field from MSG alist."
-        (or (assoc-ref msg "content") (assoc-ref msg 'content) ""))
+  "Extract content field from MSG alist."
+  (prop-ref msg 'content ""))
 
 (define (content->string content)
-        "Convert content to a string representation for token estimation."
-        (cond
-          ((string? content) content)
-          ((pair? content) (scm->json-string content))
-          (else "")))
+  "Convert content to a string representation for token estimation."
+  (safe-json-string content))
 
 (define (tool-calls->string tool-calls)
         "Convert tool-calls structure to a string representation."
