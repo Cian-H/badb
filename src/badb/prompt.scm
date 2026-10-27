@@ -46,27 +46,34 @@
 ;;;
 ;;; Shell & Process Helper
 ;;;
-
-(define* (exec-cmd-output cmd args #:optional (dir #f))
+(define*
+  (exec-cmd-output cmd args #:optional (dir #f))
   "Execute CMD with ARGS, optionally within DIR, and capture stdout as a trimmed string.
 Returns #f if execution fails or command exits non-zero."
   (catch #t
     (lambda ()
-      (let* ((orig-dir (and dir (getcwd)))
-             (_ (when dir (chdir dir)))
-             (pipe (apply open-pipe* OPEN_READ cmd args))
-             (output (read-string pipe))
-             (status (close-pipe pipe)))
-        (when orig-dir (chdir orig-dir))
-        (if (zero? (status:exit-val status))
-            (if (string? output) (string-trim-both output) "")
-            #f)))
-    (lambda _ #f)))
+      (let ((orig-dir (and dir (getcwd))))
+        (dynamic-wind
+          (lambda ()
+            (when dir (chdir dir)))
+          (lambda ()
+            (let*
+                ((pipe (apply open-pipe* "r" cmd args))
+                 (output (read-string pipe))
+                 (status (close-pipe pipe)))
+              (if (zero? (status:exit-val status))
+                (if (string? output)
+                  (string-trim-both output)
+                  "")
+                #f)))
+          (lambda ()
+            (when orig-dir (chdir orig-dir))))))
+    (lambda _
+      #f)))
 
 ;;;
 ;;; Git Inspection
 ;;;
-
 (define* (get-git-branch #:optional (workspace-dir (getcwd)))
   "Return current git branch name in WORKSPACE-DIR, or #f if not a git repository."
   (exec-cmd-output "git" '("branch" "--show-current") workspace-dir))
@@ -90,7 +97,6 @@ Returns #f if execution fails or command exits non-zero."
 ;;;
 ;;; File Tree Scanning
 ;;;
-
 (define %default-ignore-patterns
   '(".git" ".cache" "node_modules" "target" ".badb" "dist" "build" ".guix-profile"))
 
@@ -145,7 +151,6 @@ Returns #f if execution fails or command exits non-zero."
 ;;;
 ;;; Environment Info
 ;;;
-
 (define (collect-environment-info)
   "Collect host environment metadata."
   `((os . "Linux")
@@ -156,7 +161,6 @@ Returns #f if execution fails or command exits non-zero."
 ;;;
 ;;; Project Rules Discovery
 ;;;
-
 (define %standard-rule-candidates
   '(".badb/rules.scm"
     "AGENTS.md"
@@ -213,7 +217,6 @@ Returns an alist: ((path . filename) (content . content-string))."
 ;;;
 ;;; Tool Formatting
 ;;;
-
 (define* (format-tools-for-prompt tools #:key (style 'xml))
   "Format available tool specifications for prompt reinforcement.
 STYLE can be 'xml (structured tags) or 'markdown."
@@ -245,7 +248,6 @@ STYLE can be 'xml (structured tags) or 'markdown."
 ;;;
 ;;; Prompt Composer Record
 ;;;
-
 (define-record-type <prompt-composer>
   (%make-prompt-composer identity git? tree? depth max-files rule-files custom-rules tool-style limit)
   prompt-composer?
@@ -285,7 +287,6 @@ STYLE can be 'xml (structured tags) or 'markdown."
 ;;;
 ;;; Prompt Assembly
 ;;;
-
 (define* (assemble-system-prompt composer
                                 #:key
                                 (workspace-dir (getcwd))
