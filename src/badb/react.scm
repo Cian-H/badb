@@ -91,19 +91,22 @@
               (or (registry-metadata reg (car candidates)) (loop (cdr candidates)))))
           #f))
 
+(define %empty-tool-parameters
+  '((type . "object")
+    (properties . ())
+    (required . #())))
+
 (define (registry-feature->tool-spec feature)
   "Convert a kernel registry feature entry into an OpenAI-compatible tool spec."
   (let* ((id (assoc-ref feature 'id))
-         (id-str (if (symbol? id) (symbol->string id) id))
+         (id-str (ensure-string id))
          (meta (or (assoc-ref feature 'metadata) '()))
          (desc (or (assoc-ref meta 'description)
                    (assoc-ref meta "description")
                    (format #f "Kernel feature: ~a" id-str)))
          (params (or (assoc-ref meta 'parameters)
                      (assoc-ref meta "parameters")
-                     '((type . "object")
-                       (properties . ())
-                       (required . #())))))
+                     %empty-tool-parameters)))
     `((type . "function")
       (function . ((name . ,(normalize-tool-name id-str))
                    (description . ,desc)
@@ -117,9 +120,7 @@
          (server (or (assoc-ref tool 'server) (assoc-ref tool "server") "unknown"))
          (desc (or (assoc-ref tool "description") (assoc-ref tool 'description) ""))
          (schema (or (assoc-ref tool "inputSchema") (assoc-ref tool 'inputSchema)
-                     '((type . "object")
-                       (properties . ())
-                       (required . #())))))
+                     %empty-tool-parameters)))
     `((type . "function")
       (function . ((name . ,(normalize-tool-name name))
                    (description . ,desc)
@@ -408,14 +409,13 @@ Returns (values content reasoning)."
                        (not (member orig-content '("null" ":null")))
                        (not (string-null? (string-trim-both orig-content))))
                    orig-content)
-                 ((and (string? reasoning) (not (string-null? (string-trim-both reasoning))))
+                 ((non-empty-string? reasoning)
                    (format #f
                            "<think>~a</think>
 (Response provided in model reasoning trace)"
                            reasoning))
-                 ((and (string? raw-content)
-                       (not (member raw-content '("null" ":null")))
-                       (not (string-null? (string-trim-both raw-content))))
+                 ((and (non-empty-string? raw-content)
+                       (not (member raw-content '("null" ":null"))))
                    raw-content)
                  (else ""))))
           (values content reasoning)))
@@ -436,8 +436,7 @@ Returns (values content reasoning)."
                    (function . ((name . ,tc-name) (arguments . ,args-str))))))
              tool-calls)))
        (eff-reasoning
-         (if
-             (and (string? reasoning) (not (string-null? (string-trim-both reasoning))))
+         (if (non-empty-string? reasoning)
            reasoning
            (format #f
                    "Invoking ~a..."
