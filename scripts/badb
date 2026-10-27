@@ -1,0 +1,8 @@
+#!/usr/bin/env -S guile -e main -s
+!#
+;; badb launcher: puts src/ on the load path and imports the real
+;; entry point from (badb main) so that `guile -e main' can find it.
+(add-to-load-path
+ (canonicalize-path
+  (string-append (dirname (current-filename)) "/../src")))
+(use-modules (badb main))

@@ -1,0 +1,39 @@
+(define-module (badb main)
+  #:use-module (ice-9 format)
+  #:use-module (badb cli)
+  #:export (%program-name %version main))
+
+(define %program-name "badb")
+(define %version "0.1.0")
+
+(define (print-usage port)
+  (format port "~a ~a [OPTION]...
+
+Placeholder for badb.
+
+~a
+  ~a      display this help and exit
+  ~a   output version information and exit
+"
+          (bold port "Usage:") %program-name
+          (bold port "Options:")
+          (cyan port "-h, --help")
+          (cyan port "-V, --version")))
+
+(define (main args)
+  (let ((options (cdr args)))
+    (cond ((null? options)
+           (format #t "~a~%"
+                   (green (current-output-port) "OK")))
+          ((member (car options) '("-h" "--help"))
+           (print-usage (current-output-port)))
+          ((member (car options) '("-V" "--version"))
+           (format #t "~a ~a~%"
+                   (bold (current-output-port) %program-name)
+                   %version))
+          (else
+           (format (current-error-port) "~a: unrecognized option '~a'~%"
+                   (red (current-error-port) %program-name)
+                   (car options))
+           (format (current-error-port) "Try 'badb --help' for more information.~%")
+           (exit 1)))))
