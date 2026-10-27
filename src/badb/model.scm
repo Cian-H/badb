@@ -38,7 +38,6 @@
 ;;;
 ;;; Client Record Type
 ;;;
-
 (define-record-type <model-client>
   (%make-model-client endpoint api-key model)
   model-client?
@@ -79,7 +78,6 @@ or with positional arguments:
 ;;;
 ;;; Chat Request Formatting
 ;;;
-
 (define symbol-or-string->string ensure-string)
 
 (define (single-message-alist? x)
@@ -194,7 +192,6 @@ Optional keyword arguments:
 ;;;
 ;;; Server-Sent Events (SSE) Parsing
 ;;;
-
 (define (clean-sse-line line)
   (if (string? line)
       (string-trim-right line (lambda (c) (or (char=? c #\return) (char=? c #\newline))))
@@ -265,7 +262,6 @@ Returns 'done when [DONE] is encountered, or 'eof upon reaching EOF."
 ;;;
 ;;; Content and Delta Extractors
 ;;;
-
 (define (json-ref obj key)
   "Lookup KEY in OBJ where KEY may be a string or symbol, and OBJ is an alist."
   (prop-ref obj key))
@@ -437,57 +433,93 @@ Returns a list of tool call alists: ((id . \"...\") (name . \"...\") (arguments 
 ;;;
 ;;; HTTP Request Execution
 ;;;
-
-(define* (curl-http-post uri #:key body headers (streaming? #f))
-  "Execute an HTTP POST using curl subprocess. Used as a transparent fallback
+(define*
+  (curl-http-post uri #:key body headers (streaming? #f))
+  "Execute an HTTP POST using curl subprocess via stdin pipeline. Used as a transparent fallback
 when Guile GnuTLS is not available for HTTPS requests.
-Writes payload to a self-cleaning temporary file to handle arbitrarily large payloads
-without argument list limits, captures real HTTP status codes, and silences curl stderr."
-  (let* ((url (if (string? uri) uri (uri->string uri)))
-         (header-args
-          (append-map
+Streams payload directly over standard input without temporary files, captures real HTTP status codes."
+  (let*
+      ((url
+         (if (string? uri)
+           uri
+           (uri->string uri)))
+       (header-args
+         (append-map
            (lambda (h)
-             (let* ((key (car h))
-                    (val (cdr h))
-                    (str-val (cond
-                              ((string? val) val)
-                              ((and (eq? key 'authorization) (pair? val))
-                               (format #f "Bearer ~a" (cadr val)))
-                              ((eq? key 'content-type)
-                               "application/json; charset=utf-8")
-                              ((eq? key 'accept)
-                               (if streaming? "text/event-stream" "application/json"))
-                              (else (format #f "~a" val)))))
+             (let*
+                 ((key (car h)) (val (cdr h))
+                  (str-val
+                    (cond
+                      ((string? val) val)
+                      ((and (eq? key 'authorization) (pair? val)) (format #f "Bearer ~a" (cadr val)))
+                      ((eq? key 'content-type) "application/json; charset=utf-8")
+                      ((eq? key 'accept)
+                        (if streaming?
+                          "text/event-stream"
+                          "application/json"))
+                      (else (format #f "~a" val)))))
                (list "-H" (format #f "~a: ~a" key str-val))))
            (or headers '())))
-         (body-str (cond
-                    ((string? body) body)
-                    ((bytevector? body) (utf8->string body))
-                    (else "")))
-         (body-tmpl (string-copy "/tmp/badb-req-XXXXXX"))
-         (body-port (mkstemp! body-tmpl)))
-    (display body-str body-port)
-    (close-port body-port)
+       (body-str
+         (cond
+           ((string? body) body)
+           ((bytevector? body) (utf8->string body))
+           (else ""))))
     (if streaming?
-        (let* ((cmd (append (list "sh" "-c"
-                                  "TEMP=\"$1\"; shift; curl -s -N \"$@\" --data-binary @\"$TEMP\" 2>/dev/null; rm -f \"$TEMP\""
-                                  "sh" body-tmpl "-X" "POST" url)
-                            header-args))
-               (pipe (apply open-pipe* OPEN_READ cmd)))
-          (values (build-response #:code 200) pipe))
-        (let* ((cmd (append (list "sh" "-c"
-                                  "TEMP=\"$1\"; shift; curl -s -w \"\\n%{http_code}\" \"$@\" --data-binary @\"$TEMP\" 2>/dev/null; rm -f \"$TEMP\""
-                                  "sh" body-tmpl "-X" "POST" url)
-                            header-args))
-               (pipe (apply open-pipe* OPEN_READ cmd))
-               (out (read-string pipe))
-               (status (close-pipe pipe))
-               (trimmed (or out ""))
-               (last-nl (string-rindex trimmed #\newline))
-               (code-str (if last-nl (substring trimmed (+ last-nl 1)) "200"))
-               (body-text (if last-nl (substring trimmed 0 last-nl) trimmed))
-               (status-code (or (string->number (string-trim-both code-str)) 200)))
-          (values (build-response #:code status-code) body-text)))))
+      (let
+          ((cmd
+             (append
+               (list "curl" "-s" "-N" "-X" "POST" url "--data-binary" "@-")
+               header-args)))
+        (call-with-values
+          (lambda ()
+            (pipeline (list cmd)))
+          (lambda (in out pids)
+            (display body-str out)
+            (close-port out)
+            (values (build-response #:code 200) in))))
+      (let
+          ((cmd
+             (append
+               (list "curl"
+                     "-s"
+                     "-w"
+                     (format #f "~a%{http_code}" #\newline)
+                     "-X"
+                     "POST"
+                     url
+                     "--data-binary"
+                     "@-")
+               header-args)))
+        (call-with-values
+          (lambda ()
+            (pipeline (list cmd)))
+          (lambda (in out pids)
+            (display body-str out)
+            (close-port out)
+            (let* ((out-str (read-string in)))
+              (close-port in)
+              (for-each
+                (lambda (p)
+                  (catch 'system-error
+                    (lambda ()
+                      (waitpid p))
+                    (lambda _
+                      #f)))
+                pids)
+              (let*
+                  ((trimmed (or out-str ""))
+                   (last-nl (string-rindex trimmed #\newline))
+                   (code-str
+                     (if last-nl
+                       (substring trimmed (+ last-nl 1))
+                       "200"))
+                   (body-text
+                     (if last-nl
+                       (substring trimmed 0 last-nl)
+                       trimmed))
+                   (status-code (or (string->number (string-trim-both code-str)) 200)))
+                (values (build-response #:code status-code) body-text)))))))))
 
 (define* (default-http-post uri #:key body headers (streaming? #f))
   "Dispatch HTTP POST to web client, falling back to curl if gnutls is not available."
