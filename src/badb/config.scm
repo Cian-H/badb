@@ -247,102 +247,69 @@
 ;;;
 ;;; S-Expression Parsing and Serialization
 ;;;
-(define (apply-model-config-form! cfg body)
-        "Apply a (model ...) body form to <badb-config> CFG."
-        (let
-            ((body
-               (if (and (pair? body) (eq? (car body) 'model))
-                 (cdr body)
-                 body)))
-          (let
-              ((m
-                 (or (get-prop body 'name #f)
-                     (get-prop body 'default #f)
-                     (badb-config-model-name cfg)))
-               (ep (get-prop body 'endpoint (badb-config-model-endpoint cfg)))
-               (key (get-prop body 'api-key (badb-config-model-api-key cfg)))
-               (temp (get-prop body 'temperature (badb-config-model-temperature cfg)))
-               (max-tok (get-prop body 'max-tokens (badb-config-model-max-tokens cfg))))
-            (when m (set-badb-config-model-name! cfg m))
-            (when ep (set-badb-config-model-endpoint! cfg ep))
-            (when key (set-badb-config-model-api-key! cfg key))
-            (when temp (set-badb-config-model-temperature! cfg temp))
-            (when max-tok (set-badb-config-model-max-tokens! cfg max-tok)))))
+(define (apply-model-config-form! cfg form-body)
+  "Apply a (model ...) body form to <badb-config> CFG."
+  (let* ((body (if (and (pair? form-body) (eq? (car form-body) 'model))
+                   (cdr form-body)
+                   form-body))
+         (m (or (get-prop body 'name #f)
+                (get-prop body 'default #f)
+                (badb-config-model-name cfg)))
+         (ep (get-prop body 'endpoint (badb-config-model-endpoint cfg)))
+         (key (get-prop body 'api-key (badb-config-model-api-key cfg)))
+         (temp (get-prop body 'temperature (badb-config-model-temperature cfg)))
+         (max-tok (get-prop body 'max-tokens (badb-config-model-max-tokens cfg))))
+    (when m (set-badb-config-model-name! cfg m))
+    (when ep (set-badb-config-model-endpoint! cfg ep))
+    (when key (set-badb-config-model-api-key! cfg key))
+    (when temp (set-badb-config-model-temperature! cfg temp))
+    (when max-tok (set-badb-config-model-max-tokens! cfg max-tok))))
 
-(define (apply-journal-config-form! cfg body)
-        "Apply a (journal ...) body form to <badb-config> CFG."
-        (let
-            ((body
-               (if (and (pair? body) (eq? (car body) 'journal))
-                 (cdr body)
-                 body)))
-          (let
-              ((p (get-prop body 'path (badb-config-journal-path cfg))))
-            (when p (set-badb-config-journal-path! cfg p)))))
+(define (apply-journal-config-form! cfg form-body)
+  "Apply a (journal ...) body form to <badb-config> CFG."
+  (let* ((body (if (and (pair? form-body) (eq? (car form-body) 'journal))
+                   (cdr form-body)
+                   form-body))
+         (p (get-prop body 'path (badb-config-journal-path cfg))))
+    (when p (set-badb-config-journal-path! cfg p))))
 
-(define (apply-mcp-config-form! cfg body)
-        "Apply an (mcp ...) body form to <badb-config> CFG."
-        (let*
-            ((body
-               (if (and (pair? body) (eq? (car body) 'mcp))
-                 (cdr body)
-                 body))
-             (servers-entry (get-prop body 'servers #f))
-             (entries
-               (cond
-                 ((list? servers-entry) servers-entry)
-                 (else body)))
-             (parsed (filter-map parse-mcp-server-spec entries)))
-          (badb-config-merge-mcp-servers! cfg parsed)))
+(define (apply-mcp-config-form! cfg form-body)
+  "Apply an (mcp ...) body form to <badb-config> CFG."
+  (let* ((body (if (and (pair? form-body) (eq? (car form-body) 'mcp))
+                   (cdr form-body)
+                   form-body))
+         (servers-entry (get-prop body 'servers #f))
+         (entries (if (list? servers-entry) servers-entry body))
+         (parsed (filter-map parse-mcp-server-spec entries)))
+    (badb-config-merge-mcp-servers! cfg parsed)))
 
 (define* (parse-config-sexp sexp #:optional (base-config #f))
   "Parse SEXP into a <badb-config> record, optionally overlaying onto BASE-CONFIG."
-  (let
-      ((cfg
-         (if base-config
-           (make-badb-config #:model-name
-                             (badb-config-model-name base-config)
-                             #:model-endpoint
-                             (badb-config-model-endpoint base-config)
-                             #:model-api-key
-                             (badb-config-model-api-key base-config)
-                             #:model-temperature
-                             (badb-config-model-temperature base-config)
-                             #:journal-path
-                             (badb-config-journal-path base-config)
-                             #:mcp-servers
-                             (badb-config-mcp-servers base-config)
-                             #:options
-                             (badb-config-options base-config)
-                             #:source-path
-                             (badb-config-source-path base-config))
-           (make-badb-config)))
-       (forms
-         (cond
-           ;; (badb-config ...) wrapper
-           ((and (pair? sexp) (eq? (car sexp) 'badb-config)) (cdr sexp))
-           ;; List of section lists
-           ((list? sexp) sexp)
-           (else '()))))
+  (let ((cfg (if base-config
+                 (make-badb-config #:model-name (badb-config-model-name base-config)
+                                   #:model-endpoint (badb-config-model-endpoint base-config)
+                                   #:model-api-key (badb-config-model-api-key base-config)
+                                   #:model-temperature (badb-config-model-temperature base-config)
+                                   #:journal-path (badb-config-journal-path base-config)
+                                   #:mcp-servers (badb-config-mcp-servers base-config)
+                                   #:options (badb-config-options base-config)
+                                   #:source-path (badb-config-source-path base-config))
+                 (make-badb-config)))
+        (forms (cond
+                ((and (pair? sexp) (eq? (car sexp) 'badb-config)) (cdr sexp))
+                ((list? sexp) sexp)
+                (else '()))))
     (for-each
       (lambda (form)
         (when (pair? form)
           (let ((head (car form)) (body (cdr form)))
-            (cond
-              ;; Model Section: (model ...)
-              ((eq? head 'model) (apply-model-config-form! cfg body))
-              ;; Journal Section: (journal ...)
-              ((eq? head 'journal) (apply-journal-config-form! cfg body))
-              ;; MCP Section: (mcp (server ...) ...) or (mcp (servers ...))
-              ((eq? head 'mcp) (apply-mcp-config-form! cfg body))
-              ;; Standalone MCP Server: (mcp-server "name" ...)
-              ((eq? head 'mcp-server)
-                (let ((parsed (parse-mcp-server-spec form)))
-                  (when parsed (badb-config-add-mcp-server! cfg (car parsed) (cdr parsed)))))
-              ;; Options / Extensions: (options ...)
-              ((or (eq? head 'options) (eq? head 'ui))
-                (set-badb-config-options! cfg (append (badb-config-options cfg) body)))
-              (else #f)))))
+            (case head
+              ((model)      (apply-model-config-form! cfg body))
+              ((journal)    (apply-journal-config-form! cfg body))
+              ((mcp)        (apply-mcp-config-form! cfg body))
+              ((mcp-server) (let ((parsed (parse-mcp-server-spec form)))
+                              (when parsed (badb-config-add-mcp-server! cfg (car parsed) (cdr parsed)))))
+              ((options ui) (set-badb-config-options! cfg (append (badb-config-options cfg) body)))))))
       forms)
     cfg))
 
