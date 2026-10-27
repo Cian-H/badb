@@ -49,7 +49,6 @@
 ;;;
 ;;; Tool Schema Translators
 ;;;
-
 (define (normalize-tool-name str)
   "Convert dots and dashes to underscores for strict tool name compatibility."
   (string-map (lambda (c) (if (or (char=? c #\.) (char=? c #\-)) #\_ c)) str))
@@ -61,24 +60,24 @@
     (delete-duplicates (list str dots dashes))))
 
 (define (lookup-registry-feature reg name)
-  "Look up procedure in REG using exact name or denormalized variants."
-  (if (not reg)
-      #f
-      (let loop ((candidates (denormalize-tool-name name)))
-        (if (null? candidates)
-            #f
-            (or (registry-lookup reg (car candidates))
-                (loop (cdr candidates)))))))
+        "Look up procedure in REG using exact name or denormalized variants."
+        (if reg
+          (let loop
+            ((candidates (denormalize-tool-name name)))
+            (if (null? candidates)
+              #f
+              (or (registry-lookup reg (car candidates)) (loop (cdr candidates)))))
+          #f))
 
 (define (lookup-registry-metadata reg name)
-  "Look up metadata alist in REG using exact name or denormalized variants."
-  (if (not reg)
-      #f
-      (let loop ((candidates (denormalize-tool-name name)))
-        (if (null? candidates)
-            #f
-            (or (registry-metadata reg (car candidates))
-                (loop (cdr candidates)))))))
+        "Look up metadata alist in REG using exact name or denormalized variants."
+        (if reg
+          (let loop
+            ((candidates (denormalize-tool-name name)))
+            (if (null? candidates)
+              #f
+              (or (registry-metadata reg (car candidates)) (loop (cdr candidates)))))
+          #f))
 
 (define (registry-feature->tool-spec feature)
   "Convert a kernel registry feature entry into an OpenAI-compatible tool spec."
@@ -129,38 +128,49 @@
 ;;;
 ;;; Tool Call Parsing (Native API and Text/XML Fallback)
 ;;;
-
 (define (parse-xml-tool-calls text)
-  "Extract tool calls formatted as <tool_call>{...}</tool_call> from text."
-  (if (or (not (string? text)) (string-null? text))
-      '()
-      (let loop ((remaining text)
-                 (calls '())
-                 (call-counter 0))
-        (let ((start-tag (string-contains remaining "<tool_call>")))
-          (if (not start-tag)
-              (reverse calls)
-              (let* ((after-start (substring remaining (+ start-tag (string-length "<tool_call>"))))
+        "Extract tool calls formatted as <tool_call>{...}</tool_call> from text."
+        (if (or (not (string? text)) (string-null? text))
+          '()
+          (let loop
+            ((remaining text) (calls '()) (call-counter 0))
+            (let
+                ((start-tag (string-contains remaining "<tool_call>")))
+              (if start-tag
+                (let*
+                    ((after-start (substring remaining (+ start-tag (string-length "<tool_call>"))))
                      (end-tag (string-contains after-start "</tool_call>")))
-                (if (not end-tag)
-                    (reverse calls)
-                    (let* ((json-str (string-trim-both (substring after-start 0 end-tag)))
-                           (rest (substring after-start (+ end-tag (string-length "</tool_call>"))))
-                           (parsed (catch #t
-                                     (lambda () (json-string->scm json-str))
-                                     (lambda _ #f))))
-                      (if (and (pair? parsed) (or (assoc-ref parsed "name") (assoc-ref parsed 'name)))
-                          (let* ((raw-name (or (assoc-ref parsed "name") (assoc-ref parsed 'name)))
-                                 (raw-args (or (assoc-ref parsed "arguments") (assoc-ref parsed 'arguments) '()))
-                                 (args (if (string? raw-args)
-                                           (catch #t (lambda () (json-string->scm raw-args)) (lambda _ raw-args))
-                                           raw-args))
-                                 (call-id (format #f "call_xml_~a" (+ call-counter 1)))
-                                 (tool-call `((id . ,call-id)
-                                              (name . ,raw-name)
-                                              (arguments . ,args))))
-                            (loop rest (cons tool-call calls) (+ call-counter 1)))
-                          (loop rest calls call-counter))))))))))
+                  (if end-tag
+                    (let*
+                        ((json-str (string-trim-both (substring after-start 0 end-tag)))
+                         (rest (substring after-start (+ end-tag (string-length "</tool_call>"))))
+                         (parsed
+                           (catch #t
+                             (lambda ()
+                               (json-string->scm json-str))
+                             (lambda _
+                               #f))))
+                      (if
+                          (and (pair? parsed) (or (assoc-ref parsed "name") (assoc-ref parsed 'name)))
+                        (let*
+                            ((raw-name (or (assoc-ref parsed "name") (assoc-ref parsed 'name)))
+                             (raw-args (or (assoc-ref parsed "arguments") (assoc-ref parsed 'arguments) '()))
+                             (args
+                               (if (string? raw-args)
+                                 (catch #t
+                                   (lambda ()
+                                     (json-string->scm raw-args))
+                                   (lambda _
+                                     raw-args))
+                                 raw-args))
+                             (call-id (format #f "call_xml_~a" (+ call-counter 1)))
+                             (tool-call ` ((id . ,call-id) (name . ,raw-name) (arguments . ,args))))
+                          (loop rest
+                                (cons tool-call calls)
+                                (+ call-counter 1)))
+                        (loop rest calls call-counter)))
+                    (reverse calls)))
+                (reverse calls))))))
 
 (define (parse-tool-calls raw-response content-text)
   "Extract tool calls from RAW-RESPONSE (native OpenAI format) or CONTENT-TEXT (XML tags)."
@@ -172,7 +182,6 @@
 ;;;
 ;;; Tool Execution & Guardrail Enforcement
 ;;;
-
 (define* (execute-tool-call tool-call reg mcp-mgr
                            #:key
                            (jrn #f)
@@ -279,7 +288,6 @@ and logs provenance to JRN if provided. Returns (values result-scm is-error?)."
 ;;;
 ;;; ReAct Session Record
 ;;;
-
 (define-record-type <react-session>
   (%make-react-session messages status iteration max-iterations hooks client reg mcp-mgr jrn mgr max-tokens)
   react-session?
@@ -341,141 +349,181 @@ and pure keyword style: (make-react-session #:client client #:messages ... #:reg
 ;;;
 ;;; Step & Run Cycle
 ;;;
+(define (determine-step-content raw-resp)
+        "Extract normalized content and reasoning trace from model RAW-RESP.
+Returns (values content reasoning)."
+        (let*
+            ((choices (json-ref raw-resp "choices"))
+             (c0
+               (and (vector? choices) (> (vector-length choices) 0) (vector-ref choices 0)))
+             (orig-msg (and (pair? c0) (json-ref c0 "message")))
+             (reasoning
+               (and (pair? orig-msg)
+                    (or (json-ref orig-msg "reasoning_content") (json-ref orig-msg "reasoning"))))
+             (raw-content (extract-chat-content raw-resp))
+             (orig-content (and (pair? orig-msg) (json-ref orig-msg "content")))
+             (content
+               (cond
+                 ((and (string? orig-content)
+                       (not (member orig-content '("null" ":null")))
+                       (not (string-null? (string-trim-both orig-content))))
+                   orig-content)
+                 ((and (string? reasoning) (not (string-null? (string-trim-both reasoning))))
+                   (format #f
+                           "<think>~a</think>
+(Response provided in model reasoning trace)"
+                           reasoning))
+                 ((and (string? raw-content)
+                       (not (member raw-content '("null" ":null")))
+                       (not (string-null? (string-trim-both raw-content))))
+                   raw-content)
+                 (else ""))))
+          (values content reasoning)))
+
+(define
+  (build-assistant-tool-turn tool-calls content reasoning)
+  "Construct the assistant message turn representing TOOL-CALLS with CONTENT and REASONING."
+  (let*
+      ((tool-calls-vec
+         (list->vector
+           (map
+             (lambda (tc)
+               (let*
+                   ((tc-id (or (assoc-ref tc 'id) (assoc-ref tc "id") "call_0"))
+                    (tc-name (or (assoc-ref tc 'name) (assoc-ref tc "name") ""))
+                    (raw-args (or (assoc-ref tc 'arguments) (assoc-ref tc "arguments") '()))
+                    (args-str
+                      (if (string? raw-args)
+                        raw-args
+                        (scm->json-string raw-args))))
+                 `((id . ,tc-id) (type . "function")
+                   (function . ((name . ,tc-name) (arguments . ,args-str))))))
+             tool-calls)))
+       (eff-reasoning
+         (if
+             (and (string? reasoning) (not (string-null? (string-trim-both reasoning))))
+           reasoning
+           (format #f
+                   "Invoking ~a..."
+                   (or
+                     (and (pair? tool-calls)
+                          (let ((first-tc (car tool-calls)))
+                            (or (assoc-ref first-tc 'name) (assoc-ref first-tc "name"))))
+                     "tool")))))
+    `((role . "assistant")
+      (reasoning_content . ,eff-reasoning)
+      (content .
+               ,(if
+                    (and (string? content) (not (string-null? content)))
+                  content
+                  ""))
+      (tool_calls . ,tool-calls-vec))))
+
+(define
+  (execute-step-tools tool-calls
+                      reg
+                      mcp-mgr
+                      jrn
+                      mgr
+                      guardrail-fn
+                      on-tool-call-fn
+                      on-tool-result-fn)
+  "Execute TOOL-CALLS sequentially, invoking callbacks and returning pairs of (tool-call . tool-msg)."
+  (map
+    (lambda (tc)
+      (when (procedure? on-tool-call-fn) (on-tool-call-fn tc))
+      (call-with-values
+        (lambda ()
+          (execute-tool-call tc reg mcp-mgr #:jrn jrn #:mgr mgr #:guardrail guardrail-fn))
+        (lambda (res err?)
+          (when (procedure? on-tool-result-fn) (on-tool-result-fn tc res err?))
+          (let*
+              ((content-str
+                 (if (string? res)
+                   res
+                   (scm->json-string res)))
+               (tc-id (or (assoc-ref tc 'id) (assoc-ref tc "id") "call_0"))
+               (tc-name (or (assoc-ref tc 'name) (assoc-ref tc "name") ""))
+               (tool-msg `((role . "tool") (tool_call_id . ,tc-id)
+                           (name . ,tc-name)
+                           (content . ,content-str))))
+            (cons tc tool-msg)))))
+    tool-calls))
 
 (define (react-step! session)
-  "Execute a single turn of the ReAct cycle.
+        "Execute a single turn of the ReAct cycle.
 Returns:
   (values 'completed content-string)
   (values 'continue list-of-tool-results)
   (values 'max-iterations-reached #f)
   (values 'error error-message)"
-  (let* ((iter (react-session-iteration session))
-         (max-iter (react-session-max-iterations session))
-         (client (react-session-client session))
-         (reg (react-session-reg session))
-         (mcp-mgr (react-session-mcp-mgr session))
-         (jrn (react-session-jrn session))
-         (mgr (react-session-mgr session))
-         (max-tokens (or (react-session-max-tokens session) 4096))
-         (hooks (react-session-hooks session))
-         (guardrail-fn (assoc-ref hooks 'guardrail))
-         (on-step-fn (assoc-ref hooks 'on-step))
-         (on-tool-call-fn (assoc-ref hooks 'on-tool-call))
-         (on-tool-result-fn (assoc-ref hooks 'on-tool-result)))
-
-    (if (>= iter max-iter)
-        (begin
-          (set-react-session-status! session 'max-iterations-reached)
-          (values 'max-iterations-reached #f))
-        (begin
-          (set-react-session-iteration! session (+ iter 1))
-          (set-react-session-status! session 'running)
-          (when (procedure? on-step-fn)
-            (on-step-fn (+ iter 1) 'starting))
-
-          (catch #t
-            (lambda ()
-              (let* ((tools (collect-available-tools reg mcp-mgr))
-                     (msgs (react-session-messages session))
-                     (raw-resp (model-complete client msgs
-                                               #:tools tools
-                                               #:max-tokens max-tokens
-                                               #:raw? #t))
-                     (choices (json-ref raw-resp "choices"))
-                     (c0 (and (vector? choices) (> (vector-length choices) 0) (vector-ref choices 0)))
-                     (orig-msg (and (pair? c0) (json-ref c0 "message")))
-                     (reasoning (and (pair? orig-msg)
-                                     (or (json-ref orig-msg "reasoning_content")
-                                         (json-ref orig-msg "reasoning"))))
-                     (raw-content (extract-chat-content raw-resp))
-                     (orig-content (and (pair? orig-msg) (json-ref orig-msg "content")))
-                     (content (cond
-                               ((and (string? orig-content)
-                                     (not (member orig-content '("null" ":null")))
-                                     (not (string-null? (string-trim-both orig-content))))
-                                orig-content)
-                               ((and (string? reasoning) (not (string-null? (string-trim-both reasoning))))
-                                (format #f "<think>~a</think>\n(Response provided in model reasoning trace)" reasoning))
-                               ((and (string? raw-content)
-                                     (not (member raw-content '("null" ":null")))
-                                     (not (string-null? (string-trim-both raw-content))))
-                                raw-content)
-                               (else "")))
-                     (tool-calls (parse-tool-calls raw-resp content)))
-
-                (if (null? tool-calls)
-                    ;; No tools invoked: task completed by the assistant
-                    (let ((final-msg `((role . "assistant") (content . ,content))))
-                      (set-react-session-messages! session (append msgs (list final-msg)))
-                      (set-react-session-status! session 'completed)
-                      (when (procedure? on-step-fn)
-                        (on-step-fn (+ iter 1) 'completed))
-                      (values 'completed content))
-
-                    ;; Model requested tool calls
-                    (begin
-                      (set-react-session-status! session 'awaiting-tool)
-                      (let* ((tool-calls-vec
-                              (list->vector
-                               (map (lambda (tc)
-                                      (let* ((tc-id (or (assoc-ref tc 'id) (assoc-ref tc "id") "call_0"))
-                                             (tc-name (or (assoc-ref tc 'name) (assoc-ref tc "name") ""))
-                                             (raw-args (or (assoc-ref tc 'arguments) (assoc-ref tc "arguments") '()))
-                                             (args-str (if (string? raw-args) raw-args (scm->json-string raw-args))))
-                                        `((id . ,tc-id)
-                                          (type . "function")
-                                          (function . ((name . ,tc-name)
-                                                       (arguments . ,args-str))))))
-                                    tool-calls)))
-                             (eff-reasoning
-                              (if (and (string? reasoning) (not (string-null? (string-trim-both reasoning))))
-                                  reasoning
-                                  (format #f "Invoking ~a..."
-                                          (or (and (pair? tool-calls)
-                                                   (let ((first-tc (car tool-calls)))
-                                                     (or (assoc-ref first-tc 'name)
-                                                         (assoc-ref first-tc "name"))))
-                                              "tool"))))
-                             (asst-msg `((role . "assistant")
-                                         (reasoning_content . ,eff-reasoning)
-                                         (content . ,(if (and (string? content) (not (string-null? content)))
-                                                         content
-                                                         ""))
-                                         (tool_calls . ,tool-calls-vec)))
-                             (new-msgs (append msgs (list asst-msg)))
-                             (results
-                              (map (lambda (tc)
-                                     (when (procedure? on-tool-call-fn)
-                                       (on-tool-call-fn tc))
-                                     (call-with-values
-                                         (lambda ()
-                                           (execute-tool-call tc reg mcp-mgr
-                                                              #:jrn jrn
-                                                              #:mgr mgr
-                                                              #:guardrail guardrail-fn))
-                                       (lambda (res err?)
-                                         (when (procedure? on-tool-result-fn)
-                                           (on-tool-result-fn tc res err?))
-                                         (let* ((content-str (if (string? res) res (scm->json-string res)))
-                                                (tc-id (or (assoc-ref tc 'id) (assoc-ref tc "id") "call_0"))
-                                                (tc-name (or (assoc-ref tc 'name) (assoc-ref tc "name") ""))
-                                                (tool-msg `((role . "tool")
-                                                            (tool_call_id . ,tc-id)
-                                                            (name . ,tc-name)
-                                                            (content . ,content-str))))
-                                           (cons tc tool-msg)))))
-                                   tool-calls))
-                             (tool-msgs (map cdr results))
-                             (all-msgs (append new-msgs tool-msgs)))
-                        (set-react-session-messages! session all-msgs)
-                        (set-react-session-status! session 'running)
-                        (when (procedure? on-step-fn)
-                          (on-step-fn (+ iter 1) 'tools-executed))
-                        (values 'continue results))))))
-            (lambda (key . args)
-              (let ((err-msg (format #f "ReAct loop error (~a): ~s" key args)))
-                (set-react-session-status! session 'error)
-                (values 'error err-msg))))))))
+        (let*
+            ((iter (react-session-iteration session))
+             (max-iter (react-session-max-iterations session))
+             (client (react-session-client session))
+             (reg (react-session-reg session))
+             (mcp-mgr (react-session-mcp-mgr session))
+             (jrn (react-session-jrn session))
+             (mgr (react-session-mgr session))
+             (max-tokens (or (react-session-max-tokens session) 4096))
+             (hooks (react-session-hooks session))
+             (guardrail-fn (assoc-ref hooks 'guardrail))
+             (on-step-fn (assoc-ref hooks 'on-step))
+             (on-tool-call-fn (assoc-ref hooks 'on-tool-call))
+             (on-tool-result-fn (assoc-ref hooks 'on-tool-result)))
+          (if (>= iter max-iter)
+            (begin
+              (set-react-session-status! session 'max-iterations-reached)
+              (values 'max-iterations-reached #f))
+            (begin
+              (set-react-session-iteration! session (+ iter 1))
+              (set-react-session-status! session 'running)
+              (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'starting))
+              (catch #t
+                (lambda ()
+                  (let*
+                      ((tools (collect-available-tools reg mcp-mgr))
+                       (msgs (react-session-messages session))
+                       (raw-resp
+                         (model-complete client msgs #:tools tools #:max-tokens max-tokens #:raw? #t)))
+                    (call-with-values
+                      (lambda ()
+                        (determine-step-content raw-resp))
+                      (lambda (content reasoning)
+                        (let
+                            ((tool-calls (parse-tool-calls raw-resp content)))
+                          (if (null? tool-calls)
+                            (let
+                                ((final-msg ` ((role . "assistant") (content . ,content))))
+                              (set-react-session-messages! session (append msgs (list final-msg)))
+                              (set-react-session-status! session 'completed)
+                              (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'completed))
+                              (values 'completed content))
+                            (begin
+                              (set-react-session-status! session 'awaiting-tool)
+                              (let*
+                                  ((asst-msg (build-assistant-tool-turn tool-calls content reasoning))
+                                   (new-msgs (append msgs (list asst-msg)))
+                                   (results
+                                     (execute-step-tools tool-calls
+                                                         reg
+                                                         mcp-mgr
+                                                         jrn
+                                                         mgr
+                                                         guardrail-fn
+                                                         on-tool-call-fn
+                                                         on-tool-result-fn))
+                                   (tool-msgs (map cdr results))
+                                   (all-msgs (append new-msgs tool-msgs)))
+                                (set-react-session-messages! session all-msgs)
+                                (set-react-session-status! session 'running)
+                                (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'tools-executed))
+                                (values 'continue results)))))))))
+                (lambda (key . args)
+                  (let
+                      ((err-msg (format #f "ReAct loop error (~a): ~s" key args)))
+                    (set-react-session-status! session 'error)
+                    (values 'error err-msg))))))))
 
 (define* (react-run! session #:key (on-finish #f))
   "Execute the ReAct session loop until completion, error, or max iterations."
