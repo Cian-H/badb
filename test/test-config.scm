@@ -112,7 +112,11 @@
                      (command "mcp-git")
                      (args "--repo" "."))
                    (server "fetch"
-                     (command "uvx" "mcp-fetch")))))
+                     (command "uvx" "mcp-fetch"))
+                   (server "jev"
+                     (command "npx")
+                     (args "-y" "@jkudish/jev-mcp")
+                     (env (("API_KEY" . "sec123")))))))
          (cfg (parse-config-sexp sexp)))
     (test-equal "parsed model name"
       "llama-3-8b"
@@ -126,13 +130,16 @@
     (test-equal "parsed journal path"
       "/var/log/badb.jsonl"
       (badb-config-journal-path cfg))
-    (test-equal "parsed 2 mcp servers"
-      2
+    (test-equal "parsed 3 mcp servers"
+      3
       (length (badb-config-mcp-servers cfg)))
     (test-assert "git server present"
       (badb-config-get-mcp-server cfg "git"))
     (test-assert "fetch server present"
       (badb-config-get-mcp-server cfg "fetch"))
+    (let ((jev-spec (badb-config-get-mcp-server cfg "jev")))
+      (test-assert "jev server present" jev-spec)
+      (test-equal "jev env matches" '(("API_KEY" . "sec123")) (assoc-ref jev-spec 'env)))
 
     ;; Roundtrip back to s-expression and re-parse
     (let* ((serialized (config->sexp cfg))
