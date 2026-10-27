@@ -151,40 +151,32 @@
 ;;; MCP Server Helpers
 ;;;
 (define (parse-mcp-server-spec entry)
-  "Parse a raw MCP server declaration into canonical form:
+        "Parse a raw MCP server declaration into canonical form:
 (name (command . cmd) (args . (arg ...)) (env . ()) (auto-start . #t/#f))"
-  (let*
-      ((normalize-env
-         (lambda (raw-env)
-           (cond
-             ((null? raw-env) '())
-             ((and (pair? raw-env) (or (symbol? (car raw-env)) (string? (car raw-env))))
-               (list raw-env))
-             ((list? raw-env) raw-env)
-             (else '()))))
-       (name-and-props
-         (cond
-           ((and (pair? entry)
-                 (or (eq? (car entry) 'server) (eq? (car entry) 'mcp-server))
-                 (pair? (cdr entry)))
-             (cons (ensure-string (cadr entry)) (cddr entry)))
-           ((and (pair? entry) (or (string? (car entry)) (symbol? (car entry))))
-             (cons (ensure-string (car entry)) (cdr entry)))
-           (else #f))))
-    (and name-and-props
-         (let*
-             ((name (car name-and-props))
-              (props (cdr name-and-props))
-              (cmd (get-prop props 'command ""))
-              (raw-args (get-prop props 'args '()))
-              (args
-                (if (list? raw-args)
-                  raw-args
-                  (list raw-args)))
-              (env (normalize-env (get-prop props 'env '())))
-              (auto? (or (get-prop props 'auto-start #f) (get-prop props 'auto-start? #f))))
-           (cons name
-                 `((command . ,cmd) (args . ,args) (env . ,env) (auto-start . ,auto?)))))))
+        (let
+            ((name-and-props
+               (cond
+                 ((and (pair? entry)
+                       (or (eq? (car entry) 'server) (eq? (car entry) 'mcp-server))
+                       (pair? (cdr entry)))
+                   (cons (ensure-string (cadr entry)) (cddr entry)))
+                 ((and (pair? entry) (or (string? (car entry)) (symbol? (car entry))))
+                   (cons (ensure-string (car entry)) (cdr entry)))
+                 (else #f))))
+          (and name-and-props
+               (let*
+                   ((name (car name-and-props))
+                    (props (cdr name-and-props))
+                    (cmd (get-prop props 'command ""))
+                    (raw-args (get-prop props 'args '()))
+                    (args
+                      (if (list? raw-args)
+                        raw-args
+                        (list raw-args)))
+                    (env (normalize-env-alist (get-prop props 'env '())))
+                    (auto? (or (get-prop props 'auto-start #f) (get-prop props 'auto-start? #f))))
+                 (cons name
+                       `((command . ,cmd) (args . ,args) (env . ,env) (auto-start . ,auto?)))))))
 
 (define (badb-config-get-mcp-server config name)
   "Retrieve the specification alist for MCP server NAME from CONFIG, or #f."
