@@ -18,6 +18,7 @@
                         ensure-string
                         ensure-symbol
                         ensure-keyword
+                        non-empty-string?
                         normalize-role
                         get-prop
                         prop-ref
@@ -85,6 +86,10 @@
    ((string? val) (symbol->keyword (string->symbol val)))
    (else (symbol->keyword (string->symbol (object->string val))))))
 
+(define (non-empty-string? val)
+  "Return #t if VAL is a string that is non-empty after trimming whitespace."
+  (and (string? val) (not (string-null? (string-trim-both val)))))
+
 (define (normalize-role role)
         "Normalize message ROLE into canonical string ('system', 'user', 'assistant', 'tool')."
         (cond
@@ -125,23 +130,20 @@
 
 (define* (prop-ref alist key #:optional (default #f))
   "Safely retrieve value for KEY from ALIST, checking symbol, string, or keyword variants."
-  (if (not (pair? alist))
-    default
-    (let*
-        ((sym (ensure-symbol key))
-         (str (symbol->string sym))
-         (kw (symbol->keyword sym)))
-      (let loop
-        ((rest alist))
-        (if (null? rest)
-          default
-          (let ((pair (car rest)))
-            (if
-                (and (pair? pair)
-                     (let ((k (car pair)))
-                       (or (eq? k sym) (eq? k kw) (and (string? k) (string=? k str)) (equal? k key))))
-              (cdr pair)
-              (loop (cdr rest)))))))))
+  (if (pair? alist)
+      (let* ((sym (ensure-symbol key))
+             (str (symbol->string sym))
+             (kw (symbol->keyword sym)))
+        (let loop ((rest alist))
+          (if (null? rest)
+              default
+              (let ((pair (car rest)))
+                (if (and (pair? pair)
+                         (let ((k (car pair)))
+                           (or (eq? k sym) (eq? k kw) (and (string? k) (string=? k str)) (equal? k key))))
+                    (cdr pair)
+                    (loop (cdr rest)))))))
+      default))
 
 (define (prop-set alist key val)
   "Update or insert KEY with VAL in ALIST, preserving or using symbol representation."
@@ -213,29 +215,26 @@
               (not (string-null? s)))
             (string-split (string-trim-both str) #\space))))
 
-(define (format-exception key args)
-        "Format an exception key and args into a human-readable diagnostic string."
-        (cond
-          ((and (eq? key 'misc-error)
-                (pair? args)
-                (pair? (cdr args))
-                (string? (cadr args)))
-            (catch #t
-              (lambda ()
-                (let*
-                    ((msg-fmt (cadr args))
-                     (msg-args
-                       (if
-                           (and (pair? (cddr args)) (pair? (caddr args)))
-                         (caddr args)
-                         (cddr args))))
-                  (if (list? msg-args)
-                    (apply format #f msg-fmt msg-args)
-                    (format #f "~a" msg-fmt))))
-              (lambda _
-                (format #f "~a: ~s" key args))))
-          ((and (pair? args) (string? (car args))) (car args))
-          (else (format #f "~a: ~s" key args))))
+(define (format-exception ex-key ex-args)
+  "Format an exception key and args into a human-readable diagnostic string."
+  (cond
+   ((and (eq? ex-key 'misc-error)
+         (pair? ex-args)
+         (pair? (cdr ex-args))
+         (string? (cadr ex-args)))
+    (catch #t
+      (lambda ()
+        (let* ((msg-fmt (cadr ex-args))
+               (msg-args (if (and (pair? (cddr ex-args)) (pair? (caddr ex-args)))
+                             (caddr ex-args)
+                             (cddr ex-args))))
+          (if (list? msg-args)
+              (apply format #f msg-fmt msg-args)
+              (format #f "~a" msg-fmt))))
+      (lambda _
+        (format #f "~a: ~s" ex-key ex-args))))
+   ((and (pair? ex-args) (string? (car ex-args))) (car ex-args))
+   (else (format #f "~a: ~s" ex-key ex-args))))
 
 (define (sanitize-for-json val)
         "Sanitize nested data structures so they can be JSON-serialized."

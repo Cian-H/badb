@@ -87,12 +87,17 @@
         (file-exists? nested-dir)))))
 
 (test-group "util-helpers"
-            (test-equal "split-words trims and splits whitespace"
-              '("alpha" "beta" "gamma") (split-words "  alpha   beta   gamma  "))
-            (test-equal "split-words empty string" '() (split-words ""))
-            (test-equal "format-exception misc-error formatted"
-              "value is 42" (format-exception 'misc-error (list #f "value is ~a" (list 42))))
-            (test-equal "sanitize-for-json nested symbols"
-              '(("cmd" . "run") ("flag" . "true")) (sanitize-for-json '((cmd . "run") (flag . "true")))))
+  (test-assert "non-empty-string? valid string" (non-empty-string? "hello"))
+  (test-assert "non-empty-string? padded string" (non-empty-string? "  world  "))
+  (test-assert "non-empty-string? empty string returns #f" (not (non-empty-string? "")))
+  (test-assert "non-empty-string? whitespace returns #f" (not (non-empty-string? "   ")))
+  (test-assert "non-empty-string? non-string returns #f" (not (non-empty-string? #f)))
+  (test-equal "split-words trims and splits whitespace"
+    '("alpha" "beta" "gamma") (split-words "  alpha   beta   gamma  "))
+  (test-equal "split-words empty string" '() (split-words ""))
+  (test-equal "format-exception misc-error formatted"
+    "value is 42" (format-exception 'misc-error (list #f "value is ~a" (list 42))))
+  (test-equal "sanitize-for-json nested symbols"
+    '(("cmd" . "run") ("flag" . "true")) (sanitize-for-json '((cmd . "run") (flag . "true")))))
 
 (test-end "badb-util")
