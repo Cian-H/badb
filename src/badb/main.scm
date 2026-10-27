@@ -7,16 +7,18 @@
 (define %version "0.1.0")
 
 (define (print-usage port)
-  (format port "~a ~a [OPTION]...
+  (format port "~a ~a [COMMAND] [OPTION]...
 
-Placeholder for badb.
+Microharness kernel.
 
 ~a
+  ~a       run bootstrap test suite
   ~a      display this help and exit
   ~a   output version information and exit
 "
           (bold port "Usage:") %program-name
-          (bold port "Options:")
+          (bold port "Commands & Options:")
+          (cyan port "test")
           (cyan port "-h, --help")
           (cyan port "-V, --version")))
 
@@ -25,6 +27,9 @@ Placeholder for badb.
     (cond ((null? options)
            (format #t "~a~%"
                    (green (current-output-port) "OK")))
+          ((equal? (car options) "test")
+           (let ((runner-module (resolve-module '(test runner))))
+             ((module-ref runner-module 'run-all-tests))))
           ((member (car options) '("-h" "--help"))
            (print-usage (current-output-port)))
           ((member (car options) '("-V" "--version"))
