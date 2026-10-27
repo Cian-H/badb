@@ -577,12 +577,23 @@ and core badb modules for interactive evaluation."
                       '((description . "Call a tool on an MCP server")))
 
     ;; Auto-start configured MCP servers with auto-start: #t
+    ;; Auto-start configured MCP servers
     (catch #t
       (lambda ()
         (for-each
-         (lambda (server-spec)
-           (let ((name (assoc-ref server-spec 'name))
-                 (auto? (assoc-ref server-spec 'auto-start)))
+         (lambda (entry)
+           (let* ((name (if (pair? entry)
+                            (if (pair? (car entry))
+                                (assoc-ref entry 'name)
+                                (car entry))
+                            #f))
+                  (spec (if (pair? entry)
+                            (if (pair? (car entry))
+                                entry
+                                (cdr entry))
+                            '()))
+                  (auto? (or (assoc-ref spec 'auto-start)
+                             (assoc-ref spec 'auto-start?))))
              (when (and name auto?)
                (catch #t
                  (lambda () (mcp-manager-start-server! mcp-mgr name))
@@ -1100,41 +1111,81 @@ and core badb modules for interactive evaluation."
                                                                             (string-join desc "\n")))))))))))
 
          ((string=? subcmd "start")
-          (if (null? rest)
-              (set! messages (append messages (list `((role . "error") (content . "Usage: /mcp start <name>")))))
-              (let* ((name (car rest))
-                     (res (catch #t
-                            (lambda () (mcp-manager-start-server! mcp-mgr name))
-                            (lambda (k . a) (cons 'err (format #f "~a" a))))))
-                (if (and (pair? res) (eq? (car res) 'err))
-                    (set! messages (append messages (list `((role . "error") (content . ,(cdr res))))))
-                    (set! messages (append messages (list `((role . "system")
-                                                           (content . ,(format #f "Started MCP server '~a'." name))))))))))
+          (let ((name (and (pair? rest) (car rest))))
+            (cond
+             ((or (not name) (string=? name "all"))
+              (let* ((servers (mcp-manager-list-servers mcp-mgr))
+                     (results
+                      (map (lambda (s)
+                             (let ((s-name (assoc-ref s 'name))
+                                   (running? (assoc-ref s 'running?)))
+                               (if running?
+                                   (format #f "• ~a: already running" s-name)
+                                   (call-with-values (lambda () (mcp-manager-start-server! mcp-mgr s-name))
+                                     (lambda (client tools err)
+                                       (if err
+                                           (format #f "• ~a: error (~a)" s-name err)
+                                           (format #f "• ~a: started (~a tools)" s-name (length tools))))))))
+                           servers)))
+                (set! messages (append messages
+                                       (list `((role . "system")
+                                               (content . ,(string-append "Starting MCP servers:\n"
+                                                                          (string-join results "\n")))))))))
+             (else
+              (call-with-values (lambda () (mcp-manager-start-server! mcp-mgr name))
+                (lambda (client tools err)
+                  (if err
+                      (set! messages (append messages (list `((role . "error") (content . ,err)))))
+                      (set! messages (append messages (list `((role . "system")
+                                                             (content . ,(format #f "Started MCP server '~a' (~a tools available)."
+                                                                                 name (length tools))))))))))))))
 
          ((string=? subcmd "stop")
-          (if (null? rest)
-              (set! messages (append messages (list `((role . "error") (content . "Usage: /mcp stop <name>")))))
-              (let* ((name (car rest))
-                     (res (mcp-manager-stop-server! mcp-mgr name)))
+          (let ((name (and (pair? rest) (car rest))))
+            (cond
+             ((or (not name) (string=? name "all"))
+              (let ((servers (mcp-manager-list-servers mcp-mgr)))
+                (mcp-manager-stop-all! mcp-mgr)
+                (set! messages (append messages
+                                       (list `((role . "system")
+                                               (content . ,(format #f "Stopped all MCP servers (~a total)." (length servers)))))))))
+             (else
+              (let ((res (mcp-manager-stop-server! mcp-mgr name)))
                 (if res
                     (set! messages (append messages (list `((role . "system")
                                                            (content . ,(format #f "Stopped MCP server '~a'." name))))))
                     (set! messages (append messages (list `((role . "error")
-                                                           (content . ,(format #f "MCP server '~a' was not running." name))))))))))
+                                                           (content . ,(format #f "MCP server '~a' was not running." name))))))))))))
 
          ((string=? subcmd "restart")
-          (if (null? rest)
-              (set! messages (append messages (list `((role . "error") (content . "Usage: /mcp restart <name>")))))
-              (let ((name (car rest)))
-                (mcp-manager-stop-server! mcp-mgr name)
-                (catch #t
-                  (lambda ()
-                    (mcp-manager-start-server! mcp-mgr name)
-                    (set! messages (append messages (list `((role . "system")
-                                                           (content . ,(format #f "Restarted MCP server '~a'." name)))))))
-                  (lambda (k . a)
-                    (set! messages (append messages (list `((role . "error")
-                                                           (content . ,(format #f "Failed to restart '~a': ~s" name a)))))))))))
+          (let ((name (and (pair? rest) (car rest))))
+            (cond
+             ((or (not name) (string=? name "all"))
+              (mcp-manager-stop-all! mcp-mgr)
+              (let* ((servers (mcp-manager-list-servers mcp-mgr))
+                     (results
+                      (map (lambda (s)
+                             (let ((s-name (assoc-ref s 'name)))
+                               (call-with-values (lambda () (mcp-manager-start-server! mcp-mgr s-name))
+                                 (lambda (client tools err)
+                                   (if err
+                                       (format #f "• ~a: error (~a)" s-name err)
+                                       (format #f "• ~a: restarted (~a tools)" s-name (length tools)))))))
+                           servers)))
+                (set! messages (append messages
+                                       (list `((role . "system")
+                                               (content . ,(string-append "Restarted MCP servers:\n"
+                                                                          (string-join results "\n")))))))))
+             (else
+              (mcp-manager-stop-server! mcp-mgr name)
+              (call-with-values (lambda () (mcp-manager-start-server! mcp-mgr name))
+                (lambda (client tools err)
+                  (if err
+                      (set! messages (append messages (list `((role . "error")
+                                                             (content . ,(format #f "Failed to restart '~a': ~a" name err))))))
+                      (set! messages (append messages (list `((role . "system")
+                                                             (content . ,(format #f "Restarted MCP server '~a' (~a tools available)."
+                                                                                 name (length tools))))))))))))))
 
          ((string=? subcmd "add")
           (if (< (length rest) 2)
