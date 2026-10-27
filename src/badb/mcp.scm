@@ -82,13 +82,12 @@ Optionally accepts a process ID PID if backed by a child process."
 (define (json-ref alist key)
   "Look up KEY (string or symbol) in ALIST. Returns the associated value,
 or #f if not present."
-  (if (not (list? alist))
-      #f
-      (let* ((str-key (if (string? key) key (symbol->string key)))
-             (sym-key (if (symbol? key) key (string->symbol key)))
-             (entry (or (assoc str-key alist)
-                        (assoc sym-key alist))))
-        (and entry (cdr entry)))))
+  (and (list? alist)
+       (let* ((str-key (if (string? key) key (symbol->string key)))
+              (sym-key (if (symbol? key) key (string->symbol key)))
+              (entry (or (assoc str-key alist)
+                         (assoc sym-key alist))))
+         (and entry (cdr entry)))))
 
 (define (tools->list tools)
   "Normalize TOOLS (which may be a vector or list) into a Scheme list."
@@ -397,6 +396,43 @@ Supports both (mcp-manager-add-server! mgr spec-alist) and
             (lambda _ #f))))
       #t)))
 
+(define (mcp-build-exec-arguments spec)
+  "Resolve command line arguments and environment variables for an MCP server spec."
+  (let* ((cmd (or (assoc-ref spec 'command) ""))
+         (args (or (assoc-ref spec 'args) '()))
+         (env (or (assoc-ref spec 'env) '()))
+         (env-pairs (cond
+                     ((null? env) '())
+                     ((and (pair? env) (or (symbol? (car env)) (string? (car env))))
+                      (list env))
+                     ((list? env) env)
+                     (else '()))))
+    (if (null? env-pairs)
+        (cons cmd args)
+        (append (list "env")
+                (map (lambda (pair)
+                       (let ((k (if (symbol? (car pair))
+                                    (symbol->string (car pair))
+                                    (car pair)))
+                             (v (cdr pair)))
+                         (format #f "~a=~a" k v)))
+                     env-pairs)
+                (cons cmd args)))))
+
+(define (mcp-manager-update-server-state! mgr name spec client status tools error)
+  "Update internal state record for server NAME in MGR."
+  (let* ((name-str (if (symbol? name) (symbol->string name) name))
+         (updated-data `((spec . ,spec)
+                         (client . ,client)
+                         (status . ,status)
+                         (tools . ,(or tools '()))
+                         (error . ,error))))
+    (set-mcp-manager-servers!
+     mgr
+     (map (lambda (e) (if (string=? (car e) name-str) (cons name-str updated-data) e))
+          (mcp-manager-servers mgr)))
+    updated-data))
+
 (define (mcp-manager-start-server! mgr name)
   "Spawn, initialize, and discover tools for MCP server NAME.
 Returns (values client tools-list error-or-#f)."
@@ -410,26 +446,7 @@ Returns (values client tools-list error-or-#f)."
                (spec (assoc-ref data 'spec)))
           (if (and (string=? status "running") client)
               (values client (or (assoc-ref data 'tools) '()) #f)
-              (let* ((cmd (or (assoc-ref spec 'command) ""))
-                     (args (or (assoc-ref spec 'args) '()))
-                     (env (or (assoc-ref spec 'env) '()))
-                     (env-pairs (cond
-                                 ((null? env) '())
-                                 ((and (pair? env) (or (symbol? (car env)) (string? (car env))))
-                                  (list env))
-                                 ((list? env) env)
-                                 (else '())))
-                     (full-args (if (not (null? env-pairs))
-                                    (append (list "env")
-                                            (map (lambda (pair)
-                                                   (let ((k (if (symbol? (car pair))
-                                                                (symbol->string (car pair))
-                                                                (car pair)))
-                                                         (v (cdr pair)))
-                                                     (format #f "~a=~a" k v)))
-                                                 env-pairs)
-                                            (cons cmd args))
-                                    (cons cmd args))))
+              (let ((full-args (mcp-build-exec-arguments spec)))
                 (catch #t
                   (lambda ()
                     (let* ((new-client (mcp-spawn-client full-args))
@@ -438,51 +455,25 @@ Returns (values client tools-list error-or-#f)."
                                         (lambda () (mcp-list-tools new-client))
                                         (lambda _ '())))
                            (tools (tools->list raw-tools)))
-                      ;; Update server record
-                      (let ((updated-data `((spec . ,spec)
-                                            (client . ,new-client)
-                                            (status . "running")
-                                            (tools . ,tools)
-                                            (error . #f))))
-                        (set-mcp-manager-servers!
-                         mgr
-                         (map (lambda (e) (if (string=? (car e) name-str) (cons name-str updated-data) e))
-                              (mcp-manager-servers mgr)))
-                        (values new-client tools #f))))
+                      (mcp-manager-update-server-state! mgr name-str spec new-client "running" tools #f)
+                      (values new-client tools #f)))
                   (lambda (key . err-args)
-                    (let* ((err-msg (format #f "Failed to start server '~a' (~a): ~s" name-str key err-args))
-                           (updated-data `((spec . ,spec)
-                                           (client . #f)
-                                           (status . "error")
-                                           (tools . ())
-                                           (error . ,err-msg))))
-                      (set-mcp-manager-servers!
-                       mgr
-                       (map (lambda (e) (if (string=? (car e) name-str) (cons name-str updated-data) e))
-                            (mcp-manager-servers mgr)))
+                    (let ((err-msg (format #f "Failed to start server '~a' (~a): ~s" name-str key err-args)))
+                      (mcp-manager-update-server-state! mgr name-str spec #f "error" '() err-msg)
                       (values #f '() err-msg))))))))))
 
 (define (mcp-manager-stop-server! mgr name)
   "Stop running MCP server NAME and release resources."
   (let* ((name-str (if (symbol? name) (symbol->string name) name))
          (entry (assoc name-str (mcp-manager-servers mgr))))
-    (if (not entry)
-        #f
-        (let* ((data (cdr entry))
-               (client (assoc-ref data 'client))
-               (spec (assoc-ref data 'spec)))
-          (when client
-            (catch #t (lambda () (mcp-close-client client)) (lambda _ #f)))
-          (let ((updated-data `((spec . ,spec)
-                                (client . #f)
-                                (status . "stopped")
-                                (tools . ())
-                                (error . #f))))
-            (set-mcp-manager-servers!
-             mgr
-             (map (lambda (e) (if (string=? (car e) name-str) (cons name-str updated-data) e))
-                  (mcp-manager-servers mgr)))
-            #t)))))
+    (and entry
+         (let* ((data (cdr entry))
+                (client (assoc-ref data 'client))
+                (spec (assoc-ref data 'spec)))
+           (when client
+             (catch #t (lambda () (mcp-close-client client)) (lambda _ #f)))
+           (mcp-manager-update-server-state! mgr name-str spec #f "stopped" '() #f)
+           #t))))
 
 (define (mcp-manager-stop-all! mgr)
   "Stop all running MCP servers managed by MGR."
