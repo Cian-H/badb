@@ -53,10 +53,6 @@
 ;;;
 ;;; Token Estimators
 ;;;
-(define (non-empty-string? str)
-        "Return #t if STR is a non-empty string."
-        (and (string? str) (not (string-null? str))))
-
 (define (message-role msg)
   "Extract normalized role string from MSG."
   (normalize-role (prop-ref msg 'role "")))
@@ -69,23 +65,19 @@
   "Convert content to a string representation for token estimation."
   (safe-json-string content))
 
-(define (tool-calls->string tool-calls)
-        "Convert tool-calls structure to a string representation."
-        (cond
-          ((vector? tool-calls)
-            (catch #t
-              (lambda ()
-                (scm->json-string tool-calls))
-              (lambda _
-                (object->string tool-calls))))
-          ((pair? tool-calls)
-            (catch #t
-              (lambda ()
-                (scm->json-string (list->vector tool-calls)))
-              (lambda _
-                (object->string tool-calls))))
-          ((string? tool-calls) tool-calls)
-          (else "")))
+(define (tool-calls->string tc-val)
+  "Convert tool-calls structure to a string representation."
+  (cond
+   ((vector? tc-val)
+    (catch #t
+      (lambda () (scm->json-string tc-val))
+      (lambda _ (object->string tc-val))))
+   ((pair? tc-val)
+    (catch #t
+      (lambda () (scm->json-string (list->vector tc-val)))
+      (lambda _ (object->string tc-val))))
+   ((string? tc-val) tc-val)
+   (else "")))
 
 (define (char-heuristic-estimator text)
         "Heuristic estimation assuming ~4 characters per token (OpenAI/Llama average)."

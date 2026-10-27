@@ -167,19 +167,19 @@ rolled back to the pre-action checkpoint and the verification diagnostic is retu
   (let ((chkpt (create-checkpoint! rollback-mgr (format #f "pre-gate: ~a" desc))))
     (catch #t
       (lambda ()
-        (let ((thunk-result (thunk)))
-          (let ((v-res (verify-action verifier
-                                      #:file verify-target
-                                      #:workspace-dir (rollback-manager-workspace-dir rollback-mgr))))
-            (if (assoc-ref v-res 'passed?)
-                `((status . "verified")
-                  (result . ,thunk-result))
-                (begin
-                  ;; Verification failed: Rollback
-                  (rollback-to-checkpoint! rollback-mgr (checkpoint-id chkpt))
-                  `((status . "verification_failed")
-                    (checkpoint-rolled-back . ,(checkpoint-id chkpt))
-                    (failures . ,(assoc-ref v-res 'failures))))))))
+        (let* ((thunk-result (thunk))
+               (v-res (verify-action verifier
+                                     #:file verify-target
+                                     #:workspace-dir (rollback-manager-workspace-dir rollback-mgr))))
+          (if (assoc-ref v-res 'passed?)
+              `((status . "verified")
+                (result . ,thunk-result))
+              (begin
+                ;; Verification failed: Rollback
+                (rollback-to-checkpoint! rollback-mgr (checkpoint-id chkpt))
+                `((status . "verification_failed")
+                  (checkpoint-rolled-back . ,(checkpoint-id chkpt))
+                  (failures . ,(assoc-ref v-res 'failures)))))))
       (lambda (key . args)
         ;; Exception during execution: Rollback
         (rollback-to-checkpoint! rollback-mgr (checkpoint-id chkpt))
