@@ -161,10 +161,7 @@
                       (if raw-name
                         (let*
                             ((raw-args (or (prop-ref parsed 'arguments) '()))
-                             (args
-                               (if (string? raw-args)
-                                 (safe-json-parse raw-args raw-args)
-                                 raw-args))
+                             (args (safe-json-parse raw-args raw-args))
                              (call-id (format #f "call_xml_~a" (+ call-counter 1)))
                              (tool-call `((id . ,call-id) (name . ,raw-name) (arguments . ,args))))
                           (loop rest (cons tool-call calls) (+ call-counter 1)))

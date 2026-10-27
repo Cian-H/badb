@@ -389,17 +389,20 @@ Returns the string content, or #f if not found."
             (clean-json-string obj))))
 
 (define (parse-single-tool-call tc)
-  "Parse a single raw tool call object from an API response."
-  (let* ((fn (json-ref tc "function"))
-         (id (or (json-ref tc "id") "call_0"))
-         (name (if (pair? fn) (or (json-ref fn "name") "") ""))
-         (raw-args (if (pair? fn) (or (json-ref fn "arguments") "{}") "{}"))
-         (parsed-args (if (string? raw-args)
-                          (safe-json-parse raw-args raw-args)
-                          raw-args)))
-    `((id . ,id)
-      (name . ,name)
-      (arguments . ,parsed-args))))
+        "Parse a single raw tool call object from an API response."
+        (let*
+            ((fn (json-ref tc "function"))
+             (id (or (json-ref tc "id") "call_0"))
+             (name
+               (if (pair? fn)
+                 (or (json-ref fn "name") "")
+                 ""))
+             (raw-args
+               (if (pair? fn)
+                 (or (json-ref fn "arguments") "{}")
+                 "{}"))
+             (parsed-args (safe-json-parse raw-args raw-args)))
+          `((id . ,id) (name . ,name) (arguments . ,parsed-args))))
 
 (define (extract-chat-tool-calls response-obj)
         "Extract tool calls from a chat completion response (parsed JSON alist or JSON string).
