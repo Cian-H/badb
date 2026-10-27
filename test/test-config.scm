@@ -16,23 +16,14 @@
 
 (test-group "config-construction"
   (let ((cfg (make-badb-config)))
-    (test-assert "badb-config? recognizes config record"
-      (badb-config? cfg))
-    (test-assert "default model-name is string"
-      (string? (badb-config-model-name cfg)))
-    (test-assert "default model-endpoint is string"
-      (string? (badb-config-model-endpoint cfg)))
-    (test-equal "default temperature is 0.7"
-      0.7
-      (badb-config-model-temperature cfg))
-    (test-equal "default max-tokens is 4096"
-      4096
-      (badb-config-model-max-tokens cfg))
+    (test-assert "badb-config? recognizes config record" (badb-config? cfg))
+    (test-assert "default model-name is string" (string? (badb-config-model-name cfg)))
+    (test-assert "default model-endpoint is string" (string? (badb-config-model-endpoint cfg)))
+    (test-equal "default temperature is 0.7" 0.7 (badb-config-model-temperature cfg))
+    (test-equal "default max-tokens is 4096" 4096 (badb-config-model-max-tokens cfg))
     (test-equal "default journal path is .badb/journal.jsonl"
-      ".badb/journal.jsonl"
-      (badb-config-journal-path cfg))
-    (test-assert "default mcp-servers is list"
-      (list? (badb-config-mcp-servers cfg))))
+      ".badb/journal.jsonl" (badb-config-journal-path cfg))
+    (test-assert "default mcp-servers is list" (list? (badb-config-mcp-servers cfg))))
 
   (let ((custom (make-badb-config
                  #:model-name "custom-model:v1"
@@ -40,21 +31,11 @@
                  #:model-temperature 0.2
                  #:model-max-tokens 8192
                  #:journal-path "/tmp/custom-jrn.jsonl")))
-    (test-equal "custom model-name set"
-      "custom-model:v1"
-      (badb-config-model-name custom))
-    (test-equal "custom endpoint set"
-      "http://test-server:8000"
-      (badb-config-model-endpoint custom))
-    (test-equal "custom temperature set"
-      0.2
-      (badb-config-model-temperature custom))
-    (test-equal "custom max-tokens set"
-      8192
-      (badb-config-model-max-tokens custom))
-    (test-equal "custom journal path set"
-      "/tmp/custom-jrn.jsonl"
-      (badb-config-journal-path custom))))
+    (test-equal "custom model-name set" "custom-model:v1" (badb-config-model-name custom))
+    (test-equal "custom endpoint set" "http://test-server:8000" (badb-config-model-endpoint custom))
+    (test-equal "custom temperature set" 0.2 (badb-config-model-temperature custom))
+    (test-equal "custom max-tokens set" 8192 (badb-config-model-max-tokens custom))
+    (test-equal "custom journal path set" "/tmp/custom-jrn.jsonl" (badb-config-journal-path custom))))
 
 ;;;
 ;;; 2. MCP Server Specification Management
@@ -62,14 +43,11 @@
 
 (test-group "config-mcp-servers"
   (let ((cfg (make-badb-config)))
-    (test-assert "initially no mcp servers"
-      (null? (badb-config-mcp-servers cfg)))
+    (test-assert "initially no mcp servers" (null? (badb-config-mcp-servers cfg)))
 
     ;; Add server
     (badb-config-add-mcp-server! cfg "filesystem" "npx" '("-y" "@mcp/fs" ".") #:auto-start #t)
-    (test-equal "mcp-servers count is 1"
-      1
-      (length (badb-config-mcp-servers cfg)))
+    (test-equal "mcp-servers count is 1" 1 (length (badb-config-mcp-servers cfg)))
 
     (let ((fs-spec (badb-config-get-mcp-server cfg "filesystem")))
       (test-assert "retrieved filesystem spec" fs-spec)
@@ -79,28 +57,18 @@
 
     ;; Add second server
     (badb-config-add-mcp-server! cfg "memory" "mcp-server-memory")
-    (test-equal "mcp-servers count is 2"
-      2
-      (length (badb-config-mcp-servers cfg)))
+    (test-equal "mcp-servers count is 2" 2 (length (badb-config-mcp-servers cfg)))
 
     ;; Update existing server
     (badb-config-add-mcp-server! cfg "filesystem" "deno" '("run" "fs.ts"))
-    (test-equal "count remains 2 after update"
-      2
-      (length (badb-config-mcp-servers cfg)))
-    (test-equal "command updated"
-      "deno"
-      (assoc-ref (badb-config-get-mcp-server cfg "filesystem") 'command))
+    (test-equal "count remains 2 after update" 2 (length (badb-config-mcp-servers cfg)))
+    (test-equal "command updated" "deno" (assoc-ref (badb-config-get-mcp-server cfg "filesystem") 'command))
 
     ;; Remove server
     (badb-config-remove-mcp-server! cfg "filesystem")
-    (test-equal "count is 1 after removal"
-      1
-      (length (badb-config-mcp-servers cfg)))
-    (test-assert "filesystem is gone"
-      (not (badb-config-get-mcp-server cfg "filesystem")))
-    (test-assert "memory remains"
-      (badb-config-get-mcp-server cfg "memory"))))
+    (test-equal "count is 1 after removal" 1 (length (badb-config-mcp-servers cfg)))
+    (test-assert "filesystem is gone" (not (badb-config-get-mcp-server cfg "filesystem")))
+    (test-assert "memory remains" (badb-config-get-mcp-server cfg "memory"))))
 
 ;;;
 ;;; 3. S-Expression Parsing and Serialization
@@ -125,25 +93,13 @@
                      (args "-y" "@jkudish/jev-mcp")
                      (env (("API_KEY" . "sec123")))))))
          (cfg (parse-config-sexp sexp)))
-    (test-equal "parsed model name"
-      "llama-3-8b"
-      (badb-config-model-name cfg))
-    (test-equal "parsed endpoint"
-      "http://ai.lan:11434"
-      (badb-config-model-endpoint cfg))
-    (test-equal "parsed temperature"
-      0.4
-      (badb-config-model-temperature cfg))
-    (test-equal "parsed journal path"
-      "/var/log/badb.jsonl"
-      (badb-config-journal-path cfg))
-    (test-equal "parsed 3 mcp servers"
-      3
-      (length (badb-config-mcp-servers cfg)))
-    (test-assert "git server present"
-      (badb-config-get-mcp-server cfg "git"))
-    (test-assert "fetch server present"
-      (badb-config-get-mcp-server cfg "fetch"))
+    (test-equal "parsed model name" "llama-3-8b" (badb-config-model-name cfg))
+    (test-equal "parsed endpoint" "http://ai.lan:11434" (badb-config-model-endpoint cfg))
+    (test-equal "parsed temperature" 0.4 (badb-config-model-temperature cfg))
+    (test-equal "parsed journal path" "/var/log/badb.jsonl" (badb-config-journal-path cfg))
+    (test-equal "parsed 3 mcp servers" 3 (length (badb-config-mcp-servers cfg)))
+    (test-assert "git server present" (badb-config-get-mcp-server cfg "git"))
+    (test-assert "fetch server present" (badb-config-get-mcp-server cfg "fetch"))
     (let ((jev-spec (badb-config-get-mcp-server cfg "jev")))
       (test-assert "jev server present" jev-spec)
       (test-equal "jev env matches" '(("API_KEY" . "sec123")) (assoc-ref jev-spec 'env)))
@@ -151,18 +107,13 @@
     ;; Roundtrip back to s-expression and re-parse
     (let* ((serialized (config->sexp cfg))
            (re-parsed (parse-config-sexp serialized)))
-      (test-equal "roundtripped model name"
-        (badb-config-model-name cfg)
-        (badb-config-model-name re-parsed))
+      (test-equal "roundtripped model name" (badb-config-model-name cfg) (badb-config-model-name re-parsed))
       (test-equal "roundtripped endpoint"
-        (badb-config-model-endpoint cfg)
-        (badb-config-model-endpoint re-parsed))
+        (badb-config-model-endpoint cfg) (badb-config-model-endpoint re-parsed))
       (test-equal "roundtripped journal path"
-        (badb-config-journal-path cfg)
-        (badb-config-journal-path re-parsed))
+        (badb-config-journal-path cfg) (badb-config-journal-path re-parsed))
       (test-equal "roundtripped server count"
-        (length (badb-config-mcp-servers cfg))
-        (length (badb-config-mcp-servers re-parsed))))))
+        (length (badb-config-mcp-servers cfg)) (length (badb-config-mcp-servers re-parsed))))))
 
 ;;;
 ;;; 4. File Read and Write Persistence
@@ -177,26 +128,16 @@
     (badb-config-add-mcp-server! cfg "mock-fs" "npx" '("mock"))
 
     ;; Write file
-    (test-assert "write-config-file succeeds"
-      (write-config-file cfg tmp-path))
-    (test-assert "config file exists on disk"
-      (file-exists? tmp-path))
+    (test-assert "write-config-file succeeds" (write-config-file cfg tmp-path))
+    (test-assert "config file exists on disk" (file-exists? tmp-path))
 
     ;; Read file
     (let ((loaded (read-config-file tmp-path)))
-      (test-assert "read-config-file returns config"
-        (badb-config? loaded))
-      (test-equal "loaded model name matches"
-        "persisted-model"
-        (badb-config-model-name loaded))
-      (test-equal "loaded endpoint matches"
-        "http://localhost:9999"
-        (badb-config-model-endpoint loaded))
-      (test-assert "loaded mcp server exists"
-        (badb-config-get-mcp-server loaded "mock-fs"))
-      (test-equal "source path is recorded"
-        tmp-path
-        (badb-config-source-path loaded)))))
+      (test-assert "read-config-file returns config" (badb-config? loaded))
+      (test-equal "loaded model name matches" "persisted-model" (badb-config-model-name loaded))
+      (test-equal "loaded endpoint matches" "http://localhost:9999" (badb-config-model-endpoint loaded))
+      (test-assert "loaded mcp server exists" (badb-config-get-mcp-server loaded "mock-fs"))
+      (test-equal "source path is recorded" tmp-path (badb-config-source-path loaded)))))
 
 ;;;
 ;;; 5. Configuration Merging (Hierarchical Resolution)
@@ -221,31 +162,20 @@
 
     (let ((merged (merge-configs global-cfg local-cfg)))
       ;; Local overrides global model name
-      (test-equal "local model-name overrides global"
-        "project-model"
-        (badb-config-model-name merged))
+      (test-equal "local model-name overrides global" "project-model" (badb-config-model-name merged))
       ;; Global endpoint preserved if local was #f
-      (test-equal "global endpoint preserved"
-        "http://global-server:8000"
-        (badb-config-model-endpoint merged))
+      (test-equal "global endpoint preserved" "http://global-server:8000" (badb-config-model-endpoint merged))
       ;; Local journal path overrides global
-      (test-equal "local journal path overrides global"
-        ".badb/local.jsonl"
-        (badb-config-journal-path merged))
+      (test-equal "local journal path overrides global" ".badb/local.jsonl" (badb-config-journal-path merged))
 
       ;; MCP servers merged:
       ;; - "git" from local
       ;; - "project-db" from local
       ;; - "memory" retained from global
-      (test-equal "merged mcp servers count is 3"
-        3
-        (length (badb-config-mcp-servers merged)))
+      (test-equal "merged mcp servers count is 3" 3 (length (badb-config-mcp-servers merged)))
       (test-equal "git server has local args"
-        '("local-args")
-        (assoc-ref (badb-config-get-mcp-server merged "git") 'args))
-      (test-assert "project-db is present"
-        (badb-config-get-mcp-server merged "project-db"))
-      (test-assert "global memory server is preserved"
-        (badb-config-get-mcp-server merged "memory")))))
+        '("local-args") (assoc-ref (badb-config-get-mcp-server merged "git") 'args))
+      (test-assert "project-db is present" (badb-config-get-mcp-server merged "project-db"))
+      (test-assert "global memory server is preserved" (badb-config-get-mcp-server merged "memory")))))
 
 (test-end "badb-config")

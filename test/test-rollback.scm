@@ -62,8 +62,7 @@
       (test-equal "status is rolled_back" "rolled_back" (assoc-ref res 'status))
       (test-assert "main-file content was restored"
         (string-contains (call-with-input-file main-file read-line) "'original"))
-      (test-assert "new-file was deleted"
-        (not (file-exists? new-file)))))
+      (test-assert "new-file was deleted" (not (file-exists? new-file)))))
   (teardown-test-env!))
 
 ;;;
@@ -135,9 +134,7 @@
                                                         (lambda (p)
                                                           (display "good-edit\n" p)))
                                  'success))
-              (test-equal "good-edit preserved"
-                          "good-edit"
-                          (call-with-input-file main-file read-line))
+              (test-equal "good-edit preserved" "good-edit" (call-with-input-file main-file read-line))
               (with-checkpoint mgr
                                "falsy block"
                                (lambda ()
@@ -145,10 +142,8 @@
                                                         (lambda (p)
                                                           (display "falsy-edit\n" p)))
                                  #f))
-              (test-equal
-                "reverted to good-edit after #f return"
-                "good-edit"
-                (call-with-input-file main-file read-line))
+              (test-equal "reverted to good-edit after #f return"
+                "good-edit" (call-with-input-file main-file read-line))
               ;; Failing block with exception: auto-rolls back
               (catch 'test-error
                 (lambda ()
@@ -162,8 +157,7 @@
                 (lambda _
                   #t))
               (test-equal "reverted to good-edit after error"
-                          "good-edit"
-                          (call-with-input-file main-file read-line)))
+                "good-edit" (call-with-input-file main-file read-line)))
             (teardown-test-env!))
 
 (test-end "badb-rollback")

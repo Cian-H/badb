@@ -17,12 +17,10 @@
 
 (test-group "context-token-estimators"
   (test-equal "empty string has 0 tokens" 0 (char-heuristic-estimator ""))
-  (test-assert "16-char string estimated as ~4 tokens"
-    (= 4 (char-heuristic-estimator "1234567890123456")))
+  (test-assert "16-char string estimated as ~4 tokens" (= 4 (char-heuristic-estimator "1234567890123456")))
 
   (test-equal "word estimator handles spaces"
-    (inexact->exact (round (* 4 1.3)))
-    (word-heuristic-estimator "one two three four"))
+    (inexact->exact (round (* 4 1.3))) (word-heuristic-estimator "one two three four"))
 
   (let* ((msg '((role . "user") (content . "Hello world from Dublin!")))
          (tokens (estimate-message-tokens msg)))
@@ -51,9 +49,7 @@
          (pruner (strategy-prune-tool-results #:keep-recent-turns 1 #:max-tool-chars 100))
          (compacted (pruner messages 1000 char-heuristic-estimator)))
 
-    (test-equal "message count preserved after tool pruning"
-      (length messages)
-      (length compacted))
+    (test-equal "message count preserved after tool pruning" (length messages) (length compacted))
 
     ;; Old tool output should be pruned
     (let ((old-tool (caddr compacted)))
@@ -62,9 +58,7 @@
 
     ;; Recent tool output should NOT be pruned
     (let ((recent-tool (list-ref compacted 5)))
-      (test-equal "recent tool content preserved intact"
-        "PASS"
-        (assoc-ref recent-tool 'content)))))
+      (test-equal "recent tool content preserved intact" "PASS" (assoc-ref recent-tool 'content)))))
 
 ;;;
 ;;; 3. Strategy: Sliding Window with System Pinning
@@ -84,13 +78,9 @@
          (m4-cost (estimate-message-tokens m4))
          (compacted (window-fn messages (+ sys-cost m3-cost m4-cost 5) char-heuristic-estimator)))
 
-    (test-equal "system prompt is pinned at head"
-      "Always be concise."
-      (assoc-ref (car compacted) 'content))
+    (test-equal "system prompt is pinned at head" "Always be concise." (assoc-ref (car compacted) 'content))
 
-    (test-equal "most recent message is preserved"
-      "Response 2"
-      (assoc-ref (last compacted) 'content))
+    (test-equal "most recent message is preserved" "Response 2" (assoc-ref (last compacted) 'content))
 
     (test-assert "older message 1 was dropped"
       (not (any (lambda (m) (equal? (assoc-ref m 'content) "Message 1")) compacted)))))
@@ -113,9 +103,7 @@
          (strategy (strategy-summarize-older-turns summarizer #:keep-recent-turns 1))
          (compacted (strategy messages 1000 char-heuristic-estimator)))
 
-    (test-equal "first message remains system"
-      "Base prompt"
-      (assoc-ref (car compacted) 'content))
+    (test-equal "first message remains system" "Base prompt" (assoc-ref (car compacted) 'content))
 
     (let ((summary-msg (cadr compacted)))
       (test-assert "summary message injected"
@@ -123,9 +111,7 @@
       (test-assert "summary content matches"
         (string-contains (assoc-ref summary-msg 'content) "Discussed 4 turns of code.")))
 
-    (test-equal "most recent turn preserved"
-      "Answer 3"
-      (assoc-ref (last compacted) 'content))))
+    (test-equal "most recent turn preserved" "Answer 3" (assoc-ref (last compacted) 'content))))
 
 ;;;
 ;;; 5. Strategy: Journal Checkpoint Offloading
@@ -145,14 +131,10 @@
          (strategy (strategy-journal-offload jrn #:keep-recent-turns 1))
          (compacted (strategy messages 1000 char-heuristic-estimator)))
 
-    (test-equal "journal recorded archive checkpoint"
-      1
-      (journal-count jrn))
+    (test-equal "journal recorded archive checkpoint" 1 (journal-count jrn))
 
     (let ((entry (car (journal-entries jrn))))
-      (test-equal "archived message count is 4"
-        4
-        (assoc-ref entry "message-count")))
+      (test-equal "archived message count is 4" 4 (assoc-ref entry "message-count")))
 
     (let ((first-msg (car compacted)))
       (test-assert "first message points to journal checkpoint"
@@ -173,8 +155,7 @@
     (test-assert "compaction not needed for small conversation"
       (not (compaction-needed? compactor small-messages)))
 
-    (test-assert "compaction needed for large conversation"
-      (compaction-needed? compactor large-messages))
+    (test-assert "compaction needed for large conversation" (compaction-needed? compactor large-messages))
 
     (let ((compacted (compact-messages compactor large-messages)))
       (test-assert "compacted messages token count within ceiling"

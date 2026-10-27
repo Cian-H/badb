@@ -34,19 +34,12 @@
          (features (registry-list reg))
          (feat-spec (registry-feature->tool-spec (car features))))
 
-    (test-equal "tool spec type is function"
-      "function"
-      (assoc-ref feat-spec 'type))
+    (test-equal "tool spec type is function" "function" (assoc-ref feat-spec 'type))
 
     (let ((fn (assoc-ref feat-spec 'function)))
-      (test-equal "normalized name replaces dots"
-        "calc_add"
-        (assoc-ref fn 'name))
-      (test-equal "description preserved"
-        "Add two numbers"
-        (assoc-ref fn 'description))
-      (test-assert "parameters schema present"
-        (assoc-ref fn 'parameters))))
+      (test-equal "normalized name replaces dots" "calc_add" (assoc-ref fn 'name))
+      (test-equal "description preserved" "Add two numbers" (assoc-ref fn 'description))
+      (test-assert "parameters schema present" (assoc-ref fn 'parameters))))
 
   ;; MCP Tool Conversion
   (let* ((mcp-raw-tool '((name . "read_file")
@@ -55,16 +48,10 @@
                          (inputSchema . ((type . "object")
                                          (properties . ((path . ((type . "string")))))))))
          (mcp-spec (mcp-tool->tool-spec mcp-raw-tool)))
-    (test-equal "mcp tool spec type is function"
-      "function"
-      (assoc-ref mcp-spec 'type))
+    (test-equal "mcp tool spec type is function" "function" (assoc-ref mcp-spec 'type))
     (let ((fn (assoc-ref mcp-spec 'function)))
-      (test-equal "mcp tool name preserved"
-        "read_file"
-        (assoc-ref fn 'name))
-      (test-equal "mcp tool description preserved"
-        "Read file from disk"
-        (assoc-ref fn 'description)))))
+      (test-equal "mcp tool name preserved" "read_file" (assoc-ref fn 'name))
+      (test-equal "mcp tool description preserved" "Read file from disk" (assoc-ref fn 'description)))))
 
 ;;;
 ;;; 2. Tool Call Parsing (Native & XML)
@@ -80,9 +67,7 @@
                                                        (function . ((name . "git_status")
                                                                     (arguments . "{\"repo\":\"badb\"}")))))))))))))
          (parsed (parse-tool-calls native-raw "")))
-    (test-equal "parses 1 native tool call"
-      1
-      (length parsed))
+    (test-equal "parses 1 native tool call" 1 (length parsed))
     (let ((c (car parsed)))
       (test-equal "call id matches" "call_123" (assoc-ref c 'id))
       (test-equal "call name matches" "git_status" (assoc-ref c 'name))
@@ -91,9 +76,7 @@
   ;; Embedded XML format fallback
   (let* ((content-xml "I will check the status now.\n<tool_call>{\"name\": \"git_status\", \"arguments\": {\"repo\": \"badb\"}}</tool_call>\nWaiting for output.")
          (parsed (parse-tool-calls #f content-xml)))
-    (test-equal "parses 1 xml tool call"
-      1
-      (length parsed))
+    (test-equal "parses 1 xml tool call" 1 (length parsed))
     (let ((c (car parsed)))
       (test-equal "parsed xml tool name" "git_status" (assoc-ref c 'name))
       (test-equal "parsed xml arguments" "badb" (assoc-ref (assoc-ref c 'arguments) "repo"))))
@@ -101,8 +84,7 @@
   ;; Content without tool calls
   (let ((no-calls (parse-tool-calls '((choices . #(((message . ((role . "assistant") (content . "Hello world")))))))
                                     "Hello world")))
-    (test-assert "empty list when no tool calls"
-      (null? no-calls))))
+    (test-assert "empty list when no tool calls" (null? no-calls))))
 
 ;;;
 ;;; 3. Guardrail Enforcement & Execution
@@ -127,8 +109,7 @@
                                                #t))))
       (lambda (res err?)
         (test-assert "denied call returns error true" err?)
-        (test-assert "error mentions guardrail"
-          (string-contains (assoc-ref res 'error) "guardrail"))))
+        (test-assert "error mentions guardrail" (string-contains (assoc-ref res 'error) "guardrail"))))
 
     ;; Allowed by guardrail
     (call-with-values
@@ -214,25 +195,18 @@
             (test-equal "1 tool call executed" 1 (length results))))
 
         ;; Messages should now contain user + assistant(tool_calls) + tool observation
-        (test-equal "messages count is 3"
-          3
-          (length (react-session-messages session)))
+        (test-equal "messages count is 3" 3 (length (react-session-messages session)))
 
         (test-equal "assistant message has effective reasoning_content"
-          "Invoking get_weather..."
-          (assoc-ref (cadr (react-session-messages session)) 'reasoning_content))
+          "Invoking get_weather..." (assoc-ref (cadr (react-session-messages session)) 'reasoning_content))
 
         ;; Step 2: Model provides final answer
         (call-with-values (lambda () (react-step! session))
           (lambda (status answer)
             (test-equal "turn 2 status is completed" 'completed status)
-            (test-equal "final answer matches"
-              "The weather in Dublin is sunny and 22C."
-              answer)))
+            (test-equal "final answer matches" "The weather in Dublin is sunny and 22C." answer)))
 
-        (test-equal "session status is completed"
-          'completed
-          (react-session-status session))))))
+        (test-equal "session status is completed" 'completed (react-session-status session))))))
 
 ;;;
 ;;; 6. Reasoning-only model completion fallback
@@ -283,19 +257,13 @@
                                           #:max-iterations 3)))
         (call-with-values (lambda () (react-run! session))
           (lambda (status final-text sess)
-            (test-equal "status hits max-iterations-reached"
-              'max-iterations-reached
-              status)
-            (test-equal "iteration count matches limit"
-              3
-              (react-session-iteration sess))
+            (test-equal "status hits max-iterations-reached" 'max-iterations-reached status)
+            (test-equal "iteration count matches limit" 3 (react-session-iteration sess))
             ;; Verify that all tool messages in the session transcript have valid non-empty tool_call_id
             (let* ((msgs (react-session-messages sess))
                    (tool-msgs (filter (lambda (m) (equal? (assoc-ref m 'role) "tool")) msgs)))
-              (test-assert "tool messages are present in transcript"
-                (pair? tool-msgs))
-              (test-assert "every tool message has non-empty tool_call_id"
-                (every (lambda (m)
+              (test-assert "tool messages are present in transcript" (pair? tool-msgs))
+              (test-assert "every tool message has non-empty tool_call_id" (every (lambda (m)
                          (let ((tid (assoc-ref m 'tool_call_id)))
                            (and (string? tid) (not (string-null? tid)))))
                        tool-msgs)))
@@ -317,12 +285,8 @@
               (parameterize ((current-http-post completer-poster))
                 (call-with-values (lambda () (react-run! cont-session))
                   (lambda (c-status c-final c-sess)
-                    (test-equal "resumed session completes successfully"
-                      'completed
-                      c-status)
-                    (test-equal "resumed final text matches"
-                      "Continued and finished!"
-                      c-final)))))))))))
+                    (test-equal "resumed session completes successfully" 'completed c-status)
+                    (test-equal "resumed final text matches" "Continued and finished!" c-final)))))))))))
 
 ;;;
 ;;; 7. Flexible Keyword Session Construction

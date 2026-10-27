@@ -21,38 +21,27 @@
 
 (test-group "tui-wrapping"
   (let ((short-line "hello world"))
-    (test-equal "short line is not wrapped"
-      '("hello world")
-      (wrap-line short-line 20)))
+    (test-equal "short line is not wrapped" '("hello world") (wrap-line short-line 20)))
 
   (let* ((text "This is a sentence that should wrap nicely at word boundaries.")
          (wrapped (wrap-line text 20)))
-    (test-assert "wrapped produces multiple lines"
-      (> (length wrapped) 1))
+    (test-assert "wrapped produces multiple lines" (> (length wrapped) 1))
     (test-assert "every wrapped line is within max width"
       (every (lambda (l) (<= (string-length l) 20)) wrapped))
-    (test-equal "reconstructed string preserves all words"
-      text
-      (string-join wrapped " ")))
+    (test-equal "reconstructed string preserves all words" text (string-join wrapped " ")))
 
   ;; Edge cases: single word exceeding max width
   (let* ((long-word "supercalifragilisticexpialidocious")
          (wrapped (wrap-line long-word 10)))
-    (test-assert "long word is broken into chunks"
-      (> (length wrapped) 1))
-    (test-assert "all chunks <= max width"
-      (every (lambda (l) (<= (string-length l) 10)) wrapped))
-    (test-equal "concatenated chunks equal original word"
-      long-word
-      (apply string-append wrapped)))
+    (test-assert "long word is broken into chunks" (> (length wrapped) 1))
+    (test-assert "all chunks <= max width" (every (lambda (l) (<= (string-length l) 10)) wrapped))
+    (test-equal "concatenated chunks equal original word" long-word (apply string-append wrapped)))
 
   ;; Multi-line text wrapping
   (let* ((multi "Line one\nLine two is longer and needs to wrap\nLine three")
          (wrapped (wrap-text multi 15)))
-    (test-assert "multi-line wrapped produces list of lines"
-      (> (length wrapped) 3))
-    (test-assert "all lines are <= 15 chars"
-      (every (lambda (l) (<= (string-length l) 15)) wrapped))))
+    (test-assert "multi-line wrapped produces list of lines" (> (length wrapped) 3))
+    (test-assert "all lines are <= 15 chars" (every (lambda (l) (<= (string-length l) 15)) wrapped))))
 
 ;;;
 ;;; 2. Command Parsing (parse-command)
@@ -60,45 +49,32 @@
 
 (test-group "tui-command-parser"
   ;; Basic commands without arguments
-  (test-equal "parse /help"
-    '("help" . "")
-    (parse-command "/help"))
+  (test-equal "parse /help" '("help" . "") (parse-command "/help"))
 
-  (test-equal "parse /quit"
-    '("quit" . "")
-    (parse-command "/quit"))
+  (test-equal "parse /quit" '("quit" . "") (parse-command "/quit"))
 
-  (test-equal "parse /features"
-    '("features" . "")
-    (parse-command "/features"))
+  (test-equal "parse /features" '("features" . "") (parse-command "/features"))
 
   ;; Commands with arguments
   (test-equal "parse /model with argument"
-    '("model" . "minicpm5-1b:gguf:q8")
-    (parse-command "/model minicpm5-1b:gguf:q8"))
+    '("model" . "minicpm5-1b:gguf:q8") (parse-command "/model minicpm5-1b:gguf:q8"))
 
   (test-equal "parse /endpoint with URL"
     '("endpoint" . "http://127.0.0.1:10100/inference/v1")
     (parse-command "/endpoint http://127.0.0.1:10100/inference/v1"))
 
   ;; Whitespace trimming
-  (test-equal "parse with leading and trailing whitespace"
-    '("test" . "")
-    (parse-command "   /test   "))
+  (test-equal "parse with leading and trailing whitespace" '("test" . "") (parse-command "   /test   "))
 
   (test-equal "parse argument with extra spaces"
-    '("model" . "llama-3")
-    (parse-command "  /model   llama-3  "))
+    '("model" . "llama-3") (parse-command "  /model   llama-3  "))
 
   ;; Non-command inputs
-  (test-assert "regular chat prompt returns #f"
-    (not (parse-command "Why GNU Guile?")))
+  (test-assert "regular chat prompt returns #f" (not (parse-command "Why GNU Guile?")))
 
-  (test-assert "empty string returns #f"
-    (not (parse-command "")))
+  (test-assert "empty string returns #f" (not (parse-command "")))
 
-  (test-assert "string with slash in middle returns #f"
-    (not (parse-command "and/or question"))))
+  (test-assert "string with slash in middle returns #f" (not (parse-command "and/or question"))))
 
 ;;;
 ;;; 3. Input Classification (classify-input)
@@ -106,62 +82,37 @@
 
 (test-group "tui-input-classifier"
   ;; Shell commands with '!'
-  (test-equal "classify !ls"
-    '(shell . "ls -la")
-    (classify-input "!ls -la"))
+  (test-equal "classify !ls" '(shell . "ls -la") (classify-input "!ls -la"))
 
-  (test-equal "classify ! with space"
-    '(shell . "git status")
-    (classify-input "! git status"))
+  (test-equal "classify ! with space" '(shell . "git status") (classify-input "! git status"))
 
-  (test-equal "classify ! with trailing spaces"
-    '(shell . "make test")
-    (classify-input "  ! make test   "))
+  (test-equal "classify ! with trailing spaces" '(shell . "make test") (classify-input "  ! make test   "))
 
-  (test-equal "classify bare !"
-    '(shell . "")
-    (classify-input "!"))
+  (test-equal "classify bare !" '(shell . "") (classify-input "!"))
 
   ;; Scheme expressions with ',' or '('
-  (test-equal "classify ,(+ 1 2)"
-    '(scheme . "(+ 1 2)")
-    (classify-input ",(+ 1 2)"))
+  (test-equal "classify ,(+ 1 2)" '(scheme . "(+ 1 2)") (classify-input ",(+ 1 2)"))
 
-  (test-equal "classify , (+ 1 2) with space"
-    '(scheme . "(+ 1 2)")
-    (classify-input ", (+ 1 2)"))
+  (test-equal "classify , (+ 1 2) with space" '(scheme . "(+ 1 2)") (classify-input ", (+ 1 2)"))
 
-  (test-equal "classify bare ,"
-    '(scheme . "")
-    (classify-input ","))
+  (test-equal "classify bare ," '(scheme . "") (classify-input ","))
 
-  (test-equal "classify direct s-expression"
-    '(scheme . "(define x 42)")
-    (classify-input "(define x 42)"))
+  (test-equal "classify direct s-expression" '(scheme . "(define x 42)") (classify-input "(define x 42)"))
 
   (test-equal "classify s-expression with leading whitespace"
-    '(scheme . "(* x 2)")
-    (classify-input "   (* x 2)  "))
+    '(scheme . "(* x 2)") (classify-input "   (* x 2)  "))
 
   ;; Slash commands
-  (test-equal "classify /help"
-    '(slash "help" "")
-    (classify-input "/help"))
+  (test-equal "classify /help" '(slash "help" "") (classify-input "/help"))
 
-  (test-equal "classify /model arg"
-    '(slash "model" "llama3")
-    (classify-input "/model llama3"))
+  (test-equal "classify /model arg" '(slash "model" "llama3") (classify-input "/model llama3"))
 
   ;; Regular chat inputs
-  (test-equal "classify chat message"
-    '(chat . "Why GNU Guile?")
-    (classify-input "Why GNU Guile?"))
+  (test-equal "classify chat message" '(chat . "Why GNU Guile?") (classify-input "Why GNU Guile?"))
 
-  (test-assert "classify empty string is #f"
-    (not (classify-input "")))
+  (test-assert "classify empty string is #f" (not (classify-input "")))
 
-  (test-assert "classify whitespace is #f"
-    (not (classify-input "    "))))
+  (test-assert "classify whitespace is #f" (not (classify-input "    "))))
 
 ;;;
 ;;; 4. Scheme REPL Evaluation (eval-scheme-code & make-repl-mod)
@@ -217,15 +168,13 @@
     (call-with-values (lambda () (eval-scheme-code "(/ 1 0)" repl-mod))
       (lambda (res err)
         (test-assert "division by zero returns error string" (string? err))
-        (test-assert "error mentions numerical-overflow"
-          (string-contains err "numerical-overflow"))))
+        (test-assert "error mentions numerical-overflow" (string-contains err "numerical-overflow"))))
 
     ;; Error handling: syntax error
     (call-with-values (lambda () (eval-scheme-code "(+ 1" repl-mod))
       (lambda (res err)
         (test-assert "incomplete syntax returns error" (string? err))
-        (test-assert "error mentions read-error"
-          (string-contains err "read-error"))))))
+        (test-assert "error mentions read-error" (string-contains err "read-error"))))))
 
 ;;;
 ;;; 5. Shell Execution (execute-shell-command)
@@ -293,73 +242,44 @@
 
 (test-group "tui-slash-selector"
   ;; selector-active?
-  (test-assert "selector is active when buffer starts with /"
-    (selector-active? "/"))
-  (test-assert "selector is active when query is being typed"
-    (selector-active? "/mod"))
-  (test-assert "selector is inactive once a space is typed (argument mode)"
-    (not (selector-active? "/model ")))
-  (test-assert "selector is inactive for normal chat"
-    (not (selector-active? "hello /help")))
-  (test-assert "selector is inactive for shell command"
-    (not (selector-active? "!ls")))
+  (test-assert "selector is active when buffer starts with /" (selector-active? "/"))
+  (test-assert "selector is active when query is being typed" (selector-active? "/mod"))
+  (test-assert "selector is inactive once a space is typed (argument mode)" (not (selector-active? "/model ")))
+  (test-assert "selector is inactive for normal chat" (not (selector-active? "hello /help")))
+  (test-assert "selector is inactive for shell command" (not (selector-active? "!ls")))
 
   ;; %slash-commands registry contents
-  (test-assert "slash commands list contains help"
-    (assoc "help" %slash-commands))
-  (test-assert "slash commands list contains model"
-    (assoc "model" %slash-commands))
-  (test-assert "slash commands list contains endpoint"
-    (assoc "endpoint" %slash-commands))
-  (test-assert "slash commands list contains mcp"
-    (assoc "mcp" %slash-commands))
-  (test-assert "slash commands list contains config"
-    (assoc "config" %slash-commands))
-  (test-assert "slash commands list contains guardrail"
-    (assoc "guardrail" %slash-commands))
-  (test-assert "slash commands list contains compact"
-    (assoc "compact" %slash-commands))
-  (test-assert "slash commands list contains checkpoint"
-    (assoc "checkpoint" %slash-commands))
-  (test-assert "slash commands list contains rollback"
-    (assoc "rollback" %slash-commands))
-  (test-assert "slash commands list contains rules"
-    (assoc "rules" %slash-commands))
-  (test-assert "slash commands list contains context"
-    (assoc "context" %slash-commands))
-  (test-assert "slash commands list contains features"
-    (assoc "features" %slash-commands))
-  (test-assert "slash commands list contains journal"
-    (assoc "journal" %slash-commands))
-  (test-assert "slash commands list contains test"
-    (assoc "test" %slash-commands))
-  (test-assert "slash commands list contains sh"
-    (assoc "sh" %slash-commands))
-  (test-assert "slash commands list contains eval"
-    (assoc "eval" %slash-commands))
-  (test-assert "slash commands list contains clear"
-    (assoc "clear" %slash-commands))
-  (test-assert "slash commands list contains quit"
-    (assoc "quit" %slash-commands))
+  (test-assert "slash commands list contains help" (assoc "help" %slash-commands))
+  (test-assert "slash commands list contains model" (assoc "model" %slash-commands))
+  (test-assert "slash commands list contains endpoint" (assoc "endpoint" %slash-commands))
+  (test-assert "slash commands list contains mcp" (assoc "mcp" %slash-commands))
+  (test-assert "slash commands list contains config" (assoc "config" %slash-commands))
+  (test-assert "slash commands list contains guardrail" (assoc "guardrail" %slash-commands))
+  (test-assert "slash commands list contains compact" (assoc "compact" %slash-commands))
+  (test-assert "slash commands list contains checkpoint" (assoc "checkpoint" %slash-commands))
+  (test-assert "slash commands list contains rollback" (assoc "rollback" %slash-commands))
+  (test-assert "slash commands list contains rules" (assoc "rules" %slash-commands))
+  (test-assert "slash commands list contains context" (assoc "context" %slash-commands))
+  (test-assert "slash commands list contains features" (assoc "features" %slash-commands))
+  (test-assert "slash commands list contains journal" (assoc "journal" %slash-commands))
+  (test-assert "slash commands list contains test" (assoc "test" %slash-commands))
+  (test-assert "slash commands list contains sh" (assoc "sh" %slash-commands))
+  (test-assert "slash commands list contains eval" (assoc "eval" %slash-commands))
+  (test-assert "slash commands list contains clear" (assoc "clear" %slash-commands))
+  (test-assert "slash commands list contains quit" (assoc "quit" %slash-commands))
 
   ;; matching-slash-commands filtering
   (let ((all-matches (matching-slash-commands "/")))
-    (test-equal "bare / returns all slash commands"
-      (length %slash-commands)
-      (length all-matches)))
+    (test-equal "bare / returns all slash commands" (length %slash-commands) (length all-matches)))
 
   (let ((m-matches (matching-slash-commands "/m")))
-    (test-assert "matches commands containing m"
-      (member "model" (map car m-matches))))
+    (test-assert "matches commands containing m" (member "model" (map car m-matches))))
 
   (let ((exact-matches (matching-slash-commands "/jour")))
-    (test-equal "matches journal command"
-      '("journal")
-      (map car exact-matches)))
+    (test-equal "matches journal command" '("journal") (map car exact-matches)))
 
   (let ((no-matches (matching-slash-commands "/xyznonexistent")))
-    (test-assert "empty list for non-matching query"
-      (null? no-matches))))
+    (test-assert "empty list for non-matching query" (null? no-matches))))
 
 ;;;
 ;;; 8. Morphing Single-Character Prompt Indicators (get-prompt-indicator)
@@ -436,35 +356,25 @@
 (test-group "tui-modern-frame-formatters"
   ;; Header Line
   (let ((header (format-header-line 80 "READY" "minicpm5-1b:gguf:q8" 3 5)))
-    (test-assert "header starts with top-left rounded corner"
-      (string-prefix? "╭─ badb ─" header))
-    (test-assert "header ends with top-right rounded corner"
-      (string-suffix? "╮" header))
-    (test-assert "header contains status pill"
-      (string-contains header "❲● READY❳"))
-    (test-assert "header contains model pill"
-      (string-contains header "❲minicpm5-1b:gguf:q8❳"))
-    (test-assert "header contains features pill"
-      (string-contains header "❲3 feats❳"))
-    (test-assert "header contains journal pill"
-      (string-contains header "❲5 chkpts❳"))
+    (test-assert "header starts with top-left rounded corner" (string-prefix? "╭─ badb ─" header))
+    (test-assert "header ends with top-right rounded corner" (string-suffix? "╮" header))
+    (test-assert "header contains status pill" (string-contains header "❲● READY❳"))
+    (test-assert "header contains model pill" (string-contains header "❲minicpm5-1b:gguf:q8❳"))
+    (test-assert "header contains features pill" (string-contains header "❲3 feats❳"))
+    (test-assert "header contains journal pill" (string-contains header "❲5 chkpts❳"))
     (test-equal "header length matches terminal width"
       80 (string-length header)))
 
   (let ((header-mcp (format-header-line 100 "READY" "minicpm5-1b:gguf:q8" 3 5 "1/2")))
-    (test-assert "header contains mcp status pill when provided"
-      (string-contains header-mcp "❲mcp: 1/2❳"))
+    (test-assert "header contains mcp status pill when provided" (string-contains header-mcp "❲mcp: 1/2❳"))
     (test-equal "header with mcp matches terminal width"
       100 (string-length header-mcp)))
 
   ;; Prompt Divider
   (let ((divider (format-prompt-divider 80)))
-    (test-assert "divider starts with left tee branch"
-      (string-prefix? "├─ prompt ──" divider))
-    (test-assert "divider ends with right tee branch"
-      (string-suffix? "┤" divider))
-    (test-assert "divider contains shortcut hint"
-      (string-contains divider "[Tab: complete"))
+    (test-assert "divider starts with left tee branch" (string-prefix? "├─ prompt ──" divider))
+    (test-assert "divider ends with right tee branch" (string-suffix? "┤" divider))
+    (test-assert "divider contains shortcut hint" (string-contains divider "[Tab: complete"))
     (test-equal "divider length matches terminal width"
       80 (string-length divider))))
 
@@ -494,14 +404,12 @@
 
   ;; Mode-based divider hints
   (let ((shell-div (format-prompt-divider 80 'shell)))
-    (test-assert "shell divider contains shell prompt tag"
-      (string-contains shell-div "shell prompt"))
+    (test-assert "shell divider contains shell prompt tag" (string-contains shell-div "shell prompt"))
     (test-assert "shell divider contains backspace hint"
       (string-contains shell-div "Backspace: return to chat")))
 
   (let ((scheme-div (format-prompt-divider 80 'scheme)))
-    (test-assert "scheme divider contains scheme prompt tag"
-      (string-contains scheme-div "scheme prompt"))
+    (test-assert "scheme divider contains scheme prompt tag" (string-contains scheme-div "scheme prompt"))
     (test-assert "scheme divider contains backspace hint"
       (string-contains scheme-div "Backspace: return to chat"))))
 
@@ -510,29 +418,18 @@
 ;;;
 
 (test-group "tui-scheme-normalization"
-  (test-equal "preserves balanced s-expressions"
-    "(+ 1 2)"
-    (normalize-scheme-expr "(+ 1 2)"))
+  (test-equal "preserves balanced s-expressions" "(+ 1 2)" (normalize-scheme-expr "(+ 1 2)"))
 
-  (test-equal "auto-wraps multiple tokens without parens"
-    "(+ 1 2)"
-    (normalize-scheme-expr "+ 1 2"))
+  (test-equal "auto-wraps multiple tokens without parens" "(+ 1 2)" (normalize-scheme-expr "+ 1 2"))
 
-  (test-equal "auto-wraps trailing paren missing opening paren"
-    "(+ 1 2)"
-    (normalize-scheme-expr "+ 1 2)"))
+  (test-equal "auto-wraps trailing paren missing opening paren" "(+ 1 2)" (normalize-scheme-expr "+ 1 2)"))
 
-  (test-equal "preserves standalone identifier"
-    "reg"
-    (normalize-scheme-expr "reg"))
+  (test-equal "preserves standalone identifier" "reg" (normalize-scheme-expr "reg"))
 
-  (test-equal "preserves standalone literal number"
-    "42"
-    (normalize-scheme-expr "42"))
+  (test-equal "preserves standalone literal number" "42" (normalize-scheme-expr "42"))
 
   (test-equal "preserves complex definition"
-    "(define (double x) (* x 2))"
-    (normalize-scheme-expr "(define (double x) (* x 2))")))
+    "(define (double x) (* x 2))" (normalize-scheme-expr "(define (double x) (* x 2))")))
 
 ;;;
 ;;; 12. Visual Hierarchy & Token Segmentation (segment-line)
@@ -541,103 +438,57 @@
 (test-group "tui-token-segmentation"
   ;; Plain text without special tokens
   (let ((segs (segment-line "Simple text with no tokens")))
-    (test-equal "plain text is single chunk"
-      1
-      (length segs))
-    (test-equal "plain text chunk has white pair 3"
-      3
-      (cadr (car segs)))
-    (test-assert "plain text chunk is not bold"
-      (not (caddr (car segs)))))
+    (test-equal "plain text is single chunk" 1 (length segs))
+    (test-equal "plain text chunk has white pair 3" 3 (cadr (car segs)))
+    (test-assert "plain text chunk is not bold" (not (caddr (car segs)))))
 
   ;; Status tags
   (let ((segs-running (segment-line "[RUNNING]")))
-    (test-equal "running status text"
-      "[RUNNING]"
-      (caar segs-running))
-    (test-equal "running status has green pair 2"
-      2
-      (cadar segs-running))
-    (test-assert "running status is bold"
-      (caddar segs-running)))
+    (test-equal "running status text" "[RUNNING]" (caar segs-running))
+    (test-equal "running status has green pair 2" 2 (cadar segs-running))
+    (test-assert "running status is bold" (caddar segs-running)))
 
   (let ((segs-stopped (segment-line "[STOPPED]")))
-    (test-equal "stopped status text"
-      "[STOPPED]"
-      (caar segs-stopped))
-    (test-equal "stopped status has yellow pair 4"
-      4
-      (cadar segs-stopped))
-    (test-assert "stopped status is bold"
-      (caddar segs-stopped)))
+    (test-equal "stopped status text" "[STOPPED]" (caar segs-stopped))
+    (test-equal "stopped status has yellow pair 4" 4 (cadar segs-stopped))
+    (test-assert "stopped status is bold" (caddar segs-stopped)))
 
   (let ((segs-deny (segment-line "[DENY]")))
-    (test-equal "deny status text"
-      "[DENY]"
-      (caar segs-deny))
-    (test-equal "deny status has red pair 5"
-      5
-      (cadar segs-deny))
-    (test-assert "deny status is bold"
-      (caddar segs-deny)))
+    (test-equal "deny status text" "[DENY]" (caar segs-deny))
+    (test-equal "deny status has red pair 5" 5 (cadar segs-deny))
+    (test-assert "deny status is bold" (caddar segs-deny)))
 
   ;; Bullets
   (let ((segs-bullet (segment-line "• list item")))
-    (test-equal "bullet glyph text"
-      "• "
-      (caar segs-bullet))
-    (test-equal "bullet glyph has cyan pair 1"
-      1
-      (cadar segs-bullet))
-    (test-assert "bullet glyph is bold"
-      (caddar segs-bullet))
-    (test-equal "bullet content has white pair 3"
-      3
-      (cadr (cadr segs-bullet))))
+    (test-equal "bullet glyph text" "• " (caar segs-bullet))
+    (test-equal "bullet glyph has cyan pair 1" 1 (cadar segs-bullet))
+    (test-assert "bullet glyph is bold" (caddar segs-bullet))
+    (test-equal "bullet content has white pair 3" 3 (cadr (cadr segs-bullet))))
 
   ;; Property keys
   (let ((segs-key (segment-line "Model: moonshotai/kimi-k2.6")))
-    (test-equal "property key text"
-      "Model: "
-      (caar segs-key))
-    (test-equal "property key has cyan pair 1"
-      1
-      (cadar segs-key))
-    (test-equal "property value has white pair 3"
-      3
-      (cadr (cadr segs-key))))
+    (test-equal "property key text" "Model: " (caar segs-key))
+    (test-equal "property key has cyan pair 1" 1 (cadar segs-key))
+    (test-equal "property value has white pair 3" 3 (cadr (cadr segs-key))))
 
   ;; Composite MCP line: "  • filesystem: [RUNNING] (14 tools)"
   (let ((segs-mcp (segment-line "  • filesystem: [RUNNING] (14 tools)")))
-    (test-assert "composite line has multiple styled segments"
-      (>= (length segs-mcp) 5))
+    (test-assert "composite line has multiple styled segments" (>= (length segs-mcp) 5))
     ;; Verify presence of green [RUNNING] segment
     (let ((running-seg (find (lambda (s) (string=? (car s) "[RUNNING]")) segs-mcp)))
-      (test-assert "running tag found in segments"
-        running-seg)
-      (test-equal "running tag has green pair 2"
-        2
-        (cadr running-seg))
-      (test-assert "running tag is bold"
-        (caddr running-seg)))
+      (test-assert "running tag found in segments" running-seg)
+      (test-equal "running tag has green pair 2" 2 (cadr running-seg))
+      (test-assert "running tag is bold" (caddr running-seg)))
     ;; Verify presence of cyan filesystem: key
     (let ((key-seg (find (lambda (s) (string=? (car s) "filesystem: ")) segs-mcp)))
-      (test-assert "filesystem key found in segments"
-        key-seg)
-      (test-equal "filesystem key has cyan pair 1"
-        1
-        (cadr key-seg))))
+      (test-assert "filesystem key found in segments" key-seg)
+      (test-equal "filesystem key has cyan pair 1" 1 (cadr key-seg))))
 
   ;; URL preservation (not broken by key label regex)
   (let ((segs-url (segment-line "Endpoint: https://openrouter.ai/api/v1")))
-    (test-equal "endpoint key is matched"
-      "Endpoint: "
-      (caar segs-url))
+    (test-equal "endpoint key is matched" "Endpoint: " (caar segs-url))
     (test-equal "url is preserved intact as white pair 3"
-      "https://openrouter.ai/api/v1"
-      (car (cadr segs-url)))
-    (test-equal "url has white pair 3"
-      3
-      (cadr (cadr segs-url)))))
+      "https://openrouter.ai/api/v1" (car (cadr segs-url)))
+    (test-equal "url has white pair 3" 3 (cadr (cadr segs-url)))))
 
 (test-end "badb-tui")

@@ -18,35 +18,26 @@
   (let* ((in-p (open-input-string ""))
          (out-p (open-output-string))
          (client (make-mcp-client in-p out-p)))
-    (test-assert "mcp-client? recognizes client"
-      (mcp-client? client))
-    (test-assert "mcp-client? rejects non-client"
-      (not (mcp-client? "not-a-client")))
-    (test-assert "mcp-client? rejects records of other types"
-      (not (mcp-client? (cons in-p out-p))))
+    (test-assert "mcp-client? recognizes client" (mcp-client? client))
+    (test-assert "mcp-client? rejects non-client" (not (mcp-client? "not-a-client")))
+    (test-assert "mcp-client? rejects records of other types" (not (mcp-client? (cons in-p out-p))))
     (test-eq "ports match input"
       in-p (mcp-client-in-port client))
     (test-eq "ports match output"
       out-p (mcp-client-out-port client))
     (test-eq "initial next-id is 1"
       1 (mcp-client-next-id client))
-    (test-eq "default pid is #f"
-      #f (mcp-client-pid client))
-    (mcp-close-client client))
+    (test-eq "default pid is #f" #f (mcp-client-pid client)) (mcp-close-client client))
 
   (let* ((in-p (open-input-string ""))
          (out-p (open-output-string))
          (client (make-mcp-client in-p out-p #:pid 9999)))
-    (test-eq "keyword #:pid sets pid"
-      9999 (mcp-client-pid client))
-    (mcp-close-client client))
+    (test-eq "keyword #:pid sets pid" 9999 (mcp-client-pid client)) (mcp-close-client client))
 
   (let* ((in-p (open-input-string ""))
          (out-p (open-output-string))
          (client (make-mcp-client in-p out-p 8888)))
-    (test-eq "positional pid sets pid"
-      8888 (mcp-client-pid client))
-    (mcp-close-client client)))
+    (test-eq "positional pid sets pid" 8888 (mcp-client-pid client)) (mcp-close-client client)))
 
 ;;;
 ;;; 2. JSON-RPC 2.0 Request Formatting
@@ -80,8 +71,7 @@
              (parsed (json-string->scm json-str)))
         (test-equal "method is ping"
           "ping" (json-ref parsed "method"))
-        (test-assert "params member omitted when #f"
-          (not (assoc "params" parsed)))))
+        (test-assert "params member omitted when #f" (not (assoc "params" parsed)))))
     (mcp-close-client client)))
 
 ;;;
@@ -99,10 +89,8 @@
         "2.0" (json-ref parsed "jsonrpc"))
       (test-equal "method is notifications/initialized"
         "notifications/initialized" (json-ref parsed "method"))
-      (test-assert "notification has NO id member"
-        (not (assoc "id" parsed)))
-      (test-assert "notification has NO params member when omitted"
-        (not (assoc "params" parsed))))
+      (test-assert "notification has NO id member" (not (assoc "id" parsed)))
+      (test-assert "notification has NO params member when omitted" (not (assoc "params" parsed))))
 
     ;; mcp-notify with params
     (let* ((out-p2 (open-output-string))
@@ -112,11 +100,9 @@
              (parsed (json-string->scm json-str)))
         (test-equal "method is notifications/message"
           "notifications/message" (json-ref parsed "method"))
-        (test-assert "no id in mcp-notify"
-          (not (assoc "id" parsed)))
+        (test-assert "no id in mcp-notify" (not (assoc "id" parsed)))
         (test-equal "params level is info"
-          "info" (json-ref (json-ref parsed "params") "level"))))
-    (mcp-close-client client)))
+          "info" (json-ref (json-ref parsed "params") "level")))) (mcp-close-client client)))
 
 ;;;
 ;;; 4. Reading Messages
@@ -135,8 +121,7 @@
     (test-equal "result status parsed"
       "ok" (json-ref (json-ref msg "result") "status"))
     ;; Reading at EOF returns EOF object
-    (test-assert "mcp-read-message at end returns EOF"
-      (eof-object? (mcp-read-message client)))
+    (test-assert "mcp-read-message at end returns EOF" (eof-object? (mcp-read-message client)))
     (mcp-close-client client)))
 
 ;;;
@@ -173,8 +158,7 @@
         (let ((result (mcp-call client "tools/list")))
           (join-thread server-thread)
           (test-assert "result is a list" (list? result))
-          (test-assert "result contains tools"
-            (not (not (json-ref result "tools")))))
+          (test-assert "result contains tools" (not (not (json-ref result "tools")))))
         (mcp-close-client client)
         (close-port s-in)
         (close-port s-out))))
@@ -200,8 +184,7 @@
         (let ((result (mcp-call client "do-work")))
           (join-thread server-thread)
           (test-equal "mcp-call skips notifications and returns result"
-            "finished" result))
-        (mcp-close-client client)
+            "finished" result)) (mcp-close-client client)
         (close-port s-in)
         (close-port s-out))))
 
@@ -336,8 +319,7 @@
           (test-equal "client received protocolVersion"
             "2024-11-05" (json-ref init-result "protocolVersion"))
           (test-equal "client received serverInfo name"
-            "mock-server" (json-ref (json-ref init-result "serverInfo") "name")))))
-    (mcp-close-client client)
+            "mock-server" (json-ref (json-ref init-result "serverInfo") "name"))))) (mcp-close-client client)
     (close-port s-in)
     (close-port s-out)))
 
@@ -406,9 +388,7 @@
           (test-equal "content type text"
             "text" (json-ref (car content-list) "type"))
           (test-equal "content text 30"
-            "30" (json-ref (car content-list) "text")))))
-
-    (mcp-close-client client)
+            "30" (json-ref (car content-list) "text"))))) (mcp-close-client client)
     (close-port s-in)
     (close-port s-out)))
 
@@ -418,10 +398,8 @@
 
 (test-group "subprocess-spawn-and-close"
   (let ((client (mcp-spawn-client '("cat"))))
-    (test-assert "spawned client is an mcp-client"
-      (mcp-client? client))
-    (test-assert "spawned client has a valid pid"
-      (and (number? (mcp-client-pid client))
+    (test-assert "spawned client is an mcp-client" (mcp-client? client))
+    (test-assert "spawned client has a valid pid" (and (number? (mcp-client-pid client))
            (> (mcp-client-pid client) 0)))
     ;; Send raw line through cat and read back
     (display "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"hello-cat\"}\n"
@@ -445,8 +423,7 @@
          (_ (badb-config-add-mcp-server! cfg "echo-srv" "sh" '("-c" "while read l; do echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"Echo text\"}]}}'; done")))
          (mgr (make-mcp-manager cfg)))
 
-    (test-assert "mcp-manager? recognizes manager"
-      (mcp-manager? mgr))
+    (test-assert "mcp-manager? recognizes manager" (mcp-manager? mgr))
 
     (let ((servers (mcp-manager-list-servers mgr)))
       (test-equal "1 server configured" 1 (length servers))
@@ -464,12 +441,10 @@
     (test-assert "math-srv removed" (not (mcp-manager-get-server mgr "math-srv")))
 
     ;; Stop server when already stopped is safe
-    (test-assert "stopping stopped server is safe"
-      (or (mcp-manager-stop-server! mgr "echo-srv") #t))
+    (test-assert "stopping stopped server is safe" (or (mcp-manager-stop-server! mgr "echo-srv") #t))
 
     ;; Stop non-existent server is safe
-    (test-assert "stopping unknown server is safe"
-      (not (mcp-manager-stop-server! mgr "non-existent")))
+    (test-assert "stopping unknown server is safe" (not (mcp-manager-stop-server! mgr "non-existent")))
 
     ;; Stop all servers
     (mcp-manager-stop-all! mgr)

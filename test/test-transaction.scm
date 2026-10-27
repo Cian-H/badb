@@ -19,18 +19,15 @@
          (mgr-mock-journal (make-transaction-manager reg #:journal 'mock-journal))
          (mgr-pos-journal (make-transaction-manager reg 'pos-journal)))
 
-    (test-assert "transaction-manager? returns #t for manager instance"
-      (transaction-manager? mgr-no-journal))
-    (test-assert "transaction-manager? returns #f for registry"
-      (not (transaction-manager? reg)))
+    (test-assert "transaction-manager? returns #t for manager instance" (transaction-manager? mgr-no-journal))
+    (test-assert "transaction-manager? returns #f for registry" (not (transaction-manager? reg)))
     (test-assert "transaction-manager? returns #f for symbols and numbers"
       (and (not (transaction-manager? 'mgr))
            (not (transaction-manager? 12345))
            (not (transaction-manager? #f))))
 
     (test-eq "transaction-manager-registry returns configured registry"
-      reg
-      (transaction-manager-registry mgr-no-journal))
+      reg (transaction-manager-registry mgr-no-journal))
 
     (test-assert "transaction-manager-journal is #f when omitted"
       (not (transaction-manager-journal mgr-no-journal)))
@@ -39,12 +36,10 @@
       (not (transaction-manager-journal mgr-kw-journal)))
 
     (test-eq "transaction-manager-journal returns configured journal (keyword)"
-      'mock-journal
-      (transaction-manager-journal mgr-mock-journal))
+      'mock-journal (transaction-manager-journal mgr-mock-journal))
 
     (test-eq "transaction-manager-journal returns configured journal (positional)"
-      'pos-journal
-      (transaction-manager-journal mgr-pos-journal))))
+      'pos-journal (transaction-manager-journal mgr-pos-journal))))
 
 ;;;
 ;;; 2. Sandbox Staging & Module Isolation (stage-patch & eval-patch)
@@ -56,25 +51,16 @@
                             (define constant-val 42))))
          (sq (feature-module-ref mod 'square))
          (val (feature-module-ref mod 'constant-val)))
-    (test-assert "eval-patch returns a valid module"
-      (module? mod))
-    (test-assert "eval-patch evaluates defined procedures"
-      (procedure? sq))
-    (test-equal "eval-patch procedure executes correctly"
-      16
-      (sq 4))
-    (test-equal "eval-patch defines top-level values"
-      42
-      val))
+    (test-assert "eval-patch returns a valid module" (module? mod))
+    (test-assert "eval-patch evaluates defined procedures" (procedure? sq))
+    (test-equal "eval-patch procedure executes correctly" 16 (sq 4))
+    (test-equal "eval-patch defines top-level values" 42 val))
 
   ;; eval-patch with string forms
   (let* ((mod (eval-patch "(define (cube x) (* x x x))"))
          (cb (feature-module-ref mod 'cube)))
-    (test-assert "eval-patch parses string forms correctly"
-      (procedure? cb))
-    (test-equal "eval-patch string-defined procedure works"
-      27
-      (cb 3)))
+    (test-assert "eval-patch parses string forms correctly" (procedure? cb))
+    (test-equal "eval-patch string-defined procedure works" 27 (cb 3)))
 
   ;; stage-patch inheritance from base-module without mutating base
   (let* ((base (eval-patch '((define (greeting) "Hello")
@@ -97,8 +83,7 @@
          (child (eval-patch '((define (get-doubled) (* 2 num)))
                             #:base-module base)))
     (test-equal "eval-patch with #:base-module accesses base bindings"
-      200
-      ((feature-module-ref child 'get-doubled)))))
+      200 ((feature-module-ref child 'get-doubled)))))
 
 ;;;
 ;;; 3. Successful Transaction Commit
@@ -121,34 +106,24 @@
                                      #:metadata '((version . "1.0.0")
                                                   (author . "test-agent")))))
 
-    (test-equal "commit returns committed status"
-      "committed"
-      (assoc-ref result 'status))
+    (test-equal "commit returns committed status" "committed" (assoc-ref result 'status))
 
-    (test-eq "commit returns feature-id"
-      'calculator
-      (assoc-ref result 'feature-id))
+    (test-eq "commit returns feature-id" 'calculator (assoc-ref result 'feature-id))
 
     ;; Registry lookup verification
     (let ((calc (registry-lookup reg 'calculator)))
-      (test-assert "committed feature is stored in registry"
-        (procedure? calc))
-      (test-equal "committed feature is callable and returns correct result"
-        50
-        (calc 'add 20 30)))
+      (test-assert "committed feature is stored in registry" (procedure? calc))
+      (test-equal "committed feature is callable and returns correct result" 50 (calc 'add 20 30)))
 
     ;; Registry dispatch verification
-    (test-equal "registry-dispatch invokes committed feature"
-      15
-      (registry-dispatch reg 'calculator 'mul 3 5))
+    (test-equal "registry-dispatch invokes committed feature" 15 (registry-dispatch reg 'calculator 'mul 3 5))
 
     ;; Metadata verification
     (let ((meta (registry-metadata reg 'calculator)))
       (test-assert "registry metadata contains custom attributes"
         (and (equal? (assoc-ref meta 'version) "1.0.0")
              (equal? (assoc-ref meta 'author) "test-agent")))
-      (test-assert "registry metadata stores reference to staged module"
-        (module? (assoc-ref meta 'module))))))
+      (test-assert "registry metadata stores reference to staged module" (module? (assoc-ref meta 'module))))))
 
 ;;;
 ;;; 4. Transaction Hot-Swap / Upgrade Commit
@@ -164,9 +139,7 @@
                         (lambda (mod) #t)
                         #:metadata '((version . "1.0")))
 
-    (test-equal "version 1 returns 20"
-      20
-      (registry-dispatch reg 'multiplier 10))
+    (test-equal "version 1 returns 20" 20 (registry-dispatch reg 'multiplier 10))
 
     ;; Upgrade version
     (let ((res (apply-transaction! mgr 'multiplier
@@ -177,20 +150,13 @@
                                    #:metadata '((version . "2.0")
                                                 (updated . #t)))))
 
-      (test-equal "upgrade transaction committed"
-        "committed"
-        (assoc-ref res 'status))
+      (test-equal "upgrade transaction committed" "committed" (assoc-ref res 'status))
 
-      (test-equal "version 2 returns 100"
-        100
-        (registry-dispatch reg 'multiplier 10))
+      (test-equal "version 2 returns 100" 100 (registry-dispatch reg 'multiplier 10))
 
       (let ((meta (registry-metadata reg 'multiplier)))
-        (test-equal "version metadata updated"
-          "2.0"
-          (assoc-ref meta 'version))
-        (test-assert "updated metadata flag present"
-          (assoc-ref meta 'updated))))))
+        (test-equal "version metadata updated" "2.0" (assoc-ref meta 'version))
+        (test-assert "updated metadata flag present" (assoc-ref meta 'updated))))))
 
 ;;;
 ;;; 5. Rollback on Verification Failure (test-thunk returns #f)
@@ -204,9 +170,7 @@
     (apply-transaction! mgr 'safe-feature
                         '((define (safe-feature) "original"))
                         (lambda (m) #t))
-    (test-equal "initial feature registered"
-      "original"
-      ((registry-lookup reg 'safe-feature)))
+    (test-equal "initial feature registered" "original" ((registry-lookup reg 'safe-feature)))
 
     ;; Attempt broken update where tests return #f
     (let ((result (apply-transaction! mgr 'safe-feature
@@ -215,21 +179,16 @@
                                         ;; Test fails
                                         #f))))
 
-      (test-equal "result status is reverted"
-        "reverted"
-        (assoc-ref result 'status))
+      (test-equal "result status is reverted" "reverted" (assoc-ref result 'status))
 
-      (test-assert "result contains error diagnostics"
-        (string? (assoc-ref result 'error)))
+      (test-assert "result contains error diagnostics" (string? (assoc-ref result 'error)))
 
       ;; Original registry state must be preserved
       (test-equal "registry implementation remains intact and callable"
-        "original"
-        ((registry-lookup reg 'safe-feature)))
+        "original" ((registry-lookup reg 'safe-feature)))
 
       (test-equal "registry dispatch still returns original value"
-        "original"
-        (registry-dispatch reg 'safe-feature)))))
+        "original" (registry-dispatch reg 'safe-feature)))))
 
 ;;;
 ;;; 6. Rollback on Exception in Verification Thunk
@@ -245,9 +204,7 @@
                         (lambda (m) #t)
                         #:metadata '((status . "stable")))
 
-    (test-equal "original feature working"
-      5
-      ((registry-lookup reg 'divider) 10 2))
+    (test-equal "original feature working" 5 ((registry-lookup reg 'divider) 10 2))
 
     ;; Attempt update that raises divide-by-zero exception in test thunk
     (let ((res (apply-transaction! mgr 'divider
@@ -256,21 +213,16 @@
                                      ;; Deliberate exception during testing
                                      (/ 1 0)))))
 
-      (test-equal "result status is reverted"
-        "reverted"
-        (assoc-ref res 'status))
+      (test-equal "result status is reverted" "reverted" (assoc-ref res 'status))
 
-      (test-assert "result error contains exception details"
-        (string-contains (assoc-ref res 'error) "divide"))
+      (test-assert "result error contains exception details" (string-contains (assoc-ref res 'error) "divide"))
 
       ;; Verify prior implementation remains callable and unchanged
       (test-equal "prior implementation still callable after exception rollback"
-        4
-        ((registry-lookup reg 'divider) 12 3))
+        4 ((registry-lookup reg 'divider) 12 3))
 
       (test-equal "prior metadata untouched after exception rollback"
-        "stable"
-        (assoc-ref (registry-metadata reg 'divider) 'status)))))
+        "stable" (assoc-ref (registry-metadata reg 'divider) 'status)))))
 
 ;;;
 ;;; 7. Rollback on User Error / Assertion Failure
@@ -291,16 +243,12 @@
                                    (lambda (mod)
                                      (error "Assertion failed: output mismatch" 99)))))
 
-      (test-equal "result status is reverted"
-        "reverted"
-        (assoc-ref res 'status))
+      (test-equal "result status is reverted" "reverted" (assoc-ref res 'status))
 
       (test-assert "error diagnostic captures error message"
         (string-contains (assoc-ref res 'error) "Assertion failed"))
 
-      (test-equal "echo returns original message"
-        "hello"
-        ((registry-lookup reg 'echo) "hello")))))
+      (test-equal "echo returns original message" "hello" ((registry-lookup reg 'echo) "hello")))))
 
 ;;;
 ;;; 8. Rollback on Staging Syntax or Runtime Error in Forms
@@ -319,16 +267,12 @@
                                    '((define bad (/ 1 0)))
                                    (lambda (m) #t))))
 
-      (test-equal "result status is reverted on staging failure"
-        "reverted"
-        (assoc-ref res 'status))
+      (test-equal "result status is reverted on staging failure" "reverted" (assoc-ref res 'status))
 
       (test-assert "error captures divide-by-zero from staging form"
         (string-contains (assoc-ref res 'error) "divide"))
 
-      (test-equal "original feature preserved"
-        100
-        ((registry-lookup reg 'good-feat))))))
+      (test-equal "original feature preserved" 100 ((registry-lookup reg 'good-feat))))))
 
 ;;;
 ;;; 9. Checkpoint Journal Integration
@@ -346,30 +290,22 @@
                                     '((define (feat-alpha) "alpha-v1"))
                                     (lambda (m) #t)
                                     #:metadata '((version . "1.0")))))
-      (test-equal "feat-alpha committed"
-        "committed"
-        (assoc-ref res1 'status)))
+      (test-equal "feat-alpha committed" "committed" (assoc-ref res1 'status)))
 
     ;; Failed transaction with return #f
     (let ((res2 (apply-transaction! mgr 'feat-beta
                                     '((define (feat-beta) "beta-broken"))
                                     (lambda (m) #f))))
-      (test-equal "feat-beta reverted"
-        "reverted"
-        (assoc-ref res2 'status)))
+      (test-equal "feat-beta reverted" "reverted" (assoc-ref res2 'status)))
 
     ;; Failed transaction with exception
     (let ((res3 (apply-transaction! mgr 'feat-alpha
                                     '((define (feat-alpha) "alpha-v2"))
                                     (lambda (m) (error "validation failed")))))
-      (test-equal "feat-alpha upgrade reverted"
-        "reverted"
-        (assoc-ref res3 'status)))
+      (test-equal "feat-alpha upgrade reverted" "reverted" (assoc-ref res3 'status)))
 
     ;; Inspect journal entries recorded
-    (test-equal "journal recorded exactly 3 checkpoints"
-      3
-      (journal-count journal))
+    (test-equal "journal recorded exactly 3 checkpoints" 3 (journal-count journal))
 
     (let* ((entries (journal-entries journal))
            (e1 (list-ref entries 0))
@@ -377,43 +313,25 @@
            (e3 (list-ref entries 2)))
 
       ;; Checkpoint 1: Commit pass
-      (test-equal "entry 1 checkpoint is commit"
-        "commit"
-        (assoc-ref e1 "checkpoint"))
-      (test-equal "entry 1 status is pass"
-        "pass"
-        (assoc-ref e1 "status"))
-      (test-equal "entry 1 feature-id matches"
-        "feat-alpha"
-        (assoc-ref e1 "feature-id"))
+      (test-equal "entry 1 checkpoint is commit" "commit" (assoc-ref e1 "checkpoint"))
+      (test-equal "entry 1 status is pass" "pass" (assoc-ref e1 "status"))
+      (test-equal "entry 1 feature-id matches" "feat-alpha" (assoc-ref e1 "feature-id"))
 
       ;; Checkpoint 2: Revert fail
-      (test-equal "entry 2 checkpoint is revert"
-        "revert"
-        (assoc-ref e2 "checkpoint"))
-      (test-equal "entry 2 status is fail"
-        "fail"
-        (assoc-ref e2 "status"))
-      (test-equal "entry 2 feature-id matches"
-        "feat-beta"
-        (assoc-ref e2 "feature-id"))
-      (test-assert "entry 2 contains error detail"
-        (string? (assoc-ref e2 "error")))
+      (test-equal "entry 2 checkpoint is revert" "revert" (assoc-ref e2 "checkpoint"))
+      (test-equal "entry 2 status is fail" "fail" (assoc-ref e2 "status"))
+      (test-equal "entry 2 feature-id matches" "feat-beta" (assoc-ref e2 "feature-id"))
+      (test-assert "entry 2 contains error detail" (string? (assoc-ref e2 "error")))
 
       ;; Checkpoint 3: Revert fail with exception
-      (test-equal "entry 3 checkpoint is revert"
-        "revert"
-        (assoc-ref e3 "checkpoint"))
-      (test-equal "entry 3 status is fail"
-        "fail"
-        (assoc-ref e3 "status"))
+      (test-equal "entry 3 checkpoint is revert" "revert" (assoc-ref e3 "checkpoint"))
+      (test-equal "entry 3 status is fail" "fail" (assoc-ref e3 "status"))
       (test-assert "entry 3 error mentions validation failed"
         (string-contains (assoc-ref e3 "error") "validation failed")))
 
     ;; Journal integrity check
     (let ((integrity (journal-verify-integrity journal)))
-      (test-assert "journal integrity verifies successfully"
-        (assoc-ref integrity 'valid)))))
+      (test-assert "journal integrity verifies successfully" (assoc-ref integrity 'valid)))))
 
 ;;;
 ;;; 10. Multi-Iteration Chaining & State Integrity
@@ -451,8 +369,6 @@
     (let ((mod (assoc-ref (registry-metadata reg 'acc) 'module)))
       (test-assert "new procedure acc-reset! exists in module"
         (procedure? (feature-module-ref mod 'acc-reset!)))
-      (test-equal "acc-reset! resets total"
-        0
-        ((feature-module-ref mod 'acc-reset!))))))
+      (test-equal "acc-reset! resets total" 0 ((feature-module-ref mod 'acc-reset!))))))
 
 (test-end "badb-transaction")

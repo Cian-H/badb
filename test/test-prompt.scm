@@ -14,12 +14,9 @@
 (test-group "prompt-composer-construction"
   (let ((composer (make-prompt-composer)))
     (test-assert "prompt-composer? recognizes record" (prompt-composer? composer))
-    (test-assert "default system identity is string"
-      (string? (prompt-composer-system-identity composer)))
-    (test-assert "git status enabled by default"
-      (prompt-composer-include-git-status? composer))
-    (test-assert "file tree enabled by default"
-      (prompt-composer-include-file-tree? composer))
+    (test-assert "default system identity is string" (string? (prompt-composer-system-identity composer)))
+    (test-assert "git status enabled by default" (prompt-composer-include-git-status? composer))
+    (test-assert "file tree enabled by default" (prompt-composer-include-file-tree? composer))
     (test-equal "default tree depth is 2" 2 (prompt-composer-file-tree-depth composer))
     (test-equal "default tool style is native" 'native (prompt-composer-tool-style composer)))
 
@@ -106,8 +103,7 @@
          (xml-str (format-tools-for-prompt tools #:style 'xml))
          (md-str (format-tools-for-prompt tools #:style 'markdown)))
 
-    (test-assert "xml prompt contains tool tags"
-      (and (string-contains xml-str "<tool>")
+    (test-assert "xml prompt contains tool tags" (and (string-contains xml-str "<tool>")
            (string-contains xml-str "<name>execute_command</name>")
            (string-contains xml-str "Run a shell command")))
 
@@ -133,26 +129,19 @@
                                          #:tools tools
                                          #:mode 'code)))
 
-    (test-assert "prompt contains identity"
-      (string-contains prompt "You are badb system prompt."))
-    (test-assert "prompt contains Operational Directives"
-      (string-contains prompt "## Operational Directives"))
-    (test-assert "prompt contains Environment section"
-      (string-contains prompt "## Environment"))
-    (test-assert "prompt contains Git State section"
-      (string-contains prompt "## Git State"))
-    (test-assert "prompt contains Workspace Outline"
-      (string-contains prompt "## Workspace Outline"))
+    (test-assert "prompt contains identity" (string-contains prompt "You are badb system prompt."))
+    (test-assert "prompt contains Operational Directives" (string-contains prompt "## Operational Directives"))
+    (test-assert "prompt contains Environment section" (string-contains prompt "## Environment"))
+    (test-assert "prompt contains Git State section" (string-contains prompt "## Git State"))
+    (test-assert "prompt contains Workspace Outline" (string-contains prompt "## Workspace Outline"))
     (test-assert "prompt contains Custom Instruction"
       (string-contains prompt "Always maintain documentation integrity."))
-    (test-assert "prompt contains XML tool descriptions"
-      (string-contains prompt "<name>read_file</name>")))
+    (test-assert "prompt contains XML tool descriptions" (string-contains prompt "<name>read_file</name>")))
 
   ;; Test default-system-prompt convenience wrapper
   (let ((default-prompt (default-system-prompt #:custom-rules '("Rule 1"))))
     (test-assert "default-system-prompt generates non-empty string"
       (and (string? default-prompt) (> (string-length default-prompt) 100)))
-    (test-assert "default-system-prompt includes custom rule"
-      (string-contains default-prompt "Rule 1"))))
+    (test-assert "default-system-prompt includes custom rule" (string-contains default-prompt "Rule 1"))))
 
 (test-end "badb-prompt")
