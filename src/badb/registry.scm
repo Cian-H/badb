@@ -5,6 +5,7 @@
 ;;; dispatching features, tools, and extensions.
 
 (define-module (badb registry)
+  #:use-module (badb util)
   #:use-module (srfi srfi-9)
   #:use-module (ice-9 threads)
   #:export (make-registry
@@ -55,10 +56,7 @@
 
 (define (entry-id->string id)
   "Convert entry id to string for sorting."
-  (cond
-   ((string? id) id)
-   ((symbol? id) (symbol->string id))
-   (else (object->string id))))
+  (ensure-string id))
 
 ;;;
 ;;; Registry operations

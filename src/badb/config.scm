@@ -119,7 +119,7 @@
 
 (define* (make-mcp-server-spec name command #:optional (args '()) #:key (env '()) (auto-start #f))
   "Construct an MCP server specification alist."
-  `((name . ,(if (symbol? name) (symbol->string name) name))
+  `((name . ,(ensure-string name))
     (command . ,command)
     (args . ,(if (list? args) args (list args)))
     (env . ,env)
@@ -151,49 +151,44 @@
 ;;; MCP Server Helpers
 ;;;
 (define (parse-mcp-server-spec entry)
-        "Parse a raw MCP server declaration into canonical form:
+  "Parse a raw MCP server declaration into canonical form:
 (name (command . cmd) (args . (arg ...)) (env . ()) (auto-start . #t/#f))"
-        (let*
-            ((normalize-name
-               (lambda (n)
-                 (if (symbol? n)
-                   (symbol->string n)
-                   n)))
-             (normalize-env
-               (lambda (raw-env)
-                 (cond
-                   ((null? raw-env) '())
-                   ((and (pair? raw-env) (or (symbol? (car raw-env)) (string? (car raw-env))))
-                     (list raw-env))
-                   ((list? raw-env) raw-env)
-                   (else '()))))
-             (name-and-props
-               (cond
-                 ((and (pair? entry)
-                       (or (eq? (car entry) 'server) (eq? (car entry) 'mcp-server))
-                       (pair? (cdr entry)))
-                   (cons (normalize-name (cadr entry)) (cddr entry)))
-                 ((and (pair? entry) (or (string? (car entry)) (symbol? (car entry))))
-                   (cons (normalize-name (car entry)) (cdr entry)))
-                 (else #f))))
-          (and name-and-props
-               (let*
-                   ((name (car name-and-props))
-                    (props (cdr name-and-props))
-                    (cmd (get-prop props 'command ""))
-                    (raw-args (get-prop props 'args '()))
-                    (args
-                      (if (list? raw-args)
-                        raw-args
-                        (list raw-args)))
-                    (env (normalize-env (get-prop props 'env '())))
-                    (auto? (or (get-prop props 'auto-start #f) (get-prop props 'auto-start? #f))))
-                 (cons name
-                       `((command . ,cmd) (args . ,args) (env . ,env) (auto-start . ,auto?)))))))
+  (let*
+      ((normalize-env
+         (lambda (raw-env)
+           (cond
+             ((null? raw-env) '())
+             ((and (pair? raw-env) (or (symbol? (car raw-env)) (string? (car raw-env))))
+               (list raw-env))
+             ((list? raw-env) raw-env)
+             (else '()))))
+       (name-and-props
+         (cond
+           ((and (pair? entry)
+                 (or (eq? (car entry) 'server) (eq? (car entry) 'mcp-server))
+                 (pair? (cdr entry)))
+             (cons (ensure-string (cadr entry)) (cddr entry)))
+           ((and (pair? entry) (or (string? (car entry)) (symbol? (car entry))))
+             (cons (ensure-string (car entry)) (cdr entry)))
+           (else #f))))
+    (and name-and-props
+         (let*
+             ((name (car name-and-props))
+              (props (cdr name-and-props))
+              (cmd (get-prop props 'command ""))
+              (raw-args (get-prop props 'args '()))
+              (args
+                (if (list? raw-args)
+                  raw-args
+                  (list raw-args)))
+              (env (normalize-env (get-prop props 'env '())))
+              (auto? (or (get-prop props 'auto-start #f) (get-prop props 'auto-start? #f))))
+           (cons name
+                 `((command . ,cmd) (args . ,args) (env . ,env) (auto-start . ,auto?)))))))
 
 (define (badb-config-get-mcp-server config name)
   "Retrieve the specification alist for MCP server NAME from CONFIG, or #f."
-  (let* ((name-str (if (symbol? name) (symbol->string name) name))
+  (let* ((name-str (ensure-string name))
          (entry (assoc name-str (badb-config-mcp-servers config))))
     (and entry (cdr entry))))
 
@@ -201,7 +196,7 @@
                                      #:optional (args '())
                                      #:key (env '()) (auto-start #f))
   "Add or update MCP server NAME in CONFIG."
-  (let* ((name-str (if (symbol? name) (symbol->string name) name))
+  (let* ((name-str (ensure-string name))
          (spec (if (list? command)
                    ;; User passed a full spec alist in command
                    command
@@ -238,7 +233,7 @@
 
 (define (badb-config-remove-mcp-server! config name)
   "Remove MCP server NAME from CONFIG."
-  (let* ((name-str (if (symbol? name) (symbol->string name) name))
+  (let* ((name-str (ensure-string name))
          (current (badb-config-mcp-servers config))
          (filtered (remove (lambda (e) (string=? (car e) name-str)) current)))
     (set-badb-config-mcp-servers! config filtered)
