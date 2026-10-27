@@ -67,8 +67,7 @@ Returns '((passed? . #t)) or '((passed? . #f) (error . reason))."
           (lambda (key . args)
             `((passed? . #f) (error . ,(format #f "Syntax error (~a): ~s" key args))))))
 
-(define*
-  (verify-test-suite #:key (command "./scripts/test") (dir #f))
+(define* (verify-test-suite #:key (command "./scripts/test") (dir #f))
   "Execute test suite COMMAND and capture exit code and output.
 Returns '((passed? . #t/#f) (exit-code . code) (output . output-string))."
   (catch #t

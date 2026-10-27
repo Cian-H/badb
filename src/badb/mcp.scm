@@ -167,8 +167,7 @@ using json-string->scm. Skips empty lines. Returns EOF object on EOF."
               ((string-every char-whitespace? line) (loop))
               (else (json-string->scm line))))))
 
-(define*
-  (mcp-call client method #:optional params)
+(define* (mcp-call client method #:optional params)
   "Send a JSON-RPC 2.0 request to CLIENT, read the response, verify that the
 response ID matches, and return the 'result' member or raise an 'mcp-error
 on a JSON-RPC error response."
@@ -288,8 +287,7 @@ initialization result."
                     (config mcp-manager-config set-mcp-manager-config!)
                     (tool-index mcp-manager-tool-index set-mcp-manager-tool-index!))
 
-(define*
-  (make-mcp-manager #:optional (config #f))
+(define* (make-mcp-manager #:optional (config #f))
   "Create an MCP manager, optionally initialized from CONFIG."
   (let*
       ((configured-servers
@@ -438,8 +436,7 @@ Supports both (mcp-manager-add-server! mgr spec-alist) and
           (set-mcp-manager-tool-index! mgr idx)
           idx))
 
-(define
-  (mcp-manager-update-server-state! mgr name spec client status tools error)
+(define (mcp-manager-update-server-state! mgr name spec client status tools error)
   "Update internal state record for server NAME in MGR."
   (let*
       ((name-str (ensure-string name))
@@ -524,8 +521,7 @@ Returns (values client tools-list error-or-#f)."
              '())))
      running)))
 
-(define*
-  (mcp-manager-call-tool mgr arg1 arg2 #:optional (arg3 'unspecified))
+(define* (mcp-manager-call-tool mgr arg1 arg2 #:optional (arg3 'unspecified))
   "Call an MCP tool. Supports:
 (mcp-manager-call-tool mgr server-name tool-name arguments)
 or (mcp-manager-call-tool mgr tool-name arguments) discovering the owning server."

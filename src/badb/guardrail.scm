@@ -75,8 +75,7 @@
                 pat)))
           (else pat)))
 
-(define*
-  (make-pattern-rule name-pattern args-pattern verdict #:optional (reason #f))
+(define* (make-pattern-rule name-pattern args-pattern verdict #:optional (reason #f))
   "Create a declarative rule matching tool name and argument strings.
 VERDICT must be 'allow, 'deny, or 'ask.
 NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wildcard)."
@@ -106,8 +105,7 @@ NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wild
 ;;;
 ;;; Pre-built Evaluator Strategies
 ;;;
-(define*
-  (dangerous-operation? tool-name #:optional (args '()))
+(define* (dangerous-operation? tool-name #:optional (args '()))
   "Return #t if TOOL-NAME and ARGS constitute a dangerous destructive operation."
   (let ((name-str (ensure-string tool-name)))
     (if (string-contains name-str "danger")
@@ -126,8 +124,7 @@ NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wild
               (string-contains args-str "format disk"))
           #t)))))
 
-(define*
-  (mutating-operation? tool-name #:optional (args '()))
+(define* (mutating-operation? tool-name #:optional (args '()))
   "Return #t if TOOL-NAME represents a state-mutating operation."
   (let
       ((name-str (ensure-string tool-name)))
@@ -140,8 +137,7 @@ NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wild
           (string-contains name-str "exec"))
       #t)))
 
-(define*
-  (default-cautious-evaluator tool-name args level #:optional (context '()))
+(define* (default-cautious-evaluator tool-name args level #:optional (context '()))
   "Default built-in evaluator applying standard cautious/permissive/strict policies."
   (case level
     ((disabled) (cons 'allow "Guardrails disabled"))

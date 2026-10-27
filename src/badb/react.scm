@@ -194,8 +194,7 @@
 ;;;
 ;;; Tool Execution & Guardrail Enforcement
 ;;;
-(define*
-  (execute-tool-call tool-call reg mcp-mgr #:key (jrn #f) (mgr #f) (guardrail #f))
+(define* (execute-tool-call tool-call reg mcp-mgr #:key (jrn #f) (mgr #f) (guardrail #f))
   "Execute a single TOOL-CALL alist. Checks GUARDRAIL, dispatches to REG or MCP-MGR,
 and logs provenance to JRN if provided. Returns (values result-scm is-error?)."
   (let*
@@ -439,8 +438,7 @@ Returns (values content reasoning)."
                  (else ""))))
           (values content reasoning)))
 
-(define
-  (build-assistant-tool-turn tool-calls content reasoning)
+(define (build-assistant-tool-turn tool-calls content reasoning)
   "Construct the assistant message turn representing TOOL-CALLS with CONTENT and REASONING."
   (let*
       ((tool-calls-vec

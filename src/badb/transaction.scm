@@ -153,8 +153,7 @@ if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed mod
         (thunk)
         (thunk staged-module))))
 
-(define
-  (resolve-implementation staged-module feature-id test-result metadata)
+(define (resolve-implementation staged-module feature-id test-result metadata)
   "Determine the implementation object to register:
 1. Specified entry-point in metadata.
 2. Symbol matching feature-id defined in staged-module.

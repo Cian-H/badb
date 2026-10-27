@@ -110,8 +110,7 @@ into an alist."
 ;;;
 ;;; Field lookup helper
 ;;;
-(define*
-  (journal-entry-ref entry key #:optional default)
+(define* (journal-entry-ref entry key #:optional default)
   "Retrieve the value associated with KEY (string or symbol) in ENTRY alist,
 or DEFAULT if KEY is not present."
   (prop-ref entry key default))

@@ -115,8 +115,7 @@
                     (loop (+ i 1) #t wcount))))))
           0))
 
-(define*
-  (estimate-message-tokens msg #:optional (estimator char-heuristic-estimator))
+(define* (estimate-message-tokens msg #:optional (estimator char-heuristic-estimator))
   "Estimate token count of a single message alist."
   (let*
       ((role-str (message-role msg))
@@ -156,8 +155,7 @@
           (cons sys-msg msgs)
           msgs))
 
-(define
-  (prune-single-tool-output msg max-chars placeholder-generator)
+(define (prune-single-tool-output msg max-chars placeholder-generator)
   "Prune MSG if it is a tool output exceeding MAX-CHARS."
   (let ((content (message-content msg)))
     (if
@@ -182,8 +180,7 @@
           msg))
       msg)))
 
-(define
-  (journal-record-offload! jrn chkpt-id to-offload)
+(define (journal-record-offload! jrn chkpt-id to-offload)
   "Record archived messages to journal JRN."
   (when (and jrn (journal? jrn))
     (catch #t
@@ -222,8 +219,7 @@ KEEP-RECENT-TURNS while preserving model reasoning and tool call status."
                   (+ idx 1)
                   (cons processed acc))))))))
 
-(define*
-  (strategy-sliding-window #:key (keep-system-prompt #t))
+(define* (strategy-sliding-window #:key (keep-system-prompt #t))
   "Compaction strategy that keeps the newest turns fitting within target tokens,
 optionally pinning the system prompt at position 0."
   (lambda (messages target-tokens estimator)
@@ -251,8 +247,7 @@ optionally pinning the system prompt at position 0."
                       (cons msg acc)
                       (+ cur-tokens cost))))))))))
 
-(define*
-  (strategy-summarize-older-turns summarize-fn #:key (keep-recent-turns 3))
+(define* (strategy-summarize-older-turns summarize-fn #:key (keep-recent-turns 3))
   "Compaction strategy that summarizes older conversation turns using SUMMARIZE-FN.
 SUMMARIZE-FN receives a list of older messages and returns a summary string."
   (lambda (messages _target-tokens _estimator)
@@ -276,8 +271,7 @@ SUMMARIZE-FN receives a list of older messages and returns a summary string."
                                                        summary-text)))))
                    (attach-system sys-msg (cons summary-msg recent-msgs))))))))
 
-(define*
-  (strategy-journal-offload jrn #:key (keep-recent-turns 2))
+(define* (strategy-journal-offload jrn #:key (keep-recent-turns 2))
   "Compaction strategy that logs pruned conversation blocks to JRN and replaces
 them with audit trail checkpoint pointers."
   (lambda (messages _target-tokens _estimator)
@@ -371,8 +365,7 @@ Executes each configured strategy in order until the token ceiling is satisfied.
 ;;;
 ;;; Compaction Application
 ;;;
-(define
-  (context-compactor-effective-ceiling compactor)
+(define (context-compactor-effective-ceiling compactor)
   "Calculate effective token ceiling (max-tokens minus reserve-tokens)."
   (max 1
        (- (context-compactor-max-tokens compactor)
@@ -385,8 +378,7 @@ Executes each configured strategy in order until the token ceiling is satisfied.
              (estimator (context-compactor-estimator compactor)))
           (> (estimate-conversation-tokens messages estimator) ceiling)))
 
-(define*
-  (compact-messages compactor messages #:key (force #f))
+(define* (compact-messages compactor messages #:key (force #f))
   "Apply the configured strategy to MESSAGES if token count exceeds ceiling or FORCE is #t."
   (if
       (or force (compaction-needed? compactor messages))

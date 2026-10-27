@@ -123,8 +123,7 @@
         (cadr items))
        (else (loop (cdr items)))))))
 
-(define*
-  (prop-ref alist key #:optional (default #f))
+(define* (prop-ref alist key #:optional (default #f))
   "Safely retrieve value for KEY from ALIST, checking symbol, string, or keyword variants."
   (if (not (pair? alist))
     default

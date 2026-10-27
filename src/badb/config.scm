@@ -147,27 +147,6 @@
 ;;;
 ;;; Property Extraction Helper
 ;;;
-(define (get-prop lst key default)
-  "Safely extract KEY from property list or alist LST, supporting both
-(key . val), (key val), and #:key val syntax."
-  (let* ((sym (if (symbol? key) key (string->symbol key)))
-         (str (symbol->string sym))
-         (kw (symbol->keyword sym)))
-    (let loop ((items lst))
-      (cond
-       ((null? items) default)
-       ((not (pair? items)) default)
-       ((and (pair? (car items))
-             (or (equal? (caar items) sym)
-                 (equal? (caar items) str)))
-        (let ((val (cdar items)))
-          (if (and (pair? val) (null? (cdr val)))
-              (car val)
-              val)))
-       ((and (keyword? (car items)) (equal? (car items) kw) (pair? (cdr items)))
-        (cadr items))
-       (else (loop (cdr items)))))))
-
 ;;;
 ;;; MCP Server Helpers
 ;;;
@@ -235,8 +214,7 @@
     (set-badb-config-mcp-servers! config (cons (cons name-str spec) filtered))
     config))
 
-(define
-  (badb-config-merge-mcp-servers! config new-entries)
+(define (badb-config-merge-mcp-servers! config new-entries)
   "Batch add or update a list of (NAME . SPEC) MCP server entries in CONFIG."
   (if (null? new-entries)
     config
@@ -317,8 +295,7 @@
              (parsed (filter-map parse-mcp-server-spec entries)))
           (badb-config-merge-mcp-servers! cfg parsed)))
 
-(define*
-  (parse-config-sexp sexp #:optional (base-config #f))
+(define* (parse-config-sexp sexp #:optional (base-config #f))
   "Parse SEXP into a <badb-config> record, optionally overlaying onto BASE-CONFIG."
   (let
       ((cfg

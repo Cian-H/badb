@@ -433,8 +433,7 @@ Returns a list of tool call alists: ((id . \"...\") (name . \"...\") (arguments 
 ;;;
 ;;; HTTP Request Execution
 ;;;
-(define*
-  (curl-http-post uri #:key body headers (streaming? #f))
+(define* (curl-http-post uri #:key body headers (streaming? #f))
   "Execute an HTTP POST using curl subprocess via stdin pipeline. Used as a transparent fallback
 when Guile GnuTLS is not available for HTTPS requests.
 Streams payload directly over standard input without temporary files, captures real HTTP status codes."

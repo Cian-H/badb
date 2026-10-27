@@ -141,8 +141,7 @@
              entries))
       '()))
 
-(define*
-  (create-checkpoint! mgr description #:key (files #f))
+(define* (create-checkpoint! mgr description #:key (files #f))
   "Create a snapshot checkpoint of the specified FILES (or entire workspace if #f)
 and active registry state. Persists metadata to disk and journal if configured."
   (unless (rollback-manager? mgr)
@@ -243,8 +242,7 @@ and active registry state. Persists metadata to disk and journal if configured."
                   (registry-attach! reg f-id impl #:metadata meta)))
               saved-state)))
 
-(define
-  (rollback-to-checkpoint! mgr checkpoint-id)
+(define (rollback-to-checkpoint! mgr checkpoint-id)
   "Rollback workspace files and kernel registry to the state at CHECKPOINT-ID.
 Returns an alist describing restoration results."
   (unless (rollback-manager? mgr)

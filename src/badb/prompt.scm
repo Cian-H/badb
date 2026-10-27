@@ -46,8 +46,7 @@
 ;;;
 ;;; Shell & Process Helper
 ;;;
-(define*
-  (exec-cmd-output cmd args #:optional (dir #f))
+(define* (exec-cmd-output cmd args #:optional (dir #f))
   "Execute CMD with ARGS, optionally within DIR, and capture stdout as a trimmed string.
 Returns #f if execution fails or command exits non-zero."
   (catch #t
