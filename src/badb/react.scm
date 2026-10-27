@@ -207,24 +207,39 @@
                            ,@extra-alist)))
       (lambda _ #f))))
 
-(define (invoke-registry-procedure impl meta args)
+(define
+  (invoke-registry-procedure impl meta args)
   "Invoke registry IMPL with ARGS, adapting alist arguments to schema properties if available."
   (cond
-   ((null? args) (impl))
-   ((and (pair? args) (pair? (car args)))
-    (catch #t
-      (lambda ()
-        (let* ((params (and meta (or (assoc-ref meta 'parameters) (assoc-ref meta "parameters"))))
-               (props (and (pair? params) (or (assoc-ref params 'properties) (assoc-ref params "properties"))))
-               (ordered-keys (and (pair? props) (map (lambda (p) (ensure-string (car p))) props))))
-          (if (and ordered-keys (pair? ordered-keys))
-              (let ((ordered-vals (map (lambda (k) (or (assoc-ref args k) (assoc-ref args (string->symbol k))))
-                                       ordered-keys)))
+    ((null? args) (impl))
+    ((and (pair? args) (pair? (car args)))
+      (catch #t
+        (lambda ()
+          (let*
+              ((params
+                 (and meta (or (assoc-ref meta 'parameters) (assoc-ref meta "parameters"))))
+               (props
+                 (and (pair? params)
+                      (or (assoc-ref params 'properties) (assoc-ref params "properties"))))
+               (ordered-keys
+                 (and (pair? props)
+                      (map
+                        (lambda (p)
+                          (ensure-string (car p)))
+                        props))))
+            (if (and ordered-keys (pair? ordered-keys))
+              (let
+                  ((ordered-vals
+                     (map
+                       (lambda (k)
+                         (or (assoc-ref args k) (assoc-ref args (string->symbol k))))
+                       ordered-keys)))
                 (apply impl ordered-vals))
               (apply impl (map cdr args)))))
-      (lambda _ (impl args))))
-   ((list? args) (apply impl args))
-   (else (impl args))))
+        (lambda (k . a)
+          (impl args))))
+    ((list? args) (apply impl args))
+    (else (impl args))))
 
 (define* (execute-tool-call tool-call reg mcp-mgr #:key (jrn #f) (mgr #f) (guardrail #f))
   "Execute a single TOOL-CALL alist. Checks GUARDRAIL, dispatches to REG or MCP-MGR,
