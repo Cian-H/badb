@@ -21,6 +21,8 @@
             model-client-endpoint
             model-client-api-key
             model-client-model
+            valid-api-message?
+            normalize-messages
             format-chat-request
             parse-sse-line
             read-sse-events
@@ -91,6 +93,30 @@ or with positional arguments:
            (assoc-ref x "content")
            (assoc-ref x 'content))))
 
+(define (valid-api-message? msg)
+  "Predicate to check if MSG is a valid OpenAI/Anthropic chat protocol message.
+Rejects internal UI logs or tool responses missing required tool_call_id."
+  (cond
+   ;; Pair of (role . content), e.g. (user . "hello")
+   ((and (pair? msg) (not (pair? (car msg))))
+    (let ((r (symbol-or-string->string (car msg))))
+      (and (member r '("system" "user" "assistant")) #t)))
+   ;; Alist of message fields:
+   ((and (pair? msg) (pair? (car msg)))
+    (let* ((role (or (assoc-ref msg "role") (assoc-ref msg 'role)))
+           (role-str (cond ((symbol? role) (symbol->string role))
+                           ((string? role) role)
+                           (else ""))))
+      (cond
+       ((member role-str '("system" "user" "assistant"))
+        #t)
+       ((string=? role-str "tool")
+        (let ((tid (or (assoc-ref msg "tool_call_id") (assoc-ref msg 'tool_call_id))))
+          (and (string? tid) (not (string-null? tid)))))
+       (else #f))))
+   ((string? msg) #t)
+   (else #f)))
+
 (define (normalize-message msg)
   (cond
    ;; Alist of key-value pairs representing an object:
@@ -114,11 +140,13 @@ or with positional arguments:
 (define (normalize-messages msgs)
   (cond
    ((vector? msgs)
-    (list->vector (map normalize-message (vector->list msgs))))
+    (list->vector (map normalize-message (filter valid-api-message? (vector->list msgs)))))
    ((single-message-alist? msgs)
-    (vector (normalize-message msgs)))
+    (if (valid-api-message? msgs)
+        (vector (normalize-message msgs))
+        (vector)))
    ((list? msgs)
-    (list->vector (map normalize-message msgs)))
+    (list->vector (map normalize-message (filter valid-api-message? msgs))))
    ((string? msgs)
     (vector (list (cons "role" "user") (cons "content" msgs))))
    (else msgs)))

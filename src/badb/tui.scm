@@ -714,6 +714,13 @@ and core badb modules for interactive evaluation."
                                      "• Type ( or , to switch to Scheme REPL mode (λ)\n"
                                      "• Type Backspace at empty prompt to return to chat mode (❯)\n"
                                      "• Type / to open command selector palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context).")))))
+
+    ;; Dedicated LLM conversation history (strict OpenAI/Anthropic protocol messages)
+    (define llm-history
+      (list `((role . "system")
+              (content . ,(default-system-prompt
+                           #:workspace-dir (getcwd)
+                           #:tools (collect-available-tools reg mcp-mgr))))))
     (define input-buffer "")
     (define scroll-offset 0)
     (define status-text "READY")
@@ -832,8 +839,13 @@ and core badb modules for interactive evaluation."
                            (wrap-text content inner-w)
                            card-w inner-w))
 
-         ((string=? role "tool")
+         ((or (string=? role "tool-call") (string=? role "tool"))
           (make-card-entry "⚙ TOOL CALL" 4 "tool"
+                           (wrap-text content inner-w)
+                           card-w inner-w))
+
+         ((string=? role "tool-result")
+          (make-card-entry "✓ TOOL RESULT" 2 "tool"
                            (wrap-text content inner-w)
                            card-w inner-w))
 
@@ -1112,9 +1124,12 @@ and core badb modules for interactive evaluation."
     ;; Execute streaming query against LLM with separated thoughts
     (define (execute-chat-stream! user-prompt)
       (set! scroll-offset 0)
-      ;; 1. Check if context compaction is needed
-      (when (compaction-needed? compactor messages)
-        (set! messages (compact-messages compactor messages)))
+      ;; 1. Append user prompt to dedicated LLM conversation history
+      (set! llm-history (append llm-history (list `((role . "user") (content . ,user-prompt)))))
+
+      ;; 2. Check if context compaction is needed on LLM history
+      (when (compaction-needed? compactor llm-history)
+        (set! llm-history (compact-messages compactor llm-history)))
 
       ;; 2. Determine execution mode: Autonomous ReAct loop if tools present, or direct stream
       (let ((tools (collect-available-tools reg mcp-mgr)))
@@ -1122,21 +1137,22 @@ and core badb modules for interactive evaluation."
             ;; Autonomous ReAct Tool-Calling Loop
             (catch #t
               (lambda ()
-                (let ((session (make-react-session
-                                #:client client
-                                #:messages (filter (lambda (m) (member (assoc-ref m 'role) '("system" "user" "assistant" "tool"))) messages)
-                                #:registry reg
-                                #:mcp-manager mcp-mgr
-                                #:journal jrn
-                                #:transaction-manager mgr
-                                #:max-iterations 8
-                                #:max-tokens (or (badb-config-model-max-tokens cfg) 4096)
-                                #:guardrail (lambda (t-name t-args)
-                                              (evaluate-guardrail policy t-name t-args))
+                (let* ((max-react-iters 15)
+                       (session (make-react-session
+                                 #:client client
+                                 #:messages llm-history
+                                 #:registry reg
+                                 #:mcp-manager mcp-mgr
+                                 #:journal jrn
+                                 #:transaction-manager mgr
+                                 #:max-iterations max-react-iters
+                                 #:max-tokens (or (badb-config-model-max-tokens cfg) 4096)
+                                 #:guardrail (lambda (t-name t-args)
+                                               (evaluate-guardrail policy t-name t-args))
                                 #:hooks (list
                                          (cons 'on-step
                                                (lambda (iter phase)
-                                                 (set! status-text (format #f "REACT [~a/8]" iter))
+                                                 (set! status-text (format #f "REACT [~a/~a]" iter max-react-iters))
                                                  (render!)))
                                          (cons 'on-tool-call
                                                (lambda (tc)
@@ -1144,7 +1160,7 @@ and core badb modules for interactive evaluation."
                                                         (t-args (or (assoc-ref tc 'arguments) (assoc-ref tc "arguments"))))
                                                    (set! status-text (format #f "TOOL: ~a..." t-name))
                                                    (set! messages (append messages
-                                                                          (list `((role . "tool")
+                                                                          (list `((role . "tool-call")
                                                                                   (content . ,(format #f "⚙ Invoking tool: ~a (~s)" t-name t-args))))))
                                                    (render!))))
                                          (cons 'on-tool-result
@@ -1155,11 +1171,13 @@ and core badb modules for interactive evaluation."
                                                                      (string-append (substring res-str 0 140) "...")
                                                                      res-str)))
                                                    (set! messages (append messages
-                                                                          (list `((role . "tool")
+                                                                          (list `((role . "tool-result")
                                                                                   (content . ,(format #f "✓ Tool ~a returned: ~a" t-name preview))))))
                                                    (render!))))))))
                   (call-with-values (lambda () (react-run! session))
                     (lambda (verdict final-content sess)
+                      ;; Synchronize the full authentic LLM message transcript from the session
+                      (set! llm-history (react-session-messages sess))
                       (cond
                        ((eq? verdict 'completed)
                         (call-with-values (lambda () (split-thoughts-and-content (or final-content "")))
@@ -1171,7 +1189,7 @@ and core badb modules for interactive evaluation."
                        ((eq? verdict 'max-iterations-reached)
                         (set! messages (append messages
                                                (list `((role . "system")
-                                                       (content . "ReAct iteration ceiling reached (8 iterations)."))))))
+                                                       (content . ,(format #f "ReAct iteration ceiling reached (~a iterations). Type 'Continue' or follow up to proceed." max-react-iters)))))))
                        ((eq? verdict 'error)
                         (set! messages (append messages
                                                (list `((role . "error")
@@ -1188,15 +1206,9 @@ and core badb modules for interactive evaluation."
               (render!)
               (catch #t
                 (lambda ()
-                  (let ((chat-history (map (lambda (m)
-                                             (cons (assoc-ref m 'role)
-                                                   (assoc-ref m 'content)))
-                                           (filter (lambda (m)
-                                                     (member (assoc-ref m 'role) '("user" "assistant")))
-                                                   messages)))
-                        (raw-api-thoughts "")
+                  (let ((raw-api-thoughts "")
                         (raw-api-content ""))
-                    (model-stream client chat-history
+                    (model-stream client llm-history
                                   (lambda (delta . type-args)
                                     (let ((chunk-type (if (pair? type-args) (car type-args) 'content)))
                                       (if (eq? chunk-type 'thought)
@@ -1215,7 +1227,8 @@ and core badb modules for interactive evaluation."
                                                                 (content . ,inline-ct))))
                                             (set! messages (append (drop-right messages 1) (list updated-msg)))
                                             (render!))))))
-                                  #:max-tokens (or (badb-config-model-max-tokens cfg) 4096))))
+                                  #:max-tokens (or (badb-config-model-max-tokens cfg) 4096))
+                    (set! llm-history (append llm-history (list `((role . "assistant") (content . ,raw-api-content)))))))
                 (lambda (key . args)
                   (let ((err-msg (format #f "Stream error (~a): ~s" key args)))
                     (set! messages (append messages `(((role . "error") (content . ,err-msg)))))))))))
@@ -1559,16 +1572,16 @@ and core badb modules for interactive evaluation."
 
     ;; Handle context compaction command
     (define (handle-compact-cmd! arg)
-      (let* ((orig-tokens (estimate-conversation-tokens messages))
-             (compacted (compact-messages compactor messages #:force #t))
+      (let* ((orig-tokens (estimate-conversation-tokens llm-history))
+             (compacted (compact-messages compactor llm-history #:force #t))
              (new-tokens (estimate-conversation-tokens compacted)))
-        (set! messages compacted)
+        (set! llm-history compacted)
         (set! messages (append messages
                                (list `((role . "system")
-                                       (content . ,(format #f "Context compacted: ~a -> ~a tokens (saved ~a tokens, ~a messages remaining)."
+                                       (content . ,(format #f "Context compacted: ~a -> ~a tokens (saved ~a tokens, ~a LLM messages remaining)."
                                                            orig-tokens new-tokens
                                                            (max 0 (- orig-tokens new-tokens))
-                                                           (length messages)))))))))
+                                                           (length llm-history)))))))))
 
     ;; Handle checkpoint command
     (define (handle-checkpoint-cmd! arg)
@@ -1614,13 +1627,14 @@ and core badb modules for interactive evaluation."
 
     ;; Handle conversation context metrics
     (define (handle-context-cmd! arg)
-      (let* ((tokens (estimate-conversation-tokens messages))
+      (let* ((tokens (estimate-conversation-tokens llm-history))
              (ceiling (- (context-compactor-max-tokens compactor)
                          (context-compactor-reserve-tokens compactor)))
-             (needed? (compaction-needed? compactor messages)))
+             (needed? (compaction-needed? compactor llm-history)))
         (set! messages (append messages
                                (list `((role . "system")
-                                       (content . ,(format #f "Conversation Context Metrics:\n• Message Count: ~a\n• Estimated Tokens: ~a / ~a ceiling\n• Status: ~a"
+                                       (content . ,(format #f "Conversation Context Metrics:\n• LLM Message Count: ~a\n• UI Cards Count: ~a\n• Estimated Tokens: ~a / ~a ceiling\n• Status: ~a"
+                                                           (length llm-history)
                                                            (length messages)
                                                            tokens ceiling
                                                            (if needed? "COMPACTION REQUIRED" "NORMAL")))))))))
@@ -1785,6 +1799,10 @@ and core badb modules for interactive evaluation."
 
          ((string=? cmd "clear")
           (set! messages '())
+          (set! llm-history (list `((role . "system")
+                                    (content . ,(default-system-prompt
+                                                 #:workspace-dir (getcwd)
+                                                 #:tools (collect-available-tools reg mcp-mgr))))))
           (set! scroll-offset 0))
 
          ((or (string=? cmd "quit") (string=? cmd "exit"))

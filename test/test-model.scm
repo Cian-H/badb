@@ -141,7 +141,51 @@
     (test-assert "as-alist returns pair"
       (pair? alist))
     (test-assert "as-alist contains messages key"
-      (assoc-ref alist "messages"))))
+      (assoc-ref alist "messages")))
+
+  ;; Tool message validation and UI card filtering
+  (let* ((valid-tool `((role . "tool") (tool_call_id . "call_abc123") (name . "read_file") (content . "hello file")))
+         (invalid-tool-no-id `((role . "tool") (content . "⚙ Invoking tool: read_file")))
+         (invalid-tool-empty-id `((role . "tool") (tool_call_id . "") (content . "empty id")))
+         (ui-log-call `((role . "tool-call") (content . "⚙ Invoking tool...")))
+         (ui-log-result `((role . "tool-result") (content . "✓ Tool returned...")))
+         (ui-notice `((role . "notice") (content . "welcome")))
+         (ui-error `((role . "error") (content . "something failed")))
+         (raw-msgs (list `((role . "user") (content . "test"))
+                         invalid-tool-no-id
+                         invalid-tool-empty-id
+                         ui-log-call
+                         ui-log-result
+                         ui-notice
+                         ui-error
+                         valid-tool))
+         (normalized (normalize-messages raw-msgs)))
+    (test-assert "valid tool message satisfies valid-api-message?"
+      (valid-api-message? valid-tool))
+    (test-assert "tool message missing tool_call_id fails valid-api-message?"
+      (not (valid-api-message? invalid-tool-no-id)))
+    (test-assert "tool message with empty tool_call_id fails valid-api-message?"
+      (not (valid-api-message? invalid-tool-empty-id)))
+    (test-assert "tool-call UI role fails valid-api-message?"
+      (not (valid-api-message? ui-log-call)))
+    (test-assert "tool-result UI role fails valid-api-message?"
+      (not (valid-api-message? ui-log-result)))
+    (test-assert "notice UI role fails valid-api-message?"
+      (not (valid-api-message? ui-notice)))
+    (test-assert "error UI role fails valid-api-message?"
+      (not (valid-api-message? ui-error)))
+    (test-equal "normalize-messages filters out all invalid and UI messages"
+      2
+      (vector-length normalized))
+    (test-equal "first preserved message is user"
+      "user"
+      (assoc-ref (vector-ref normalized 0) "role"))
+    (test-equal "second preserved message is valid tool"
+      "tool"
+      (assoc-ref (vector-ref normalized 1) "role"))
+    (test-equal "preserved tool message has tool_call_id"
+      "call_abc123"
+      (assoc-ref (vector-ref normalized 1) "tool_call_id"))))
 
 ;;;
 ;;; 3. SSE Line Parsing (parse-sse-line)

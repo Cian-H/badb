@@ -261,7 +261,41 @@
               status)
             (test-equal "iteration count matches limit"
               3
-              (react-session-iteration sess))))))))
+              (react-session-iteration sess))
+            ;; Verify that all tool messages in the session transcript have valid non-empty tool_call_id
+            (let* ((msgs (react-session-messages sess))
+                   (tool-msgs (filter (lambda (m) (equal? (assoc-ref m 'role) "tool")) msgs)))
+              (test-assert "tool messages are present in transcript"
+                (pair? tool-msgs))
+              (test-assert "every tool message has non-empty tool_call_id"
+                (every (lambda (m)
+                         (let ((tid (assoc-ref m 'tool_call_id)))
+                           (and (string? tid) (not (string-null? tid)))))
+                       tool-msgs)))
+
+            ;; Now simulate typing 'Continue': create a new session resuming with full transcript
+            (let* ((continued-msgs (append (react-session-messages sess)
+                                           '(((role . "user") (content . "Continue")))))
+                   (completer-poster
+                    (lambda* (uri #:key body headers streaming?)
+                      (let ((resp-body (scm->json-string
+                                        '((choices . #(((message . ((role . "assistant")
+                                                                    (content . "Continued and finished!"))))))))))
+                        (values (build-response #:code 200) resp-body))))
+                   (cont-session (parameterize ((current-http-post completer-poster))
+                                   (make-react-session client
+                                                       #:initial-messages continued-msgs
+                                                       #:reg reg
+                                                       #:max-iterations 3))))
+              (parameterize ((current-http-post completer-poster))
+                (call-with-values (lambda () (react-run! cont-session))
+                  (lambda (c-status c-final c-sess)
+                    (test-equal "resumed session completes successfully"
+                      'completed
+                      c-status)
+                    (test-equal "resumed final text matches"
+                      "Continued and finished!"
+                      c-final)))))))))))
 
 ;;;
 ;;; 7. Flexible Keyword Session Construction
