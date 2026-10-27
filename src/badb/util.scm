@@ -5,38 +5,29 @@
 ;;; safe JSON serialization, and environment variable formatting to keep
 ;;; subsystems DRY and maintainable.
 
-(define-module (badb util)
-  #:use-module (ice-9 format)
-  #:use-module (ice-9 ftw)
-  #:use-module (json)
-  #:use-module (srfi srfi-1)
-  #:export (;; Filesystem
-            mkdir-p
-            ensure-parent-directory!
-
-            ;; Coercion & Normalization
-            ensure-string
-            ensure-symbol
-            ensure-keyword
-            normalize-role
-
-            ;; Property & Alist Access
-            get-prop
-            prop-ref
-            prop-set
-
-            ;; Safe JSON
-            safe-json-string
-            safe-json-parse
-
-            ;; Environment
-            normalize-env-alist
-            env-alist->exec-strings))
+(define-module (badb util) #:use-module
+               (ice-9 format)
+               #:use-module
+               (json)
+               #:use-module
+               (srfi srfi-1)
+               #:export
+               (mkdir-p ensure-parent-directory!
+                        ensure-string
+                        ensure-symbol
+                        ensure-keyword
+                        normalize-role
+                        get-prop
+                        prop-ref
+                        prop-set
+                        safe-json-string
+                        safe-json-parse
+                        normalize-env-alist
+                        env-alist->exec-strings))
 
 ;;;
 ;;; Filesystem Helpers
 ;;;
-
 (define (mkdir-p dir)
   "Recursively ensure that directory DIR exists."
   (unless (or (not (string? dir))
@@ -65,7 +56,6 @@
 ;;;
 ;;; Coercion & Identifier Normalization
 ;;;
-
 (define (ensure-string val)
   "Convert VAL to string representation."
   (cond
@@ -91,16 +81,21 @@
    (else (symbol->keyword (string->symbol (object->string val))))))
 
 (define (normalize-role role)
-  "Normalize message ROLE into canonical string ('system', 'user', 'assistant', 'tool')."
-  (let ((s (string-downcase (ensure-string role))))
-    (cond
-     ((string-prefix? ":" s) (substring s 1))
-     (else s))))
+        "Normalize message ROLE into canonical string ('system', 'user', 'assistant', 'tool')."
+        (cond
+          ((or (eq? role 'user) (equal? role "user")) "user")
+          ((or (eq? role 'assistant) (equal? role "assistant")) "assistant")
+          ((or (eq? role 'system) (equal? role "system")) "system")
+          ((or (eq? role 'tool) (equal? role "tool")) "tool")
+          (else
+            (let ((s (string-downcase (ensure-string role))))
+              (if (string-prefix? ":" s)
+                (substring s 1)
+                s)))))
 
 ;;;
 ;;; Property & Alist Accessors
 ;;;
-
 (define (get-prop lst key default)
   "Safely extract KEY from property list or alist LST, supporting both
 (key . val), (key val), and #:key val syntax."
@@ -123,19 +118,26 @@
         (cadr items))
        (else (loop (cdr items)))))))
 
-(define* (prop-ref alist key #:optional (default #f))
+(define*
+  (prop-ref alist key #:optional (default #f))
   "Safely retrieve value for KEY from ALIST, checking symbol, string, or keyword variants."
   (if (not (pair? alist))
-      default
-      (let* ((sym (ensure-symbol key))
-             (str (symbol->string sym))
-             (kw (symbol->keyword sym))
-             (entry (or (assoc sym alist)
-                        (assoc str alist)
-                        (assoc kw alist))))
-        (if entry
-            (cdr entry)
-            default))))
+    default
+    (let*
+        ((sym (ensure-symbol key))
+         (str (symbol->string sym))
+         (kw (symbol->keyword sym)))
+      (let loop
+        ((rest alist))
+        (if (null? rest)
+          default
+          (let ((pair (car rest)))
+            (if
+                (and (pair? pair)
+                     (let ((k (car pair)))
+                       (or (eq? k sym) (eq? k kw) (and (string? k) (string=? k str)) (equal? k key))))
+              (cdr pair)
+              (loop (cdr rest)))))))))
 
 (define (prop-set alist key val)
   "Update or insert KEY with VAL in ALIST, preserving or using symbol representation."
@@ -153,7 +155,6 @@
 ;;;
 ;;; Safe JSON Serialization
 ;;;
-
 (define (safe-json-string val)
   "Return VAL as string. If not already a string, serializes VAL to JSON."
   (cond
@@ -173,24 +174,26 @@
 ;;;
 ;;; Environment Formatting
 ;;;
-
 (define (normalize-env-alist raw-env)
-  "Normalize heterogenous environment specifications into canonical ((str-key . str-val) ...)."
-  (cond
-   ((null? raw-env) '())
-   ((and (pair? raw-env) (or (symbol? (car raw-env)) (string? (car raw-env))))
-    (list (cons (ensure-string (car raw-env)) (ensure-string (cdr raw-env)))))
-   ((list? raw-env)
-    (filter-map (lambda (item)
-                  (cond
-                   ((and (pair? item) (or (symbol? (car item)) (string? (car item))))
+        "Normalize heterogenous environment specifications into canonical ((str-key . str-val) ...)."
+        (cond
+          ((null? raw-env) '())
+          ((and (pair? raw-env) (or (symbol? (car raw-env)) (string? (car raw-env))))
+            (list (cons (ensure-string (car raw-env)) (ensure-string (cdr raw-env)))))
+          ((list? raw-env)
+            (filter-map
+              (lambda (item)
+                (cond
+                  ((and (pair? item) (or (symbol? (car item)) (string? (car item))))
                     (cons (ensure-string (car item)) (ensure-string (cdr item))))
-                   ((and (string? item) (string-contains item "="))
+                  ((string? item)
                     (let ((idx (string-contains item "=")))
-                      (cons (substring item 0 idx) (substring item (+ idx 1)))))
-                   (else #f)))
-                raw-env))
-   (else '())))
+                      (if idx
+                        (cons (substring item 0 idx) (substring item (+ idx 1)))
+                        #f)))
+                  (else #f)))
+              raw-env))
+          (else '())))
 
 (define (env-alist->exec-strings env-alist)
   "Convert canonical environment alist into list of 'KEY=VAL' strings."
