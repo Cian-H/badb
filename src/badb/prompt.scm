@@ -100,53 +100,70 @@ Returns #f if execution fails or command exits non-zero."
 (define %default-ignore-patterns
   '(".git" ".cache" "node_modules" "target" ".badb" "dist" "build" ".guix-profile"))
 
-(define* (build-workspace-file-tree #:optional (workspace-dir (getcwd))
-                                    #:key (max-depth 2)
-                                          (max-files 80)
-                                          (ignore-patterns %default-ignore-patterns))
+(define*
+  (build-workspace-file-tree #:optional
+                             (workspace-dir (getcwd))
+                             #:key
+                             (max-depth 2)
+                             (max-files 80)
+                             (ignore-patterns %default-ignore-patterns))
   "Generate a clean, indented file tree outline of WORKSPACE-DIR."
   (let ((file-count 0))
-    (define (scan-dir dir depth prefix)
-      (if (> depth max-depth)
-          '()
-          (catch 'system-error
-            (lambda ()
-              (let* ((dir-stream (opendir dir))
-                     (entries (let loop ((acc '()))
-                                (let ((entry (readdir dir-stream)))
-                                  (if (eof-object? entry)
-                                      (begin (closedir dir-stream) (reverse acc))
-                                      (loop (cons entry acc)))))))
-                (let* ((sorted (sort (filter (lambda (name)
-                                               (and (not (member name '("." "..")))
-                                                    (not (member name ignore-patterns))
-                                                    (not (string-prefix? "." name))))
-                                             entries)
-                                     string<?))
-                       (lines '()))
-                  (for-each
-                   (lambda (name)
-                     (when (< file-count max-files)
-                       (set! file-count (+ file-count 1))
-                       (let* ((full (string-append dir "/" name))
-                              (is-dir? (and (file-exists? full) (file-is-directory? full))))
-                         (if is-dir?
-                             (begin
-                               (set! lines (cons (format #f "~a├── ~a/" prefix name) lines))
-                               (let ((sub-lines (scan-dir full (+ depth 1) (string-append prefix "│   "))))
-                                 (set! lines (append (reverse sub-lines) lines))))
-                             (set! lines (cons (format #f "~a├── ~a" prefix name) lines))))))
-                   sorted)
-                  (reverse lines))))
-            (lambda _ '()))))
-
-    (let ((result (scan-dir workspace-dir 1 "")))
+    (define (scan-dir dir depth prefix acc)
+            (if (> depth max-depth)
+              acc
+              (catch 'system-error
+                (lambda ()
+                  (let*
+                      ((dir-stream (opendir dir))
+                       (entries
+                         (let loop
+                           ((accum '()))
+                           (let ((entry (readdir dir-stream)))
+                             (if (eof-object? entry)
+                               (begin (closedir dir-stream) (reverse accum))
+                               (loop (cons entry accum)))))))
+                    (let
+                        ((sorted
+                           (sort
+                             (filter
+                               (lambda (name)
+                                 (and (not (member name '("." "..")))
+                                      (not (member name ignore-patterns))
+                                      (not (string-prefix? "." name))))
+                               entries)
+                             string<?)))
+                      (let loop
+                        ((items sorted) (current-acc acc))
+                        (if (or (null? items) (>= file-count max-files))
+                          current-acc
+                          (let*
+                              ((name (car items))
+                               (full (string-append dir "/" name))
+                               (is-dir? (and (file-exists? full) (file-is-directory? full))))
+                            (set! file-count (+ file-count 1))
+                            (if is-dir?
+                              (let*
+                                  ((entry-line (format #f "~a├── ~a/" prefix name))
+                                   (sub-acc
+                                     (scan-dir full
+                                               (+ depth 1)
+                                               (string-append prefix "│   ")
+                                               (cons entry-line current-acc))))
+                                (loop (cdr items) sub-acc))
+                              (let
+                                  ((entry-line (format #f "~a├── ~a" prefix name)))
+                                (loop (cdr items) (cons entry-line current-acc))))))))))
+                (lambda _
+                  acc))))
+    (let
+        ((result (reverse (scan-dir workspace-dir 1 "" '()))))
       (if (null? result)
-          "(empty or unreadable workspace)"
-          (let ((tree-str (string-join result "\n")))
-            (if (>= file-count max-files)
-                (format #f "~a\n... (additional files truncated)" tree-str)
-                tree-str))))))
+        "(empty or unreadable workspace)"
+        (let ((tree-str (string-join result "\n")))
+          (if (>= file-count max-files)
+            (format #f "~a\n... (additional files truncated)" tree-str)
+            tree-str))))))
 
 ;;;
 ;;; Environment Info
