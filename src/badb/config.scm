@@ -6,6 +6,7 @@
 ;;; declarations, checkpoint journal paths, and custom options.
 
 (define-module (badb config)
+  #:use-module (badb util)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-9)
   #:use-module (ice-9 format)
@@ -146,29 +147,6 @@
   "Return the standard path for badb's project-local configuration."
   ".badb/config.scm")
 
-;;;
-;;; Property Extraction Helper
-;;;
-(define (get-prop lst key default)
-  "Safely extract KEY from property list or alist LST, supporting both
-(key . val), (key val), and #:key val syntax."
-  (let* ((sym (if (symbol? key) key (string->symbol key)))
-         (str (symbol->string sym))
-         (kw (symbol->keyword sym)))
-    (let loop ((items lst))
-      (cond
-       ((null? items) default)
-       ((not (pair? items)) default)
-       ((and (pair? (car items))
-             (or (equal? (caar items) sym)
-                 (equal? (caar items) str)))
-        (let ((val (cdar items)))
-          (if (and (pair? val) (null? (cdr val)))
-              (car val)
-              val)))
-       ((and (keyword? (car items)) (equal? (car items) kw) (pair? (cdr items)))
-        (cadr items))
-       (else (loop (cdr items)))))))
 
 ;;;
 ;;; MCP Server Helpers
@@ -407,30 +385,9 @@
           #f))
       #f))
 
-(define (mkdir-p dir)
-  "Recursively ensure that directory DIR exists."
-  (unless (or (string-null? dir)
-              (string=? dir ".")
-              (string=? dir "/")
-              (file-exists? dir))
-    (let ((parent (dirname dir)))
-      (unless (or (string=? parent dir)
-                  (string-null? parent)
-                  (string=? parent "."))
-        (mkdir-p parent))
-      (catch 'system-error
-        (lambda () (mkdir dir))
-        (lambda args
-          (unless (file-exists? dir)
-            (apply throw args)))))))
-
 (define (ensure-directory-for-file path)
   "Ensure the parent directory for PATH exists."
-  (let ((dir (dirname path)))
-    (unless (or (string=? dir ".") (string=? dir "/") (file-exists? dir))
-      (catch #t
-        (lambda () (mkdir-p dir))
-        (lambda _ #f)))))
+  (ensure-parent-directory! path))
 
 (define (write-config-file config path)
   "Serialize CONFIG to PATH as readable Scheme code."

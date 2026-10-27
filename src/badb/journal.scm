@@ -4,6 +4,7 @@
 ;;; feature iterations and provenance.
 
 (define-module (badb journal)
+  #:use-module (badb util)
   #:use-module (ice-9 rdelim)
   #:use-module (json)
   #:use-module (srfi srfi-1)
@@ -32,27 +33,6 @@
             journal-entry-details))
 
 ;;;
-;;; Filesystem helpers
-;;;
-
-(define (mkdir-p dir)
-  "Recursively ensure that directory DIR exists."
-  (unless (or (string-null? dir)
-              (string=? dir ".")
-              (string=? dir "/")
-              (file-exists? dir))
-    (let ((parent (dirname dir)))
-      (unless (or (string=? parent dir)
-                  (string-null? parent)
-                  (string=? parent "."))
-        (mkdir-p parent))
-      (catch 'system-error
-        (lambda () (mkdir dir))
-        (lambda args
-          (unless (file-exists? dir)
-            (apply throw args)))))))
-
-;;;
 ;;; Journal record type
 ;;;
 
@@ -64,9 +44,7 @@
 (define (make-journal filepath)
   "Open or create a checkpoint journal at FILEPATH.
 Ensures that any parent directory exists."
-  (let ((dir (dirname filepath)))
-    (when (and dir (not (string-null? dir)) (not (string=? dir ".")))
-      (mkdir-p dir)))
+  (ensure-parent-directory! filepath)
   (unless (file-exists? filepath)
     (close-port (open-file filepath "a")))
   (%make-journal filepath))
@@ -216,10 +194,8 @@ iteration if not provided. Returns the prepared entry alist."
     (error "journal-append!: expected a <journal> object" journal))
   (let* ((prepared (prepare-entry journal entry))
          (json-str (journal-entry->json-string prepared))
-         (path (journal-path journal))
-         (dir (dirname path)))
-    (when (and dir (not (string-null? dir)) (not (string=? dir ".")))
-      (mkdir-p dir))
+         (path (journal-path journal)))
+    (ensure-parent-directory! path)
     (let ((port (open-file path "a")))
       (catch #t
         (lambda ()

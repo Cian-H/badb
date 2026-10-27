@@ -4,6 +4,7 @@
 ;;; atomic rollbacks, undo history, and time-travel state restoration.
 
 (define-module (badb rollback)
+  #:use-module (badb util)
   #:use-module (badb registry)
   #:use-module (badb journal)
   #:use-module (ice-9 rdelim)
@@ -44,22 +45,6 @@
 ;;; Filesystem Helpers
 ;;;
 
-(define (mkdir-p dir)
-  "Recursively ensure that directory DIR exists."
-  (unless (or (string-null? dir)
-              (string=? dir ".")
-              (string=? dir "/")
-              (file-exists? dir))
-    (let ((parent (dirname dir)))
-      (unless (or (string=? parent dir)
-                  (string-null? parent)
-                  (string=? parent "."))
-        (mkdir-p parent))
-      (catch 'system-error
-        (lambda () (mkdir dir))
-        (lambda args
-          (unless (file-exists? dir)
-            (apply throw args)))))))
 
 (define (read-file-content path)
   "Read the entire content of PATH as string, or #f if unreadable/non-existent."
@@ -72,11 +57,9 @@
 
 (define (write-file-content path content)
   "Write CONTENT string to PATH, creating parent directories if needed."
-  (let ((dir (dirname path)))
-    (when (and dir (not (string-null? dir)) (not (string=? dir ".")))
-      (mkdir-p dir))
-    (call-with-output-file path
-      (lambda (port) (display (or content "") port)))))
+  (ensure-parent-directory! path)
+  (call-with-output-file path
+    (lambda (port) (display (or content "") port))))
 
 ;;;
 ;;; Data Records
