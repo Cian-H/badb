@@ -8,24 +8,29 @@
 ;;;    and returning failure diagnostics.
 ;;; 4. Optionally records audit checkpoints into the checkpoint journal.
 
-(define-module (badb transaction)
-  #:use-module (srfi srfi-9)
-  #:use-module (srfi srfi-11)
-  #:use-module (ice-9 exceptions)
-  #:use-module (ice-9 format)
-  #:use-module (badb registry)
-  #:export (make-transaction-manager
-            transaction-manager?
-            transaction-manager-registry
-            transaction-manager-journal
-            stage-patch
-            eval-patch
-            apply-transaction!))
+(define-module (badb transaction) #:use-module
+               (srfi srfi-9)
+               #:use-module
+               (srfi srfi-11)
+               #:use-module
+               (ice-9 exceptions)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (badb registry)
+               #:use-module
+               (badb journal)
+               #:export
+               (make-transaction-manager transaction-manager?
+                                         transaction-manager-registry
+                                         transaction-manager-journal
+                                         stage-patch
+                                         eval-patch
+                                         apply-transaction!))
 
 ;;;
 ;;; Transaction Manager Record
 ;;;
-
 (define-record-type <transaction-manager>
   (%make-transaction-manager registry journal)
   transaction-manager?
@@ -40,7 +45,6 @@
 ;;;
 ;;; Form normalization & AST evaluation
 ;;;
-
 (define (ensure-forms forms)
   "Normalize FORMS to a list of Scheme expressions/AST nodes.
 Handles string input, single forms, or lists of forms."
@@ -60,15 +64,23 @@ Handles string input, single forms, or lists of forms."
    (else forms)))
 
 (define (stage-patch target-module forms)
-  "Create a child/sandbox module inheriting from TARGET-MODULE (or fresh module
+        "Create a child/sandbox module inheriting from TARGET-MODULE (or fresh module
 if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed module."
-  (let ((sandbox (make-fresh-feature-module #f)))
-    (when (module? target-module)
-      (module-use! sandbox target-module))
-    (for-each (lambda (form)
-                (eval-in-feature-module sandbox form))
-              (ensure-forms forms))
-    sandbox))
+        (let ((sandbox (make-fresh-feature-module #f)))
+          (when (module? target-module)
+            (for-each
+              (lambda (u)
+                (unless (member u (module-uses sandbox)) (module-use! sandbox u)))
+              (module-uses target-module))
+            (module-for-each
+              (lambda (sym var)
+                (module-define! sandbox sym (variable-ref var)))
+              target-module))
+          (for-each
+            (lambda (form)
+              (eval-in-feature-module sandbox form))
+            (ensure-forms forms))
+          sandbox))
 
 (define* (eval-patch forms #:optional (base-module-pos #f) #:key (base-module #f))
   "Helper to evaluate FORMS in a sandboxed module, optionally inheriting from BASE-MODULE."
@@ -78,7 +90,6 @@ if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed mod
 ;;;
 ;;; Helpers for metadata, error formatting, and journaling
 ;;;
-
 (define (canonical-id-string id)
   "Convert feature-id to string."
   (cond
@@ -107,20 +118,33 @@ if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed mod
     (format #f "~a: ~s" key args))))
 
 (define (merge-metadata old-meta new-meta)
-  "Merge OLD-META with NEW-META, with NEW-META entries taking precedence."
-  (let ((old (if (list? old-meta) old-meta '()))
-        (new (if (list? new-meta) new-meta '())))
-    (let loop ((rest new) (acc '()))
-      (if (null? rest)
-          (let add-old ((o-rest old) (res acc))
-            (if (null? o-rest)
-                (reverse res)
-                (let* ((entry (car o-rest))
-                       (key (if (pair? entry) (car entry) entry)))
-                  (if (assq key new)
+        "Merge OLD-META with NEW-META, with NEW-META entries taking precedence."
+        (let
+            ((old
+               (if (list? old-meta)
+                 old-meta
+                 '()))
+             (new
+               (if (list? new-meta)
+                 new-meta
+                 '())))
+          (let loop
+            ((rest new) (acc '()))
+            (if (null? rest)
+              (let add-old
+                ((o-rest old) (res acc))
+                (if (null? o-rest)
+                  (reverse res)
+                  (let*
+                      ((entry (car o-rest))
+                       (key
+                         (if (pair? entry)
+                           (car entry)
+                           entry)))
+                    (if (assoc key new)
                       (add-old (cdr o-rest) res)
                       (add-old (cdr o-rest) (cons entry res))))))
-          (loop (cdr rest) (cons (car rest) acc))))))
+              (loop (cdr rest) (cons (car rest) acc))))))
 
 (define (sanitize-for-json val)
   "Sanitize nested data structures so they can be JSON-serialized."
@@ -141,18 +165,20 @@ if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed mod
    (else (format #f "~a" val))))
 
 (define (log-journal! journal entry)
-  "Append an entry to the journal if configured."
-  (when journal
-    (cond
-     ((procedure? journal)
-      (journal entry))
-     (else
-      (let ((append-fn (catch #t
-                         (lambda ()
-                           (module-ref (resolve-module '(badb journal)) 'journal-append!))
-                         (lambda _ #f))))
-        (when append-fn
-          (append-fn journal entry)))))))
+        "Append an entry to the journal if configured."
+        (when journal
+          (cond
+            ((procedure? journal) (journal entry))
+            ((journal? journal) (journal-append! journal entry))
+            (else
+              (let
+                  ((append-fn
+                     (catch #t
+                       (lambda ()
+                         (module-ref (resolve-module '(badb journal)) 'journal-append!))
+                       (lambda _
+                         #f))))
+                (when append-fn (append-fn journal entry)))))))
 
 (define (invoke-test-thunk thunk staged-module)
   "Execute THUNK passing STAGED-MODULE if accepted, otherwise with 0 arguments."
@@ -163,37 +189,34 @@ if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed mod
         (thunk)
         (thunk staged-module))))
 
-(define (resolve-implementation staged-module feature-id test-result metadata)
+(define
+  (resolve-implementation staged-module feature-id test-result metadata)
   "Determine the implementation object to register:
 1. Specified entry-point in metadata.
 2. Symbol matching feature-id defined in staged-module.
 3. 'main' or 'run' procedure if defined in staged-module.
 4. test-result if it is a procedure.
 5. staged-module itself."
-  (let* ((feature-sym (cond
-                       ((symbol? feature-id) feature-id)
-                       ((string? feature-id) (string->symbol feature-id))
-                       (else #f)))
-         (entry-sym (or (assoc-ref metadata 'entry-point)
-                        (assoc-ref metadata 'entry)))
-         (entry-proc (and entry-sym (symbol? entry-sym)
-                          (feature-module-ref staged-module entry-sym #f)))
-         (feat-proc (and feature-sym
-                         (feature-module-ref staged-module feature-sym #f)))
-         (main-proc (feature-module-ref staged-module 'main #f))
-         (run-proc (feature-module-ref staged-module 'run #f)))
-    (cond
-     (entry-proc entry-proc)
-     (feat-proc feat-proc)
-     (main-proc main-proc)
-     (run-proc run-proc)
-     ((procedure? test-result) test-result)
-     (else staged-module))))
+  (let*
+      ((feature-sym
+         (cond
+           ((symbol? feature-id) feature-id)
+           ((string? feature-id) (string->symbol feature-id))
+           (else #f)))
+       (entry-sym (or (assoc-ref metadata 'entry-point) (assoc-ref metadata 'entry))))
+    (or
+      (and entry-sym
+           (symbol? entry-sym)
+           (feature-module-ref staged-module entry-sym #f))
+      (and feature-sym (feature-module-ref staged-module feature-sym #f))
+      (feature-module-ref staged-module 'main #f)
+      (feature-module-ref staged-module 'run #f)
+      (and (procedure? test-result) test-result)
+      staged-module)))
 
 ;;;
 ;;; Transaction Application Protocol
 ;;;
-
 (define* (apply-transaction! mgr feature-id forms test-thunk
                              #:optional (meta-pos '())
                              #:key (metadata '()))
