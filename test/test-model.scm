@@ -203,15 +203,15 @@
                                          (set! collected (cons chunk collected))))))
     (test-equal "read-sse-events returns 'done when encountering [DONE]" 'done result)
     (test-equal "two events were collected before [DONE]" 2 (length collected))
-    (let ((ordered (reverse collected)))
-      (let ((first-ev (car ordered))
-            (second-ev (cadr ordered)))
-        ;; First event
-        (test-assert "first event is parsed JSON alist" (pair? first-ev))
-        (test-equal "first event id is 1" "1" (assoc-ref first-ev "id"))
-        ;; Second event
-        (test-assert "second event is parsed JSON alist" (pair? second-ev))
-        (test-equal "second event id is 2" "2" (assoc-ref second-ev "id")))))
+    (let* ((ordered (reverse collected))
+           (first-ev (car ordered))
+           (second-ev (cadr ordered)))
+      ;; First event
+      (test-assert "first event is parsed JSON alist" (pair? first-ev))
+      (test-equal "first event id is 1" "1" (assoc-ref first-ev "id"))
+      ;; Second event
+      (test-assert "second event is parsed JSON alist" (pair? second-ev))
+      (test-equal "second event id is 2" "2" (assoc-ref second-ev "id"))))
 
   ;; Stream ending at EOF without [DONE]
   (let* ((sse-input (string-append

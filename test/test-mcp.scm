@@ -247,7 +247,7 @@
       (join-thread server-thread))
 
     ;; Test catching mcp-error key and inspecting error fields
-    (let ((server-thread2
+    (let* ((server-thread2
            (call-with-new-thread
             (lambda ()
               (let* ((line (read-line s-in))
@@ -257,21 +257,21 @@
                           "{\"jsonrpc\":\"2.0\",\"id\":" (number->string id)
                           ",\"error\":{\"code\":-32602,\"message\":\"Invalid params\"}}\n")
                          s-out)
-                (force-output s-out))))))
-      (let ((caught #f)
-            (error-code #f)
-            (error-msg #f))
-        (catch 'mcp-error
-          (lambda ()
-            (mcp-call client "bad_args"))
-          (lambda (key subr fmt args extra)
-            (set! caught #t)
-            (set! error-code (car args))
-            (set! error-msg (cadr args))))
-        (join-thread server-thread2)
-        (test-assert "caught 'mcp-error key" caught)
-        (test-eq "error code matches" -32602 error-code)
-        (test-equal "error message matches" "Invalid params" error-msg)))
+                (force-output s-out)))))
+          (caught #f)
+          (error-code #f)
+          (error-msg #f))
+      (catch 'mcp-error
+        (lambda ()
+          (mcp-call client "bad_args"))
+        (lambda (key subr fmt args extra)
+          (set! caught #t)
+          (set! error-code (car args))
+          (set! error-msg (cadr args))))
+      (join-thread server-thread2)
+      (test-assert "caught 'mcp-error key" caught)
+      (test-eq "error code matches" -32602 error-code)
+      (test-equal "error message matches" "Invalid params" error-msg))
 
     (mcp-close-client client)
     (close-port s-in)
@@ -287,39 +287,40 @@
          (client (make-mcp-client (car s2c) (cdr c2s)))
          (s-in (car c2s))
          (s-out (cdr s2c)))
-    (let ((server-thread
-           (call-with-new-thread
-            (lambda ()
-              ;; 1. Read initialize request
-              (let* ((init-line (read-line s-in))
-                     (req (json-string->scm init-line))
-                     (id (json-ref req "id"))
-                     (method (json-ref req "method"))
-                     (params (json-ref req "params")))
-                (if (string=? method "initialize")
-                    (begin
-                      (display (string-append
-                                "{\"jsonrpc\":\"2.0\",\"id\":" (number->string id)
-                                ",\"result\":{\"protocolVersion\":\"2024-11-05\","
-                                "\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-server\",\"version\":\"1.0\"}}}\n")
-                               s-out)
-                      (force-output s-out)
-                      ;; 2. Read notifications/initialized
-                      (let* ((notif-line (read-line s-in))
-                             (notif (json-string->scm notif-line)))
-                        (list (json-ref notif "method")
-                              (json-ref (json-ref params "clientInfo") "name"))))
-                    #f))))))
-      (let ((init-result (mcp-initialize client #:client-info '((name . "test-badb") (version . "0.9.0")))))
-        (let ((server-received (join-thread server-thread)))
-          (test-equal "server received notifications/initialized"
-            "notifications/initialized" (car server-received))
-          (test-equal "server received clientInfo name"
-            "test-badb" (cadr server-received))
-          (test-equal "client received protocolVersion"
-            "2024-11-05" (json-ref init-result "protocolVersion"))
-          (test-equal "client received serverInfo name"
-            "mock-server" (json-ref (json-ref init-result "serverInfo") "name"))))) (mcp-close-client client)
+    (let* ((server-thread
+            (call-with-new-thread
+             (lambda ()
+               ;; 1. Read initialize request
+               (let* ((init-line (read-line s-in))
+                      (req (json-string->scm init-line))
+                      (id (json-ref req "id"))
+                      (method (json-ref req "method"))
+                      (params (json-ref req "params")))
+                 (if (string=? method "initialize")
+                     (begin
+                       (display (string-append
+                                 "{\"jsonrpc\":\"2.0\",\"id\":" (number->string id)
+                                 ",\"result\":{\"protocolVersion\":\"2024-11-05\","
+                                 "\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-server\",\"version\":\"1.0\"}}}\n")
+                                s-out)
+                       (force-output s-out)
+                       ;; 2. Read notifications/initialized
+                       (let* ((notif-line (read-line s-in))
+                              (notif (json-string->scm notif-line)))
+                         (list (json-ref notif "method")
+                               (json-ref (json-ref params "clientInfo") "name"))))
+                     #f)))))
+           (init-result (mcp-initialize client #:client-info '((name . "test-badb") (version . "0.9.0"))))
+           (server-received (join-thread server-thread)))
+      (test-equal "server received notifications/initialized"
+        "notifications/initialized" (car server-received))
+      (test-equal "server received clientInfo name"
+        "test-badb" (cadr server-received))
+      (test-equal "client received protocolVersion"
+        "2024-11-05" (json-ref init-result "protocolVersion"))
+      (test-equal "client received serverInfo name"
+        "mock-server" (json-ref (json-ref init-result "serverInfo") "name")))
+    (mcp-close-client client)
     (close-port s-in)
     (close-port s-out)))
 
@@ -334,61 +335,62 @@
          (s-in (car c2s))
          (s-out (cdr s2c)))
     ;; Test mcp-list-tools
-    (let ((server-thread
-           (call-with-new-thread
-            (lambda ()
-              (let* ((line (read-line s-in))
-                     (req (json-string->scm line))
-                     (id (json-ref req "id")))
-                (display (string-append
-                          "{\"jsonrpc\":\"2.0\",\"id\":" (number->string id)
-                          ",\"result\":{\"tools\":["
-                          "{\"name\":\"add\",\"description\":\"Add two numbers\","
-                          "\"inputSchema\":{\"type\":\"object\"}},"
-                          "{\"name\":\"sub\",\"description\":\"Subtract numbers\","
-                          "\"inputSchema\":{\"type\":\"object\"}}"
-                          "]}}\n")
-                         s-out)
-                (force-output s-out))))))
-      (let ((tools (mcp-list-tools client)))
-        (join-thread server-thread)
-        (test-assert "tools is vector or list" (or (vector? tools) (list? tools)))
-        (let ((tool-list (tools->list tools)))
-          (test-eq "2 tools returned" 2 (length tool-list))
-          (test-equal "first tool name is add"
-            "add" (json-ref (car tool-list) "name"))
-          (test-equal "second tool name is sub"
-            "sub" (json-ref (cadr tool-list) "name")))))
+    (let* ((server-thread
+            (call-with-new-thread
+             (lambda ()
+               (let* ((line (read-line s-in))
+                      (req (json-string->scm line))
+                      (id (json-ref req "id")))
+                 (display (string-append
+                           "{\"jsonrpc\":\"2.0\",\"id\":" (number->string id)
+                           ",\"result\":{\"tools\":["
+                           "{\"name\":\"add\",\"description\":\"Add two numbers\","
+                           "\"inputSchema\":{\"type\":\"object\"}},"
+                           "{\"name\":\"sub\",\"description\":\"Subtract numbers\","
+                           "\"inputSchema\":{\"type\":\"object\"}}"
+                           "]}}\n")
+                          s-out)
+                 (force-output s-out)))))
+           (tools (mcp-list-tools client)))
+      (join-thread server-thread)
+      (test-assert "tools is vector or list" (or (vector? tools) (list? tools)))
+      (let ((tool-list (tools->list tools)))
+        (test-eq "2 tools returned" 2 (length tool-list))
+        (test-equal "first tool name is add"
+          "add" (json-ref (car tool-list) "name"))
+        (test-equal "second tool name is sub"
+          "sub" (json-ref (cadr tool-list) "name"))))
 
     ;; Test mcp-call-tool
-    (let ((server-thread
-           (call-with-new-thread
-            (lambda ()
-              (let* ((line (read-line s-in))
-                     (req (json-string->scm line))
-                     (id (json-ref req "id"))
-                     (params (json-ref req "params"))
-                     (tool-name (json-ref params "name"))
-                     (arguments (json-ref params "arguments")))
-                (if (and (string=? tool-name "add")
-                         (= (json-ref arguments "a") 10)
-                         (= (json-ref arguments "b") 20))
-                    (begin
-                      (display (string-append
-                                "{\"jsonrpc\":\"2.0\",\"id\":" (number->string id)
-                                ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"30\"}],\"isError\":false}}\n")
-                               s-out)
-                      (force-output s-out))
-                    (display "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32602,\"message\":\"bad params\"}}\n" s-out)))))))
-      (let ((content (mcp-call-tool client "add" '((a . 10) (b . 20)))))
-        (join-thread server-thread)
-        (test-assert "content returned" (not (not content)))
-        (let ((content-list (tools->list content)))
-          (test-eq "1 content item" 1 (length content-list))
-          (test-equal "content type text"
-            "text" (json-ref (car content-list) "type"))
-          (test-equal "content text 30"
-            "30" (json-ref (car content-list) "text"))))) (mcp-close-client client)
+    (let* ((server-thread
+            (call-with-new-thread
+             (lambda ()
+               (let* ((line (read-line s-in))
+                      (req (json-string->scm line))
+                      (id (json-ref req "id"))
+                      (params (json-ref req "params"))
+                      (tool-name (json-ref params "name"))
+                      (arguments (json-ref params "arguments")))
+                 (if (and (string=? tool-name "add")
+                          (= (json-ref arguments "a") 10)
+                          (= (json-ref arguments "b") 20))
+                     (begin
+                       (display (string-append
+                                 "{\"jsonrpc\":\"2.0\",\"id\":" (number->string id)
+                                 ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"30\"}],\"isError\":false}}\n")
+                                s-out)
+                       (force-output s-out))
+                     (display "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32602,\"message\":\"bad params\"}}\n" s-out))))))
+           (content (mcp-call-tool client "add" '((a . 10) (b . 20)))))
+      (join-thread server-thread)
+      (test-assert "content returned" (not (not content)))
+      (let ((content-list (tools->list content)))
+        (test-eq "1 content item" 1 (length content-list))
+        (test-equal "content type text"
+          "text" (json-ref (car content-list) "type"))
+        (test-equal "content text 30"
+          "30" (json-ref (car content-list) "text"))))
+    (mcp-close-client client)
     (close-port s-in)
     (close-port s-out)))
 
