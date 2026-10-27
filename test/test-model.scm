@@ -310,16 +310,20 @@
 ;;; 7. Non-Streaming model-complete with Mock HTTP
 ;;;
 
+(define (capture-request uri body headers streaming?)
+  "Helper to bundle mock HTTP request parameters into an alist."
+  (list (cons 'uri uri)
+        (cons 'body body)
+        (cons 'headers headers)
+        (cons 'streaming? streaming?)))
+
 (test-group "model-complete"
   (let* ((client (make-model-client #:endpoint "http://test-server/v1/chat/completions"
                                     #:api-key "test-secret-key"
                                     #:model "test-model"))
          (captured-req #f)
          (mock-poster (lambda* (uri #:key (body #f) (headers '()) (streaming? #f))
-                        (set! captured-req (list (cons 'uri uri)
-                                                 (cons 'body body)
-                                                 (cons 'headers headers)
-                                                 (cons 'streaming? streaming?)))
+                        (set! captured-req (capture-request uri body headers streaming?))
                         (values (build-response #:code 200
                                                 #:headers '((content-type application/json (charset . "utf-8"))))
                                 "{\"choices\": [{\"message\": {\"content\": \"Hello from mock!\"}}]}"))))
@@ -411,10 +415,7 @@
                        "data: [DONE]\n"))
          (captured-req #f)
          (mock-poster (lambda* (uri #:key (body #f) (headers '()) (streaming? #f))
-                        (set! captured-req (list (cons 'uri uri)
-                                                 (cons 'body body)
-                                                 (cons 'headers headers)
-                                                 (cons 'streaming? streaming?)))
+                        (set! captured-req (capture-request uri body headers streaming?))
                         (values (build-response #:code 200
                                                 #:headers '((content-type text/event-stream)))
                                 (open-input-string stream-data))))
