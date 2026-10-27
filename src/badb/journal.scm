@@ -169,23 +169,21 @@ returning the parsed entry alist or #f if JOURNAL has no entries."
             #f)))
 
 (define (next-iteration journal)
-        "Compute the next auto-incrementing iteration ID for JOURNAL by inspecting
+  "Compute the next auto-incrementing iteration ID for JOURNAL by inspecting
 the latest entry on disk."
-        (let ((latest (read-last-journal-entry journal)))
-          (if latest
-            (let ((it (journal-entry-ref latest 'iteration)))
-              (if (and it (number? it))
-                (+ it 1)
-                (let loop
-                  ((rest (reverse (journal-entries journal))))
-                  (if (null? rest)
+  (let ((latest (read-last-journal-entry journal)))
+    (if latest
+        (let ((it (journal-entry-ref latest 'iteration)))
+          (if (and it (number? it))
+              (+ it 1)
+              (let loop ((rest (reverse (journal-entries journal))))
+                (if (null? rest)
                     1
-                    (let
-                        ((it (journal-entry-ref (car rest) 'iteration)))
-                      (if (and it (number? it))
-                        (+ it 1)
-                        (loop (cdr rest))))))))
-            1)))
+                    (let ((prior-it (journal-entry-ref (car rest) 'iteration)))
+                      (if (and prior-it (number? prior-it))
+                          (+ prior-it 1)
+                          (loop (cdr rest))))))))
+        1)))
 
 (define (prepare-entry journal entry)
   "Ensure ENTRY has timestamp and auto-incrementing iteration fields injected
@@ -245,9 +243,7 @@ iteration if not provided. Returns the prepared entry alist."
 
 (define (matches-feature? entry target-id)
   (let ((fid (entry-feature-id entry)))
-    (and fid
-         (string=? (if (symbol? fid) (symbol->string fid) (format #f "~a" fid))
-                   (if (symbol? target-id) (symbol->string target-id) (format #f "~a" target-id))))))
+    (and fid (string=? (ensure-string fid) (ensure-string target-id)))))
 
 (define* (journal-entries journal #:optional (feature-id-opt #f) #:key (feature-id feature-id-opt))
   "Read all valid journal entries from disk.
@@ -255,8 +251,7 @@ If FEATURE-ID is provided, return only entries matching that feature id."
   (unless (journal? journal)
     (error "journal-entries: expected a <journal> object" journal))
   (let ((path (journal-path journal)))
-    (if (not (file-exists? path))
-        '()
+    (if (file-exists? path)
         (let ((entries
                (call-with-input-file path
                  (lambda (port)
@@ -274,46 +269,36 @@ If FEATURE-ID is provided, return only entries matching that feature id."
                                (loop acc)))))))))))
           (if feature-id
               (filter (lambda (e) (matches-feature? e feature-id)) entries)
-              entries)))))
+              entries))
+        '())))
 
-(define*
-  (journal-latest journal
-                  #:optional
-                  (feature-id-opt #f)
-                  #:key
-                  (feature-id feature-id-opt))
+(define* (journal-latest journal
+                         #:optional (feature-id-opt #f)
+                         #:key (feature-id feature-id-opt))
   "Return the most recent journal entry (optionally for given FEATURE-ID),
 or #f if the journal has no matching entries."
-  (if (not feature-id)
-    (read-last-journal-entry journal)
-    (let
-        ((entries (journal-entries journal #:feature-id feature-id)))
-      (if (null? entries)
-        #f
-        (last entries)))))
+  (if feature-id
+      (let ((entries (journal-entries journal #:feature-id feature-id)))
+        (if (null? entries) #f (last entries)))
+      (read-last-journal-entry journal)))
 
-(define*
-  (journal-count journal
-                 #:optional
-                 (feature-id-opt #f)
-                 #:key
-                 (feature-id feature-id-opt))
+(define* (journal-count journal
+                        #:optional (feature-id-opt #f)
+                        #:key (feature-id feature-id-opt))
   "Return the number of entries in JOURNAL (optionally for given FEATURE-ID)."
   (if feature-id
-    (length (journal-entries journal #:feature-id feature-id))
-    (let ((path (journal-path journal)))
-      (if (file-exists? path)
-        (call-with-input-file path
-                              (lambda (port)
-                                (let loop
-                                  ((count 0))
-                                  (let ((line (read-line port)))
-                                    (if (eof-object? line)
-                                      count
-                                      (if (string-null? (string-trim-both line))
-                                        (loop count)
-                                        (loop (+ count 1))))))))
-        0))))
+      (length (journal-entries journal #:feature-id feature-id))
+      (let ((path (journal-path journal)))
+        (if (file-exists? path)
+            (call-with-input-file path
+              (lambda (port)
+                (let loop ((count 0))
+                  (let ((line (read-line port)))
+                    (cond
+                     ((eof-object? line) count)
+                     ((string-null? (string-trim-both line)) (loop count))
+                     (else (loop (+ count 1))))))))
+            0))))
 
 ;;;
 ;;; Integrity verification
@@ -326,8 +311,7 @@ or ((valid . #f) (corrupt-line . L) (error . reason)) on failure."
   (unless (journal? journal)
     (error "journal-verify-integrity: expected a <journal> object" journal))
   (let ((path (journal-path journal)))
-    (if (not (file-exists? path))
-        '((valid . #f) (corrupt-line . 0) (error . "Journal file does not exist"))
+    (if (file-exists? path)
         (call-with-input-file path
           (lambda (port)
             (let loop ((line-num 1) (prev-iter #f) (count 0))
@@ -362,4 +346,5 @@ or ((valid . #f) (corrupt-line . L) (error . reason)) on failure."
                                 (cons 'error (format #f "Non-monotonic iteration: expected > ~a, got ~a"
                                                      prev-iter iter))))
                          (else
-                          (loop (+ line-num 1) iter (+ count 1)))))))))))))))))
+                          (loop (+ line-num 1) iter (+ count 1))))))))))))))
+        '((valid . #f) (corrupt-line . 0) (error . "Journal file does not exist")))))
