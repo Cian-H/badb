@@ -312,8 +312,7 @@ Returns a pair '(thought . text) or '(content . text) or #f."
   (let ((obj (if (string? chunk)
                  (catch #t (lambda () (json-string->scm chunk)) (lambda _ chunk))
                  chunk)))
-    (if (not (pair? obj))
-        (and (string? obj) (cons 'content obj))
+    (if (pair? obj)
         (or (extract-openai-delta-item obj)
             (extract-anthropic-delta-item obj)
             (extract-ollama-delta-item obj)
@@ -324,7 +323,8 @@ Returns a pair '(thought . text) or '(content . text) or #f."
               => (lambda (c) (cons 'content c)))
              ((json-ref obj "text")
               => (lambda (t) (cons 'content t)))
-             (else #f))))))
+             (else #f)))
+        (and (string? obj) (cons 'content obj)))))
 
 (define (extract-chat-delta chunk)
   "Extract the textual delta string from an SSE chunk (parsed JSON alist or JSON string).
@@ -385,15 +385,15 @@ Returns the string content, or #f if not found."
   (let ((obj (if (string? response-obj)
                  (catch #t (lambda () (json-string->scm response-obj)) (lambda _ response-obj))
                  response-obj)))
-    (if (not (pair? obj))
-        (clean-json-string obj)
+    (if (pair? obj)
         (clean-json-string
          (or (extract-openai-content obj)
              (extract-anthropic-content obj)
              (extract-ollama-content obj)
              (json-ref obj "response")
              (json-ref obj "content")
-             (json-ref obj "text"))))))
+             (json-ref obj "text")))
+        (clean-json-string obj))))
 
 (define (extract-chat-tool-calls response-obj)
   "Extract tool calls from a chat completion response (parsed JSON alist or JSON string).
@@ -401,8 +401,7 @@ Returns a list of tool call alists: ((id . \"...\") (name . \"...\") (arguments 
   (let ((obj (if (string? response-obj)
                  (catch #t (lambda () (json-string->scm response-obj)) (lambda _ response-obj))
                  response-obj)))
-    (if (not (pair? obj))
-        '()
+    (if (pair? obj)
         (let* ((choices (json-ref obj "choices"))
                (msg (and (vector? choices)
                          (> (vector-length choices) 0)
@@ -428,7 +427,8 @@ Returns a list of tool call alists: ((id . \"...\") (name . \"...\") (arguments 
                  (vector->list raw-calls)))
            ((list? raw-calls)
             raw-calls)
-           (else '()))))))
+           (else '())))
+        '())))
 
 ;;;
 ;;; HTTP Request Execution
