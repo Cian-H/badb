@@ -225,44 +225,29 @@ and logs provenance to JRN if provided. Returns (values result-scm is-error?)."
                    (cond
                      ;; 1. Check registry features (exact match or with dots/dashes restored)
                      ((and reg (lookup-registry-feature reg name))
-                       (let ((impl (lookup-registry-feature reg name)))
-                         (if (procedure? impl)
-                           (cond
-                             ((null? args) (impl))
-                             ((and (pair? args) (pair? (car args)))
-                               ;; args is an alist: try applying matching parameters based on metadata, or positional values, or pass alist
-                               (catch #t
-                                 (lambda ()
-                                   (let*
-                                       ((meta (lookup-registry-metadata reg name))
-                                        (params
-                                          (and meta (or (assoc-ref meta 'parameters) (assoc-ref meta "parameters"))))
-                                        (props
-                                          (and (pair? params)
-                                               (or (assoc-ref params 'properties) (assoc-ref params "properties"))))
-                                        (ordered-keys
-                                          (if (pair? props)
-                                            (map
-                                              (lambda (p)
-                                                (if (symbol? (car p))
-                                                  (symbol->string (car p))
-                                                  (car p)))
-                                              props)
-                                            #f)))
-                                     (if (and ordered-keys (pair? ordered-keys))
-                                       (let
-                                           ((ordered-vals
-                                              (map
-                                                (lambda (k)
-                                                  (or (assoc-ref args k) (assoc-ref args (string->symbol k))))
-                                                ordered-keys)))
-                                         (apply impl ordered-vals))
-                                       (apply impl (map cdr args)))))
-                                 (lambda _
-                                   (impl args))))
-                             ((list? args) (apply impl args))
-                             (else (impl args)))
-                           (error "Registry entry is not a procedure" name))))
+                      => (lambda (impl)
+                           (if (procedure? impl)
+                               (cond
+                                ((null? args) (impl))
+                                ((and (pair? args) (pair? (car args)))
+                                 ;; args is an alist: try applying matching parameters based on metadata, or positional values, or pass alist
+                                 (catch #t
+                                   (lambda ()
+                                     (let* ((meta (lookup-registry-metadata reg name))
+                                            (params (and meta (or (assoc-ref meta 'parameters) (assoc-ref meta "parameters"))))
+                                            (props (and (pair? params) (or (assoc-ref params 'properties) (assoc-ref params "properties"))))
+                                            (ordered-keys (if (pair? props)
+                                                              (map (lambda (p) (if (symbol? (car p)) (symbol->string (car p)) (car p))) props)
+                                                              #f)))
+                                       (if (and ordered-keys (pair? ordered-keys))
+                                           (let ((ordered-vals (map (lambda (k) (or (assoc-ref args k) (assoc-ref args (string->symbol k))))
+                                                                    ordered-keys)))
+                                             (apply impl ordered-vals))
+                                           (apply impl (map cdr args)))))
+                                   (lambda _ (impl args))))
+                                ((list? args) (apply impl args))
+                                (else (impl args)))
+                               (error "Registry entry is not a procedure" name))))
                      ;; 2. Check MCP manager
                      ((and mcp-mgr
                            (let
