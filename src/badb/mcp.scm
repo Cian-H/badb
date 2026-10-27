@@ -3,59 +3,67 @@
 ;;; Implements a Model Context Protocol (MCP) client communicating over
 ;;; standard I/O ports or spawned subprocesses using JSON-RPC 2.0.
 
-(define-module (badb mcp)
-  #:use-module (badb util)
-  #:use-module (json)
-  #:use-module (ice-9 rdelim)
-  #:use-module (ice-9 popen)
-  #:use-module (ice-9 format)
-  #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-9)
-  #:use-module (srfi srfi-13)
-  #:use-module (badb config)
-  #:export (make-mcp-client
-            mcp-client?
-            mcp-client-in-port
-            mcp-client-out-port
-            mcp-client-pid
-            mcp-client-next-id
-            set-mcp-client-in-port!
-            set-mcp-client-out-port!
-            set-mcp-client-pid!
-            set-mcp-client-next-id!
-            mcp-spawn-client
-            mcp-send-request!
-            mcp-send-notification!
-            mcp-read-message
-            mcp-call
-            mcp-notify
-            mcp-initialize
-            mcp-list-tools
-            mcp-call-tool
-            mcp-close-client
-            json-ref
-            tools->list
-
-            make-mcp-manager
-            mcp-manager?
-            mcp-manager-config
-            mcp-manager-servers
-            set-mcp-manager-servers!
-            set-mcp-manager-config!
-            mcp-manager-list-servers
-            mcp-manager-get-server
-            mcp-manager-add-server!
-            mcp-manager-remove-server!
-            mcp-manager-start-server!
-            mcp-manager-stop-server!
-            mcp-manager-stop-all!
-            mcp-manager-list-tools
-            mcp-manager-call-tool))
+(define-module (badb mcp) #:use-module
+               (badb util)
+               #:use-module
+               (json)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 popen)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:use-module
+               (srfi srfi-13)
+               #:use-module
+               (badb config)
+               #:export
+               (make-mcp-client mcp-client?
+                                mcp-client-in-port
+                                mcp-client-out-port
+                                mcp-client-pid
+                                mcp-client-next-id
+                                set-mcp-client-in-port!
+                                set-mcp-client-out-port!
+                                set-mcp-client-pid!
+                                set-mcp-client-next-id!
+                                mcp-spawn-client
+                                mcp-send-request!
+                                mcp-send-notification!
+                                mcp-read-message
+                                mcp-call
+                                mcp-notify
+                                mcp-initialize
+                                mcp-list-tools
+                                mcp-call-tool
+                                mcp-close-client
+                                json-ref
+                                tools->list
+                                make-mcp-manager
+                                mcp-manager?
+                                mcp-manager-config
+                                mcp-manager-servers
+                                set-mcp-manager-servers!
+                                set-mcp-manager-config!
+                                mcp-manager-list-servers
+                                mcp-manager-get-server
+                                mcp-manager-add-server!
+                                mcp-manager-remove-server!
+                                mcp-manager-start-server!
+                                mcp-manager-stop-server!
+                                mcp-manager-stop-all!
+                                mcp-manager-list-tools
+                                mcp-manager-call-tool
+                                mcp-manager-tool-index
+                                mcp-manager-rebuild-tool-index!))
 
 ;;;
 ;;; Client Record
 ;;;
-
 (define-record-type <mcp-client>
   (%make-mcp-client in-port out-port pid next-id closed?)
   mcp-client?
@@ -79,7 +87,6 @@ Optionally accepts a process ID PID if backed by a child process."
 ;;;
 ;;; Utilities
 ;;;
-
 (define (json-ref alist key)
   "Look up KEY (string or symbol) in ALIST. Returns the associated value,
 or #f if not present."
@@ -95,7 +102,6 @@ or #f if not present."
 ;;;
 ;;; Subprocess Spawning
 ;;;
-
 (define (mcp-spawn-client command-args)
   "Spawn an MCP server subprocess for COMMAND-ARGS (a string or list of strings)
 and return a new <mcp-client> connected to its stdio. Stderr is redirected to
@@ -116,7 +122,6 @@ and return a new <mcp-client> connected to its stdio. Stderr is redirected to
 ;;;
 ;;; JSON-RPC 2.0 Protocol Operations
 ;;;
-
 (define* (mcp-send-request! client method #:optional params)
   "Write a JSON-RPC 2.0 request line to the client's output port with an
 incrementing integer ID, flush output, and return the request ID."
@@ -151,58 +156,66 @@ and flush output."
   (mcp-send-notification! client method params))
 
 (define (mcp-read-message client)
-  "Read a line from the client's input port and parse it into an SCM structure
+        "Read a line from the client's input port and parse it into an SCM structure
 using json-string->scm. Skips empty lines. Returns EOF object on EOF."
-  (let loop ()
-    (let ((line (read-line (mcp-client-in-port client))))
-      (cond
-       ((eof-object? line) line)
-       ((string-null? (string-trim-both line)) (loop))
-       (else (json-string->scm line))))))
+        (let loop
+          ()
+          (let
+              ((line (read-line (mcp-client-in-port client))))
+            (cond
+              ((eof-object? line) line)
+              ((string-every char-whitespace? line) (loop))
+              (else (json-string->scm line))))))
 
-(define* (mcp-call client method #:optional params)
+(define*
+  (mcp-call client method #:optional params)
   "Send a JSON-RPC 2.0 request to CLIENT, read the response, verify that the
 response ID matches, and return the 'result' member or raise an 'mcp-error
 on a JSON-RPC error response."
-  (let ((req-id (mcp-send-request! client method params)))
-    (let loop ()
+  (let
+      ((req-id (mcp-send-request! client method params)))
+    (let loop
+      ()
       (let ((msg (mcp-read-message client)))
         (cond
-         ((eof-object? msg)
-          (error "mcp-call: unexpected EOF waiting for response to request" req-id))
-         ((not (list? msg))
-          (error "mcp-call: expected JSON object from server" msg))
-         ;; Skip notifications from server (which have no "id" member)
-         ((not (or (assoc "id" msg) (assoc 'id msg)))
-          (loop))
-         (else
-          (let* ((resp-id (let ((e (or (assoc "id" msg) (assoc 'id msg))))
-                            (and e (cdr e))))
-                 (err-entry (or (assoc "error" msg) (assoc 'error msg)))
-                 (res-entry (or (assoc "result" msg) (assoc 'result msg))))
-            (unless (equal? resp-id req-id)
-              (error "mcp-call: response ID mismatch" req-id resp-id msg))
-            (if err-entry
-                (let* ((err (cdr err-entry))
-                       (code (and (list? err)
-                                  (let ((e (or (assoc "code" err) (assoc 'code err))))
-                                    (and e (cdr e)))))
-                       (message (and (list? err)
-                                     (let ((e (or (assoc "message" err) (assoc 'message err))))
-                                       (and e (cdr e))))))
-                  (scm-error 'mcp-error
-                             "mcp-call"
-                             "JSON-RPC error ~a: ~a"
-                             (list (or code 0) (or message "unknown error"))
-                             (list err)))
-                (if res-entry
-                    (cdr res-entry)
-                    (error "mcp-call: response missing both 'result' and 'error'" msg))))))))))
+          ((eof-object? msg)
+            (error "mcp-call: unexpected EOF waiting for response to request" req-id))
+          ((not (list? msg)) (error "mcp-call: expected JSON object from server" msg))
+          (else
+            (let
+                ((id-pair (or (assoc "id" msg) (assoc 'id msg))))
+              ;; Skip notifications from server (which have no "id" member)
+              (if (not id-pair)
+                (loop)
+                (let
+                    ((resp-id (cdr id-pair))
+                     (err-pair (or (assoc "error" msg) (assoc 'error msg)))
+                     (res-pair (or (assoc "result" msg) (assoc 'result msg))))
+                  (unless (equal? resp-id req-id)
+                    (error "mcp-call: response ID mismatch" req-id resp-id msg))
+                  (if err-pair
+                    (let*
+                        ((err (cdr err-pair))
+                         (code
+                           (if (list? err)
+                             (prop-ref err 'code 0)
+                             0))
+                         (message
+                           (if (list? err)
+                             (prop-ref err 'message "unknown error")
+                             "unknown error")))
+                      (scm-error 'mcp-error
+                                 "mcp-call"
+                                 "JSON-RPC error ~a: ~a"
+                                 (list code message)
+                                 (list err)))
+                    (if res-pair
+                      (cdr res-pair)
+                      (error "mcp-call: response missing both 'result' and 'error'" msg))))))))))))
 
 ;;;
 ;;; MCP High-Level Protocol Operations
 ;;;
-
 (define* (mcp-initialize client
                          #:optional (client-info-pos #f)
                          #:key
@@ -268,28 +281,29 @@ initialization result."
 ;;;
 ;;; MCP Manager Record and Operations
 ;;;
-
 (define-record-type <mcp-manager>
-  (%make-mcp-manager servers config)
-  mcp-manager?
-  (servers mcp-manager-servers set-mcp-manager-servers!)
-  (config mcp-manager-config set-mcp-manager-config!))
+                    (%make-mcp-manager servers config tool-index)
+                    mcp-manager?
+                    (servers mcp-manager-servers set-mcp-manager-servers!)
+                    (config mcp-manager-config set-mcp-manager-config!)
+                    (tool-index mcp-manager-tool-index set-mcp-manager-tool-index!))
 
-(define* (make-mcp-manager #:optional (config #f))
+(define*
+  (make-mcp-manager #:optional (config #f))
   "Create an MCP manager, optionally initialized from CONFIG."
-  (let* ((configured-servers (if config (badb-config-mcp-servers config) '()))
-         (initial-servers
-          (map (lambda (entry)
-                 (let ((name (car entry))
-                       (spec (cdr entry)))
-                   (cons name
-                         `((spec . ,spec)
-                           (client . #f)
-                           (status . "stopped")
-                           (tools . ())
-                           (error . #f)))))
-               configured-servers)))
-    (%make-mcp-manager initial-servers config)))
+  (let*
+      ((configured-servers
+         (if config
+           (badb-config-mcp-servers config)
+           '()))
+       (initial-servers
+         (map
+           (lambda (entry)
+             (let ((name (car entry)) (spec (cdr entry)))
+               (cons name
+                     `((spec . ,spec) (client . #f) (status . "stopped") (tools . ()) (error . #f)))))
+           configured-servers)))
+    (%make-mcp-manager initial-servers config (make-hash-table 31))))
 
 (define (mcp-manager-list-servers mgr)
   "Return list of alists describing configured and active MCP servers."
@@ -402,18 +416,46 @@ Supports both (mcp-manager-add-server! mgr spec-alist) and
         (append (cons "env" (env-alist->exec-strings env-pairs))
                 (cons cmd args)))))
 
-(define (mcp-manager-update-server-state! mgr name spec client status tools error)
+(define (mcp-manager-rebuild-tool-index! mgr)
+        "Rebuild the inverted tool-name -> (server-name . client) hash table in MGR."
+        (let ((idx (make-hash-table 31)))
+          (for-each
+            (lambda (entry)
+              (let*
+                  ((srv-name (car entry)) (data (cdr entry))
+                   (status (or (assoc-ref data 'status) ""))
+                   (client (assoc-ref data 'client))
+                   (tools (or (assoc-ref data 'tools) '())))
+                (when (and (string=? status "running") client)
+                  (for-each
+                    (lambda (t)
+                      (let
+                          ((n (or (assoc-ref t "name") (assoc-ref t 'name))))
+                        (when n
+                          (let ((n-str (ensure-string n))) (hash-set! idx n-str (cons srv-name client))))))
+                    tools))))
+            (mcp-manager-servers mgr))
+          (set-mcp-manager-tool-index! mgr idx)
+          idx))
+
+(define
+  (mcp-manager-update-server-state! mgr name spec client status tools error)
   "Update internal state record for server NAME in MGR."
-  (let* ((name-str (ensure-string name))
-         (updated-data `((spec . ,spec)
-                         (client . ,client)
-                         (status . ,status)
-                         (tools . ,(or tools '()))
-                         (error . ,error))))
-    (set-mcp-manager-servers!
-     mgr
-     (map (lambda (e) (if (string=? (car e) name-str) (cons name-str updated-data) e))
-          (mcp-manager-servers mgr)))
+  (let*
+      ((name-str (ensure-string name))
+       (updated-data
+         `((spec . ,spec) (client . ,client)
+           (status . ,status)
+           (tools . ,(or tools '()))
+           (error . ,error))))
+    (set-mcp-manager-servers! mgr
+                              (map
+                                (lambda (e)
+                                  (if (string=? (car e) name-str)
+                                    (cons name-str updated-data)
+                                    e))
+                                (mcp-manager-servers mgr)))
+    (mcp-manager-rebuild-tool-index! mgr)
     updated-data))
 
 (define (mcp-manager-start-server! mgr name)
@@ -482,38 +524,43 @@ Returns (values client tools-list error-or-#f)."
              '())))
      running)))
 
-(define* (mcp-manager-call-tool mgr arg1 arg2 #:optional (arg3 'unspecified))
+(define*
+  (mcp-manager-call-tool mgr arg1 arg2 #:optional (arg3 'unspecified))
   "Call an MCP tool. Supports:
 (mcp-manager-call-tool mgr server-name tool-name arguments)
 or (mcp-manager-call-tool mgr tool-name arguments) discovering the owning server."
   (if (eq? arg3 'unspecified)
-      ;; Called as (mcp-manager-call-tool mgr tool-name arguments)
-      (let* ((tool-name (if (symbol? arg1) (symbol->string arg1) arg1))
-             (arguments arg2)
-             (running (filter (lambda (e) (string=? (or (assoc-ref (cdr e) 'status) "") "running"))
-                              (mcp-manager-servers mgr)))
-             (matching-server
-              (find (lambda (e)
-                      (let ((tools (or (assoc-ref (cdr e) 'tools) '())))
-                        (any (lambda (t)
-                               (let ((n (or (assoc-ref t "name") (assoc-ref t 'name))))
-                                 (and n (string=? (if (symbol? n) (symbol->string n) n) tool-name))))
-                             tools)))
-                    running)))
-        (if matching-server
-            (let ((client (assoc-ref (cdr matching-server) 'client)))
-              (mcp-call-tool client tool-name arguments))
-            (error (format #f "mcp-manager-call-tool: tool '~a' not found on any running server" tool-name))))
-      ;; Called as (mcp-manager-call-tool mgr server-name tool-name arguments)
-      (let* ((server-name (if (symbol? arg1) (symbol->string arg1) arg1))
-             (tool-name (if (symbol? arg2) (symbol->string arg2) arg2))
-             (arguments arg3)
-             (entry (assoc server-name (mcp-manager-servers mgr))))
-        (unless entry
-          (error (format #f "mcp-manager-call-tool: server '~a' not found" server-name)))
-        (let* ((data (cdr entry))
-               (status (assoc-ref data 'status))
-               (client (assoc-ref data 'client)))
-          (unless (and (string=? status "running") client)
-            (error (format #f "mcp-manager-call-tool: server '~a' is not running" server-name)))
-          (mcp-call-tool client tool-name arguments)))))
+    ;; Called as (mcp-manager-call-tool mgr tool-name arguments)
+    (let*
+        ((tool-name (ensure-string arg1))
+         (arguments arg2)
+         (idx (or (mcp-manager-tool-index mgr) (mcp-manager-rebuild-tool-index! mgr)))
+         (matched (hash-ref idx tool-name)))
+      (if matched
+        (let ((client (cdr matched))) (mcp-call-tool client tool-name arguments))
+        ;; Retry after full index rebuild if dynamically updated
+        (let*
+            ((rebuilt (mcp-manager-rebuild-tool-index! mgr))
+             (retry-matched (hash-ref rebuilt tool-name)))
+          (if retry-matched
+            (let ((client (cdr retry-matched))) (mcp-call-tool client tool-name arguments))
+            (error
+              (format #f
+                      "mcp-manager-call-tool: tool '~a' not found on any running server"
+                      tool-name))))))
+    ;; Called as (mcp-manager-call-tool mgr server-name tool-name arguments)
+    (let*
+        ((server-name (ensure-string arg1))
+         (tool-name (ensure-string arg2))
+         (arguments arg3)
+         (entry (assoc server-name (mcp-manager-servers mgr))))
+      (unless entry
+        (error (format #f "mcp-manager-call-tool: server '~a' not found" server-name)))
+      (let*
+          ((data (cdr entry))
+           (status (assoc-ref data 'status))
+           (client (assoc-ref data 'client)))
+        (unless (and (string=? status "running") client)
+          (error
+            (format #f "mcp-manager-call-tool: server '~a' is not running" server-name)))
+        (mcp-call-tool client tool-name arguments)))))
