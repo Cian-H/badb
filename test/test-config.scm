@@ -25,6 +25,9 @@
     (test-equal "default temperature is 0.7"
       0.7
       (badb-config-model-temperature cfg))
+    (test-equal "default max-tokens is 4096"
+      4096
+      (badb-config-model-max-tokens cfg))
     (test-equal "default journal path is .badb/journal.jsonl"
       ".badb/journal.jsonl"
       (badb-config-journal-path cfg))
@@ -35,6 +38,7 @@
                  #:model-name "custom-model:v1"
                  #:model-endpoint "http://test-server:8000"
                  #:model-temperature 0.2
+                 #:model-max-tokens 8192
                  #:journal-path "/tmp/custom-jrn.jsonl")))
     (test-equal "custom model-name set"
       "custom-model:v1"
@@ -45,6 +49,9 @@
     (test-equal "custom temperature set"
       0.2
       (badb-config-model-temperature custom))
+    (test-equal "custom max-tokens set"
+      8192
+      (badb-config-model-max-tokens custom))
     (test-equal "custom journal path set"
       "/tmp/custom-jrn.jsonl"
       (badb-config-journal-path custom))))

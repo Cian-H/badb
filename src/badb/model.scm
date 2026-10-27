@@ -128,6 +128,7 @@ or with positional arguments:
                               (stream #f)
                               (tools #f)
                               (tool-choice #f)
+                              (max-tokens #f)
                               (as-alist #f))
   "Format a chat completion request payload.
 MESSAGES can be a string prompt, a list of message alists, a single message alist,
@@ -138,12 +139,16 @@ Optional keyword arguments:
   #:stream      - Boolean indicating streaming mode
   #:tools       - List or vector of tool specification alists
   #:tool-choice - Tool choice policy string or object (e.g. \"auto\")
+  #:max-tokens  - Integer maximum tokens to generate
   #:as-alist    - When true, returns the Scheme alist instead of JSON string."
   (let* ((msgs (normalize-messages messages))
          (entries (list (cons "messages" msgs)))
          (entries (if model (cons (cons "model" model) entries) entries))
          (entries (if (number? temperature)
                       (cons (cons "temperature" temperature) entries)
+                      entries))
+         (entries (if (number? max-tokens)
+                      (cons (cons "max_tokens" max-tokens) entries)
                       entries))
          (entries (if (and tools (or (pair? tools) (vector? tools)))
                       (cons (cons "tools" (if (list? tools) (list->vector tools) tools)) entries)
@@ -332,7 +337,8 @@ Returns the string content, or #f if not found."
                        (msg (json-ref c0 "message")))
                   (or (and (pair? msg)
                            (or (json-ref msg "content")
-                               (json-ref msg "reasoning_content")))
+                               (json-ref msg "reasoning_content")
+                               (json-ref msg "reasoning")))
                       (json-ref c0 "text")))))
          ;; Anthropic style: content[0].text or content string
          (let ((content (json-ref obj "content")))
@@ -430,6 +436,7 @@ append /chat/completions."
 (define* (model-complete client messages
                         #:key
                         (temperature 0.7)
+                        (max-tokens #f)
                         (tools #f)
                         (tool-choice #f)
                         (raw? #f)
@@ -443,6 +450,7 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
          (payload  (format-chat-request messages
                                         #:model model
                                         #:temperature temperature
+                                        #:max-tokens max-tokens
                                         #:stream #f
                                         #:tools tools
                                         #:tool-choice tool-choice))
@@ -471,6 +479,7 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
 (define* (model-stream client messages chunk-callback
                        #:key
                        (temperature 0.7)
+                       (max-tokens #f)
                        (http-poster #f))
   "Initiate a streaming chat request, calling (CHUNK-CALLBACK text-delta)
 as SSE chunks arrive. Returns 'done or 'eof."
@@ -481,6 +490,7 @@ as SSE chunks arrive. Returns 'done or 'eof."
          (payload  (format-chat-request messages
                                         #:model model
                                         #:temperature temperature
+                                        #:max-tokens max-tokens
                                         #:stream #t))
          (headers  (build-headers api-key #t))
          (poster   (or http-poster (current-http-post))))

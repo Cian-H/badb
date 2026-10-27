@@ -17,6 +17,7 @@
             badb-config-model-endpoint
             badb-config-model-api-key
             badb-config-model-temperature
+            badb-config-model-max-tokens
             badb-config-journal-path
             badb-config-mcp-servers
             badb-config-options
@@ -25,6 +26,7 @@
             set-badb-config-model-endpoint!
             set-badb-config-model-api-key!
             set-badb-config-model-temperature!
+            set-badb-config-model-max-tokens!
             set-badb-config-journal-path!
             set-badb-config-mcp-servers!
             set-badb-config-options!
@@ -33,6 +35,7 @@
             badb-config-set-model-endpoint!
             badb-config-set-model-api-key!
             badb-config-set-model-temperature!
+            badb-config-set-model-max-tokens!
             badb-config-set-journal-path!
             badb-config-set-mcp-servers!
             badb-config-set-options!
@@ -64,6 +67,7 @@
                      model-endpoint
                      model-api-key
                      model-temperature
+                     model-max-tokens
                      journal-path
                      mcp-servers
                      options
@@ -73,6 +77,7 @@
   (model-endpoint badb-config-model-endpoint set-badb-config-model-endpoint!)
   (model-api-key badb-config-model-api-key set-badb-config-model-api-key!)
   (model-temperature badb-config-model-temperature set-badb-config-model-temperature!)
+  (model-max-tokens badb-config-model-max-tokens set-badb-config-model-max-tokens!)
   (journal-path badb-config-journal-path set-badb-config-journal-path!)
   (mcp-servers badb-config-mcp-servers set-badb-config-mcp-servers!)
   (options badb-config-options set-badb-config-options!)
@@ -87,6 +92,9 @@
                                               (getenv "OPENAI_API_KEY")
                                               #f))
                            (model-temperature 0.7)
+                           (model-max-tokens (or (and (getenv "BADB_MAX_TOKENS")
+                                                      (string->number (getenv "BADB_MAX_TOKENS")))
+                                                 4096))
                            (journal-path ".badb/journal.jsonl")
                            (mcp-servers '())
                            (options '())
@@ -96,6 +104,7 @@
                      model-endpoint
                      model-api-key
                      model-temperature
+                     model-max-tokens
                      journal-path
                      mcp-servers
                      options
@@ -105,6 +114,7 @@
 (define badb-config-set-model-endpoint! set-badb-config-model-endpoint!)
 (define badb-config-set-model-api-key! set-badb-config-model-api-key!)
 (define badb-config-set-model-temperature! set-badb-config-model-temperature!)
+(define badb-config-set-model-max-tokens! set-badb-config-model-max-tokens!)
 (define badb-config-set-journal-path! set-badb-config-journal-path!)
 (define badb-config-set-mcp-servers! set-badb-config-mcp-servers!)
 (define badb-config-set-options! set-badb-config-options!)
@@ -273,11 +283,13 @@
              (let ((m (get-prop body 'name (get-prop body 'default (badb-config-model-name cfg))))
                    (ep (get-prop body 'endpoint (badb-config-model-endpoint cfg)))
                    (key (get-prop body 'api-key (badb-config-model-api-key cfg)))
-                   (temp (get-prop body 'temperature (badb-config-model-temperature cfg))))
+                   (temp (get-prop body 'temperature (badb-config-model-temperature cfg)))
+                   (max-tok (get-prop body 'max-tokens (badb-config-model-max-tokens cfg))))
                (when m (set-badb-config-model-name! cfg m))
                (when ep (set-badb-config-model-endpoint! cfg ep))
                (when key (set-badb-config-model-api-key! cfg key))
-               (when temp (set-badb-config-model-temperature! cfg temp))))
+               (when temp (set-badb-config-model-temperature! cfg temp))
+               (when max-tok (set-badb-config-model-max-tokens! cfg max-tok))))
 
             ;; Journal Section: (journal ...)
             ((eq? head 'journal)
@@ -316,7 +328,10 @@
       (name ,(badb-config-model-name config))
       (endpoint ,(badb-config-model-endpoint config))
       (api-key ,(badb-config-model-api-key config))
-      (temperature ,(badb-config-model-temperature config)))
+      (temperature ,(badb-config-model-temperature config))
+      ,@(if (badb-config-model-max-tokens config)
+            (list `(max-tokens ,(badb-config-model-max-tokens config)))
+            '()))
 
     (journal
       (path ,(badb-config-journal-path config)))
@@ -419,6 +434,8 @@ unique base servers are retained."
                                       (badb-config-model-api-key base))
                   #:model-temperature (or (badb-config-model-temperature overlay)
                                           (badb-config-model-temperature base))
+                  #:model-max-tokens (or (badb-config-model-max-tokens overlay)
+                                         (badb-config-model-max-tokens base))
                   #:journal-path (or (badb-config-journal-path overlay)
                                      (badb-config-journal-path base))
                   #:options (append (badb-config-options base)

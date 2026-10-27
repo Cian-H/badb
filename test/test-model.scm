@@ -111,6 +111,15 @@
     (test-assert "temperature omitted when #f"
       (not (assoc-ref parsed "temperature"))))
 
+  ;; Payload with max-tokens
+  (let* ((json-str (format-chat-request "Token test"
+                                        #:model "reflection/beam-1.0-501b-a23b"
+                                        #:max-tokens 2048))
+         (parsed (json-string->scm json-str)))
+    (test-equal "max_tokens is set in payload"
+      2048
+      (assoc-ref parsed "max_tokens")))
+
   ;; Multi-message with system and user roles
   (let* ((messages (list '((role . "system") (content . "Be concise."))
                          '((role . "user") (content . "Hi!"))))
