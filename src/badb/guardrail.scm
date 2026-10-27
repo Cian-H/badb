@@ -33,6 +33,7 @@
 
             ;; Decision evaluation & level inspection
             evaluate-guardrail
+            guardrail-evaluate
             guardrail-level-rank
             guardrail-allow?
             guardrail-deny?
@@ -225,6 +226,8 @@ Returns a pair: (verdict-symbol . reason-string), e.g. '(allow . \"...\") or '(d
         (lambda _ #f)))
 
     decision))
+
+(define guardrail-evaluate evaluate-guardrail)
 
 (define (guardrail-allow? decision)
   (eq? (car decision) 'allow))

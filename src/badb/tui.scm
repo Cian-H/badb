@@ -578,17 +578,39 @@ and core badb modules for interactive evaluation."
                                       (content . ((type . "string") (description . "Content to write")))))
                        (required . #("path" "content"))))))
 
-    (registry-attach! reg "execute_command"
-      (lambda (cmd)
+    (define (exec-cmd-impl cmd-or-arg)
+      (let ((cmd (cond
+                  ((string? cmd-or-arg) cmd-or-arg)
+                  ((and (pair? cmd-or-arg) (pair? (car cmd-or-arg)))
+                   (or (assoc-ref cmd-or-arg "command")
+                       (assoc-ref cmd-or-arg 'command)
+                       (assoc-ref cmd-or-arg "cmd")
+                       (assoc-ref cmd-or-arg 'cmd)
+                       (cdar cmd-or-arg)))
+                  (else (object->string cmd-or-arg)))))
         (call-with-values (lambda () (execute-shell-command cmd))
           (lambda (out exit-val err)
             (if err
                 (format #f "Error: ~a" err)
-                (format #f "[exit ~a]\n~a" exit-val out)))))
+                (format #f "[exit ~a]\n~a" exit-val out))))))
+
+    (registry-attach! reg "execute_command" exec-cmd-impl
       '((description . "Execute a shell command and return output and exit status")
         (parameters . ((type . "object")
                        (properties . ((cmd . ((type . "string") (description . "Shell command to run")))))
                        (required . #("cmd"))))))
+
+    (registry-attach! reg "bash" exec-cmd-impl
+      '((description . "Execute a bash shell command and return stdout/stderr and exit code")
+        (parameters . ((type . "object")
+                       (properties . ((command . ((type . "string") (description . "Bash command line")))))
+                       (required . #("command"))))))
+
+    (registry-attach! reg "sh" exec-cmd-impl
+      '((description . "Execute a POSIX shell command and return output and exit code")
+        (parameters . ((type . "object")
+                       (properties . ((command . ((type . "string") (description . "Shell command line")))))
+                       (required . #("command"))))))
 
     (registry-attach! reg "checkpoint_create"
       (lambda (description)
@@ -1110,7 +1132,7 @@ and core badb modules for interactive evaluation."
                                 #:max-iterations 8
                                 #:max-tokens (or (badb-config-model-max-tokens cfg) 4096)
                                 #:guardrail (lambda (t-name t-args)
-                                              (guardrail-evaluate policy t-name t-args))
+                                              (evaluate-guardrail policy t-name t-args))
                                 #:hooks (list
                                          (cons 'on-step
                                                (lambda (iter phase)

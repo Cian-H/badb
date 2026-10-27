@@ -158,6 +158,7 @@ Optional keyword arguments:
          (entries (if tool-choice
                       (cons (cons "tool_choice" tool-choice) entries)
                       entries))
+         (entries (cons (cons "allow_missing_thinking" #t) entries))
          (entries (cons (cons "stream" (if stream #t #f)) entries))
          (alist (reverse entries)))
     (if as-alist

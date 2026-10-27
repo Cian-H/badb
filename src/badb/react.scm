@@ -70,6 +70,16 @@
             (or (registry-lookup reg (car candidates))
                 (loop (cdr candidates)))))))
 
+(define (lookup-registry-metadata reg name)
+  "Look up metadata alist in REG using exact name or denormalized variants."
+  (if (not reg)
+      #f
+      (let loop ((candidates (denormalize-tool-name name)))
+        (if (null? candidates)
+            #f
+            (or (registry-metadata reg (car candidates))
+                (loop (cdr candidates)))))))
+
 (define (registry-feature->tool-spec feature)
   "Convert a kernel registry feature entry into an OpenAI-compatible tool spec."
   (let* ((id (assoc-ref feature 'id))
@@ -175,7 +185,10 @@ and logs provenance to JRN if provided. Returns (values result-scm is-error?)."
          (args (or (assoc-ref tool-call 'arguments) '()))
          ;; Check guardrail policy
          (permission (if (procedure? guardrail)
-                         (guardrail name args)
+                         (catch #t
+                           (lambda () (guardrail name args))
+                           (lambda (k . a)
+                             (cons 'deny (format #f "Guardrail exception (~a): ~s" k a))))
                          #t)))
     (cond
      ((or (eq? permission #f) (eq? permission 'deny))
@@ -197,9 +210,20 @@ and logs provenance to JRN if provided. Returns (values result-scm is-error?)."
                          (cond
                           ((null? args) (impl))
                           ((and (pair? args) (pair? (car args)))
-                           ;; args is an alist: try applying positional values, or pass alist
+                           ;; args is an alist: try applying matching parameters based on metadata, or positional values, or pass alist
                            (catch #t
-                             (lambda () (apply impl (map cdr args)))
+                             (lambda ()
+                               (let* ((meta (lookup-registry-metadata reg name))
+                                      (params (and meta (or (assoc-ref meta 'parameters) (assoc-ref meta "parameters"))))
+                                      (props (and (pair? params) (or (assoc-ref params 'properties) (assoc-ref params "properties"))))
+                                      (ordered-keys (if (pair? props) (map (lambda (p) (if (symbol? (car p)) (symbol->string (car p)) (car p))) props) #f)))
+                                 (if (and ordered-keys (pair? ordered-keys))
+                                     (let ((ordered-vals (map (lambda (k)
+                                                                (or (assoc-ref args k)
+                                                                    (assoc-ref args (string->symbol k))))
+                                                              ordered-keys)))
+                                       (apply impl ordered-vals))
+                                     (apply impl (map cdr args)))))
                              (lambda _ (impl args))))
                           ((list? args)
                            (apply impl args))
@@ -388,8 +412,19 @@ Returns:
                                           (function . ((name . ,tc-name)
                                                        (arguments . ,args-str))))))
                                     tool-calls)))
+                             (choices (json-ref raw-resp "choices"))
+                             (c0 (and (vector? choices) (> (vector-length choices) 0) (vector-ref choices 0)))
+                             (orig-msg (and (pair? c0) (json-ref c0 "message")))
+                             (reasoning (and (pair? orig-msg)
+                                             (or (json-ref orig-msg "reasoning_content")
+                                                 (json-ref orig-msg "reasoning"))))
                              (asst-msg `((role . "assistant")
-                                         (content . ,(if (or (not (string? content)) (string-null? content)) #f content))
+                                         ,@(if (and (string? reasoning) (not (string-null? reasoning)))
+                                               `((reasoning_content . ,reasoning))
+                                               '())
+                                         (content . ,(if (and (string? content) (not (string-null? content)))
+                                                         content
+                                                         ""))
                                          (tool_calls . ,tool-calls-vec)))
                              (new-msgs (append msgs (list asst-msg)))
                              (results
