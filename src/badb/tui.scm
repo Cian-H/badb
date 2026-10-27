@@ -647,10 +647,12 @@ and core badb modules for interactive evaluation."
     (define repl-mod (make-repl-mod reg jrn mgr client cfg mcp-mgr policy compactor rollback-mgr verifier composer))
 
     ;; UI State
+    (define (make-system-turn)
+      `((role . "system")
+        (content . ,(default-system-prompt #:workspace-dir (getcwd)
+                                           #:tools (collect-available-tools reg mcp-mgr)))))
     (define messages
-      (list `((role . "system")
-              (content . ,(default-system-prompt #:workspace-dir (getcwd)
-                                                 #:tools (collect-available-tools reg mcp-mgr))))
+      (list (make-system-turn)
             `((role . "notice")
               (content . ,(string-append
                            "Welcome to badb microharness TUI!\n"
@@ -660,9 +662,7 @@ and core badb modules for interactive evaluation."
                            "• Type Backspace at empty prompt to return to chat mode (❯)\n"
                            "• Type / to open command selector palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context).")))))
     (define llm-history
-      (list `((role . "system")
-              (content . ,(default-system-prompt #:workspace-dir (getcwd)
-                                                 #:tools (collect-available-tools reg mcp-mgr))))))
+      (list (make-system-turn)))
     (define input-buffer "")
     (define scroll-offset 0)
     (define status-text "READY")
@@ -1461,10 +1461,7 @@ and core badb modules for interactive evaluation."
           (set! status-text "READY"))
          ((string=? cmd "clear")
           (set! messages '())
-          (set! llm-history (list `((role . "system")
-                                    (content . ,(default-system-prompt
-                                                 #:workspace-dir (getcwd)
-                                                 #:tools (collect-available-tools reg mcp-mgr))))))
+          (set! llm-history (list (make-system-turn)))
           (set! scroll-offset 0))
          ((or (string=? cmd "quit") (string=? cmd "exit")) 'exit)
          (else
