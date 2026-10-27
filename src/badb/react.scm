@@ -143,8 +143,7 @@
 ;;;
 (define (parse-xml-tool-calls text)
         "Extract tool calls formatted as <tool_call>{...}</tool_call> from text."
-        (if (or (not (string? text)) (string-null? text))
-          '()
+        (if (non-empty-string? text)
           (let loop
             ((remaining text) (calls '()) (call-counter 0))
             (let
@@ -157,33 +156,22 @@
                     (let*
                         ((json-str (string-trim-both (substring after-start 0 end-tag)))
                          (rest (substring after-start (+ end-tag (string-length "</tool_call>"))))
-                         (parsed
-                           (catch #t
-                             (lambda ()
-                               (json-string->scm json-str))
-                             (lambda _
-                               #f))))
-                      (if
-                          (and (pair? parsed) (or (assoc-ref parsed "name") (assoc-ref parsed 'name)))
+                         (parsed (safe-json-parse json-str #f))
+                         (raw-name (and (pair? parsed) (prop-ref parsed 'name))))
+                      (if raw-name
                         (let*
-                            ((raw-name (or (assoc-ref parsed "name") (assoc-ref parsed 'name)))
-                             (raw-args (or (assoc-ref parsed "arguments") (assoc-ref parsed 'arguments) '()))
+                            ((raw-args (or (prop-ref parsed 'arguments) '()))
                              (args
                                (if (string? raw-args)
-                                 (catch #t
-                                   (lambda ()
-                                     (json-string->scm raw-args))
-                                   (lambda _
-                                     raw-args))
+                                 (safe-json-parse raw-args raw-args)
                                  raw-args))
                              (call-id (format #f "call_xml_~a" (+ call-counter 1)))
-                             (tool-call ` ((id . ,call-id) (name . ,raw-name) (arguments . ,args))))
-                          (loop rest
-                                (cons tool-call calls)
-                                (+ call-counter 1)))
+                             (tool-call `((id . ,call-id) (name . ,raw-name) (arguments . ,args))))
+                          (loop rest (cons tool-call calls) (+ call-counter 1)))
                         (loop rest calls call-counter)))
                     (reverse calls)))
-                (reverse calls))))))
+                (reverse calls))))
+          '()))
 
 (define (parse-tool-calls raw-response content-text)
   "Extract tool calls from RAW-RESPONSE (native OpenAI format) or CONTENT-TEXT (XML tags)."
@@ -242,55 +230,67 @@
     ((list? args) (apply impl args))
     (else (impl args))))
 
-(define* (execute-tool-call tool-call reg mcp-mgr #:key (jrn #f) (mgr #f) (guardrail #f))
-  "Execute a single TOOL-CALL alist. Checks GUARDRAIL, dispatches to REG or MCP-MGR,
-and logs provenance to JRN if provided. Returns (values result-scm is-error?)."
-  (let* ((name (assoc-ref tool-call 'name))
-         (args (or (assoc-ref tool-call 'arguments) '()))
-         ;; Check guardrail policy
-         (permission
-          (if (procedure? guardrail)
-              (catch #t
-                (lambda () (guardrail name args))
-                (lambda (k . a)
-                  (cons 'deny (format #f "Guardrail exception (~a): ~s" k a))))
-              #t)))
+(define*
+  (execute-tool-call tool-call reg mcp-mgr #:key (jrn #f) (mgr #f) (guardrail #f))
+  "Execute a single TOOL-CALL alist. Checks GUARDRAIL, dispatches to REGISTRY or MCP-MGR,
+logs execution provenance to JRN, and returns (values result is-error?)."
+  (let*
+      ((name (prop-ref tool-call 'name))
+       (args (or (prop-ref tool-call 'arguments) '()))
+       ;; Check guardrail policy
+       (permission
+         (if (procedure? guardrail)
+           (catch #t
+             (lambda ()
+               (guardrail name args))
+             (lambda (k . a)
+               (cons 'deny (format #f "Guardrail exception (~a): ~s" k a))))
+           #t)))
     (cond
-     ((or (eq? permission #f) (eq? permission 'deny))
-      (values `((error . ,(format #f "Permission denied for tool '~a' by guardrail policy" name)))
-              #t))
-     ((and (pair? permission) (eq? (car permission) 'deny))
-      (values `((error . ,(cdr permission))) #t))
-     (else
-      (catch #t
-        (lambda ()
-          (let ((res
-                 (cond
-                  ;; 1. Check registry features (exact match or with dots/dashes restored)
-                  ((and reg (lookup-registry-feature reg name))
-                   => (lambda (impl)
-                        (if (procedure? impl)
-                            (let ((meta (lookup-registry-metadata reg name)))
-                              (invoke-registry-procedure impl meta args))
-                            (error "Registry entry is not a procedure" name))))
-                  ;; 2. Check MCP manager
-                  ((and mcp-mgr
-                        (find (lambda (t)
-                                (let ((tname (or (assoc-ref t "name") (assoc-ref t 'name))))
-                                  (or (string=? tname name)
-                                      (string=? (normalize-tool-name tname) name))))
-                              (mcp-manager-list-tools mcp-mgr)))
-                   => (lambda (matched)
-                        (let ((orig-name (or (assoc-ref matched "name") (assoc-ref matched 'name))))
-                          (mcp-manager-call-tool mcp-mgr orig-name args))))
-                  (else
-                   (error (format #f "Tool '~a' not found in registry or active MCP servers" name))))))
-            (log-tool-execution! jrn name args "success" `((result-summary . ,(object->string res))))
-            (values res #f)))
-        (lambda (key . err-args)
-          (let ((err-msg (format #f "Execution of tool '~a' failed (~a): ~s" name key err-args)))
-            (log-tool-execution! jrn name args "error" `((error . ,err-msg)))
-            (values `((error . ,err-msg)) #t))))))))
+      ((or (eq? permission #f) (eq? permission 'deny))
+        (values
+          `((error .
+                   ,(format #f "Permission denied for tool '~a' by guardrail policy" name)))
+          #t))
+      ((and (pair? permission) (eq? (car permission) 'deny))
+        (values `((error . ,(cdr permission))) #t))
+      (else
+        (catch #t
+          (lambda ()
+            (let
+                ((res
+                   (cond
+                     ;; 1. Check registry features (exact match or with dots/dashes restored)
+                     ((and reg (lookup-registry-feature reg name)) =>
+                                                                   (lambda (impl)
+                                                                     (if (procedure? impl)
+                                                                       (let ((meta (lookup-registry-metadata reg name)))
+                                                                         (invoke-registry-procedure impl meta args))
+                                                                       (error "Registry entry is not a procedure" name))))
+                     ;; 2. Check MCP manager
+                     ((and mcp-mgr
+                           (find
+                             (lambda (t)
+                               (let ((tname (prop-ref t 'name)))
+                                 (or (string=? tname name) (string=? (normalize-tool-name tname) name))))
+                             (mcp-manager-list-tools mcp-mgr)))
+                       =>
+                       (lambda (matched)
+                         (let ((orig-name (prop-ref matched 'name)))
+                           (mcp-manager-call-tool mcp-mgr orig-name args))))
+                     (else
+                       (error (format #f "Tool '~a' not found in registry or active MCP servers" name))))))
+              (log-tool-execution! jrn
+                                   name
+                                   args
+                                   "success"
+                                   `((result-summary . ,(object->string res))))
+              (values res #f)))
+          (lambda (key . err-args)
+            (let
+                ((err-msg (format #f "Execution of tool '~a' failed (~a): ~s" name key err-args)))
+              (log-tool-execution! jrn name args "error" `((error . ,err-msg)))
+              (values `((error . ,err-msg)) #t))))))))
 
 ;;;
 ;;; ReAct Session Record

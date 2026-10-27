@@ -162,41 +162,51 @@ NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wild
         (cons 'ask "Inspection requires confirmation in paranoid mode")))
     (else (cons 'ask "Unrecognized security level; defaulting to ask"))))
 
-(define (make-scheme-predicate-evaluator predicate-fn)
+(define
+  (make-scheme-predicate-evaluator predicate-fn)
   "Create an algorithmic evaluator driven by custom Scheme PREDICATE-FN.
 PREDICATE-FN receives (tool-name args level context) and returns 'allow, 'deny, or 'ask."
-  (lambda (tool-name args level . extra)
-    (let ((res (predicate-fn tool-name args level (if (pair? extra) (car extra) '()))))
+  (lambda*
+    (tool-name args level #:optional (context '()))
+    (let
+        ((res (predicate-fn tool-name args level context)))
       (cond
-       ((pair? res) res)
-       ((eq? res #t) (cons 'allow "Approved by custom Scheme predicate"))
-       ((eq? res #f) (cons 'deny "Denied by custom Scheme predicate"))
-       (else (cons res (format #f "Decided ~a by Scheme predicate" res)))))))
+        ((pair? res) res)
+        ((eq? res #t) (cons 'allow "Approved by custom Scheme predicate"))
+        ((eq? res #f) (cons 'deny "Denied by custom Scheme predicate"))
+        (else (cons res (format #f "Decided ~a by Scheme predicate" res)))))))
 
-(define* (make-system1-model-evaluator fast-client
-                                       #:key
-                                       (system-prompt "You are a fast System 1 safety guardrail. Evaluate the proposed tool call. Respond strictly with JSON: {\"verdict\": \"allow\"|\"ask\"|\"deny\", \"reason\": \"...\"}")
-                                       (fallback-evaluator default-cautious-evaluator))
+(define*
+  (make-system1-model-evaluator fast-client
+                                #:key
+                                (system-prompt
+                                  "You are a fast System 1 safety guardrail. Evaluate the proposed tool call. Respond strictly with JSON: {\"verdict\": \"allow\"|\"ask\"|\"deny\", \"reason\": \"...\"}")
+                                (fallback-evaluator default-cautious-evaluator))
   "Create a fast neuro-symbolic evaluator using a lightweight 'System 1' model FAST-CLIENT.
 Falls back to FALLBACK-EVALUATOR if the model call fails."
-  (lambda (tool-name args level . extra)
+  (lambda*
+    (tool-name args level #:optional (context '()))
     (catch #t
       (lambda ()
-        (let* ((prompt (format #f "Tool: ~a\nArguments: ~s\nSecurity Level: ~a\nContext: ~s"
-                               tool-name args level (if (pair? extra) (car extra) '())))
-               (msgs (list (cons "system" system-prompt)
-                           (cons "user" prompt)))
-               (resp (model-complete fast-client msgs #:temperature 0.0))
-               (parsed (catch #t
-                         (lambda () (json-string->scm resp))
-                         (lambda _ #f)))
-               (verdict (and (pair? parsed) (or (assoc-ref parsed "verdict") (assoc-ref parsed 'verdict))))
-               (reason (and (pair? parsed) (or (assoc-ref parsed "reason") (assoc-ref parsed 'reason)))))
-          (if (and verdict (member verdict '("allow" "ask" "deny")))
-              (cons (string->symbol verdict) (or reason "Evaluated by System 1 model"))
-              (fallback-evaluator tool-name args level))))
+        (let*
+            ((prompt
+               (format #f
+                       "Tool: ~a\nArguments: ~s\nSecurity Level: ~a\nContext: ~s"
+                       tool-name
+                       args
+                       level
+                       context))
+             (msgs (list (cons "system" system-prompt) (cons "user" prompt)))
+             (resp (model-complete fast-client msgs #:temperature 0.0))
+             (parsed (safe-json-parse resp #f))
+             (verdict (and (pair? parsed) (prop-ref parsed 'verdict)))
+             (reason (and (pair? parsed) (prop-ref parsed 'reason))))
+          (if
+              (and verdict (member (ensure-string verdict) '("allow" "ask" "deny")))
+            (cons (ensure-symbol verdict) (or reason "Evaluated by System 1 model"))
+            (fallback-evaluator tool-name args level context))))
       (lambda (k . a)
-        (fallback-evaluator tool-name args level)))))
+        (fallback-evaluator tool-name args level context)))))
 
 ;;;
 ;;; Guardrail Policy Record

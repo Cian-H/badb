@@ -411,14 +411,13 @@ Supports both (mcp-manager-add-server! mgr spec-alist) and
             (lambda (entry)
               (let*
                   ((srv-name (car entry)) (data (cdr entry))
-                   (status (or (assoc-ref data 'status) ""))
-                   (client (assoc-ref data 'client))
-                   (tools (or (assoc-ref data 'tools) '())))
+                   (status (or (prop-ref data 'status) ""))
+                   (client (prop-ref data 'client))
+                   (tools (or (prop-ref data 'tools) '())))
                 (when (and (string=? status "running") client)
                   (for-each
                     (lambda (t)
-                      (let
-                          ((n (or (assoc-ref t "name") (assoc-ref t 'name))))
+                      (let ((n (prop-ref t 'name)))
                         (when n
                           (let ((n-str (ensure-string n))) (hash-set! idx n-str (cons srv-name client))))))
                     tools))))
