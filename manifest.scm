@@ -4,6 +4,8 @@
   "git"
   "grep"
   "guile"
+  "guile-json"
+  "guile-ncurses"
   "sed"
   "findutils"
   "make"
