@@ -5,6 +5,7 @@
 ;;; system prompts tailored for autonomous ReAct loops.
 
 (define-module (badb prompt)
+  #:use-module (badb util)
   #:use-module (ice-9 popen)
   #:use-module (ice-9 rdelim)
   #:use-module (ice-9 format)
@@ -222,7 +223,7 @@ Returns an alist: ((path . filename) (content . content-string))."
                               (string-append workspace-dir "/" rel-path))))
           (if (file-exists? full-path)
               (let ((content (read-rule-file full-path)))
-                (if (and content (not (string-null? (string-trim-both content))))
+                (if (non-empty-string? content)
                     (loop (cdr rest)
                           (cons `((path . ,rel-path)
                                   (content . ,(string-trim-both content)))
@@ -312,7 +313,7 @@ STYLE can be 'xml (structured tags) or 'markdown."
 workspace state, project guidelines, and tool instructions."
   (let* ((sections '())
          (add-sec! (lambda (header content)
-                     (when (and content (not (string-null? (string-trim-both content))))
+                     (when (non-empty-string? content)
                        (set! sections (cons (format #f "## ~a\n~a" header (string-trim-both content))
                                             sections))))))
 

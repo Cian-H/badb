@@ -739,11 +739,11 @@ and core badb modules for interactive evaluation."
              (inner-w (max 10 (- card-w 4))))
         (cond
          ((string=? role "assistant")
-          (let* ((th-lines (if (and thoughts (not (string-null? (string-trim-both thoughts))))
+          (let* ((th-lines (if (non-empty-string? thoughts)
                                (make-card-entry "💭 THOUGHT PROCESS" 1 "thought"
                                                 (wrap-text (string-trim-both thoughts) inner-w) card-w inner-w)
                                '()))
-                 (ct-lines (if (and content (not (string-null? (string-trim-both content))))
+                 (ct-lines (if (non-empty-string? content)
                                (make-card-entry "🤖 ASSISTANT" 3 "assistant"
                                                 (wrap-text content inner-w) card-w inner-w)
                                '())))
