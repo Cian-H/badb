@@ -72,8 +72,19 @@
 (define (tool-calls->string tool-calls)
         "Convert tool-calls structure to a string representation."
         (cond
-          ((vector? tool-calls) (scm->json-string (vector->list tool-calls)))
-          ((pair? tool-calls) (scm->json-string tool-calls))
+          ((vector? tool-calls)
+            (catch #t
+              (lambda ()
+                (scm->json-string tool-calls))
+              (lambda _
+                (object->string tool-calls))))
+          ((pair? tool-calls)
+            (catch #t
+              (lambda ()
+                (scm->json-string (list->vector tool-calls)))
+              (lambda _
+                (object->string tool-calls))))
+          ((string? tool-calls) tool-calls)
           (else "")))
 
 (define (char-heuristic-estimator text)
