@@ -1,0 +1,12 @@
+(specifications->manifest
+ (list
+  "coreutils"
+  "git"
+  "grep"
+  "guile"
+  "sed"
+  "findutils"
+  "make"
+  "tar"
+  "gzip"
+  "unzip"))
