@@ -232,4 +232,194 @@
       (test-equal "exit code is 42" 42 exit-val)
       (test-assert "stderr captured" (string-contains out "oops")))))
 
+;;;
+;;; 6. Model Thoughts and Reasoning Separation (split-thoughts-and-content)
+;;;
+
+(test-group "tui-thoughts-separation"
+  ;; Closed <think> tag
+  (call-with-values (lambda () (split-thoughts-and-content "<think>Let me reason carefully.</think>The answer is 42."))
+    (lambda (th ct)
+      (test-equal "extracts closed <think> tag thoughts" "Let me reason carefully." th)
+      (test-equal "extracts closed <think> tag content" "The answer is 42." ct)))
+
+  ;; Closed <thought> tag
+  (call-with-values (lambda () (split-thoughts-and-content "<thought>Pondering options...</thought>Option A is best."))
+    (lambda (th ct)
+      (test-equal "extracts closed <thought> tag thoughts" "Pondering options..." th)
+      (test-equal "extracts closed <thought> tag content" "Option A is best." ct)))
+
+  ;; Streaming in-flight unclosed <think> tag
+  (call-with-values (lambda () (split-thoughts-and-content "<think>Currently reasoning in real-time..."))
+    (lambda (th ct)
+      (test-equal "extracts in-flight streaming thoughts" "Currently reasoning in real-time..." th)
+      (test-equal "content is empty during in-flight thinking" "" ct)))
+
+  ;; Multiple thought blocks
+  (call-with-values (lambda () (split-thoughts-and-content "<think>Part 1</think>Content 1\n<think>Part 2</think>Content 2"))
+    (lambda (th ct)
+      (test-equal "combines multiple thought tags" "Part 1\n\nPart 2" th)
+      (test-equal "combines content around multiple thought tags" "Content 1\nContent 2" ct)))
+
+  ;; Text with no thought tags
+  (call-with-values (lambda () (split-thoughts-and-content "Pure answer with no internal thoughts."))
+    (lambda (th ct)
+      (test-assert "thoughts are #f when no tags present" (not th))
+      (test-equal "content is unchanged" "Pure answer with no internal thoughts." ct)))
+
+  ;; Empty text
+  (call-with-values (lambda () (split-thoughts-and-content ""))
+    (lambda (th ct)
+      (test-assert "thoughts are #f on empty input" (not th))
+      (test-equal "content is empty on empty input" "" ct))))
+
+;;;
+;;; 7. Slash Command Palette & Selector Filtering
+;;;
+
+(test-group "tui-slash-selector"
+  ;; selector-active?
+  (test-assert "selector is active when buffer starts with /"
+    (selector-active? "/"))
+  (test-assert "selector is active when query is being typed"
+    (selector-active? "/mod"))
+  (test-assert "selector is inactive once a space is typed (argument mode)"
+    (not (selector-active? "/model ")))
+  (test-assert "selector is inactive for normal chat"
+    (not (selector-active? "hello /help")))
+  (test-assert "selector is inactive for shell command"
+    (not (selector-active? "!ls")))
+
+  ;; %slash-commands registry contents
+  (test-assert "slash commands list contains help"
+    (assoc "help" %slash-commands))
+  (test-assert "slash commands list contains model"
+    (assoc "model" %slash-commands))
+  (test-assert "slash commands list contains endpoint"
+    (assoc "endpoint" %slash-commands))
+  (test-assert "slash commands list contains features"
+    (assoc "features" %slash-commands))
+  (test-assert "slash commands list contains journal"
+    (assoc "journal" %slash-commands))
+  (test-assert "slash commands list contains test"
+    (assoc "test" %slash-commands))
+  (test-assert "slash commands list contains sh"
+    (assoc "sh" %slash-commands))
+  (test-assert "slash commands list contains eval"
+    (assoc "eval" %slash-commands))
+  (test-assert "slash commands list contains clear"
+    (assoc "clear" %slash-commands))
+  (test-assert "slash commands list contains quit"
+    (assoc "quit" %slash-commands))
+
+  ;; matching-slash-commands filtering
+  (let ((all-matches (matching-slash-commands "/")))
+    (test-equal "bare / returns all slash commands"
+      (length %slash-commands)
+      (length all-matches)))
+
+  (let ((m-matches (matching-slash-commands "/m")))
+    (test-assert "matches commands containing m"
+      (member "model" (map car m-matches))))
+
+  (let ((exact-matches (matching-slash-commands "/jour")))
+    (test-equal "matches journal command"
+      '("journal")
+      (map car exact-matches)))
+
+  (let ((no-matches (matching-slash-commands "/xyznonexistent")))
+    (test-assert "empty list for non-matching query"
+      (null? no-matches))))
+
+;;;
+;;; 8. Morphing Single-Character Prompt Indicators (get-prompt-indicator)
+;;;
+
+(test-group "tui-prompt-indicator"
+  ;; Idle prompt: single-character ❯
+  (call-with-values (lambda () (get-prompt-indicator "" "READY"))
+    (lambda (glyph pair bold?)
+      (test-equal "idle prompt is single char ❯" "❯" glyph)
+      (test-equal "idle prompt color is green pair 2" 2 pair)
+      (test-assert "idle prompt is bold" bold?)))
+
+  ;; Shell mode: single-character $
+  (call-with-values (lambda () (get-prompt-indicator "!git status" "READY"))
+    (lambda (glyph pair bold?)
+      (test-equal "shell prompt is single char $" "$" glyph)
+      (test-equal "shell prompt color is magenta pair 6" 6 pair)
+      (test-assert "shell prompt is bold" bold?)))
+
+  ;; Scheme mode: single-character λ
+  (call-with-values (lambda () (get-prompt-indicator ",(+ 1 2)" "READY"))
+    (lambda (glyph pair bold?)
+      (test-equal "scheme prompt is single char λ" "λ" glyph)
+      (test-equal "scheme prompt color is cyan pair 1" 1 pair)
+      (test-assert "scheme prompt is bold" bold?)))
+
+  (call-with-values (lambda () (get-prompt-indicator "(define x 42)" "READY"))
+    (lambda (glyph pair bold?)
+      (test-equal "s-expr prompt is single char λ" "λ" glyph)
+      (test-equal "s-expr prompt color is cyan pair 1" 1 pair)))
+
+  ;; Slash command mode: single-character /
+  (call-with-values (lambda () (get-prompt-indicator "/model" "READY"))
+    (lambda (glyph pair bold?)
+      (test-equal "slash prompt is single char /" "/" glyph)
+      (test-equal "slash prompt color is yellow pair 4" 4 pair)))
+
+  ;; Task-based morphing indicators
+  (call-with-values (lambda () (get-prompt-indicator "" "STREAMING..."))
+    (lambda (glyph pair bold?)
+      (test-equal "streaming prompt is single char ⟳" "⟳" glyph)
+      (test-equal "streaming prompt color is cyan pair 1" 1 pair)))
+
+  (call-with-values (lambda () (get-prompt-indicator "" "EXEC..."))
+    (lambda (glyph pair bold?)
+      (test-equal "executing prompt is single char ⚙" "⚙" glyph)
+      (test-equal "executing prompt color is magenta pair 6" 6 pair)))
+
+  (call-with-values (lambda () (get-prompt-indicator "" "EVAL..."))
+    (lambda (glyph pair bold?)
+      (test-equal "evaluating prompt is single char λ" "λ" glyph)
+      (test-equal "evaluating prompt color is cyan pair 1" 1 pair)))
+
+  (call-with-values (lambda () (get-prompt-indicator "" "TESTING..."))
+    (lambda (glyph pair bold?)
+      (test-equal "testing prompt is single char ⚙" "⚙" glyph)
+      (test-equal "testing prompt color is yellow pair 4" 4 pair))))
+
+;;;
+;;; 9. Modern 2020s Container Frame Formatters
+;;;
+
+(test-group "tui-modern-frame-formatters"
+  ;; Header Line
+  (let ((header (format-header-line 80 "READY" "minicpm5-1b:gguf:q8" 3 5)))
+    (test-assert "header starts with top-left rounded corner"
+      (string-prefix? "╭─ badb ─" header))
+    (test-assert "header ends with top-right rounded corner"
+      (string-suffix? "╮" header))
+    (test-assert "header contains status pill"
+      (string-contains header "❲● READY❳"))
+    (test-assert "header contains model pill"
+      (string-contains header "❲minicpm5-1b:gguf:q8❳"))
+    (test-assert "header contains features pill"
+      (string-contains header "❲3 feats❳"))
+    (test-assert "header contains journal pill"
+      (string-contains header "❲5 chkpts❳"))
+    (test-equal "header length matches terminal width"
+      80 (string-length header)))
+
+  ;; Prompt Divider
+  (let ((divider (format-prompt-divider 80)))
+    (test-assert "divider starts with left tee branch"
+      (string-prefix? "├─ prompt ──" divider))
+    (test-assert "divider ends with right tee branch"
+      (string-suffix? "┤" divider))
+    (test-assert "divider contains shortcut hint"
+      (string-contains divider "[Tab: complete"))
+    (test-equal "divider length matches terminal width"
+      80 (string-length divider))))
+
 (test-end "badb-tui")

@@ -1,8 +1,9 @@
 ;;; badb — Terminal User Interface (TUI)
 ;;;
 ;;; Interactive full-screen terminal interface for badb powered by guile-ncurses.
-;;; Provides live streaming LLM chat, model configuration, registry inspection,
-;;; and checkpoint journal viewing.
+;;; Provides live streaming LLM chat with separated thought reasoning cards,
+;;; morphing single-character prompt indicators, interactive slash-command
+;;; selector palette, and modern 2020s container styling (lazygit / vibe inspired).
 
 (define-module (badb tui)
   #:use-module (badb model)
@@ -22,7 +23,14 @@
             classify-input
             make-repl-mod
             eval-scheme-code
-            execute-shell-command))
+            execute-shell-command
+            split-thoughts-and-content
+            %slash-commands
+            matching-slash-commands
+            selector-active?
+            get-prompt-indicator
+            format-header-line
+            format-prompt-divider))
 
 ;;;
 ;;; Text Formatting & Word Wrapping Helpers
@@ -57,6 +65,39 @@ breaking on whitespace when possible."
   (let ((raw-lines (string-split text #\newline)))
     (append-map (lambda (line) (wrap-line line max-width)) raw-lines)))
 
+;;;
+;;; Slash Commands Registry & Parsing
+;;;
+
+(define %slash-commands
+  '(("help"     . "Show help manual & shortcuts")
+    ("model"    . "Switch or inspect active LLM model")
+    ("endpoint" . "Switch or inspect endpoint URL")
+    ("features" . "List kernel registered features")
+    ("journal"  . "View checkpoint provenance audit log")
+    ("test"     . "Run bootstrap verification test suite")
+    ("sh"       . "Execute shell command (!<cmd>)")
+    ("eval"     . "Evaluate Scheme code in REPL (,<expr>)")
+    ("clear"    . "Clear chat viewport history")
+    ("quit"     . "Exit badb microharness")))
+
+(define (selector-active? input-buffer)
+  "Return #t if the slash command selector palette should be visible."
+  (and (string-prefix? "/" input-buffer)
+       (not (string-contains input-buffer " "))))
+
+(define (matching-slash-commands input-buffer)
+  "Return list of (%slash-commands) items matching the current query in INPUT-BUFFER."
+  (let* ((prefix (if (string-prefix? "/" input-buffer)
+                     (substring input-buffer 1)
+                     input-buffer))
+         (clean-q (string-downcase (string-trim-both prefix))))
+    (if (string-null? clean-q)
+        %slash-commands
+        (filter (lambda (item)
+                  (string-contains (string-downcase (car item)) clean-q))
+                %slash-commands))))
+
 (define (parse-command input)
   "Parse user INPUT into (command . arg-string) or #f if not a slash command."
   (let ((trimmed (string-trim-both input)))
@@ -68,6 +109,114 @@ breaking on whitespace when possible."
                     (string-trim-both (substring without-slash (+ space-pos 1))))
               (cons without-slash "")))
         #f)))
+
+;;;
+;;; Model Thoughts & Reasoning Separation Helper
+;;;
+
+(define (split-thoughts-and-content text)
+  "Separate thought blocks (<think>...</think> or <thought>...</thought>)
+from response content in TEXT. Handles unclosed tags from live streaming.
+Returns (values thoughts content)."
+  (let loop ((remaining text)
+             (thoughts-acc '())
+             (content-acc '()))
+    (let* ((think-start (string-contains remaining "<think>"))
+           (thought-start (string-contains remaining "<thought>"))
+           (start-tag (cond
+                       ((and think-start thought-start)
+                        (if (< think-start thought-start)
+                            (cons think-start "<think>")
+                            (cons thought-start "<thought>")))
+                       (think-start (cons think-start "<think>"))
+                       (thought-start (cons thought-start "<thought>"))
+                       (else #f))))
+      (if (not start-tag)
+          (let* ((all-c (if (string-null? (string-trim-both remaining))
+                            content-acc
+                            (cons (string-trim-both remaining) content-acc)))
+                 (final-content (string-trim-both (string-join (reverse all-c) "\n")))
+                 (final-thoughts (string-trim-both (string-join (reverse thoughts-acc) "\n\n"))))
+            (values (if (string-null? final-thoughts) #f final-thoughts)
+                    final-content))
+          (let* ((start-pos (car start-tag))
+                 (tag-str (cdr start-tag))
+                 (tag-len (string-length tag-str))
+                 (end-tag-str (if (string=? tag-str "<think>") "</think>" "</thought>"))
+                 (prefix-content (substring remaining 0 start-pos))
+                 (after-tag (substring remaining (+ start-pos tag-len)))
+                 (end-pos (string-contains after-tag end-tag-str)))
+            (if end-pos
+                (let ((thought-body (substring after-tag 0 end-pos))
+                      (rest-after (substring after-tag (+ end-pos (string-length end-tag-str)))))
+                  (loop rest-after
+                        (cons (string-trim-both thought-body) thoughts-acc)
+                        (if (string-null? (string-trim-both prefix-content))
+                            content-acc
+                            (cons (string-trim-both prefix-content) content-acc))))
+                (let ((thought-body (string-trim-both after-tag)))
+                  (let* ((all-thoughts (reverse (cons thought-body thoughts-acc)))
+                         (all-content (if (string-null? (string-trim-both prefix-content))
+                                          (reverse content-acc)
+                                          (reverse (cons (string-trim-both prefix-content) content-acc))))
+                         (final-th (string-trim-both (string-join all-thoughts "\n\n")))
+                         (final-ct (string-trim-both (string-join all-content "\n"))))
+                    (values (if (string-null? final-th) #f final-th)
+                            final-ct)))))))))
+
+;;;
+;;; Morphing Prompt Indicator
+;;;
+
+(define (get-prompt-indicator input-buffer status-text)
+  "Return (values glyph-char color-pair bold?) for the prompt indicator
+based on current input mode and execution status."
+  (cond
+   ((string=? status-text "STREAMING...")
+    (values "⟳" 1 #t))     ; Cyan bold spinning
+   ((string=? status-text "EXEC...")
+    (values "⚙" 6 #t))     ; Magenta bold gear
+   ((string=? status-text "EVAL...")
+    (values "λ" 1 #t))     ; Cyan bold lambda
+   ((string=? status-text "TESTING...")
+    (values "⚙" 4 #t))     ; Yellow bold gear
+   ((string-prefix? "!" input-buffer)
+    (values "$" 6 #t))     ; Magenta bold shell
+   ((or (string-prefix? "," input-buffer) (string-prefix? "(" input-buffer))
+    (values "λ" 1 #t))     ; Cyan bold lambda
+   ((string-prefix? "/" input-buffer)
+    (values "/" 4 #t))     ; Yellow bold slash
+   (else
+    (values "❯" 2 #t))))   ; Green bold chat
+
+;;;
+;;; Modern 2020s Container Layout Formatters
+;;;
+
+(define (format-header-line maxx status-text model-name feat-count jrn-count)
+  "Format a modern rounded container header bar with status pills."
+  (let* ((prefix (format #f "╭─ badb ─ ❲● ~a❳ ─ ❲~a❳ ─ ❲~a feats❳ ─ ❲~a chkpts❳ "
+                         status-text model-name feat-count jrn-count))
+         (plen (string-length prefix)))
+    (if (< plen (- maxx 1))
+        (string-append prefix (make-string (- maxx 1 plen) #\─) "╮")
+        (let* ((short-prefix (format #f "╭─ badb ─ ❲● ~a❳ ─ ❲~a❳ " status-text model-name))
+               (splen (string-length short-prefix)))
+          (if (< splen (- maxx 1))
+              (string-append short-prefix (make-string (- maxx 1 splen) #\─) "╮")
+              (substring (string-append short-prefix (make-string (max 0 (- maxx splen)) #\─) "╮") 0 maxx))))))
+
+(define (format-prompt-divider maxx)
+  "Format the divider bar separating message history from the input prompt."
+  (let* ((prefix "├─ prompt ── [Tab: complete │ !: shell │ ,: scheme │ /: commands] ")
+         (plen (string-length prefix)))
+    (if (< plen (- maxx 1))
+        (string-append prefix (make-string (- maxx 1 plen) #\─) "┤")
+        (let* ((short-p "├─ prompt ── [Tab / ! ,] ")
+               (splen (string-length short-p)))
+          (if (< splen (- maxx 1))
+              (string-append short-p (make-string (- maxx 1 splen) #\─) "┤")
+              (substring (string-append "├─ prompt " (make-string (max 0 (- maxx 10)) #\─) "┤") 0 maxx))))))
 
 ;;;
 ;;; Shell & REPL Execution Helpers
@@ -162,11 +311,7 @@ and core badb modules for interactive evaluation."
       (values #f 1 (format #f "Shell error (~a): ~s" key args)))))
 
 ;;;
-;;; Curses Safe Rendering Utilities
-;;;
-
-;;;
-;;; Main TUI Event Loop
+;;; Main TUI Controller
 ;;;
 
 (define* (run-tui #:key
@@ -248,14 +393,15 @@ and core badb modules for interactive evaluation."
     (define messages (list
                       `((role . "system")
                         (content . ,(string-append
-                                    "Welcome to badb microharness TUI!\n"
-                                    "• Type a message to chat with the model\n"
-                                    "• Type !<cmd> to execute shell commands (e.g. !git status)\n"
-                                    "• Type ,<expr> or (<expr>) to evaluate Scheme (e.g. ,(+ 1 2))\n"
-                                    "• Type /help for all available commands.")))))
+                                     "Welcome to badb microharness TUI!\n"
+                                     "• Type a message to chat with the model\n"
+                                     "• Type !<cmd> to execute shell commands (e.g. !git status)\n"
+                                     "• Type ,<expr> or (<expr>) to evaluate Scheme (e.g. ,(+ 1 2))\n"
+                                     "• Type / to open command selector palette.")))))
     (define input-buffer "")
     (define scroll-offset 0)
     (define status-text "READY")
+    (define selector-index 0)
 
     (define stdscr #f)
     (define colors-enabled? #f)
@@ -276,64 +422,121 @@ and core badb modules for interactive evaluation."
               (addstr win safe-str))
             (lambda _ #f)))))
 
+    ;; Format a single message entry into styled rows
+    (define (format-message-entry msg content-width)
+      (let* ((role (assoc-ref msg 'role))
+             (content (or (assoc-ref msg 'content) ""))
+             (thoughts (assoc-ref msg 'thoughts)))
+        (cond
+         ((string=? role "assistant")
+          (let* ((thought-lines
+                  (if (and thoughts (not (string-null? (string-trim-both thoughts))))
+                      (let* ((card-w (min content-width 72))
+                             (inner-w (max 10 (- card-w 4)))
+                             (wrapped-th (wrap-text (string-trim-both thoughts) inner-w))
+                             (top-tag "╭─ 💭 Thought Process ")
+                             (top-fill (make-string (max 0 (- card-w (string-length top-tag) 1)) #\─))
+                             (top-line (string-append top-tag top-fill "╮"))
+                             (bot-line (string-append "╰" (make-string (- card-w 2) #\─) "╯"))
+                             (body (map (lambda (l)
+                                          (let ((pad (make-string (max 0 (- inner-w (string-length l))) #\space)))
+                                            (string-append "│ " l pad " │")))
+                                        wrapped-th)))
+                        (map (lambda (l) (list "thought" l))
+                             (cons top-line (append body (list bot-line)))))
+                      '()))
+                 (content-lines
+                  (if (string-null? (string-trim-both content))
+                      '()
+                      (let ((wrapped (wrap-text content (- content-width 2))))
+                        (if (null? wrapped)
+                            '()
+                            (cons (list "assistant" (string-append "• " (car wrapped)))
+                                  (map (lambda (l) (list "assistant" (string-append "  " l)))
+                                       (cdr wrapped))))))))
+            (append thought-lines content-lines)))
+
+         ((string=? role "user")
+          (let ((wrapped (wrap-text content (- content-width 2))))
+            (if (null? wrapped)
+                '()
+                (cons (list "user" (string-append "❯ " (car wrapped)))
+                      (map (lambda (l) (list "user" (string-append "  " l))) (cdr wrapped))))))
+
+         ((string=? role "system")
+          (let ((wrapped (wrap-text content (- content-width 2))))
+            (if (null? wrapped)
+                '()
+                (cons (list "system" (string-append "ℹ " (car wrapped)))
+                      (map (lambda (l) (list "system" (string-append "  " l))) (cdr wrapped))))))
+
+         ((string=? role "error")
+          (let ((wrapped (wrap-text content (- content-width 2))))
+            (if (null? wrapped)
+                '()
+                (cons (list "error" (string-append "✗ " (car wrapped)))
+                      (map (lambda (l) (list "error" (string-append "  " l))) (cdr wrapped))))))
+
+         ((string=? role "shell-cmd")
+          (let ((wrapped (wrap-text content (- content-width 2))))
+            (if (null? wrapped)
+                '()
+                (cons (list "shell-cmd" (string-append "$ " (car wrapped)))
+                      (map (lambda (l) (list "shell-cmd" (string-append "  " l))) (cdr wrapped))))))
+
+         ((string=? role "shell-out")
+          (let ((wrapped (wrap-text content (- content-width 2))))
+            (map (lambda (l) (list "shell-out" (string-append "  " l))) wrapped)))
+
+         ((string=? role "scheme-in")
+          (let ((wrapped (wrap-text content (- content-width 2))))
+            (if (null? wrapped)
+                '()
+                (cons (list "scheme-in" (string-append "λ " (car wrapped)))
+                      (map (lambda (l) (list "scheme-in" (string-append "  " l))) (cdr wrapped))))))
+
+         ((string=? role "scheme-out")
+          (let ((wrapped (wrap-text content (- content-width 2))))
+            (map (lambda (l) (list "scheme-out" (string-append "  " l))) wrapped)))
+
+         (else
+          (let ((wrapped (wrap-text content (- content-width 2))))
+            (map (lambda (l) (list "system" (string-append "• " l))) wrapped))))))
+
     ;; Render entire screen
     (define (render!)
       (let* ((maxy (getmaxy stdscr))
              (maxx (getmaxx stdscr))
-             (view-top 2)
+             (view-top 1)
              (view-bottom (- maxy 3))
              (view-height (max 1 (- view-bottom view-top)))
              (content-width (max 10 (- maxx 4))))
 
         (erase stdscr)
 
-        ;; 1. Header Bar
+        ;; 1. Header Bar with Rounded Frame & Status Pills
         (set-color-attr! 1 #t)
-        (attr-on! stdscr A_BOLD)
-        (attr-on! stdscr A_REVERSE)
-        (let* ((header-str (format #f " badb [~a] | Model: ~a | Features: ~a | Journal: ~a "
-                                   status-text
-                                   cur-model
-                                   (length (registry-list reg))
-                                   (journal-count jrn)))
-               (pad-len (max 0 (- maxx (string-length header-str))))
-               (full-header (string-append header-str (make-string pad-len #\space))))
-          (safe-addstr stdscr 0 0 full-header maxx))
-        (attr-off! stdscr A_REVERSE)
-        (attr-off! stdscr A_BOLD)
+        (safe-addstr stdscr 0 0
+                     (format-header-line maxx
+                                         status-text
+                                         cur-model
+                                         (length (registry-list reg))
+                                         (journal-count jrn))
+                     maxx)
         (set-color-attr! 1 #f)
 
-        ;; 2. Separator line below header
-        (safe-addstr stdscr 1 0 (make-string maxx #\─) maxx)
+        ;; 2. Side borders for viewport rows
+        (let loop-borders ((y view-top))
+          (when (< y view-bottom)
+            (safe-addstr stdscr y 0 "│" 1)
+            (safe-addstr stdscr y (- maxx 1) "│" 1)
+            (loop-borders (+ y 1))))
 
         ;; 3. Formatted Message History
         (let* ((formatted-lines
-                (append-map
-                 (lambda (msg)
-                   (let* ((role (assoc-ref msg 'role))
-                          (content (or (assoc-ref msg 'content) ""))
-                          (prefix (cond
-                                   ((string=? role "user") "> ")
-                                   ((string=? role "assistant") "• ")
-                                   ((string=? role "system") "ℹ ")
-                                   ((string=? role "error") "✗ ")
-                                   ((string=? role "shell-cmd") "$ ")
-                                   ((string=? role "shell-out") "  ")
-                                   ((string=? role "scheme-in") "λ> ")
-                                   ((string=? role "scheme-out") "  ")
-                                   (else "* ")))
-                          (wrapped (wrap-text content (- content-width (string-length prefix)))))
-                     (if (null? wrapped)
-                         '()
-                         (cons (list role (string-append prefix (car wrapped)))
-                               (map (lambda (line)
-                                      (list role (string-append
-                                                  (make-string (string-length prefix) #\space)
-                                                  line)))
-                                    (cdr wrapped))))))
-                 messages))
+                (append-map (lambda (msg) (format-message-entry msg content-width))
+                            messages))
                (total-lines (length formatted-lines))
-               ;; Calculate scroll window
                (start-line (max 0 (- total-lines view-height scroll-offset)))
                (visible-lines (take (drop formatted-lines start-line)
                                     (min view-height (- total-lines start-line)))))
@@ -344,6 +547,13 @@ and core badb modules for interactive evaluation."
                      (role (car entry))
                      (text (cadr entry)))
                 (cond
+                 ((string=? role "thought")
+                  (set-color-attr! 1 #t)
+                  (attr-on! stdscr A_DIM)
+                  (safe-addstr stdscr y 2 text content-width)
+                  (attr-off! stdscr A_DIM)
+                  (set-color-attr! 1 #f))
+
                  ((string=? role "user")
                   (set-color-attr! 2 #t)
                   (attr-on! stdscr A_BOLD)
@@ -394,40 +604,98 @@ and core badb modules for interactive evaluation."
                   (safe-addstr stdscr y 2 text content-width))))
               (loop (cdr lines) (+ y 1)))))
 
-        ;; 4. Separator line above input
-        (safe-addstr stdscr (- maxy 3) 0 (make-string maxx #\─) maxx)
-        (let ((hint " [/help | !<cmd> | ,<expr> | /test | /quit] "))
-          (safe-addstr stdscr (- maxy 3) (max 0 (- maxx (string-length hint) 2)) hint (string-length hint)))
+        ;; 4. Prompt divider line
+        (set-color-attr! 1 #t)
+        (safe-addstr stdscr (- maxy 3) 0 (format-prompt-divider maxx) maxx)
+        (set-color-attr! 1 #f)
 
-        ;; 5. Input Prompt Line (dynamic prefix based on active input mode)
-        (let* ((prompt-prefix
-                (cond
-                 ((string-prefix? "!" input-buffer) "sh!> ")
-                 ((or (string-prefix? "," input-buffer) (string-prefix? "(" input-buffer)) "schemeλ> ")
-                 (else "badb> ")))
-               (avail-width (max 1 (- maxx (string-length prompt-prefix) 2)))
-               (visible-input (if (> (string-length input-buffer) avail-width)
-                                  (substring input-buffer (- (string-length input-buffer) avail-width))
-                                  input-buffer)))
-          (set-color-attr! 1 #t)
-          (attr-on! stdscr A_BOLD)
-          (safe-addstr stdscr (- maxy 2) 1 prompt-prefix (string-length prompt-prefix))
-          (attr-off! stdscr A_BOLD)
-          (set-color-attr! 1 #f)
+        ;; 5. Prompt Input Line (single character morphing indicator)
+        (safe-addstr stdscr (- maxy 2) 0 "│" 1)
+        (safe-addstr stdscr (- maxy 2) (- maxx 1) "│" 1)
+        (call-with-values (lambda () (get-prompt-indicator input-buffer status-text))
+          (lambda (glyph pair-id bold?)
+            (let* ((avail-width (max 1 (- maxx 6)))
+                   (visible-input (if (> (string-length input-buffer) avail-width)
+                                      (substring input-buffer (- (string-length input-buffer) avail-width))
+                                      input-buffer)))
+              (set-color-attr! pair-id #t)
+              (when bold? (attr-on! stdscr A_BOLD))
+              (safe-addstr stdscr (- maxy 2) 2 glyph 1)
+              (when bold? (attr-off! stdscr A_BOLD))
+              (set-color-attr! pair-id #f)
 
-          (safe-addstr stdscr (- maxy 2) (+ 1 (string-length prompt-prefix)) visible-input avail-width)
-          ;; Position cursor
-          (move stdscr (- maxy 2) (+ 1 (string-length prompt-prefix) (string-length visible-input))))
+              (safe-addstr stdscr (- maxy 2) 4 visible-input avail-width)
+              ;; Position cursor at end of input
+              (move stdscr (- maxy 2) (+ 4 (string-length visible-input))))))
+
+        ;; 6. Bottom container border
+        (set-color-attr! 1 #t)
+        (safe-addstr stdscr (- maxy 1) 0
+                     (string-append "╰" (make-string (max 0 (- maxx 2)) #\─) "╯")
+                     maxx)
+        (set-color-attr! 1 #f)
+
+        ;; 7. Floating Slash Command Selector Popup Overlay
+        (when (selector-active? input-buffer)
+          (let* ((matches (matching-slash-commands input-buffer))
+                 (box-w (min 62 (max 20 (- maxx 4))))
+                 (vis-count (min (length matches) 7)))
+            (when (> vis-count 0)
+              (let* ((box-h (+ vis-count 2))
+                     (start-y (- maxy 3 box-h))
+                     (start-x 2))
+                ;; Top line
+                (let* ((top-tag "╭─ Commands ")
+                       (top-fill (make-string (max 0 (- box-w (string-length top-tag) 1)) #\─))
+                       (top-str (string-append top-tag top-fill "╮")))
+                  (set-color-attr! 4 #t)
+                  (safe-addstr stdscr start-y start-x top-str box-w)
+                  (set-color-attr! 4 #f))
+                ;; Items
+                (let loop ((items matches) (idx 0))
+                  (when (and (not (null? items)) (< idx vis-count))
+                    (let* ((item (car items))
+                           (cmd (car item))
+                           (desc (cdr item))
+                           (is-sel? (= idx selector-index))
+                           (row-y (+ start-y 1 idx))
+                           (inner-w (- box-w 4))
+                           (cursor (if is-sel? "❯ " "  "))
+                           (cmd-text (format #f "/~a" cmd))
+                           (pad-cmd (make-string (max 1 (- 12 (string-length cmd-text))) #\space))
+                           (content (string-append cursor cmd-text pad-cmd desc))
+                           (clipped (if (> (string-length content) inner-w)
+                                        (substring content 0 inner-w)
+                                        content))
+                           (pad (make-string (max 0 (- inner-w (string-length clipped))) #\space))
+                           (row-text (string-append "│ " clipped pad " │")))
+                      (if is-sel?
+                          (begin
+                            (set-color-attr! 1 #t)
+                            (attr-on! stdscr A_BOLD)
+                            (attr-on! stdscr A_REVERSE)
+                            (safe-addstr stdscr row-y start-x row-text box-w)
+                            (attr-off! stdscr A_REVERSE)
+                            (attr-off! stdscr A_BOLD)
+                            (set-color-attr! 1 #f))
+                          (begin
+                            (safe-addstr stdscr row-y start-x row-text box-w)))
+                      (loop (cdr items) (+ idx 1)))))
+                ;; Bottom line
+                (let* ((bot-str (string-append "╰" (make-string (- box-w 2) #\─) "╯")))
+                  (set-color-attr! 4 #t)
+                  (safe-addstr stdscr (+ start-y 1 vis-count) start-x bot-str box-w)
+                  (set-color-attr! 4 #f))))))
 
         (refresh stdscr)))
 
-    ;; Execute streaming query against LLM
+    ;; Execute streaming query against LLM with separated thoughts
     (define (execute-chat-stream! user-prompt)
       (set! status-text "STREAMING...")
       (set! scroll-offset 0)
-      ;; Add empty assistant message to accumulate stream
+      ;; Add empty assistant message with separate thoughts and content
       (set! messages (append messages
-                             (list `((role . "assistant") (content . "")))))
+                             (list `((role . "assistant") (thoughts . #f) (content . "")))))
       (render!)
 
       (catch #t
@@ -437,15 +705,28 @@ and core badb modules for interactive evaluation."
                                            (assoc-ref m 'content)))
                                    (filter (lambda (m)
                                              (member (assoc-ref m 'role) '("user" "assistant")))
-                                           messages))))
+                                           messages)))
+                (raw-api-thoughts "")
+                (raw-api-content ""))
             (model-stream client chat-history
-                          (lambda (delta)
-                            (let* ((cur-last (last messages))
-                                   (cur-content (assoc-ref cur-last 'content))
-                                   (new-content (string-append cur-content delta))
-                                   (updated-msg `((role . "assistant") (content . ,new-content))))
-                              (set! messages (append (drop-right messages 1) (list updated-msg)))
-                              (render!))))))
+                          (lambda (delta . type-args)
+                            (let ((chunk-type (if (pair? type-args) (car type-args) 'content)))
+                              (if (eq? chunk-type 'thought)
+                                  (set! raw-api-thoughts (string-append raw-api-thoughts delta))
+                                  (set! raw-api-content (string-append raw-api-content delta)))
+                              (call-with-values (lambda () (split-thoughts-and-content raw-api-content))
+                                (lambda (inline-th inline-ct)
+                                  (let* ((total-th (cond
+                                                    ((and (not (string-null? raw-api-thoughts)) inline-th)
+                                                     (string-append raw-api-thoughts "\n\n" inline-th))
+                                                    ((not (string-null? raw-api-thoughts))
+                                                     raw-api-thoughts)
+                                                    (else inline-th)))
+                                         (updated-msg `((role . "assistant")
+                                                        (thoughts . ,total-th)
+                                                        (content . ,inline-ct))))
+                                    (set! messages (append (drop-right messages 1) (list updated-msg)))
+                                    (render!)))))))))
         (lambda (key . args)
           (let ((err-msg (format #f "Stream error (~a): ~s" key args)))
             (set! messages (append messages `(((role . "error") (content . ,err-msg))))))))
@@ -503,26 +784,26 @@ and core badb modules for interactive evaluation."
     ;; Handle slash commands
     (define (handle-command! cmd-pair)
       (let ((cmd (car cmd-pair))
-            (arg (cdr cmd-pair)))
+             (arg (cdr cmd-pair)))
         (cond
          ((or (string=? cmd "help") (string=? cmd "?"))
           (set! messages
                 (append messages
                         (list `((role . "system")
                                 (content . ,(string-append
-                                            "Available Commands:\n"
-                                            "  /help             Display this help message\n"
-                                            "  /model [NAME]     Show or switch active LLM model\n"
-                                            "  /endpoint [URL]   Show or switch endpoint URL\n"
-                                            "  /features         List active registry features\n"
-                                            "  /journal          View recent checkpoint provenance\n"
-                                            "  /test             Run the bootstrap test suite\n"
-                                            "  /clear            Clear chat history\n"
-                                            "  /quit, /exit      Exit TUI\n"
-                                            "  !<command>        Execute shell command (e.g. !git status)\n"
-                                            "  ,<expr> or (..)   Send Scheme code to live REPL (e.g. ,(+ 1 2))\n"
-                                            "  /sh <cmd>         Alias for !<command>\n"
-                                            "  /eval <expr>      Alias for ,<expr>")))))))
+                                             "Available Commands:\n"
+                                             "  /help             Display this help message\n"
+                                             "  /model [NAME]     Show or switch active LLM model\n"
+                                             "  /endpoint [URL]   Show or switch endpoint URL\n"
+                                             "  /features         List active registry features\n"
+                                             "  /journal          View recent checkpoint provenance\n"
+                                             "  /test             Run the bootstrap test suite\n"
+                                             "  /clear            Clear chat history\n"
+                                             "  /quit, /exit      Exit TUI\n"
+                                             "  !<command>        Execute shell command (e.g. !git status)\n"
+                                             "  ,<expr> or (..)   Send Scheme code to live REPL (e.g. ,(+ 1 2))\n"
+                                             "  /sh <cmd>         Alias for !<command>\n"
+                                             "  /eval <expr>      Alias for ,<expr>")))))))
 
          ((string=? cmd "model")
           (if (string-null? arg)
@@ -649,12 +930,12 @@ and core badb modules for interactive evaluation."
     (set! colors-enabled? (has-colors?))
     (when colors-enabled?
       (start-color!)
-      (init-pair! 1 COLOR_CYAN COLOR_BLACK)     ; Header / Info
-      (init-pair! 2 COLOR_GREEN COLOR_BLACK)    ; User prompt
+      (init-pair! 1 COLOR_CYAN COLOR_BLACK)     ; Header / Info / Scheme / Thoughts
+      (init-pair! 2 COLOR_GREEN COLOR_BLACK)    ; User prompt / Messages
       (init-pair! 3 COLOR_WHITE COLOR_BLACK)    ; Assistant text
-      (init-pair! 4 COLOR_YELLOW COLOR_BLACK)   ; System notice
+      (init-pair! 4 COLOR_YELLOW COLOR_BLACK)   ; System notice / Selector border
       (init-pair! 5 COLOR_RED COLOR_BLACK)      ; Error
-      (init-pair! 6 COLOR_MAGENTA COLOR_BLACK)) ; Transaction badge
+      (init-pair! 6 COLOR_MAGENTA COLOR_BLACK)) ; Shell prompt / Exec badge
 
     ;; Main input loop wrapped in dynamic-wind for crash-proof terminal restoration
     (dynamic-wind
@@ -664,42 +945,113 @@ and core badb modules for interactive evaluation."
           (render!)
           (let ((ch (getch stdscr)))
             (cond
-             ;; Enter key: process buffer
+             ;; Enter key: process buffer or selector item
              ((or (eqv? ch KEY_ENTER) (eqv? ch #\newline) (eqv? ch #\return)
                   (eqv? ch 10) (eqv? ch 13))
-              (let ((trimmed (string-trim-both input-buffer)))
+              (if (selector-active? input-buffer)
+                  (let ((matches (matching-slash-commands input-buffer)))
+                    (if (null? matches)
+                        (let ((trimmed (string-trim-both input-buffer)))
+                          (set! input-buffer "")
+                          (set! selector-index 0)
+                          (if (string-null? trimmed)
+                              (loop)
+                              (let ((action (classify-input trimmed)))
+                                (when (and action (eq? (car action) 'slash))
+                                  (handle-command! (cons (cadr action) (caddr action))))
+                                (loop))))
+                        (let* ((safe-idx (min selector-index (max 0 (- (length matches) 1))))
+                               (chosen (car (list-ref matches safe-idx))))
+                          (cond
+                           ((member chosen '("model" "endpoint" "sh" "eval"))
+                            ;; Argument required: populate prompt with space
+                            (set! input-buffer (string-append "/" chosen " "))
+                            (set! selector-index 0)
+                            (loop))
+                           (else
+                            ;; Zero-argument command: execute immediately
+                            (set! input-buffer "")
+                            (set! selector-index 0)
+                            (let ((res (handle-command! (cons chosen ""))))
+                              (unless (eq? res 'exit)
+                                (loop))))))))
+                  (let ((trimmed (string-trim-both input-buffer)))
+                    (set! input-buffer "")
+                    (set! selector-index 0)
+                    (if (string-null? trimmed)
+                        (loop)
+                        (let ((action (classify-input trimmed)))
+                          (case (car action)
+                            ((slash)
+                             (let* ((cmd (cadr action))
+                                    (arg (caddr action))
+                                    (res (handle-command! (cons cmd arg))))
+                               (unless (eq? res 'exit)
+                                 (loop))))
+                            ((shell)
+                             (let ((shell-cmd (cdr action)))
+                               (set! messages (append messages (list `((role . "shell-cmd") (content . ,shell-cmd)))))
+                               (execute-shell! shell-cmd)
+                               (loop)))
+                            ((scheme)
+                             (let ((code-str (cdr action)))
+                               (set! messages (append messages (list `((role . "scheme-in") (content . ,code-str)))))
+                               (execute-scheme! code-str)
+                               (loop)))
+                            ((chat)
+                             (let ((user-text (cdr action)))
+                               (set! messages (append messages (list `((role . "user") (content . ,user-text)))))
+                               (execute-chat-stream! user-text)
+                               (loop)))))))))
+
+             ;; Tab key: autocomplete selected slash command
+             ((or (eqv? ch #\tab) (eqv? ch 9))
+              (when (selector-active? input-buffer)
+                (let ((matches (matching-slash-commands input-buffer)))
+                  (unless (null? matches)
+                    (let* ((safe-idx (min selector-index (max 0 (- (length matches) 1))))
+                           (chosen (car (list-ref matches safe-idx))))
+                      (if (member chosen '("model" "endpoint" "sh" "eval"))
+                          (set! input-buffer (string-append "/" chosen " "))
+                          (set! input-buffer (string-append "/" chosen)))
+                      (set! selector-index 0)))))
+              (loop))
+
+             ;; Escape key: close selector palette / clear input
+             ((or (eqv? ch 27))
+              (when (selector-active? input-buffer)
                 (set! input-buffer "")
-                (if (string-null? trimmed)
-                    (loop)
-                    (let ((action (classify-input trimmed)))
-                      (case (car action)
-                        ((slash)
-                         (let* ((cmd (cadr action))
-                                (arg (caddr action))
-                                (res (handle-command! (cons cmd arg))))
-                           (unless (eq? res 'exit)
-                             (loop))))
-                        ((shell)
-                         (let ((shell-cmd (cdr action)))
-                           (set! messages (append messages (list `((role . "shell-cmd") (content . ,shell-cmd)))))
-                           (execute-shell! shell-cmd)
-                           (loop)))
-                        ((scheme)
-                         (let ((code-str (cdr action)))
-                           (set! messages (append messages (list `((role . "scheme-in") (content . ,code-str)))))
-                           (execute-scheme! code-str)
-                           (loop)))
-                        ((chat)
-                         (let ((user-text (cdr action)))
-                           (set! messages (append messages (list `((role . "user") (content . ,user-text)))))
-                           (execute-chat-stream! user-text)
-                           (loop))))))))
+                (set! selector-index 0))
+              (loop))
+
+             ;; Up Arrow: navigate selector up or scroll
+             ((eqv? ch KEY_UP)
+              (if (selector-active? input-buffer)
+                  (let ((matches (matching-slash-commands input-buffer)))
+                    (unless (null? matches)
+                      (set! selector-index (if (<= selector-index 0)
+                                               (- (length matches) 1)
+                                               (- selector-index 1)))))
+                  (set! scroll-offset (+ scroll-offset 1)))
+              (loop))
+
+             ;; Down Arrow: navigate selector down or scroll
+             ((eqv? ch KEY_DOWN)
+              (if (selector-active? input-buffer)
+                  (let ((matches (matching-slash-commands input-buffer)))
+                    (unless (null? matches)
+                      (set! selector-index (remainder (+ selector-index 1) (length matches)))))
+                  (set! scroll-offset (max 0 (- scroll-offset 1))))
+              (loop))
 
              ;; Backspace
              ((or (eqv? ch KEY_BACKSPACE) (eqv? ch #\backspace)
                   (eqv? ch (integer->char 127)) (eqv? ch 127) (eqv? ch 8))
               (when (> (string-length input-buffer) 0)
-                (set! input-buffer (substring input-buffer 0 (- (string-length input-buffer) 1))))
+                (set! input-buffer (substring input-buffer 0 (- (string-length input-buffer) 1)))
+                (when (selector-active? input-buffer)
+                  (let ((matches (matching-slash-commands input-buffer)))
+                    (set! selector-index (if (null? matches) 0 (min selector-index (- (length matches) 1)))))))
               (loop))
 
              ;; Page Up / Scroll Up
@@ -719,9 +1071,12 @@ and core badb modules for interactive evaluation."
              ;; Printable character input
              ((char? ch)
               (set! input-buffer (string-append input-buffer (string ch)))
+              (when (selector-active? input-buffer)
+                (let ((matches (matching-slash-commands input-buffer)))
+                  (set! selector-index (if (null? matches) 0 (min selector-index (- (length matches) 1))))))
               (loop))
 
-             ;; Other keys (e.g. arrow keys)
+             ;; Other keys
              (else
               (loop))))))
       (lambda ()

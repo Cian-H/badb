@@ -335,6 +335,26 @@
     (extract-chat-delta "raw delta")))
 
 ;;;
+;;; 5b. Structured Delta Extraction (extract-chat-delta-item)
+;;;
+
+(test-group "extract-chat-delta-item"
+  (let ((content-chunk (json-string->scm "{\"choices\": [{\"delta\": {\"content\": \"Hello world\"}}]}")))
+    (test-equal "extract content type and text"
+      '(content . "Hello world")
+      (extract-chat-delta-item content-chunk)))
+
+  (let ((thought-chunk (json-string->scm "{\"choices\": [{\"delta\": {\"reasoning_content\": \"Analyzing code\"}}]}")))
+    (test-equal "extract reasoning/thought type and text"
+      '(thought . "Analyzing code")
+      (extract-chat-delta-item thought-chunk)))
+
+  (let ((anthropic-thought (json-string->scm "{\"delta\": {\"thinking\": \"Pondering step\"}}")))
+    (test-equal "extract Anthropic thinking delta"
+      '(thought . "Pondering step")
+      (extract-chat-delta-item anthropic-thought))))
+
+;;;
 ;;; 6. Content Extraction (extract-chat-content)
 ;;;
 

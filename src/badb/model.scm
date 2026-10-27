@@ -23,6 +23,7 @@
             parse-sse-line
             read-sse-events
             extract-chat-delta
+            extract-chat-delta-item
             extract-chat-content
             current-http-post
             model-complete
@@ -249,6 +250,59 @@ Returns the string delta, or #f if no content is found."
          (json-ref obj "content")
          (json-ref obj "text")))))
 
+(define (extract-chat-delta-item chunk)
+  "Extract structured delta info from an SSE chunk (parsed JSON alist or JSON string).
+Returns a pair '(thought . text) or '(content . text) or #f."
+  (let ((obj (if (string? chunk)
+                 (catch #t (lambda () (json-string->scm chunk)) (lambda _ chunk))
+                 chunk)))
+    (if (not (pair? obj))
+        (and (string? obj) (cons 'content obj))
+        (or
+         ;; OpenAI style: choices[0].delta
+         (let ((choices (json-ref obj "choices")))
+           (and (vector? choices)
+                (> (vector-length choices) 0)
+                (let* ((choice (vector-ref choices 0))
+                       (delta (json-ref choice "delta")))
+                  (and (pair? delta)
+                       (cond
+                        ((or (json-ref delta "reasoning_content")
+                             (json-ref delta "reasoning"))
+                         => (lambda (rc) (cons 'thought rc)))
+                        ((json-ref delta "content")
+                         => (lambda (c) (cons 'content c)))
+                        ((json-ref delta "text")
+                         => (lambda (t) (cons 'content t)))
+                        (else #f))))))
+         ;; Anthropic style: delta.thinking or delta.text or delta.content
+         (let ((delta (json-ref obj "delta")))
+           (and (pair? delta)
+                (cond
+                 ((or (json-ref delta "thinking") (json-ref delta "thought"))
+                  => (lambda (th) (cons 'thought th)))
+                 ((or (json-ref delta "text") (json-ref delta "content"))
+                  => (lambda (c) (cons 'content c)))
+                 (else #f))))
+         ;; Ollama style: message.thinking or message.content
+         (let ((msg (json-ref obj "message")))
+           (and (pair? msg)
+                (cond
+                 ((or (json-ref msg "reasoning_content") (json-ref msg "thinking"))
+                  => (lambda (rc) (cons 'thought rc)))
+                 ((json-ref msg "content")
+                  => (lambda (c) (cons 'content c)))
+                 (else #f))))
+         ;; Direct content or text
+         (cond
+          ((or (json-ref obj "reasoning_content") (json-ref obj "thinking"))
+           => (lambda (rc) (cons 'thought rc)))
+          ((json-ref obj "content")
+           => (lambda (c) (cons 'content c)))
+          ((json-ref obj "text")
+           => (lambda (t) (cons 'content t)))
+          (else #f))))))
+
 (define (extract-chat-content response-obj)
   "Extract the assistant message text from a non-streaming chat response.
 Supports OpenAI, Anthropic, Ollama, and OpenRouter formats.
@@ -400,9 +454,13 @@ as SSE chunks arrive. Returns 'done or 'eof."
               (read-sse-events
                body-port
                (lambda (chunk)
-                 (let ((delta (extract-chat-delta chunk)))
-                   (when (and (string? delta) (not (string-null? delta)))
-                     (chunk-callback delta))))))
+                 (let ((item (extract-chat-delta-item chunk)))
+                   (when (and (pair? item)
+                              (string? (cdr item))
+                              (not (string-null? (cdr item))))
+                     (catch #t
+                       (lambda () (chunk-callback (cdr item) (car item)))
+                       (lambda _ (chunk-callback (cdr item)))))))))
             (lambda ()
               (when (and (port? body-port) (not (port-closed? body-port)))
                 (close-port body-port)))))))))
