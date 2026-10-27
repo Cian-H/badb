@@ -12,9 +12,17 @@
   #:use-module (badb journal)
   #:use-module (badb config)
   #:use-module (badb mcp)
+  #:use-module (badb react)
+  #:use-module (badb guardrail)
+  #:use-module (badb context)
+  #:use-module (badb prompt)
+  #:use-module (badb rollback)
+  #:use-module (badb verify)
+  #:use-module (json)
   #:use-module (ice-9 format)
   #:use-module (ice-9 popen)
   #:use-module (ice-9 rdelim)
+  #:use-module (ice-9 optargs)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-9)
   #:use-module (srfi srfi-19)
@@ -73,18 +81,24 @@ breaking on whitespace when possible."
 ;;;
 
 (define %slash-commands
-  '(("help"     . "Show help manual & shortcuts")
-    ("model"    . "Switch or inspect active LLM model")
-    ("endpoint" . "Switch or inspect endpoint URL")
-    ("mcp"      . "Manage MCP servers (list, start, stop, add, remove, tools)")
-    ("config"   . "Inspect, reload, or save badb configuration")
-    ("features" . "List kernel registered features")
-    ("journal"  . "View checkpoint provenance audit log")
-    ("test"     . "Run bootstrap verification test suite")
-    ("sh"       . "Execute shell command (!<cmd>)")
-    ("eval"     . "Evaluate Scheme code in REPL (,<expr>)")
-    ("clear"    . "Clear chat viewport history")
-    ("quit"     . "Exit badb microharness")))
+  '(("help"       . "Show help manual & shortcuts")
+    ("model"      . "Switch or inspect active LLM model")
+    ("endpoint"   . "Switch or inspect endpoint URL")
+    ("mcp"        . "Manage MCP servers (list, start, stop, add, remove, tools)")
+    ("config"     . "Inspect, reload, or save badb configuration")
+    ("guardrail"  . "Inspect or set guardrail security policy level")
+    ("compact"    . "Compact conversation history context")
+    ("checkpoint" . "Create a workspace and registry checkpoint")
+    ("rollback"   . "Revert to latest or specified checkpoint")
+    ("rules"      . "Inspect discovered project rules & workspace tree")
+    ("context"    . "View conversation token stats and metrics")
+    ("features"   . "List kernel registered features")
+    ("journal"    . "View checkpoint provenance audit log")
+    ("test"       . "Run bootstrap verification test suite")
+    ("sh"         . "Execute shell command (!<cmd>)")
+    ("eval"       . "Evaluate Scheme code in REPL (,<expr>)")
+    ("clear"      . "Clear chat viewport history")
+    ("quit"       . "Exit badb microharness")))
 
 (define (selector-active? input-buffer)
   "Return #t if the slash command selector palette should be visible."
@@ -181,6 +195,10 @@ based on current input mode, execution status, and active prompt mode."
     (values "⟳" 1 #t))     ; Cyan bold spinning
    ((string=? status-text "EXEC...")
     (values "⚙" 6 #t))     ; Magenta bold gear
+   ((string-prefix? "TOOL:" status-text)
+    (values "⚙" 6 #t))     ; Magenta bold gear
+   ((string-prefix? "REACT" status-text)
+    (values "⚙" 4 #t))     ; Yellow bold gear
    ((string=? status-text "EVAL...")
     (values "λ" 1 #t))     ; Cyan bold lambda
    ((string=? status-text "TESTING...")
@@ -290,7 +308,8 @@ parentheses (e.g. '+ 1 2' or '+ 1 2)') are wrapped for evaluation."
      ;; Standalone identifier or literal number: e.g. "reg", "42"
      (else trimmed))))
 
-(define* (make-repl-mod reg jrn mgr client #:optional (cfg #f) (mcp-mgr #f))
+(define* (make-repl-mod reg jrn mgr client #:optional (cfg #f) (mcp-mgr #f)
+                        (policy #f) (compactor #f) (rollback-mgr #f) (verifier #f) (composer #f))
   "Create an isolated user module pre-populated with kernel state bindings
 and core badb modules for interactive evaluation."
   (let ((mod (make-fresh-user-module)))
@@ -300,9 +319,13 @@ and core badb modules for interactive evaluation."
     (module-use! mod (resolve-interface '(badb transaction)))
     (module-use! mod (resolve-interface '(badb journal)))
     (module-use! mod (resolve-interface '(badb config)))
-    (catch #t
-      (lambda () (module-use! mod (resolve-interface '(badb mcp))))
-      (lambda _ #f))
+    (catch #t (lambda () (module-use! mod (resolve-interface '(badb mcp)))) (lambda _ #f))
+    (catch #t (lambda () (module-use! mod (resolve-interface '(badb guardrail)))) (lambda _ #f))
+    (catch #t (lambda () (module-use! mod (resolve-interface '(badb context)))) (lambda _ #f))
+    (catch #t (lambda () (module-use! mod (resolve-interface '(badb prompt)))) (lambda _ #f))
+    (catch #t (lambda () (module-use! mod (resolve-interface '(badb rollback)))) (lambda _ #f))
+    (catch #t (lambda () (module-use! mod (resolve-interface '(badb verify)))) (lambda _ #f))
+    (catch #t (lambda () (module-use! mod (resolve-interface '(badb react)))) (lambda _ #f))
     (module-use! mod (resolve-interface '(ice-9 format)))
     (module-use! mod (resolve-interface '(ice-9 rdelim)))
     (module-use! mod (resolve-interface '(srfi srfi-1)))
@@ -312,6 +335,11 @@ and core badb modules for interactive evaluation."
     (module-define! mod 'client client)
     (when cfg (module-define! mod 'cfg cfg))
     (when mcp-mgr (module-define! mod 'mcp-mgr mcp-mgr))
+    (when policy (module-define! mod 'policy policy))
+    (when compactor (module-define! mod 'compactor compactor))
+    (when rollback-mgr (module-define! mod 'rollback-mgr rollback-mgr))
+    (when verifier (module-define! mod 'verifier verifier))
+    (when composer (module-define! mod 'composer composer))
     mod))
 
 (define (eval-scheme-code code-str repl-mod)
@@ -438,6 +466,87 @@ and core badb modules for interactive evaluation."
     (define jrn (make-journal cur-journal-path))
     (define mgr (make-transaction-manager reg #:journal jrn))
     (define mcp-mgr (make-mcp-manager cfg))
+    (define policy (make-guardrail-policy #:level 'cautious))
+    (define compactor (make-context-compactor #:max-tokens 16384 #:reserve-tokens 2048))
+    (define rollback-mgr (make-rollback-manager #:workspace-dir (getcwd) #:registry reg #:journal jrn))
+    (define verifier (make-verifier #:check-syntax? #t #:run-tests? #f))
+    (define composer (make-prompt-composer))
+
+    ;; Register Built-in Autonomous Agent Tools
+    (registry-attach! reg "read_file"
+      (lambda (path)
+        (catch #t
+          (lambda ()
+            (if (file-exists? path)
+                (call-with-input-file path read-string)
+                (format #f "Error: file '~a' does not exist" path)))
+          (lambda (k . a) (format #f "Error reading file: ~s" a))))
+      '((description . "Read the complete contents of a file at PATH")
+        (parameters . ((type . "object")
+                       (properties . ((path . ((type . "string") (description . "Path to the file to read")))))
+                       (required . #("path"))))))
+
+    (registry-attach! reg "write_file"
+      (lambda (path content)
+        (catch #t
+          (lambda ()
+            (create-checkpoint! rollback-mgr (format #f "pre-write: ~a" path) #:files (list path))
+            (let ((v-res (verify-action verifier #:code content #:file path)))
+              (if (assoc-ref v-res 'passed?)
+                  (begin
+                    (call-with-output-file path (lambda (p) (display content p)))
+                    (format #f "Successfully wrote ~a characters to '~a'" (string-length content) path))
+                  (begin
+                    (rollback-latest! rollback-mgr)
+                    (format #f "Write aborted: verification failed: ~s" (assoc-ref v-res 'failures))))))
+          (lambda (k . a) (format #f "Error writing file: ~s" a))))
+      '((description . "Write CONTENT to a file at PATH")
+        (parameters . ((type . "object")
+                       (properties . ((path . ((type . "string") (description . "File path to write")))
+                                      (content . ((type . "string") (description . "Content to write")))))
+                       (required . #("path" "content"))))))
+
+    (registry-attach! reg "execute_command"
+      (lambda (cmd)
+        (call-with-values (lambda () (execute-shell-command cmd))
+          (lambda (out exit-val err)
+            (if err
+                (format #f "Error: ~a" err)
+                (format #f "[exit ~a]\n~a" exit-val out)))))
+      '((description . "Execute a shell command and return output and exit status")
+        (parameters . ((type . "object")
+                       (properties . ((cmd . ((type . "string") (description . "Shell command to run")))))
+                       (required . #("cmd"))))))
+
+    (registry-attach! reg "checkpoint_create"
+      (lambda (description)
+        (let ((c (create-checkpoint! rollback-mgr (or description "agent-checkpoint"))))
+          (format #f "Created checkpoint: ~a (~a)" (checkpoint-id c) (checkpoint-description c))))
+      '((description . "Create a rollback checkpoint snapshot")
+        (parameters . ((type . "object")
+                       (properties . ((description . ((type . "string") (description . "Checkpoint description")))))
+                       (required . #("description"))))))
+
+    (registry-attach! reg "checkpoint_rollback"
+      (lambda* (#:optional id)
+        (let ((res (if (and id (not (string-null? id)))
+                       (rollback-to-checkpoint! rollback-mgr id)
+                       (rollback-latest! rollback-mgr))))
+          (format #f "Rollback: ~a" (assoc-ref res 'status))))
+      '((description . "Rollback to specified or latest checkpoint")
+        (parameters . ((type . "object")
+                       (properties . ((id . ((type . "string") (description . "Checkpoint ID")))))))))
+
+    (registry-attach! reg "run_tests"
+      (lambda* (#:optional (cmd "./scripts/test"))
+        (let ((res (verify-test-suite #:command (or cmd "./scripts/test"))))
+          (format #f "Tests: ~a (exit ~a)\n~a"
+                  (if (assoc-ref res 'passed?) "PASS" "FAIL")
+                  (assoc-ref res 'exit-code)
+                  (assoc-ref res 'output))))
+      '((description . "Run project test suite and return verdict")
+        (parameters . ((type . "object")
+                       (properties . ((cmd . ((type . "string") (description . "Test command")))))))))
 
     ;; Register MCP Kernel Features for Agent & User Automation
     (registry-attach! reg "mcp.list"
@@ -484,18 +593,22 @@ and core badb modules for interactive evaluation."
     (define client (make-model-client #:endpoint cur-endpoint
                                       #:api-key cur-api-key
                                       #:model cur-model))
-    (define repl-mod (make-repl-mod reg jrn mgr client cfg mcp-mgr))
+    (define repl-mod (make-repl-mod reg jrn mgr client cfg mcp-mgr policy compactor rollback-mgr verifier composer))
 
     ;; UI State
     (define messages (list
                       `((role . "system")
+                        (content . ,(default-system-prompt
+                                     #:workspace-dir (getcwd)
+                                     #:tools (collect-available-tools reg mcp-mgr))))
+                      `((role . "system")
                         (content . ,(string-append
                                      "Welcome to badb microharness TUI!\n"
-                                     "• Type a message to chat with the model\n"
+                                     "• Type a message to chat with the model (autonomous ReAct loop active)\n"
                                      "• Type ! to switch to shell mode ($)\n"
                                      "• Type ( or , to switch to Scheme REPL mode (λ)\n"
                                      "• Type Backspace at empty prompt to return to chat mode (❯)\n"
-                                     "• Type / to open command selector palette.")))))
+                                     "• Type / to open command selector palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context).")))))
     (define input-buffer "")
     (define scroll-offset 0)
     (define status-text "READY")
@@ -795,45 +908,112 @@ and core badb modules for interactive evaluation."
 
     ;; Execute streaming query against LLM with separated thoughts
     (define (execute-chat-stream! user-prompt)
-      (set! status-text "STREAMING...")
       (set! scroll-offset 0)
-      ;; Add empty assistant message with separate thoughts and content
-      (set! messages (append messages
-                             (list `((role . "assistant") (thoughts . #f) (content . "")))))
-      (render!)
+      ;; 1. Check if context compaction is needed
+      (when (compaction-needed? compactor messages)
+        (set! messages (compact-messages compactor messages)))
 
-      (catch #t
-        (lambda ()
-          (let ((chat-history (map (lambda (m)
-                                     (cons (assoc-ref m 'role)
-                                           (assoc-ref m 'content)))
-                                   (filter (lambda (m)
-                                             (member (assoc-ref m 'role) '("user" "assistant")))
-                                           messages)))
-                (raw-api-thoughts "")
-                (raw-api-content ""))
-            (model-stream client chat-history
-                          (lambda (delta . type-args)
-                            (let ((chunk-type (if (pair? type-args) (car type-args) 'content)))
-                              (if (eq? chunk-type 'thought)
-                                  (set! raw-api-thoughts (string-append raw-api-thoughts delta))
-                                  (set! raw-api-content (string-append raw-api-content delta)))
-                              (call-with-values (lambda () (split-thoughts-and-content raw-api-content))
-                                (lambda (inline-th inline-ct)
-                                  (let* ((total-th (cond
-                                                    ((and (not (string-null? raw-api-thoughts)) inline-th)
-                                                     (string-append raw-api-thoughts "\n\n" inline-th))
-                                                    ((not (string-null? raw-api-thoughts))
-                                                     raw-api-thoughts)
-                                                    (else inline-th)))
-                                         (updated-msg `((role . "assistant")
-                                                        (thoughts . ,total-th)
-                                                        (content . ,inline-ct))))
-                                    (set! messages (append (drop-right messages 1) (list updated-msg)))
-                                    (render!)))))))))
-        (lambda (key . args)
-          (let ((err-msg (format #f "Stream error (~a): ~s" key args)))
-            (set! messages (append messages `(((role . "error") (content . ,err-msg))))))))
+      ;; 2. Determine execution mode: Autonomous ReAct loop if tools present, or direct stream
+      (let ((tools (collect-available-tools reg mcp-mgr)))
+        (if (pair? tools)
+            ;; Autonomous ReAct Tool-Calling Loop
+            (let ((session (make-react-session
+                            #:messages (filter (lambda (m) (member (assoc-ref m 'role) '("system" "user" "assistant" "tool"))) messages)
+                            #:client client
+                            #:registry reg
+                            #:mcp-manager mcp-mgr
+                            #:journal jrn
+                            #:transaction-manager mgr
+                            #:max-iterations 8
+                            #:guardrail (lambda (t-name t-args)
+                                          (guardrail-evaluate policy t-name t-args))
+                            #:hooks (list
+                                     (cons 'on-step
+                                           (lambda (iter phase)
+                                             (set! status-text (format #f "REACT [~a/8]" iter))
+                                             (render!)))
+                                     (cons 'on-tool-call
+                                           (lambda (tc)
+                                             (let* ((t-name (or (assoc-ref tc 'name) (assoc-ref tc "name")))
+                                                    (t-args (or (assoc-ref tc 'arguments) (assoc-ref tc "arguments"))))
+                                               (set! status-text (format #f "TOOL: ~a..." t-name))
+                                               (set! messages (append messages
+                                                                      (list `((role . "system")
+                                                                              (content . ,(format #f "⚙ Invoking tool: ~a (~s)" t-name t-args))))))
+                                               (render!))))
+                                     (cons 'on-tool-result
+                                           (lambda (tc res err?)
+                                             (let* ((t-name (or (assoc-ref tc 'name) (assoc-ref tc "name")))
+                                                    (res-str (if (string? res) res (scm->json-string res)))
+                                                    (preview (if (> (string-length res-str) 140)
+                                                                 (string-append (substring res-str 0 140) "...")
+                                                                 res-str)))
+                                               (set! messages (append messages
+                                                                      (list `((role . "system")
+                                                                              (content . ,(format #f "✓ Tool ~a returned: ~a" t-name preview))))))
+                                               (render!))))))))
+              (catch #t
+                (lambda ()
+                  (call-with-values (lambda () (react-run! session))
+                    (lambda (verdict final-content sess)
+                      (cond
+                       ((eq? verdict 'completed)
+                        (call-with-values (lambda () (split-thoughts-and-content (or final-content "")))
+                          (lambda (th ct)
+                            (set! messages (append messages
+                                                   (list `((role . "assistant")
+                                                           (thoughts . ,th)
+                                                           (content . ,ct))))))))
+                       ((eq? verdict 'max-iterations-reached)
+                        (set! messages (append messages
+                                               (list `((role . "system")
+                                                       (content . "ReAct iteration ceiling reached (8 iterations)."))))))
+                       ((eq? verdict 'error)
+                        (set! messages (append messages
+                                               (list `((role . "error")
+                                                       (content . ,(format #f "ReAct error: ~a" final-content)))))))))))
+                (lambda (key . args)
+                  (set! messages (append messages (list `((role . "error")
+                                                          (content . ,(format #f "Agent loop failure: ~a ~s" key args)))))))))
+
+            ;; Direct Streaming Mode when no tools registered
+            (begin
+              (set! status-text "STREAMING...")
+              (set! messages (append messages
+                                     (list `((role . "assistant") (thoughts . #f) (content . "")))))
+              (render!)
+              (catch #t
+                (lambda ()
+                  (let ((chat-history (map (lambda (m)
+                                             (cons (assoc-ref m 'role)
+                                                   (assoc-ref m 'content)))
+                                           (filter (lambda (m)
+                                                     (member (assoc-ref m 'role) '("user" "assistant")))
+                                                   messages)))
+                        (raw-api-thoughts "")
+                        (raw-api-content ""))
+                    (model-stream client chat-history
+                                  (lambda (delta . type-args)
+                                    (let ((chunk-type (if (pair? type-args) (car type-args) 'content)))
+                                      (if (eq? chunk-type 'thought)
+                                          (set! raw-api-thoughts (string-append raw-api-thoughts delta))
+                                          (set! raw-api-content (string-append raw-api-content delta)))
+                                      (call-with-values (lambda () (split-thoughts-and-content raw-api-content))
+                                        (lambda (inline-th inline-ct)
+                                          (let* ((total-th (cond
+                                                            ((and (not (string-null? raw-api-thoughts)) inline-th)
+                                                             (string-append raw-api-thoughts "\n\n" inline-th))
+                                                            ((not (string-null? raw-api-thoughts))
+                                                             raw-api-thoughts)
+                                                            (else inline-th)))
+                                                 (updated-msg `((role . "assistant")
+                                                                (thoughts . ,total-th)
+                                                                (content . ,inline-ct))))
+                                            (set! messages (append (drop-right messages 1) (list updated-msg)))
+                                            (render!)))))))))
+                (lambda (key . args)
+                  (let ((err-msg (format #f "Stream error (~a): ~s" key args)))
+                    (set! messages (append messages `(((role . "error") (content . ,err-msg)))))))))))
 
       (set! status-text "READY")
       (render!))
@@ -1113,6 +1293,93 @@ and core badb modules for interactive evaluation."
                                  (list `((role . "error")
                                          (content . ,(format #f "Unknown /config subcommand '~a'. Valid: show, reload, save, set" subcmd))))))))))
 
+    ;; Handle guardrail subcommands
+    (define (handle-guardrail-cmd! arg)
+      (let ((trimmed (string-trim-both arg)))
+        (if (string-null? trimmed)
+            (set! messages (append messages
+                                   (list `((role . "system")
+                                           (content . ,(format #f "Guardrail Policy Level: ~a\nUsage: /guardrail <disabled|permissive|cautious|strict|paranoid>"
+                                                               (guardrail-policy-level policy)))))))
+            (let ((sym (string->symbol trimmed)))
+              (if (member sym '(disabled permissive cautious strict paranoid))
+                  (begin
+                    (set-guardrail-policy-level! policy sym)
+                    (set! messages (append messages
+                                           (list `((role . "system")
+                                                   (content . ,(format #f "Guardrail policy level set to '~a'." sym)))))))
+                  (set! messages (append messages
+                                         (list `((role . "error")
+                                                 (content . "Valid levels: disabled, permissive, cautious, strict, paranoid"))))))))))
+
+    ;; Handle context compaction command
+    (define (handle-compact-cmd! arg)
+      (let* ((orig-tokens (estimate-conversation-tokens messages))
+             (compacted (compact-messages compactor messages #:force #t))
+             (new-tokens (estimate-conversation-tokens compacted)))
+        (set! messages compacted)
+        (set! messages (append messages
+                               (list `((role . "system")
+                                       (content . ,(format #f "Context compacted: ~a -> ~a tokens (saved ~a tokens, ~a messages remaining)."
+                                                           orig-tokens new-tokens
+                                                           (max 0 (- orig-tokens new-tokens))
+                                                           (length messages)))))))))
+
+    ;; Handle checkpoint command
+    (define (handle-checkpoint-cmd! arg)
+      (let* ((desc (if (string-null? (string-trim-both arg)) "User manual checkpoint" (string-trim-both arg)))
+             (chkpt (create-checkpoint! rollback-mgr desc)))
+        (set! messages (append messages
+                               (list `((role . "system")
+                                       (content . ,(format #f "Created checkpoint '~a' (~a).\nFiles recorded: ~a, Registry entries: ~a."
+                                                           (checkpoint-id chkpt)
+                                                           (checkpoint-description chkpt)
+                                                           (length (checkpoint-files chkpt))
+                                                           (length (checkpoint-registry-state chkpt))))))))))
+
+    ;; Handle rollback command
+    (define (handle-rollback-cmd! arg)
+      (let* ((trimmed (string-trim-both arg))
+             (res (if (string-null? trimmed)
+                      (rollback-latest! rollback-mgr)
+                      (rollback-to-checkpoint! rollback-mgr trimmed))))
+        (if (equal? (assoc-ref res 'status) "rolled_back")
+            (set! messages (append messages
+                                   (list `((role . "system")
+                                           (content . ,(format #f "Successfully rolled back to checkpoint '~a' (~a).\nRestored ~a file(s), removed ~a new file(s)."
+                                                               (assoc-ref res 'checkpoint-id)
+                                                               (assoc-ref res 'description)
+                                                               (length (assoc-ref res 'restored-files))
+                                                               (length (assoc-ref res 'removed-files))))))))
+            (set! messages (append messages
+                                   (list `((role . "error")
+                                           (content . ,(format #f "Rollback failed: ~a" (assoc-ref res 'error))))))))))
+
+    ;; Handle project rules inspection
+    (define (handle-rules-cmd! arg)
+      (let* ((rules (discover-project-rules (getcwd)))
+             (tree (build-workspace-file-tree (getcwd) #:max-depth 2 #:max-files 20))
+             (rule-desc (if (null? rules)
+                            "No project rule files found."
+                            (string-join (map (lambda (r) (format #f "• ~a" (assoc-ref r 'path))) rules) "\n"))))
+        (set! messages (append messages
+                               (list `((role . "system")
+                                       (content . ,(format #f "Discovered Project Rules:\n~a\n\nWorkspace Tree:\n~a"
+                                                           rule-desc tree))))))))
+
+    ;; Handle conversation context metrics
+    (define (handle-context-cmd! arg)
+      (let* ((tokens (estimate-conversation-tokens messages))
+             (ceiling (- (context-compactor-max-tokens compactor)
+                         (context-compactor-reserve-tokens compactor)))
+             (needed? (compaction-needed? compactor messages)))
+        (set! messages (append messages
+                               (list `((role . "system")
+                                       (content . ,(format #f "Conversation Context Metrics:\n• Message Count: ~a\n• Estimated Tokens: ~a / ~a ceiling\n• Status: ~a"
+                                                           (length messages)
+                                                           tokens ceiling
+                                                           (if needed? "COMPACTION REQUIRED" "NORMAL")))))))))
+
     ;; Handle slash commands
     (define (handle-command! cmd-pair)
       (let ((cmd (car cmd-pair))
@@ -1129,6 +1396,12 @@ and core badb modules for interactive evaluation."
                                               "  /endpoint [URL]   Show or switch endpoint URL\n"
                                               "  /mcp [CMD]        Manage MCP servers (list, start, stop, add, remove, tools)\n"
                                               "  /config [CMD]     Inspect or reload configuration (show, reload, save, set)\n"
+                                              "  /guardrail [LVL]  Set policy level (disabled, permissive, cautious, strict, paranoid)\n"
+                                              "  /compact          Compact conversation history\n"
+                                              "  /checkpoint [DSC] Create a rollback checkpoint snapshot\n"
+                                              "  /rollback [ID]    Revert to latest or specified checkpoint\n"
+                                              "  /rules            View discovered project rules & workspace tree\n"
+                                              "  /context          View conversation token metrics\n"
                                               "  /features         List active registry features\n"
                                               "  /journal          View recent checkpoint provenance\n"
                                               "  /test             Run the bootstrap test suite\n"
@@ -1138,6 +1411,24 @@ and core badb modules for interactive evaluation."
                                               "  ,<expr> or (..)   Evaluate Scheme code (or press ( at empty prompt)\n"
                                               "  /sh <cmd>         Alias for shell command\n"
                                               "  /eval <expr>      Alias for Scheme eval")))))))
+
+         ((string=? cmd "guardrail")
+          (handle-guardrail-cmd! arg))
+
+         ((string=? cmd "compact")
+          (handle-compact-cmd! arg))
+
+         ((string=? cmd "checkpoint")
+          (handle-checkpoint-cmd! arg))
+
+         ((string=? cmd "rollback")
+          (handle-rollback-cmd! arg))
+
+         ((string=? cmd "rules")
+          (handle-rules-cmd! arg))
+
+         ((string=? cmd "context")
+          (handle-context-cmd! arg))
 
          ((string=? cmd "model")
           (if (string-null? arg)

@@ -315,6 +315,18 @@
     (assoc "mcp" %slash-commands))
   (test-assert "slash commands list contains config"
     (assoc "config" %slash-commands))
+  (test-assert "slash commands list contains guardrail"
+    (assoc "guardrail" %slash-commands))
+  (test-assert "slash commands list contains compact"
+    (assoc "compact" %slash-commands))
+  (test-assert "slash commands list contains checkpoint"
+    (assoc "checkpoint" %slash-commands))
+  (test-assert "slash commands list contains rollback"
+    (assoc "rollback" %slash-commands))
+  (test-assert "slash commands list contains rules"
+    (assoc "rules" %slash-commands))
+  (test-assert "slash commands list contains context"
+    (assoc "context" %slash-commands))
   (test-assert "slash commands list contains features"
     (assoc "features" %slash-commands))
   (test-assert "slash commands list contains journal"
@@ -396,6 +408,16 @@
     (lambda (glyph pair bold?)
       (test-equal "executing prompt is single char ⚙" "⚙" glyph)
       (test-equal "executing prompt color is magenta pair 6" 6 pair)))
+
+  (call-with-values (lambda () (get-prompt-indicator "" "TOOL: read_file..."))
+    (lambda (glyph pair bold?)
+      (test-equal "tool prompt is single char ⚙" "⚙" glyph)
+      (test-equal "tool prompt color is magenta pair 6" 6 pair)))
+
+  (call-with-values (lambda () (get-prompt-indicator "" "REACT [1/8]"))
+    (lambda (glyph pair bold?)
+      (test-equal "react prompt is single char ⚙" "⚙" glyph)
+      (test-equal "react prompt color is yellow pair 4" 4 pair)))
 
   (call-with-values (lambda () (get-prompt-indicator "" "EVAL..."))
     (lambda (glyph pair bold?)
