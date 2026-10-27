@@ -362,9 +362,11 @@ Supports both (mcp-manager-add-server! mgr spec-alist) and
         (badb-config-add-mcp-server! (mcp-manager-config mgr)
                                     name-str cmd args-list
                                     #:env env-list #:auto-start auto-val)
-        (catch #t
-          (lambda () (save-local-config! (mcp-manager-config mgr)))
-          (lambda _ #f)))
+        (when (badb-config-source-path (mcp-manager-config mgr))
+          (catch #t
+            (lambda () (save-local-config! (mcp-manager-config mgr)
+                                           (badb-config-source-path (mcp-manager-config mgr))))
+            (lambda _ #f))))
       #t)))
 
 (define (mcp-manager-remove-server! mgr name)
@@ -381,9 +383,11 @@ Supports both (mcp-manager-add-server! mgr spec-alist) and
                                 (remove (lambda (e) (string=? (car e) name-str)) servers))
       (when (mcp-manager-config mgr)
         (badb-config-remove-mcp-server! (mcp-manager-config mgr) name-str)
-        (catch #t
-          (lambda () (save-local-config! (mcp-manager-config mgr)))
-          (lambda _ #f)))
+        (when (badb-config-source-path (mcp-manager-config mgr))
+          (catch #t
+            (lambda () (save-local-config! (mcp-manager-config mgr)
+                                           (badb-config-source-path (mcp-manager-config mgr))))
+            (lambda _ #f))))
       #t)))
 
 (define (mcp-manager-start-server! mgr name)
