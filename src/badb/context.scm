@@ -18,7 +18,11 @@
                #:use-module
                (srfi srfi-1)
                #:use-module
+               (srfi srfi-8)
+               #:use-module
                (srfi srfi-9)
+               #:use-module
+               (srfi srfi-13)
                #:export
                (<context-compactor> make-context-compactor
                                     context-compactor?
@@ -32,12 +36,10 @@
                                     set-context-compactor-reserve-tokens!
                                     set-context-compactor-estimator!
                                     set-context-compactor-strategy!
-                                    ;; Token Estimators
                                     char-heuristic-estimator
                                     word-heuristic-estimator
                                     estimate-message-tokens
                                     estimate-conversation-tokens
-                                    ;; Pluggable Compaction Strategies
                                     strategy-prune-tool-results
                                     strategy-sliding-window
                                     strategy-summarize-older-turns
@@ -45,9 +47,8 @@
                                     strategy-pipeline
                                     strategy-cascading
                                     strategy-cascading-pipeline
-                                    ;; Compaction Application
-                                    compact-messages
-                                    compaction-needed?))
+                                    compaction-needed?
+                                    compact-messages))
 
 ;;;
 ;;; Token Estimators
@@ -84,10 +85,23 @@
 (define (word-heuristic-estimator text)
         "Heuristic estimation assuming ~1.3 tokens per whitespace-separated word."
         (if (non-empty-string? text)
-          (let*
-              ((words (filter non-empty-string? (string-split text #\space)))
-               (wcount (length words)))
-            (max 1 (inexact->exact (round (* wcount 1.3)))))
+          (let ((len (string-length text)))
+            (let loop
+              ((i 0) (in-word? #f) (wcount 0))
+              (if (>= i len)
+                (let
+                    ((final-wcount
+                       (if in-word?
+                         (+ wcount 1)
+                         wcount)))
+                  (max 1 (inexact->exact (round (* final-wcount 1.3)))))
+                (let ((c (string-ref text i)))
+                  (if (char-whitespace? c)
+                    (loop (+ i 1) #f
+                          (if in-word?
+                            (+ wcount 1)
+                            wcount))
+                    (loop (+ i 1) #t wcount))))))
           0))
 
 (define*
@@ -140,13 +154,13 @@
              (string? content)
              (> (string-length content) max-chars))
       (let*
-          ((lines (string-split content #\newline))
+          ((line-count (max 1 (string-count content #\newline)))
            (stub
              (if (procedure? placeholder-generator)
                (placeholder-generator msg)
                (format #f
                        "[Pruned tool output (~a lines, ~a chars) — completed]"
-                       (length lines)
+                       line-count
                        (string-length content)))))
         (map
           (lambda (pair)
@@ -239,17 +253,17 @@ SUMMARIZE-FN receives a list of older messages and returns a summary string."
          (split-point (max 0 (- (length pool) recent-count))))
       (if (<= split-point 0)
         messages
-        (let*
-            ((older-msgs (take pool split-point))
-             (recent-msgs (drop pool split-point))
-             (summary-text (summarize-fn older-msgs))
-             (summary-msg `((role . "system")
-                            (content .
-                                     ,(format #f
-                                              "[Context Summary of preceding turns]:
+        (receive (older-msgs recent-msgs)
+                 (split-at pool split-point)
+                 (let*
+                     ((summary-text (summarize-fn older-msgs))
+                      (summary-msg `((role . "system")
+                                     (content .
+                                              ,(format #f
+                                                       "[Context Summary of preceding turns]:
 ~a"
-                                              summary-text)))))
-          (attach-system sys-msg (cons summary-msg recent-msgs)))))))
+                                                       summary-text)))))
+                   (attach-system sys-msg (cons summary-msg recent-msgs))))))))
 
 (define*
   (strategy-journal-offload jrn #:key (keep-recent-turns 2))
@@ -261,19 +275,20 @@ them with audit trail checkpoint pointers."
          (threshold (max 0 (- total (* keep-recent-turns 2)))))
       (if (<= threshold 0)
         messages
-        (let*
-            ((to-offload (take messages threshold))
-             (kept (drop messages threshold))
-             (chkpt-id (format #f "context-archive-~a" (current-time))))
-          (journal-record-offload! jrn chkpt-id to-offload)
-          (let
-              ((ref-msg `((role . "system")
-                          (content .
-                                   ,(format #f
-                                            "[Prior ~a turns archived to journal checkpoint '~a']"
-                                            (length to-offload)
-                                            chkpt-id)))))
-            (cons ref-msg kept)))))))
+        (receive (to-offload kept)
+                 (split-at messages threshold)
+                 (let*
+                     ((tv (gettimeofday))
+                      (chkpt-id (format #f "context-archive-~a-~a" (car tv) (cdr tv))))
+                   (journal-record-offload! jrn chkpt-id to-offload)
+                   (let
+                       ((ref-msg `((role . "system")
+                                   (content .
+                                            ,(format #f
+                                                     "[Prior ~a turns archived to journal checkpoint '~a']"
+                                                     (length to-offload)
+                                                     chkpt-id)))))
+                     (cons ref-msg kept))))))))
 
 (define (strategy-pipeline . strategies)
   "Combine multiple compaction strategies in sequence."
