@@ -78,8 +78,6 @@ or with positional arguments:
 ;;;
 ;;; Chat Request Formatting
 ;;;
-(define symbol-or-string->string ensure-string)
-
 (define (single-message-alist? x)
   (and (pair? x)
        (pair? (car x))
@@ -92,14 +90,12 @@ Rejects internal UI logs or tool responses missing required tool_call_id."
   (cond
    ;; Pair of (role . content), e.g. (user . "hello")
    ((and (pair? msg) (not (pair? (car msg))))
-    (let ((r (symbol-or-string->string (car msg))))
+    (let ((r (ensure-string (car msg))))
       (and (member r '("system" "user" "assistant")) #t)))
    ;; Alist of message fields:
    ((and (pair? msg) (pair? (car msg)))
     (let* ((role (or (assoc-ref msg "role") (assoc-ref msg 'role)))
-           (role-str (cond ((symbol? role) (symbol->string role))
-                           ((string? role) role)
-                           (else ""))))
+           (role-str (if role (ensure-string role) "")))
       (cond
        ((member role-str '("system" "user" "assistant"))
         #t)
@@ -117,7 +113,7 @@ Rejects internal UI logs or tool responses missing required tool_call_id."
    ((and (pair? msg) (pair? (car msg)))
     (let* ((stringified
             (map (lambda (pair)
-                   (cons (symbol-or-string->string (car pair))
+                   (cons (ensure-string (car pair))
                          (cdr pair)))
                  msg))
            (role (assoc-ref stringified "role"))
@@ -131,7 +127,7 @@ Rejects internal UI logs or tool responses missing required tool_call_id."
    ;; Pair of (role . content):
    ;; e.g. (user . "hello") or ("user" . "hello")
    ((and (pair? msg) (not (pair? (car msg))))
-    (list (cons "role" (symbol-or-string->string (car msg)))
+    (list (cons "role" (ensure-string (car msg)))
           (cons "content" (cdr msg))))
    ;; Bare string: assume user role
    ((string? msg)
@@ -383,7 +379,7 @@ Returns the string delta, or #f if no content is found."
 Supports OpenAI, Anthropic, Ollama, and OpenRouter formats.
 Returns the string content, or #f if not found."
   (let ((obj (if (string? response-obj)
-                 (catch #t (lambda () (json-string->scm response-obj)) (lambda _ response-obj))
+                 (safe-json-parse response-obj response-obj)
                  response-obj)))
     (if (pair? obj)
         (clean-json-string
@@ -395,11 +391,24 @@ Returns the string content, or #f if not found."
              (json-ref obj "text")))
         (clean-json-string obj))))
 
+(define (parse-single-tool-call tc)
+  "Parse a single raw tool call object from an API response."
+  (let* ((fn (json-ref tc "function"))
+         (id (or (json-ref tc "id") "call_0"))
+         (name (if (pair? fn) (or (json-ref fn "name") "") ""))
+         (raw-args (if (pair? fn) (or (json-ref fn "arguments") "{}") "{}"))
+         (parsed-args (if (string? raw-args)
+                          (safe-json-parse raw-args raw-args)
+                          raw-args)))
+    `((id . ,id)
+      (name . ,name)
+      (arguments . ,parsed-args))))
+
 (define (extract-chat-tool-calls response-obj)
   "Extract tool calls from a chat completion response (parsed JSON alist or JSON string).
 Returns a list of tool call alists: ((id . \"...\") (name . \"...\") (arguments . ...)), or '() if none found."
   (let ((obj (if (string? response-obj)
-                 (catch #t (lambda () (json-string->scm response-obj)) (lambda _ response-obj))
+                 (safe-json-parse response-obj response-obj)
                  response-obj)))
     (if (pair? obj)
         (let* ((choices (json-ref obj "choices"))
@@ -410,21 +419,7 @@ Returns a list of tool call alists: ((id . \"...\") (name . \"...\") (arguments 
                               (json-ref obj "tool_calls"))))
           (cond
            ((vector? raw-calls)
-            (map (lambda (tc)
-                   (let* ((fn (json-ref tc "function"))
-                          (id (or (json-ref tc "id") "call_0"))
-                          (name (if (pair? fn) (or (json-ref fn "name") "") ""))
-                          (raw-args (if (pair? fn) (or (json-ref fn "arguments") "{}") "{}"))
-                          (parsed-args (cond
-                                        ((string? raw-args)
-                                         (catch #t
-                                           (lambda () (json-string->scm raw-args))
-                                           (lambda _ raw-args)))
-                                        (else raw-args))))
-                     `((id . ,id)
-                       (name . ,name)
-                       (arguments . ,parsed-args))))
-                 (vector->list raw-calls)))
+            (map parse-single-tool-call (vector->list raw-calls)))
            ((list? raw-calls)
             raw-calls)
            (else '())))
