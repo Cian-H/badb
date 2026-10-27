@@ -61,7 +61,6 @@
 ;;;
 ;;; Configuration Record Definition
 ;;;
-
 (define-record-type <badb-config>
   (%make-badb-config model-name
                      model-endpoint
@@ -131,7 +130,6 @@
 ;;;
 ;;; Standard Paths
 ;;;
-
 (define (default-global-config-path)
   "Return the standard path for badb's global user configuration."
   (let ((xdg (getenv "XDG_CONFIG_HOME"))
@@ -151,7 +149,6 @@
 ;;;
 ;;; Property Extraction Helper
 ;;;
-
 (define (get-prop lst key default)
   "Safely extract KEY from property list or alist LST, supporting both
 (key . val), (key val), and #:key val syntax."
@@ -176,44 +173,46 @@
 ;;;
 ;;; MCP Server Helpers
 ;;;
-
 (define (parse-mcp-server-spec entry)
-  "Parse a raw MCP server declaration into canonical form:
+        "Parse a raw MCP server declaration into canonical form:
 (name (command . cmd) (args . (arg ...)) (env . ()) (auto-start . #t/#f))"
-  (let ((normalize-env
-         (lambda (raw-env)
-           (cond
-            ((null? raw-env) '())
-            ((and (pair? raw-env) (or (symbol? (car raw-env)) (string? (car raw-env))))
-             (list raw-env))
-            ((list? raw-env) raw-env)
-            (else '())))))
-    (cond
-     ;; (server "name" (command ...) ...) or (mcp-server "name" ...)
-     ((and (pair? entry)
-           (or (eq? (car entry) 'server) (eq? (car entry) 'mcp-server))
-           (pair? (cdr entry)))
-      (let* ((name (if (symbol? (cadr entry)) (symbol->string (cadr entry)) (cadr entry)))
-             (props (cddr entry))
-             (cmd (get-prop props 'command ""))
-             (raw-args (get-prop props 'args '()))
-             (args (if (list? raw-args) raw-args (list raw-args)))
-             (env (normalize-env (get-prop props 'env '())))
-             (auto? (or (get-prop props 'auto-start #f)
-                        (get-prop props 'auto-start? #f))))
-        (cons name `((command . ,cmd) (args . ,args) (env . ,env) (auto-start . ,auto?)))))
-     ;; ("name" (command ...) ...)
-     ((and (pair? entry) (or (string? (car entry)) (symbol? (car entry))))
-      (let* ((name (if (symbol? (car entry)) (symbol->string (car entry)) (car entry)))
-             (props (cdr entry))
-             (cmd (get-prop props 'command ""))
-             (raw-args (get-prop props 'args '()))
-             (args (if (list? raw-args) raw-args (list raw-args)))
-             (env (normalize-env (get-prop props 'env '())))
-             (auto? (or (get-prop props 'auto-start #f)
-                        (get-prop props 'auto-start? #f))))
-        (cons name `((command . ,cmd) (args . ,args) (env . ,env) (auto-start . ,auto?)))))
-     (else #f))))
+        (let*
+            ((normalize-name
+               (lambda (n)
+                 (if (symbol? n)
+                   (symbol->string n)
+                   n)))
+             (normalize-env
+               (lambda (raw-env)
+                 (cond
+                   ((null? raw-env) '())
+                   ((and (pair? raw-env) (or (symbol? (car raw-env)) (string? (car raw-env))))
+                     (list raw-env))
+                   ((list? raw-env) raw-env)
+                   (else '()))))
+             (name-and-props
+               (cond
+                 ((and (pair? entry)
+                       (or (eq? (car entry) 'server) (eq? (car entry) 'mcp-server))
+                       (pair? (cdr entry)))
+                   (cons (normalize-name (cadr entry)) (cddr entry)))
+                 ((and (pair? entry) (or (string? (car entry)) (symbol? (car entry))))
+                   (cons (normalize-name (car entry)) (cdr entry)))
+                 (else #f))))
+          (and name-and-props
+               (let*
+                   ((name (car name-and-props))
+                    (props (cdr name-and-props))
+                    (cmd (get-prop props 'command ""))
+                    (raw-args (get-prop props 'args '()))
+                    (args
+                      (if (list? raw-args)
+                        raw-args
+                        (list raw-args)))
+                    (env (normalize-env (get-prop props 'env '())))
+                    (auto? (or (get-prop props 'auto-start #f) (get-prop props 'auto-start? #f))))
+                 (cons name
+                       `((command . ,cmd) (args . ,args) (env . ,env) (auto-start . ,auto?)))))))
 
 (define (badb-config-get-mcp-server config name)
   "Retrieve the specification alist for MCP server NAME from CONFIG, or #f."
@@ -249,76 +248,104 @@
 ;;;
 ;;; S-Expression Parsing and Serialization
 ;;;
+(define (apply-model-config-form! cfg body)
+        "Apply a (model ...) body form to <badb-config> CFG."
+        (let
+            ((body
+               (if (and (pair? body) (eq? (car body) 'model))
+                 (cdr body)
+                 body)))
+          (let
+              ((m (get-prop body 'name (get-prop body 'default (badb-config-model-name cfg))))
+               (ep (get-prop body 'endpoint (badb-config-model-endpoint cfg)))
+               (key (get-prop body 'api-key (badb-config-model-api-key cfg)))
+               (temp (get-prop body 'temperature (badb-config-model-temperature cfg)))
+               (max-tok (get-prop body 'max-tokens (badb-config-model-max-tokens cfg))))
+            (when m (set-badb-config-model-name! cfg m))
+            (when ep (set-badb-config-model-endpoint! cfg ep))
+            (when key (set-badb-config-model-api-key! cfg key))
+            (when temp (set-badb-config-model-temperature! cfg temp))
+            (when max-tok (set-badb-config-model-max-tokens! cfg max-tok)))))
 
-(define* (parse-config-sexp sexp #:optional (base-config #f))
+(define (apply-journal-config-form! cfg body)
+        "Apply a (journal ...) body form to <badb-config> CFG."
+        (let
+            ((body
+               (if (and (pair? body) (eq? (car body) 'journal))
+                 (cdr body)
+                 body)))
+          (let
+              ((p (get-prop body 'path (badb-config-journal-path cfg))))
+            (when p (set-badb-config-journal-path! cfg p)))))
+
+(define (apply-mcp-config-form! cfg body)
+        "Apply an (mcp ...) body form to <badb-config> CFG."
+        (let*
+            ((body
+               (if (and (pair? body) (eq? (car body) 'mcp))
+                 (cdr body)
+                 body))
+             (servers-entry (get-prop body 'servers #f))
+             (entries
+               (cond
+                 ((list? servers-entry) servers-entry)
+                 (else body)))
+             (parsed (filter-map parse-mcp-server-spec entries)))
+          (for-each
+            (lambda (entry)
+              (badb-config-add-mcp-server! cfg (car entry) (cdr entry)))
+            parsed)))
+
+(define*
+  (parse-config-sexp sexp #:optional (base-config #f))
   "Parse SEXP into a <badb-config> record, optionally overlaying onto BASE-CONFIG."
-  (let ((cfg (if base-config
-                 (make-badb-config
-                  #:model-name (badb-config-model-name base-config)
-                  #:model-endpoint (badb-config-model-endpoint base-config)
-                  #:model-api-key (badb-config-model-api-key base-config)
-                  #:model-temperature (badb-config-model-temperature base-config)
-                  #:journal-path (badb-config-journal-path base-config)
-                  #:mcp-servers (badb-config-mcp-servers base-config)
-                  #:options (badb-config-options base-config)
-                  #:source-path (badb-config-source-path base-config))
-                 (make-badb-config)))
-        (forms (cond
-                ;; (badb-config ...) wrapper
-                ((and (pair? sexp) (eq? (car sexp) 'badb-config))
-                 (cdr sexp))
-                ;; List of section lists
-                ((list? sexp)
-                 sexp)
-                (else '()))))
-
+  (let
+      ((cfg
+         (if base-config
+           (make-badb-config #:model-name
+                             (badb-config-model-name base-config)
+                             #:model-endpoint
+                             (badb-config-model-endpoint base-config)
+                             #:model-api-key
+                             (badb-config-model-api-key base-config)
+                             #:model-temperature
+                             (badb-config-model-temperature base-config)
+                             #:journal-path
+                             (badb-config-journal-path base-config)
+                             #:mcp-servers
+                             (badb-config-mcp-servers base-config)
+                             #:options
+                             (badb-config-options base-config)
+                             #:source-path
+                             (badb-config-source-path base-config))
+           (make-badb-config)))
+       (forms
+         (cond
+           ;; (badb-config ...) wrapper
+           ((and (pair? sexp) (eq? (car sexp) 'badb-config)) (cdr sexp))
+           ;; List of section lists
+           ((list? sexp) sexp)
+           (else '()))))
     (for-each
-     (lambda (form)
-       (when (pair? form)
-         (let ((head (car form))
-               (body (cdr form)))
-           (cond
-            ;; Model Section: (model ...)
-            ((eq? head 'model)
-             (let ((m (get-prop body 'name (get-prop body 'default (badb-config-model-name cfg))))
-                   (ep (get-prop body 'endpoint (badb-config-model-endpoint cfg)))
-                   (key (get-prop body 'api-key (badb-config-model-api-key cfg)))
-                   (temp (get-prop body 'temperature (badb-config-model-temperature cfg)))
-                   (max-tok (get-prop body 'max-tokens (badb-config-model-max-tokens cfg))))
-               (when m (set-badb-config-model-name! cfg m))
-               (when ep (set-badb-config-model-endpoint! cfg ep))
-               (when key (set-badb-config-model-api-key! cfg key))
-               (when temp (set-badb-config-model-temperature! cfg temp))
-               (when max-tok (set-badb-config-model-max-tokens! cfg max-tok))))
-
-            ;; Journal Section: (journal ...)
-            ((eq? head 'journal)
-             (let ((p (get-prop body 'path (badb-config-journal-path cfg))))
-               (when p (set-badb-config-journal-path! cfg p))))
-
-            ;; MCP Section: (mcp (server ...) ...) or (mcp (servers ...))
-            ((eq? head 'mcp)
-             (let* ((servers-entry (get-prop body 'servers #f))
-                    (entries (cond
-                              ((list? servers-entry) servers-entry)
-                              (else body)))
-                    (parsed (filter-map parse-mcp-server-spec entries)))
-               (for-each (lambda (entry)
-                           (badb-config-add-mcp-server! cfg (car entry) (cdr entry)))
-                         parsed)))
-
-            ;; Standalone MCP Server: (mcp-server "name" ...)
-            ((eq? head 'mcp-server)
-             (let ((parsed (parse-mcp-server-spec form)))
-               (when parsed
-                 (badb-config-add-mcp-server! cfg (car parsed) (cdr parsed)))))
-
-            ;; Options / Extensions: (options ...)
-            ((or (eq? head 'options) (eq? head 'ui))
-             (set-badb-config-options! cfg (append (badb-config-options cfg) body)))
-
-            (else #f)))))
-     forms)
+      (lambda (form)
+        (when (pair? form)
+          (let ((head (car form)) (body (cdr form)))
+            (cond
+              ;; Model Section: (model ...)
+              ((eq? head 'model) (apply-model-config-form! cfg body))
+              ;; Journal Section: (journal ...)
+              ((eq? head 'journal) (apply-journal-config-form! cfg body))
+              ;; MCP Section: (mcp (server ...) ...) or (mcp (servers ...))
+              ((eq? head 'mcp) (apply-mcp-config-form! cfg body))
+              ;; Standalone MCP Server: (mcp-server "name" ...)
+              ((eq? head 'mcp-server)
+                (let ((parsed (parse-mcp-server-spec form)))
+                  (when parsed (badb-config-add-mcp-server! cfg (car parsed) (cdr parsed)))))
+              ;; Options / Extensions: (options ...)
+              ((or (eq? head 'options) (eq? head 'ui))
+                (set-badb-config-options! cfg (append (badb-config-options cfg) body)))
+              (else #f)))))
+      forms)
     cfg))
 
 (define (config->sexp config)
@@ -360,7 +387,6 @@
 ;;;
 ;;; File I/O
 ;;;
-
 (define (read-config-file path)
   "Read and parse a configuration file from PATH. Returns <badb-config> or #f if not found."
   (if (file-exists? path)
@@ -420,7 +446,6 @@
 ;;;
 ;;; Configuration Merging & Discovery
 ;;;
-
 (define (merge-configs base overlay)
   "Merge OVERLAY into BASE. Overlay scalar values override base values.
 MCP servers from overlay override base servers with the same name, while
