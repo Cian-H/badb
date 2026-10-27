@@ -127,7 +127,7 @@ and return a new <mcp-client> connected to its stdio. Stderr is redirected to
 incrementing integer ID, flush output, and return the request ID."
   (let* ((id (mcp-client-next-id client))
          (out (mcp-client-out-port client))
-         (method-str (if (symbol? method) (symbol->string method) method))
+         (method-str (ensure-string method))
          (msg `((jsonrpc . "2.0")
                 (id . ,id)
                 (method . ,method-str)
@@ -142,7 +142,7 @@ incrementing integer ID, flush output, and return the request ID."
   "Write a JSON-RPC 2.0 notification line (no ID) to the client's output port
 and flush output."
   (let* ((out (mcp-client-out-port client))
-         (method-str (if (symbol? method) (symbol->string method) method))
+         (method-str (ensure-string method))
          (msg `((jsonrpc . "2.0")
                 (method . ,method-str)
                 ,@(if params `((params . ,params)) '()))))
@@ -315,9 +315,25 @@ initialization result."
              (error . ,err))))
        (mcp-manager-servers mgr)))
 
+(define (mcp-stop-entry-client! entry)
+  "If ENTRY has an active client process, gracefully close it."
+  (let ((client (and entry (assoc-ref (cdr entry) 'client))))
+    (when client
+      (catch #t
+        (lambda () (mcp-close-client client))
+        (lambda _ #f)))))
+
+(define (mcp-manager-sync-config! mgr)
+  "Persist MGR configuration to disk if a source path is registered."
+  (let ((cfg (mcp-manager-config mgr)))
+    (when (and cfg (badb-config-source-path cfg))
+      (catch #t
+        (lambda () (save-local-config! cfg (badb-config-source-path cfg)))
+        (lambda _ #f)))))
+
 (define (mcp-manager-get-server mgr name)
   "Retrieve internal server state for NAME or #f."
-  (let* ((name-str (if (symbol? name) (symbol->string name) name))
+  (let* ((name-str (ensure-string name))
          (entry (assoc name-str (mcp-manager-servers mgr))))
     (and entry (cdr entry))))
 
@@ -331,7 +347,7 @@ Supports both (mcp-manager-add-server! mgr spec-alist) and
   (let* ((is-spec? (and (pair? name-or-spec) (not (string? name-or-spec)) (not (symbol? name-or-spec))))
          (spec (if is-spec? name-or-spec '()))
          (name-raw (if is-spec? (or (assoc-ref spec 'name) "server") name-or-spec))
-         (name-str (if (symbol? name-raw) (symbol->string name-raw) name-raw))
+         (name-str (ensure-string name-raw))
          (cmd (if is-spec? (or (assoc-ref spec 'command) "") command))
          (raw-args (if is-spec? (or (assoc-ref spec 'args) '()) args))
          (args-list (cond
@@ -348,10 +364,7 @@ Supports both (mcp-manager-add-server! mgr spec-alist) and
          (servers (mcp-manager-servers mgr))
          (existing (assoc name-str servers)))
     ;; If existing server is running, stop it
-    (when (and existing (assoc-ref (cdr existing) 'client))
-      (catch #t
-        (lambda () (mcp-close-client (assoc-ref (cdr existing) 'client)))
-        (lambda _ #f)))
+    (mcp-stop-entry-client! existing)
     (let* ((filtered (remove (lambda (e) (string=? (car e) name-str)) servers))
            (new-entry (cons name-str
                             `((spec . ,full-spec)
@@ -365,32 +378,21 @@ Supports both (mcp-manager-add-server! mgr spec-alist) and
         (badb-config-add-mcp-server! (mcp-manager-config mgr)
                                     name-str cmd args-list
                                     #:env env-list #:auto-start auto-val)
-        (when (badb-config-source-path (mcp-manager-config mgr))
-          (catch #t
-            (lambda () (save-local-config! (mcp-manager-config mgr)
-                                           (badb-config-source-path (mcp-manager-config mgr))))
-            (lambda _ #f))))
+        (mcp-manager-sync-config! mgr))
       #t)))
 
 (define (mcp-manager-remove-server! mgr name)
   "Remove MCP server NAME from MGR, stopping it if running, and update config."
-  (let* ((name-str (if (symbol? name) (symbol->string name) name))
+  (let* ((name-str (ensure-string name))
          (servers (mcp-manager-servers mgr))
          (existing (assoc name-str servers)))
     (when existing
-      (when (assoc-ref (cdr existing) 'client)
-        (catch #t
-          (lambda () (mcp-close-client (assoc-ref (cdr existing) 'client)))
-          (lambda _ #f)))
+      (mcp-stop-entry-client! existing)
       (set-mcp-manager-servers! mgr
                                 (remove (lambda (e) (string=? (car e) name-str)) servers))
       (when (mcp-manager-config mgr)
         (badb-config-remove-mcp-server! (mcp-manager-config mgr) name-str)
-        (when (badb-config-source-path (mcp-manager-config mgr))
-          (catch #t
-            (lambda () (save-local-config! (mcp-manager-config mgr)
-                                           (badb-config-source-path (mcp-manager-config mgr))))
-            (lambda _ #f))))
+        (mcp-manager-sync-config! mgr))
       #t)))
 
 (define (mcp-build-exec-arguments spec)
@@ -478,11 +480,8 @@ Returns (values client tools-list error-or-#f)."
   (let* ((name-str (ensure-string name))
          (entry (assoc name-str (mcp-manager-servers mgr))))
     (and entry
-         (let* ((data (cdr entry))
-                (client (assoc-ref data 'client))
-                (spec (assoc-ref data 'spec)))
-           (when client
-             (catch #t (lambda () (mcp-close-client client)) (lambda _ #f)))
+         (let ((spec (assoc-ref (cdr entry) 'spec)))
+           (mcp-stop-entry-client! entry)
            (mcp-manager-update-server-state! mgr name-str spec #f "stopped" '() #f)
            #t))))
 
@@ -501,9 +500,7 @@ Returns (values client tools-list error-or-#f)."
        (let* ((srv-name (car entry))
               (tools (or (assoc-ref (cdr entry) 'tools) '())))
          (if (or (not server-filter)
-                 (string=? srv-name (if (symbol? server-filter)
-                                        (symbol->string server-filter)
-                                        server-filter)))
+                 (string=? srv-name (ensure-string server-filter)))
              (map (lambda (tool)
                     (cons (cons 'server srv-name) tool))
                   tools)
