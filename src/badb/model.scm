@@ -626,51 +626,64 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
                     parsed
                     (or (extract-chat-content parsed) parsed)))))))))))
 
-(define* (model-stream client messages chunk-callback
-                       #:key
-                       (temperature 0.7)
-                       (max-tokens #f)
-                       (http-poster #f))
+(define*
+  (model-stream client
+                messages
+                chunk-callback
+                #:key
+                (temperature 0.7)
+                (max-tokens #f)
+                (http-poster #f))
   "Initiate a streaming chat request, calling (CHUNK-CALLBACK text-delta)
 as SSE chunks arrive. Returns 'done or 'eof."
-  (let* ((endpoint (model-client-endpoint client))
-         (api-key  (model-client-api-key client))
-         (model    (model-client-model client))
-         (uri      (resolve-endpoint-uri endpoint))
-         (payload  (format-chat-request messages
-                                        #:model model
-                                        #:temperature temperature
-                                        #:max-tokens max-tokens
-                                        #:stream #t))
-         (headers  (build-headers api-key #t))
-         (poster   (or http-poster (current-http-post))))
+  (let*
+      ((endpoint (model-client-endpoint client))
+       (api-key (model-client-api-key client))
+       (model (model-client-model client))
+       (uri (resolve-endpoint-uri endpoint))
+       (payload
+         (format-chat-request messages
+                              #:model
+                              model
+                              #:temperature
+                              temperature
+                              #:max-tokens
+                              max-tokens
+                              #:stream
+                              #t))
+       (headers (build-headers api-key #t))
+       (poster (or http-poster (current-http-post))))
     (call-with-values
-        (lambda ()
-          (poster uri #:body payload #:headers headers #:streaming? #t))
+      (lambda ()
+        (poster uri #:body payload #:headers headers #:streaming? #t))
       (lambda (response body-port)
-        (let ((code (response-code response)))
-          (unless (<= 200 code 299)
-            (let ((err-text (if (port? body-port)
-                                (catch #t
-                                  (lambda () (read-delimited "" body-port))
-                                  (lambda _ "failed to read error body"))
-                                body-port)))
-              (when (and (port? body-port) (not (port-closed? body-port)))
-                (close-port body-port))
-              (error "model-stream HTTP request failed" code err-text)))
-          (dynamic-wind
-            (lambda () #t)
-            (lambda ()
-              (read-sse-events
-               body-port
-               (lambda (chunk)
-                 (let ((item (extract-chat-delta-item chunk)))
-                   (when (and (pair? item)
-                              (string? (cdr item))
-                              (not (string-null? (cdr item))))
-                     (catch #t
-                       (lambda () (chunk-callback (cdr item) (car item)))
-                       (lambda _ (chunk-callback (cdr item)))))))))
-            (lambda ()
-              (when (and (port? body-port) (not (port-closed? body-port)))
-                (close-port body-port)))))))))
+        (dynamic-wind
+          (lambda ()
+            #t)
+          (lambda ()
+            (let ((code (response-code response)))
+              (unless (<= 200 code 299)
+                (let
+                    ((err-text
+                       (if (port? body-port)
+                         (catch #t
+                           (lambda ()
+                             (read-delimited "" body-port))
+                           (lambda _
+                             "failed to read error body"))
+                         body-port)))
+                  (error "model-stream HTTP request failed" code err-text)))
+              (read-sse-events body-port
+                               (lambda (chunk)
+                                 (let ((item (extract-chat-delta-item chunk)))
+                                   (when
+                                       (and (pair? item) (string? (cdr item)) (not (string-null? (cdr item))))
+                                     (catch #t
+                                       (lambda ()
+                                         (chunk-callback (cdr item) (car item)))
+                                       (lambda _
+                                         (chunk-callback (cdr item))))))))))
+          (lambda ()
+            (when
+                (and (port? body-port) (not (port-closed? body-port)))
+              (close-port body-port))))))))
