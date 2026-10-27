@@ -35,7 +35,6 @@
 ;;;
 ;;; Journal record type
 ;;;
-
 (define-record-type <journal>
   (%make-journal path)
   journal?
@@ -52,7 +51,6 @@ Ensures that any parent directory exists."
 ;;;
 ;;; Journal entry record type and conversion
 ;;;
-
 (define %unspecified (list 'unspecified))
 
 (define-record-type <journal-entry>
@@ -112,24 +110,15 @@ into an alist."
 ;;;
 ;;; Field lookup helper
 ;;;
-
-(define* (journal-entry-ref entry key #:optional default)
+(define*
+  (journal-entry-ref entry key #:optional default)
   "Retrieve the value associated with KEY (string or symbol) in ENTRY alist,
 or DEFAULT if KEY is not present."
-  (let* ((str-key (cond ((symbol? key) (symbol->string key))
-                        ((string? key) key)
-                        (else (format #f "~a" key))))
-         (sym-key (cond ((symbol? key) key)
-                        ((string? key) (string->symbol key))
-                        (else (string->symbol (format #f "~a" key)))))
-         (pair (or (assoc str-key entry)
-                   (assoc sym-key entry))))
-    (if pair (cdr pair) default)))
+  (prop-ref entry key default))
 
 ;;;
 ;;; JSON serialization & deserialization
 ;;;
-
 (define (journal-entry->json-string entry)
   "Serialize ENTRY (an alist or record) to a single-line JSON string."
   (scm->json-string (entry->alist entry)))
@@ -141,24 +130,63 @@ or DEFAULT if KEY is not present."
 ;;;
 ;;; Automatic timestamp and iteration calculation
 ;;;
-
 (define (current-iso8601-timestamp)
   "Return the current UTC timestamp formatted as an ISO-8601 string."
   (date->string (current-date 0) "~4"))
 
+(define (read-last-journal-entry journal)
+        "Read the most recent journal entry from disk efficiently via seek,
+returning the parsed entry alist or #f if JOURNAL has no entries."
+        (let ((path (journal-path journal)))
+          (if (file-exists? path)
+            (catch 'system-error
+              (lambda ()
+                (call-with-input-file path
+                                      (lambda (port)
+                                        (let*
+                                            ((size (seek port 0 2)) (chunk-size (min size 65536)))
+                                          (if (<= size 0)
+                                            #f
+                                            (begin (seek port (- size chunk-size) 0)
+                                                   (let loop
+                                                     ((last-entry #f))
+                                                     (let ((line (read-line port)))
+                                                       (if (eof-object? line)
+                                                         (or last-entry
+                                                             (let ((entries (journal-entries journal)))
+                                                               (if (null? entries)
+                                                                 #f
+                                                                 (last entries))))
+                                                         (let ((trimmed (string-trim-both line)))
+                                                           (if (string-null? trimmed)
+                                                             (loop last-entry)
+                                                             (catch #t
+                                                               (lambda ()
+                                                                 (loop (json-string->journal-entry trimmed)))
+                                                               (lambda _
+                                                                 (loop last-entry))))))))))))))
+              (lambda _
+                #f))
+            #f)))
+
 (define (next-iteration journal)
-  "Compute the next auto-incrementing iteration ID for JOURNAL by scanning
-existing entries on disk."
-  (let ((entries (journal-entries journal)))
-    (if (null? entries)
-        1
-        (let loop ((rest (reverse entries)))
-          (if (null? rest)
-              1
-              (let ((it (journal-entry-ref (car rest) 'iteration)))
-                (if (and it (number? it))
-                    (+ it 1)
-                    (loop (cdr rest)))))))))
+        "Compute the next auto-incrementing iteration ID for JOURNAL by inspecting
+the latest entry on disk."
+        (let ((latest (read-last-journal-entry journal)))
+          (if latest
+            (let ((it (journal-entry-ref latest 'iteration)))
+              (if (and it (number? it))
+                (+ it 1)
+                (let loop
+                  ((rest (reverse (journal-entries journal))))
+                  (if (null? rest)
+                    1
+                    (let
+                        ((it (journal-entry-ref (car rest) 'iteration)))
+                      (if (and it (number? it))
+                        (+ it 1)
+                        (loop (cdr rest))))))))
+            1)))
 
 (define (prepare-entry journal entry)
   "Ensure ENTRY has timestamp and auto-incrementing iteration fields injected
@@ -185,7 +213,6 @@ if not already provided."
 ;;;
 ;;; Appending entries
 ;;;
-
 (define (journal-append! journal entry)
   "Append ENTRY (alist or record) to JOURNAL as a single-line JSON string followed
 by newline, and flush the port. Automatically injects timestamp and monotonic
@@ -211,7 +238,6 @@ iteration if not provided. Returns the prepared entry alist."
 ;;;
 ;;; Querying entries
 ;;;
-
 (define (entry-feature-id entry)
   (or (journal-entry-ref entry "feature-id")
       (journal-entry-ref entry 'feature-id)
@@ -251,22 +277,48 @@ If FEATURE-ID is provided, return only entries matching that feature id."
               (filter (lambda (e) (matches-feature? e feature-id)) entries)
               entries)))))
 
-(define* (journal-latest journal #:optional (feature-id-opt #f) #:key (feature-id feature-id-opt))
+(define*
+  (journal-latest journal
+                  #:optional
+                  (feature-id-opt #f)
+                  #:key
+                  (feature-id feature-id-opt))
   "Return the most recent journal entry (optionally for given FEATURE-ID),
 or #f if the journal has no matching entries."
-  (let ((entries (journal-entries journal #:feature-id feature-id)))
-    (if (null? entries)
+  (if (not feature-id)
+    (read-last-journal-entry journal)
+    (let
+        ((entries (journal-entries journal #:feature-id feature-id)))
+      (if (null? entries)
         #f
-        (last entries))))
+        (last entries)))))
 
-(define* (journal-count journal #:optional (feature-id-opt #f) #:key (feature-id feature-id-opt))
+(define*
+  (journal-count journal
+                 #:optional
+                 (feature-id-opt #f)
+                 #:key
+                 (feature-id feature-id-opt))
   "Return the number of entries in JOURNAL (optionally for given FEATURE-ID)."
-  (length (journal-entries journal #:feature-id feature-id)))
+  (if feature-id
+    (length (journal-entries journal #:feature-id feature-id))
+    (let ((path (journal-path journal)))
+      (if (file-exists? path)
+        (call-with-input-file path
+                              (lambda (port)
+                                (let loop
+                                  ((count 0))
+                                  (let ((line (read-line port)))
+                                    (if (eof-object? line)
+                                      count
+                                      (if (string-null? (string-trim-both line))
+                                        (loop count)
+                                        (loop (+ count 1))))))))
+        0))))
 
 ;;;
 ;;; Integrity verification
 ;;;
-
 (define (journal-verify-integrity journal)
   "Scan JOURNAL file line-by-line; check that all lines are valid JSON and iterations
 are strictly monotonic.
