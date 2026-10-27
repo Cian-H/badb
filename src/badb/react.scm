@@ -194,105 +194,87 @@
 ;;;
 ;;; Tool Execution & Guardrail Enforcement
 ;;;
+(define (log-tool-execution! jrn name args status extra-alist)
+  "Log tool execution outcome to journal JRN if valid."
+  (when (and jrn (journal? jrn))
+    (catch #t
+      (lambda ()
+        (journal-append! jrn
+                         `((feature-id . ,name)
+                           (checkpoint . ,(format #f "tool:~a" name))
+                           (status . ,status)
+                           (arguments . ,args)
+                           ,@extra-alist)))
+      (lambda _ #f))))
+
+(define (invoke-registry-procedure impl meta args)
+  "Invoke registry IMPL with ARGS, adapting alist arguments to schema properties if available."
+  (cond
+   ((null? args) (impl))
+   ((and (pair? args) (pair? (car args)))
+    (catch #t
+      (lambda ()
+        (let* ((params (and meta (or (assoc-ref meta 'parameters) (assoc-ref meta "parameters"))))
+               (props (and (pair? params) (or (assoc-ref params 'properties) (assoc-ref params "properties"))))
+               (ordered-keys (and (pair? props) (map (lambda (p) (ensure-string (car p))) props))))
+          (if (and ordered-keys (pair? ordered-keys))
+              (let ((ordered-vals (map (lambda (k) (or (assoc-ref args k) (assoc-ref args (string->symbol k))))
+                                       ordered-keys)))
+                (apply impl ordered-vals))
+              (apply impl (map cdr args)))))
+      (lambda _ (impl args))))
+   ((list? args) (apply impl args))
+   (else (impl args))))
+
 (define* (execute-tool-call tool-call reg mcp-mgr #:key (jrn #f) (mgr #f) (guardrail #f))
   "Execute a single TOOL-CALL alist. Checks GUARDRAIL, dispatches to REG or MCP-MGR,
 and logs provenance to JRN if provided. Returns (values result-scm is-error?)."
-  (let*
-      ((id (assoc-ref tool-call 'id))
-       (name (assoc-ref tool-call 'name))
-       (args (or (assoc-ref tool-call 'arguments) '()))
-       ;; Check guardrail policy
-       (permission
-         (if (procedure? guardrail)
-           (catch #t
-             (lambda ()
-               (guardrail name args))
-             (lambda (k . a)
-               (cons 'deny (format #f "Guardrail exception (~a): ~s" k a))))
-           #t)))
+  (let* ((name (assoc-ref tool-call 'name))
+         (args (or (assoc-ref tool-call 'arguments) '()))
+         ;; Check guardrail policy
+         (permission
+          (if (procedure? guardrail)
+              (catch #t
+                (lambda () (guardrail name args))
+                (lambda (k . a)
+                  (cons 'deny (format #f "Guardrail exception (~a): ~s" k a))))
+              #t)))
     (cond
-      ((or (eq? permission #f) (eq? permission 'deny))
-        (values `((error .
-                         ,(format #f "Permission denied for tool '~a' by guardrail policy" name)))
-                #t))
-      ((and (pair? permission) (eq? (car permission) 'deny))
-        (values ` ((error . ,(cdr permission))) #t))
-      (else ;; Execute tool
-        (catch #t
-          (lambda ()
-            (let
-                ((res
-                   (cond
-                     ;; 1. Check registry features (exact match or with dots/dashes restored)
-                     ((and reg (lookup-registry-feature reg name))
-                      => (lambda (impl)
-                           (if (procedure? impl)
-                               (cond
-                                ((null? args) (impl))
-                                ((and (pair? args) (pair? (car args)))
-                                 ;; args is an alist: try applying matching parameters based on metadata, or positional values, or pass alist
-                                 (catch #t
-                                   (lambda ()
-                                     (let* ((meta (lookup-registry-metadata reg name))
-                                            (params (and meta (or (assoc-ref meta 'parameters) (assoc-ref meta "parameters"))))
-                                            (props (and (pair? params) (or (assoc-ref params 'properties) (assoc-ref params "properties"))))
-                                            (ordered-keys (if (pair? props)
-                                                              (map (lambda (p) (if (symbol? (car p)) (symbol->string (car p)) (car p))) props)
-                                                              #f)))
-                                       (if (and ordered-keys (pair? ordered-keys))
-                                           (let ((ordered-vals (map (lambda (k) (or (assoc-ref args k) (assoc-ref args (string->symbol k))))
-                                                                    ordered-keys)))
-                                             (apply impl ordered-vals))
-                                           (apply impl (map cdr args)))))
-                                   (lambda _ (impl args))))
-                                ((list? args) (apply impl args))
-                                (else (impl args)))
-                               (error "Registry entry is not a procedure" name))))
-                     ;; 2. Check MCP manager
-                     ((and mcp-mgr
-                           (let
-                               ((all-tools (mcp-manager-list-tools mcp-mgr)))
-                             (find
-                               (lambda (t)
-                                 (let
-                                     ((tname (or (assoc-ref t "name") (assoc-ref t 'name))))
-                                   (or (string=? tname name) (string=? (normalize-tool-name tname) name))))
-                               all-tools)))
-                       =>
-                       (lambda (matched)
-                         (let
-                             ((orig-name (or (assoc-ref matched "name") (assoc-ref matched 'name))))
-                           (mcp-manager-call-tool mcp-mgr orig-name args))))
-                     (else
-                       (error (format #f "Tool '~a' not found in registry or active MCP servers" name))))))
-              ;; Log to journal if attached
-              (when (and jrn (journal? jrn))
-                (catch #t
-                  (lambda ()
-                    (journal-append! jrn
-                                     `((feature-id . ,name)
-                                       (checkpoint . ,(format #f "tool:~a" name))
-                                       (status . "success")
-                                       (arguments . ,args)
-                                       (result-summary . ,(object->string res)))))
-                  (lambda _
-                    #f)))
-              (values res #f)))
-          (lambda (key . err-args)
-            (let
-                ((err-msg (format #f "Execution of tool '~a' failed (~a): ~s" name key err-args)))
-              (when (and jrn (journal? jrn))
-                (catch #t
-                  (lambda ()
-                    (journal-append! jrn
-                                     `((feature-id . ,name)
-                                       (checkpoint . ,(format #f "tool:~a" name))
-                                       (status . "error")
-                                       (arguments . ,args)
-                                       (error . ,err-msg))))
-                  (lambda _
-                    #f)))
-              (values ` ((error . ,err-msg)) #t))))))))
+     ((or (eq? permission #f) (eq? permission 'deny))
+      (values `((error . ,(format #f "Permission denied for tool '~a' by guardrail policy" name)))
+              #t))
+     ((and (pair? permission) (eq? (car permission) 'deny))
+      (values `((error . ,(cdr permission))) #t))
+     (else
+      (catch #t
+        (lambda ()
+          (let ((res
+                 (cond
+                  ;; 1. Check registry features (exact match or with dots/dashes restored)
+                  ((and reg (lookup-registry-feature reg name))
+                   => (lambda (impl)
+                        (if (procedure? impl)
+                            (let ((meta (lookup-registry-metadata reg name)))
+                              (invoke-registry-procedure impl meta args))
+                            (error "Registry entry is not a procedure" name))))
+                  ;; 2. Check MCP manager
+                  ((and mcp-mgr
+                        (find (lambda (t)
+                                (let ((tname (or (assoc-ref t "name") (assoc-ref t 'name))))
+                                  (or (string=? tname name)
+                                      (string=? (normalize-tool-name tname) name))))
+                              (mcp-manager-list-tools mcp-mgr)))
+                   => (lambda (matched)
+                        (let ((orig-name (or (assoc-ref matched "name") (assoc-ref matched 'name))))
+                          (mcp-manager-call-tool mcp-mgr orig-name args))))
+                  (else
+                   (error (format #f "Tool '~a' not found in registry or active MCP servers" name))))))
+            (log-tool-execution! jrn name args "success" `((result-summary . ,(object->string res))))
+            (values res #f)))
+        (lambda (key . err-args)
+          (let ((err-msg (format #f "Execution of tool '~a' failed (~a): ~s" name key err-args)))
+            (log-tool-execution! jrn name args "error" `((error . ,err-msg)))
+            (values `((error . ,err-msg)) #t))))))))
 
 ;;;
 ;;; ReAct Session Record
