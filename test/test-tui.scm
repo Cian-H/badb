@@ -534,4 +534,110 @@
     "(define (double x) (* x 2))"
     (normalize-scheme-expr "(define (double x) (* x 2))")))
 
+;;;
+;;; 12. Visual Hierarchy & Token Segmentation (segment-line)
+;;;
+
+(test-group "tui-token-segmentation"
+  ;; Plain text without special tokens
+  (let ((segs (segment-line "Simple text with no tokens")))
+    (test-equal "plain text is single chunk"
+      1
+      (length segs))
+    (test-equal "plain text chunk has white pair 3"
+      3
+      (cadr (car segs)))
+    (test-assert "plain text chunk is not bold"
+      (not (caddr (car segs)))))
+
+  ;; Status tags
+  (let ((segs-running (segment-line "[RUNNING]")))
+    (test-equal "running status text"
+      "[RUNNING]"
+      (caar segs-running))
+    (test-equal "running status has green pair 2"
+      2
+      (cadar segs-running))
+    (test-assert "running status is bold"
+      (caddar segs-running)))
+
+  (let ((segs-stopped (segment-line "[STOPPED]")))
+    (test-equal "stopped status text"
+      "[STOPPED]"
+      (caar segs-stopped))
+    (test-equal "stopped status has yellow pair 4"
+      4
+      (cadar segs-stopped))
+    (test-assert "stopped status is bold"
+      (caddar segs-stopped)))
+
+  (let ((segs-deny (segment-line "[DENY]")))
+    (test-equal "deny status text"
+      "[DENY]"
+      (caar segs-deny))
+    (test-equal "deny status has red pair 5"
+      5
+      (cadar segs-deny))
+    (test-assert "deny status is bold"
+      (caddar segs-deny)))
+
+  ;; Bullets
+  (let ((segs-bullet (segment-line "• list item")))
+    (test-equal "bullet glyph text"
+      "• "
+      (caar segs-bullet))
+    (test-equal "bullet glyph has cyan pair 1"
+      1
+      (cadar segs-bullet))
+    (test-assert "bullet glyph is bold"
+      (caddar segs-bullet))
+    (test-equal "bullet content has white pair 3"
+      3
+      (cadr (cadr segs-bullet))))
+
+  ;; Property keys
+  (let ((segs-key (segment-line "Model: moonshotai/kimi-k2.6")))
+    (test-equal "property key text"
+      "Model: "
+      (caar segs-key))
+    (test-equal "property key has cyan pair 1"
+      1
+      (cadar segs-key))
+    (test-equal "property value has white pair 3"
+      3
+      (cadr (cadr segs-key))))
+
+  ;; Composite MCP line: "  • filesystem: [RUNNING] (14 tools)"
+  (let ((segs-mcp (segment-line "  • filesystem: [RUNNING] (14 tools)")))
+    (test-assert "composite line has multiple styled segments"
+      (>= (length segs-mcp) 5))
+    ;; Verify presence of green [RUNNING] segment
+    (let ((running-seg (find (lambda (s) (string=? (car s) "[RUNNING]")) segs-mcp)))
+      (test-assert "running tag found in segments"
+        running-seg)
+      (test-equal "running tag has green pair 2"
+        2
+        (cadr running-seg))
+      (test-assert "running tag is bold"
+        (caddr running-seg)))
+    ;; Verify presence of cyan filesystem: key
+    (let ((key-seg (find (lambda (s) (string=? (car s) "filesystem: ")) segs-mcp)))
+      (test-assert "filesystem key found in segments"
+        key-seg)
+      (test-equal "filesystem key has cyan pair 1"
+        1
+        (cadr key-seg))))
+
+  ;; URL preservation (not broken by key label regex)
+  (let ((segs-url (segment-line "Endpoint: https://openrouter.ai/api/v1")))
+    (test-equal "endpoint key is matched"
+      "Endpoint: "
+      (caar segs-url))
+    (test-equal "url is preserved intact as white pair 3"
+      "https://openrouter.ai/api/v1"
+      (car (cadr segs-url)))
+    (test-equal "url has white pair 3"
+      3
+      (cadr (cadr segs-url)))))
+
 (test-end "badb-tui")

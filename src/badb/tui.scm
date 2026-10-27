@@ -23,6 +23,7 @@
   #:use-module (ice-9 popen)
   #:use-module (ice-9 rdelim)
   #:use-module (ice-9 optargs)
+  #:use-module (ice-9 regex)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-9)
   #:use-module (srfi srfi-19)
@@ -41,7 +42,8 @@
             selector-active?
             get-prompt-indicator
             format-header-line
-            format-prompt-divider))
+            format-prompt-divider
+            segment-line))
 
 ;;;
 ;;; Text Formatting & Word Wrapping Helpers
@@ -383,6 +385,76 @@ and core badb modules for interactive evaluation."
       (values #f 1 (format #f "Shell error (~a): ~s" key args)))))
 
 ;;;
+;;; Visual Hierarchy & Token Highlight Engine
+;;;
+
+;; Canonical status pills with (tag pair-id bold? dim?)
+(define %status-tags
+  (list (list "[RUNNING]" 2 #t #f)
+        (list "[OK]" 2 #t #f)
+        (list "[ALLOW]" 2 #t #f)
+        (list "[ACTIVE]" 2 #t #f)
+        (list "[PASSED]" 2 #t #f)
+        (list "[READY]" 2 #t #f)
+        (list "[STOPPED]" 4 #t #f)
+        (list "[WARN]" 4 #t #f)
+        (list "[WARNING]" 4 #t #f)
+        (list "[ASK]" 4 #t #f)
+        (list "[PENDING]" 4 #t #f)
+        (list "[CAUTIOUS]" 4 #t #f)
+        (list "[STRICT]" 4 #t #f)
+        (list "[ERROR]" 5 #t #f)
+        (list "[DENY]" 5 #t #f)
+        (list "[FAILED]" 5 #t #f)
+        (list "[PARANOID]" 5 #t #f)
+        (list "[PERMISSIVE]" 1 #t #f)
+        (list "[DISABLED]" 1 #t #f)))
+
+;; Regex for key label at the start of a clause: e.g. "Model: ", "System Guardrail: "
+(define %key-label-rx (make-regexp "^[ \t]*([A-Za-z0-9_-]+( [A-Za-z0-9_-]+){0,2}):[ \t]+"))
+
+(define (segment-line line)
+  "Segment LINE into styled chunks of the form ((chunk-str pair-id bold? dim?) ...)."
+  (let loop ((pos 0) (acc '()))
+    (if (>= pos (string-length line))
+        (reverse acc)
+        (let ((rem (substring line pos)))
+          (let ((tag-match
+                 (find (lambda (tag-entry)
+                         (string-prefix? (car tag-entry) rem))
+                       %status-tags)))
+            (cond
+             (tag-match
+              (let* ((tag-str (car tag-match))
+                     (pair-id (cadr tag-match))
+                     (bold? (caddr tag-match))
+                     (dim? (cadddr tag-match)))
+                (loop (+ pos (string-length tag-str))
+                      (cons (list tag-str pair-id bold? dim?) acc))))
+             ((or (string-prefix? "• " rem) (string-prefix? "❯ " rem))
+              (let ((bullet-str (substring rem 0 2)))
+                (loop (+ pos 2)
+                      (cons (list bullet-str 1 #t #f) acc))))
+             ((regexp-exec %key-label-rx rem)
+              => (lambda (m)
+                   (let* ((full-match (match:substring m 0))
+                          (match-len (string-length full-match)))
+                     (loop (+ pos match-len)
+                           (cons (list full-match 1 #f #f) acc)))))
+             (else
+              (let find-next ((end (+ pos 1)))
+                (if (>= end (string-length line))
+                    (reverse (cons (list (substring line pos) 3 #f #f) acc))
+                    (let ((sub-rem (substring line end)))
+                      (if (or (any (lambda (t) (string-prefix? (car t) sub-rem)) %status-tags)
+                              (string-prefix? "• " sub-rem)
+                              (string-prefix? "❯ " sub-rem)
+                              (regexp-exec %key-label-rx sub-rem))
+                          (loop end
+                                (cons (list (substring line pos end) 3 #f #f) acc))
+                          (find-next (+ end 1)))))))))))))
+
+;;;
 ;;; Main TUI Controller
 ;;;
 
@@ -645,86 +717,237 @@ and core badb modules for interactive evaluation."
               (addstr win safe-str))
             (lambda _ #f)))))
 
-    ;; Format a single message entry into styled rows
+    ;; Determine system badge text and color pair from content
+    (define (system-badge-and-pair content)
+      (cond
+       ((or (string-contains content "MCP Server")
+            (string-prefix? "Active Model:" content))
+        (cons "ℹ MCP SERVERS" 1))
+       ((string-contains content "Configuration")
+        (cons "⚙ CONFIGURATION" 1))
+       ((string-contains content "Guardrail")
+        (cons "🛡 GUARDRAILS" 4))
+       ((string-contains content "Context Statistics")
+        (cons "📊 CONTEXT" 1))
+       ((string-contains content "Features & Architecture")
+        (cons "⚡ FEATURES" 1))
+       ((string-contains content "Help & Commands")
+        (cons "📖 HELP" 1))
+       ((string-contains content "Test Suite")
+        (cons "🧪 TESTS" 1))
+       ((string-contains content "ReAct")
+        (cons "🔄 REACT" 4))
+       ((or (string-contains content "Journal")
+            (string-contains content "Checkpoint"))
+        (cons "📓 JOURNAL" 1))
+       (else
+        (cons "ℹ SYSTEM" 1))))
+
+    ;; Helper to wrap lines into a framed card descriptor
+    (define (make-card-entry badge badge-pair-id role lines card-w inner-w)
+      (if (null? lines)
+          '()
+          (append
+           (list (list "card-top" badge badge-pair-id card-w))
+           (map (lambda (l) (list "card-body" role l inner-w)) lines)
+           (list (list "card-bot" card-w))
+           (list (list "spacer" "")))))
+
+    ;; Format a single message entry into card structure rows
     (define (format-message-entry msg content-width)
       (let* ((role (assoc-ref msg 'role))
              (content (or (assoc-ref msg 'content) ""))
-             (thoughts (assoc-ref msg 'thoughts)))
+             (thoughts (assoc-ref msg 'thoughts))
+             (card-w content-width)
+             (inner-w (max 10 (- card-w 4))))
         (cond
          ((string=? role "assistant")
-          (let* ((thought-lines
-                  (if (and thoughts (not (string-null? (string-trim-both thoughts))))
-                      (let* ((card-w (min content-width 72))
-                             (inner-w (max 10 (- card-w 4)))
-                             (wrapped-th (wrap-text (string-trim-both thoughts) inner-w))
-                             (top-tag "╭─ 💭 Thought Process ")
-                             (top-fill (make-string (max 0 (- card-w (string-length top-tag) 1)) #\─))
-                             (top-line (string-append top-tag top-fill "╮"))
-                             (bot-line (string-append "╰" (make-string (- card-w 2) #\─) "╯"))
-                             (body (map (lambda (l)
-                                          (let ((pad (make-string (max 0 (- inner-w (string-length l))) #\space)))
-                                            (string-append "│ " l pad " │")))
-                                        wrapped-th)))
-                        (map (lambda (l) (list "thought" l))
-                             (cons top-line (append body (list bot-line)))))
-                      '()))
-                 (content-lines
-                  (if (string-null? (string-trim-both content))
-                      '()
-                      (let ((wrapped (wrap-text content (- content-width 2))))
-                        (if (null? wrapped)
-                            '()
-                            (cons (list "assistant" (string-append "• " (car wrapped)))
-                                  (map (lambda (l) (list "assistant" (string-append "  " l)))
-                                       (cdr wrapped))))))))
-            (append thought-lines content-lines)))
+          (let* ((th-lines (if (and thoughts (not (string-null? (string-trim-both thoughts))))
+                               (make-card-entry "💭 THOUGHT PROCESS" 1 "thought"
+                                                (wrap-text (string-trim-both thoughts) inner-w)
+                                                card-w inner-w)
+                               '()))
+                 (ct-lines (if (and content (not (string-null? (string-trim-both content))))
+                               (make-card-entry "🤖 ASSISTANT" 3 "assistant"
+                                                (wrap-text content inner-w)
+                                                card-w inner-w)
+                               '())))
+            (append th-lines ct-lines)))
 
          ((string=? role "user")
-          (let ((wrapped (wrap-text content (- content-width 2))))
-            (if (null? wrapped)
-                '()
-                (cons (list "user" (string-append "❯ " (car wrapped)))
-                  (map (lambda (l) (list "user" (string-append "  " l))) (cdr wrapped))))))
+          (make-card-entry "👤 USER" 2 "user"
+                           (wrap-text (string-trim-both content) inner-w)
+                           card-w inner-w))
 
          ((string=? role "system")
-          (let ((wrapped (wrap-text content (- content-width 2))))
-            (if (null? wrapped)
-                '()
-                (cons (list "system" (string-append "ℹ " (car wrapped)))
-                      (map (lambda (l) (list "system" (string-append "  " l))) (cdr wrapped))))))
+          (let ((bp (system-badge-and-pair content)))
+            (make-card-entry (car bp) (cdr bp) "system"
+                             (wrap-text content inner-w)
+                             card-w inner-w)))
 
          ((string=? role "error")
-          (let ((wrapped (wrap-text content (- content-width 2))))
-            (if (null? wrapped)
-                '()
-                (cons (list "error" (string-append "✗ " (car wrapped)))
-                      (map (lambda (l) (list "error" (string-append "  " l))) (cdr wrapped))))))
+          (make-card-entry "✗ ERROR" 5 "error"
+                           (wrap-text content inner-w)
+                           card-w inner-w))
 
          ((string=? role "shell-cmd")
-          (let ((wrapped (wrap-text content (- content-width 2))))
-            (if (null? wrapped)
-                '()
-                (cons (list "shell-cmd" (string-append "$ " (car wrapped)))
-                      (map (lambda (l) (list "shell-cmd" (string-append "  " l))) (cdr wrapped))))))
+          (make-card-entry "🐚 SHELL COMMAND" 6 "shell-cmd"
+                           (wrap-text content inner-w)
+                           card-w inner-w))
 
          ((string=? role "shell-out")
-          (let ((wrapped (wrap-text content (- content-width 2))))
-            (map (lambda (l) (list "shell-out" (string-append "  " l))) wrapped)))
+          (make-card-entry "🐚 SHELL OUTPUT" 6 "shell-out"
+                           (wrap-text content inner-w)
+                           card-w inner-w))
 
          ((string=? role "scheme-in")
-          (let ((wrapped (wrap-text content (- content-width 2))))
-            (if (null? wrapped)
-                '()
-                (cons (list "scheme-in" (string-append "λ " (car wrapped)))
-                      (map (lambda (l) (list "scheme-in" (string-append "  " l))) (cdr wrapped))))))
+          (make-card-entry "λ SCHEME INPUT" 1 "scheme-in"
+                           (wrap-text content inner-w)
+                           card-w inner-w))
 
          ((string=? role "scheme-out")
-          (let ((wrapped (wrap-text content (- content-width 2))))
-            (map (lambda (l) (list "scheme-out" (string-append "  " l))) wrapped)))
+          (make-card-entry "λ SCHEME EVALUATION" 1 "scheme-out"
+                           (wrap-text content inner-w)
+                           card-w inner-w))
+
+         ((string=? role "tool")
+          (make-card-entry "⚙ TOOL CALL" 4 "tool"
+                           (wrap-text content inner-w)
+                           card-w inner-w))
 
          (else
-          (let ((wrapped (wrap-text content (- content-width 2))))
-            (map (lambda (l) (list "system" (string-append "• " l))) wrapped))))))
+          (make-card-entry "ℹ NOTICE" 1 "system"
+                           (wrap-text content inner-w)
+                           card-w inner-w)))))
+
+    ;; Render interior text of a card body row with semantic token highlights
+    (define (draw-styled-interior y start-x text inner-w role)
+      (let* ((text-len (string-length text))
+             (pad-len (max 0 (- inner-w text-len)))
+             (padded (if (> pad-len 0)
+                         (string-append text (make-string pad-len #\space))
+                         (if (> text-len inner-w)
+                             (substring text 0 inner-w)
+                             text))))
+        (cond
+         ((string=? role "error")
+          (set-color-attr! 5 #t)
+          (attr-on! stdscr A_BOLD)
+          (safe-addstr stdscr y start-x padded inner-w)
+          (attr-off! stdscr A_BOLD)
+          (set-color-attr! 5 #f))
+
+         ((string=? role "user")
+          (set-color-attr! 2 #t)
+          (attr-on! stdscr A_BOLD)
+          (safe-addstr stdscr y start-x padded inner-w)
+          (attr-off! stdscr A_BOLD)
+          (set-color-attr! 2 #f))
+
+         ((string=? role "shell-cmd")
+          (set-color-attr! 6 #t)
+          (attr-on! stdscr A_BOLD)
+          (safe-addstr stdscr y start-x padded inner-w)
+          (attr-off! stdscr A_BOLD)
+          (set-color-attr! 6 #f))
+
+         ((string=? role "scheme-in")
+          (set-color-attr! 1 #t)
+          (attr-on! stdscr A_BOLD)
+          (safe-addstr stdscr y start-x padded inner-w)
+          (attr-off! stdscr A_BOLD)
+          (set-color-attr! 1 #f))
+
+         ((string=? role "thought")
+          (set-color-attr! 1 #t)
+          (attr-on! stdscr A_DIM)
+          (safe-addstr stdscr y start-x padded inner-w)
+          (attr-off! stdscr A_DIM)
+          (set-color-attr! 1 #f))
+
+         (else
+          (let ((segments (segment-line padded)))
+            (let loop ((segs segments) (cur-x start-x))
+              (unless (or (null? segs) (>= cur-x (+ start-x inner-w)))
+                (let* ((seg (car segs))
+                       (str (car seg))
+                       (pair-id (cadr seg))
+                       (bold? (caddr seg))
+                       (dim? (cadddr seg))
+                       (len (min (string-length str) (max 0 (- (+ start-x inner-w) cur-x)))))
+                  (when (> len 0)
+                    (set-color-attr! pair-id #t)
+                    (when bold? (attr-on! stdscr A_BOLD))
+                    (when dim? (attr-on! stdscr A_DIM))
+                    (safe-addstr stdscr y cur-x str len)
+                    (when dim? (attr-off! stdscr A_DIM))
+                    (when bold? (attr-off! stdscr A_BOLD))
+                    (set-color-attr! pair-id #f))
+                  (loop (cdr segs) (+ cur-x len))))))))))
+
+    ;; Draw a single card row (top, body, bot, or spacer)
+    (define (draw-card-line y entry content-width)
+      (let ((kind (car entry)))
+        (cond
+         ((string=? kind "spacer")
+          #t)
+
+         ((string=? kind "card-top")
+          (let* ((badge (cadr entry))
+                 (badge-pair (caddr entry))
+                 (card-w (cadddr entry))
+                 (right-col (+ 2 (- card-w 1))))
+            (set-color-attr! 7 #t)
+            (safe-addstr stdscr y 2 "╭─ " 3)
+            (set-color-attr! 7 #f)
+
+            (set-color-attr! badge-pair #t)
+            (attr-on! stdscr A_BOLD)
+            (when (string=? badge "💭 THOUGHT PROCESS")
+              (attr-on! stdscr A_DIM))
+            (let* ((avail-badge (max 1 (- card-w 8)))
+                   (badge-str (if (> (string-length badge) avail-badge)
+                                  (substring badge 0 avail-badge)
+                                  badge))
+                   (badge-padded (string-append badge-str " ")))
+              (safe-addstr stdscr y 5 badge-padded (string-length badge-padded)))
+            (when (string=? badge "💭 THOUGHT PROCESS")
+              (attr-off! stdscr A_DIM))
+            (attr-off! stdscr A_BOLD)
+            (set-color-attr! badge-pair #f)
+
+            (let* ((cur-x (+ 5 (string-length badge) 1))
+                   (dash-count (max 0 (- right-col cur-x))))
+              (set-color-attr! 7 #t)
+              (when (> dash-count 0)
+                (safe-addstr stdscr y cur-x (make-string dash-count #\─) dash-count))
+              (safe-addstr stdscr y right-col "╮" 1)
+              (set-color-attr! 7 #f))))
+
+         ((string=? kind "card-body")
+          (let* ((role (cadr entry))
+                 (line-text (caddr entry))
+                 (inner-w (cadddr entry))
+                 (card-w (+ inner-w 4))
+                 (right-col (+ 2 (- card-w 1))))
+            (set-color-attr! 7 #t)
+            (safe-addstr stdscr y 2 "│ " 2)
+            (set-color-attr! 7 #f)
+            (draw-styled-interior y 4 line-text inner-w role)
+            (set-color-attr! 7 #t)
+            (safe-addstr stdscr y (- right-col 1) " │" 2)
+            (set-color-attr! 7 #f)))
+
+         ((string=? kind "card-bot")
+          (let* ((card-w (cadr entry))
+                 (right-col (+ 2 (- card-w 1)))
+                 (dash-count (max 0 (- card-w 2))))
+            (set-color-attr! 7 #t)
+            (safe-addstr stdscr y 2 "╰" 1)
+            (when (> dash-count 0)
+              (safe-addstr stdscr y 3 (make-string dash-count #\─) dash-count))
+            (safe-addstr stdscr y right-col "╯" 1)
+            (set-color-attr! 7 #f))))))
 
     ;; Render entire screen
     (define (render!)
@@ -740,8 +963,8 @@ and core badb modules for interactive evaluation."
         ;; 1. Header Bar with Rounded Frame & Status Pills
         (let* ((active-count (length (filter (lambda (s) (assoc-ref s 'running?))
                                              (mcp-manager-list-servers mcp-mgr))))
-               (total-count (length (badb-config-mcp-servers cfg)))
-               (mcp-info (format #f "~a/~a" active-count total-count)))
+                (total-count (length (badb-config-mcp-servers cfg)))
+                (mcp-info (format #f "~a/~a" active-count total-count)))
           (set-color-attr! 1 #t)
           (safe-addstr stdscr 0 0
                        (format-header-line maxx
@@ -754,13 +977,15 @@ and core badb modules for interactive evaluation."
           (set-color-attr! 1 #f))
 
         ;; 2. Side borders for viewport rows
+        (set-color-attr! 7 #t)
         (let loop-borders ((y view-top))
           (when (< y view-bottom)
             (safe-addstr stdscr y 0 "│" 1)
             (safe-addstr stdscr y (- maxx 1) "│" 1)
             (loop-borders (+ y 1))))
+        (set-color-attr! 7 #f)
 
-        ;; 3. Formatted Message History
+        ;; 3. Formatted Message History Cards
         (let* ((formatted-lines
                 (append-map (lambda (msg) (format-message-entry msg content-width))
                             messages))
@@ -771,66 +996,9 @@ and core badb modules for interactive evaluation."
 
           (let loop ((lines visible-lines) (y view-top))
             (unless (or (null? lines) (>= y view-bottom))
-              (let* ((entry (car lines))
-                     (role (car entry))
-                     (text (cadr entry)))
-                (cond
-                 ((string=? role "thought")
-                  (set-color-attr! 1 #t)
-                  (attr-on! stdscr A_DIM)
-                  (safe-addstr stdscr y 2 text content-width)
-                  (attr-off! stdscr A_DIM)
-                  (set-color-attr! 1 #f))
-
-                 ((string=? role "user")
-                  (set-color-attr! 2 #t)
-                  (attr-on! stdscr A_BOLD)
-                  (safe-addstr stdscr y 2 text content-width)
-                  (attr-off! stdscr A_BOLD)
-                  (set-color-attr! 2 #f))
-
-                 ((string=? role "assistant")
-                  (set-color-attr! 3 #t)
-                  (safe-addstr stdscr y 2 text content-width)
-                  (set-color-attr! 3 #f))
-
-                 ((string=? role "system")
-                  (set-color-attr! 4 #t)
-                  (safe-addstr stdscr y 2 text content-width)
-                  (set-color-attr! 4 #f))
-
-                 ((string=? role "error")
-                  (set-color-attr! 5 #t)
-                  (attr-on! stdscr A_BOLD)
-                  (safe-addstr stdscr y 2 text content-width)
-                  (attr-off! stdscr A_BOLD)
-                  (set-color-attr! 5 #f))
-
-                 ((string=? role "shell-cmd")
-                  (set-color-attr! 6 #t)
-                  (attr-on! stdscr A_BOLD)
-                  (safe-addstr stdscr y 2 text content-width)
-                  (attr-off! stdscr A_BOLD)
-                  (set-color-attr! 6 #f))
-
-                 ((string=? role "shell-out")
-                  (safe-addstr stdscr y 2 text content-width))
-
-                 ((string=? role "scheme-in")
-                  (set-color-attr! 1 #t)
-                  (attr-on! stdscr A_BOLD)
-                  (safe-addstr stdscr y 2 text content-width)
-                  (attr-off! stdscr A_BOLD)
-                  (set-color-attr! 1 #f))
-
-                 ((string=? role "scheme-out")
-                  (set-color-attr! 3 #t)
-                  (safe-addstr stdscr y 2 text content-width)
-                  (set-color-attr! 3 #f))
-
-                 (else
-                  (safe-addstr stdscr y 2 text content-width))))
-              (loop (cdr lines) (+ y 1)))))
+              (let ((entry (car lines)))
+                (draw-card-line y entry content-width)
+                (loop (cdr lines) (+ y 1))))))
 
         ;; 4. Prompt divider line with dynamic mode hint
         (set-color-attr! 1 #t)
@@ -838,8 +1006,10 @@ and core badb modules for interactive evaluation."
         (set-color-attr! 1 #f)
 
         ;; 5. Prompt Input Line (single character morphing indicator)
+        (set-color-attr! 7 #t)
         (safe-addstr stdscr (- maxy 2) 0 "│" 1)
         (safe-addstr stdscr (- maxy 2) (- maxx 1) "│" 1)
+        (set-color-attr! 7 #f)
         (call-with-values (lambda () (get-prompt-indicator input-buffer status-text prompt-mode))
           (lambda (glyph pair-id bold?)
             (let* ((avail-width (max 1 (- maxx 6)))
@@ -949,7 +1119,7 @@ and core badb modules for interactive evaluation."
                                                     (t-args (or (assoc-ref tc 'arguments) (assoc-ref tc "arguments"))))
                                                (set! status-text (format #f "TOOL: ~a..." t-name))
                                                (set! messages (append messages
-                                                                      (list `((role . "system")
+                                                                      (list `((role . "tool")
                                                                               (content . ,(format #f "⚙ Invoking tool: ~a (~s)" t-name t-args))))))
                                                (render!))))
                                      (cons 'on-tool-result
@@ -960,7 +1130,7 @@ and core badb modules for interactive evaluation."
                                                                  (string-append (substring res-str 0 140) "...")
                                                                  res-str)))
                                                (set! messages (append messages
-                                                                      (list `((role . "system")
+                                                                      (list `((role . "tool")
                                                                               (content . ,(format #f "✓ Tool ~a returned: ~a" t-name preview))))))
                                                (render!))))))))
               (catch #t
@@ -1622,7 +1792,8 @@ and core badb modules for interactive evaluation."
       (init-pair! 3 COLOR_WHITE COLOR_BLACK)    ; Assistant text
       (init-pair! 4 COLOR_YELLOW COLOR_BLACK)   ; System notice / Selector border
       (init-pair! 5 COLOR_RED COLOR_BLACK)      ; Error
-      (init-pair! 6 COLOR_MAGENTA COLOR_BLACK)) ; Shell prompt / Exec badge
+      (init-pair! 6 COLOR_MAGENTA COLOR_BLACK)  ; Shell prompt / Exec badge
+      (init-pair! 7 COLOR_BLUE COLOR_BLACK))    ; Container frame & borders
 
     ;; Main input loop wrapped in dynamic-wind for crash-proof terminal restoration
     (dynamic-wind
