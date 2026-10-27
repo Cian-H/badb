@@ -5,44 +5,49 @@
 ;;; arbitrary Scheme predicates, interactive human confirmation, or algorithmic
 ;;; fast "System 1" models evaluating risk in real-time.
 
-(define-module (badb guardrail)
-  #:use-module (badb model)
-  #:use-module (badb journal)
-  #:use-module (json)
-  #:use-module (ice-9 format)
-  #:use-module (ice-9 regex)
-  #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-9)
-  #:export (<guardrail-policy>
-            make-guardrail-policy
-            guardrail-policy?
-            guardrail-policy-level
-            guardrail-policy-rules
-            guardrail-policy-evaluator
-            guardrail-policy-journal
-            set-guardrail-policy-level!
-            set-guardrail-policy-rules!
-            set-guardrail-policy-evaluator!
-            set-guardrail-policy-journal!
-
-            ;; Pre-built evaluators & rule constructors
-            make-pattern-rule
-            make-scheme-predicate-evaluator
-            make-system1-model-evaluator
-            default-cautious-evaluator
-
-            ;; Decision evaluation & level inspection
-            evaluate-guardrail
-            guardrail-evaluate
-            guardrail-level-rank
-            guardrail-allow?
-            guardrail-deny?
-            guardrail-ask?))
+(define-module (badb guardrail) #:use-module
+               (badb model)
+               #:use-module
+               (badb journal)
+               #:use-module
+               (json)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 regex)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:export
+               (<guardrail-policy> make-guardrail-policy
+                                   guardrail-policy?
+                                   guardrail-policy-level
+                                   guardrail-policy-rules
+                                   guardrail-policy-evaluator
+                                   guardrail-policy-journal
+                                   set-guardrail-policy-level!
+                                   set-guardrail-policy-rules!
+                                   set-guardrail-policy-evaluator!
+                                   set-guardrail-policy-journal!
+                                   ;; Pre-built evaluators & rule constructors
+                                   make-pattern-rule
+                                   make-scheme-predicate-evaluator
+                                   make-system1-model-evaluator
+                                   default-cautious-evaluator
+                                   dangerous-operation?
+                                   mutating-operation?
+                                   ;; Decision evaluation & level inspection
+                                   evaluate-guardrail
+                                   guardrail-evaluate
+                                   guardrail-level-rank
+                                   guardrail-allow?
+                                   guardrail-deny?
+                                   guardrail-ask?))
 
 ;;;
 ;;; Guardrail Levels & Ranking
 ;;;
-
 (define %guardrail-levels
   '((disabled   . 0)
     (permissive . 1)
@@ -57,7 +62,6 @@
 ;;;
 ;;; Rule Constructors
 ;;;
-
 (define* (make-pattern-rule name-pattern args-pattern verdict
                             #:optional (reason #f))
   "Create a declarative rule matching tool name and argument strings.
@@ -83,43 +87,67 @@ NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wild
 ;;;
 ;;; Pre-built Evaluator Strategies
 ;;;
+(define*
+  (dangerous-operation? tool-name #:optional (args '()))
+  "Return #t if TOOL-NAME and ARGS constitute a dangerous destructive operation."
+  (let
+      ((name-str
+         (if (symbol? tool-name)
+           (symbol->string tool-name)
+           tool-name))
+       (args-str
+         (if (string? args)
+           args
+           (object->string args))))
+    (and
+      (or (string-contains args-str "rm -rf")
+          (string-contains args-str "drop table")
+          (string-contains args-str "format disk")
+          (string-contains name-str "danger"))
+      #t)))
 
-(define* (default-cautious-evaluator tool-name args level #:optional (context '()))
+(define*
+  (mutating-operation? tool-name #:optional (args '()))
+  "Return #t if TOOL-NAME represents a state-mutating operation."
+  (let
+      ((name-str
+         (if (symbol? tool-name)
+           (symbol->string tool-name)
+           tool-name)))
+    (and
+      (or (string-prefix? "write" name-str)
+          (string-prefix? "edit" name-str)
+          (string-prefix? "delete" name-str)
+          (string-prefix? "create" name-str)
+          (string-prefix? "shell" name-str)
+          (string-contains name-str "exec"))
+      #t)))
+
+(define*
+  (default-cautious-evaluator tool-name args level #:optional (context '()))
   "Default built-in evaluator applying standard cautious/permissive/strict policies."
-  (let* ((name-str (if (symbol? tool-name) (symbol->string tool-name) tool-name))
-         (args-str (object->string args))
-         (is-danger? (or (string-contains args-str "rm -rf")
-                         (string-contains args-str "drop table")
-                         (string-contains args-str "format disk")
-                         (string-contains name-str "danger")))
-         (is-mutation? (or (string-prefix? "write" name-str)
-                           (string-prefix? "edit" name-str)
-                           (string-prefix? "delete" name-str)
-                           (string-prefix? "create" name-str)
-                           (string-prefix? "shell" name-str)
-                           (string-contains name-str "exec"))))
-    (case level
-      ((disabled)
-       (cons 'allow "Guardrails disabled"))
-      ((permissive)
-       (if is-danger?
-           (cons 'ask "High-risk command detected in permissive mode")
-           (cons 'allow "Permissive mode auto-approved")))
-      ((cautious)
-       (cond
-        (is-danger? (cons 'deny "Dangerous destructive operation blocked in cautious mode"))
-        (is-mutation? (cons 'ask "State mutation requires confirmation in cautious mode"))
-        (else (cons 'allow "Read-only inspection permitted"))))
-      ((strict)
-       (if is-danger?
-           (cons 'deny "Dangerous operation blocked in strict mode")
-           (cons 'ask "All operations require confirmation in strict mode")))
-      ((paranoid)
-       (if is-mutation?
-           (cons 'deny "All mutations prohibited in paranoid mode")
-           (cons 'ask "Inspection requires confirmation in paranoid mode")))
-      (else
-       (cons 'ask "Unrecognized security level; defaulting to ask")))))
+  (let
+      ((is-danger? (dangerous-operation? tool-name args))
+       (is-mutation? (mutating-operation? tool-name args)))
+    (cond
+      ((eq? level 'disabled) (cons 'allow "Guardrails disabled"))
+      ((and (eq? level 'permissive) is-danger?)
+        (cons 'ask "High-risk command detected in permissive mode"))
+      ((eq? level 'permissive) (cons 'allow "Permissive mode auto-approved"))
+      ((and (eq? level 'cautious) is-danger?)
+        (cons 'deny "Dangerous destructive operation blocked in cautious mode"))
+      ((and (eq? level 'cautious) is-mutation?)
+        (cons 'ask "State mutation requires confirmation in cautious mode"))
+      ((eq? level 'cautious) (cons 'allow "Read-only inspection permitted"))
+      ((and (eq? level 'strict) is-danger?)
+        (cons 'deny "Dangerous operation blocked in strict mode"))
+      ((eq? level 'strict)
+        (cons 'ask "All operations require confirmation in strict mode"))
+      ((and (eq? level 'paranoid) is-mutation?)
+        (cons 'deny "All mutations prohibited in paranoid mode"))
+      ((eq? level 'paranoid)
+        (cons 'ask "Inspection requires confirmation in paranoid mode"))
+      (else (cons 'ask "Unrecognized security level; defaulting to ask")))))
 
 (define (make-scheme-predicate-evaluator predicate-fn)
   "Create an algorithmic evaluator driven by custom Scheme PREDICATE-FN.
@@ -160,7 +188,6 @@ Falls back to FALLBACK-EVALUATOR if the model call fails."
 ;;;
 ;;; Guardrail Policy Record
 ;;;
-
 (define-record-type <guardrail-policy>
   (%make-guardrail-policy level rules evaluator journal)
   guardrail-policy?
@@ -180,7 +207,6 @@ Falls back to FALLBACK-EVALUATOR if the model call fails."
 ;;;
 ;;; Evaluation Pipeline
 ;;;
-
 (define* (evaluate-guardrail policy tool-name args #:optional (context '()))
   "Evaluate TOOL-NAME and ARGS against POLICY.
 Returns a pair: (verdict-symbol . reason-string), e.g. '(allow . \"...\") or '(deny . \"...\")."
