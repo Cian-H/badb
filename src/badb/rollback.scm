@@ -44,8 +44,6 @@
 ;;;
 ;;; Filesystem Helpers
 ;;;
-
-
 (define (read-file-content path)
   "Read the entire content of PATH as string, or #f if unreadable/non-existent."
   (catch #t
@@ -64,7 +62,6 @@
 ;;;
 ;;; Data Records
 ;;;
-
 (define-record-type <checkpoint>
   (%make-checkpoint id description timestamp files registry-state)
   checkpoint?
@@ -102,7 +99,6 @@
 ;;;
 ;;; Checkpoint Creation
 ;;;
-
 (define %ignore-dirs
   '(".git" ".cache" "node_modules" "target" ".badb" "dist" "build"))
 
@@ -145,53 +141,60 @@
              entries))
       '()))
 
-(define* (create-checkpoint! mgr description #:key (files #f))
+(define*
+  (create-checkpoint! mgr description #:key (files #f))
   "Create a snapshot checkpoint of the specified FILES (or entire workspace if #f)
 and active registry state. Persists metadata to disk and journal if configured."
   (unless (rollback-manager? mgr)
     (error "create-checkpoint!: expected <rollback-manager>" mgr))
-  (let* ((ws (rollback-manager-workspace-dir mgr))
-         (reg (rollback-manager-registry mgr))
-         (jrn (rollback-manager-journal mgr))
-         (id (format #f "chkpt-~a-~a" (current-time) (random 100000)))
-         (target-files (cond
-                        ((list? files) files)
-                        (else (scan-text-files ws))))
-         (file-snapshots
-          (map (lambda (rel-path)
-                 (let* ((full-path (if (string-prefix? "/" rel-path)
-                                       rel-path
-                                       (string-append ws "/" rel-path)))
-                        (existed? (file-exists? full-path))
-                        (content (and existed? (read-file-content full-path))))
-                   (cons rel-path (cons existed? content))))
-               target-files))
-         (reg-state (snapshot-registry reg))
-         (chkpt (make-checkpoint id description
-                                 #:files file-snapshots
-                                 #:registry-state reg-state)))
-
+  (let*
+      ((ws (rollback-manager-workspace-dir mgr))
+       (reg (rollback-manager-registry mgr))
+       (jrn (rollback-manager-journal mgr))
+       (id (format #f "chkpt-~a-~a" (current-time) (random 100000)))
+       (target-files
+         (cond
+           ((list? files) files)
+           (else (scan-text-files ws))))
+       (file-snapshots
+         (map
+           (lambda (rel-path)
+             (let*
+                 ((full-path
+                    (if (string-prefix? "/" rel-path)
+                      rel-path
+                      (string-append ws "/" rel-path)))
+                  (existed? (file-exists? full-path))
+                  (content (and existed? (read-file-content full-path))))
+               (cons rel-path (cons existed? content))))
+           target-files))
+       (reg-state (snapshot-registry reg))
+       (chkpt
+         (make-checkpoint id
+                          description
+                          #:files
+                          file-snapshots
+                          #:registry-state
+                          reg-state)))
     ;; Prepend to in-memory checkpoint list
-    (set-rollback-manager-checkpoints!
-     mgr
-     (cons chkpt (rollback-manager-checkpoints mgr)))
-
+    (set-rollback-manager-checkpoints! mgr
+                                       (cons chkpt (rollback-manager-checkpoints mgr)))
     ;; Persist to disk
-    (let ((chkpt-file (format #f "~a/~a.json" (rollback-manager-storage-dir mgr) id)))
+    (let
+        ((chkpt-file (format #f "~a/~a.json" (rollback-manager-storage-dir mgr) id)))
       (catch #t
         (lambda ()
-          (mkdir-p (rollback-manager-storage-dir mgr))
+          (ensure-parent-directory! chkpt-file)
           (call-with-output-file chkpt-file
-            (lambda (port)
-              (scm->json
-               `((id . ,id)
-                 (description . ,description)
-                 (timestamp . ,(checkpoint-timestamp chkpt))
-                 (files-count . ,(length file-snapshots))
-                 (registry-count . ,(length reg-state)))
-               port))))
-        (lambda _ #f)))
-
+                                 (lambda (port)
+                                   (scm->json
+                                     `((id . ,id) (description . ,description)
+                                       (timestamp . ,(checkpoint-timestamp chkpt))
+                                       (files-count . ,(length file-snapshots))
+                                       (registry-count . ,(length reg-state)))
+                                     port))))
+        (lambda _
+          #f)))
     ;; Record in Journal if present
     (when (and jrn (journal? jrn))
       (catch #t
@@ -200,16 +203,15 @@ and active registry state. Persists metadata to disk and journal if configured."
                            `((checkpoint . ,id)
                              (status . "checkpoint_created")
                              (feature-id . "rollback")
-                             (details . ((description . ,description)
-                                         (files-count . ,(length file-snapshots)))))))
-        (lambda _ #f)))
-
+                             (details .
+                                      ((description . ,description) (files-count . ,(length file-snapshots)))))))
+        (lambda _
+          #f)))
     chkpt))
 
 ;;;
 ;;; Checkpoint Queries
 ;;;
-
 (define (list-checkpoints mgr)
   "Return list of all recorded <checkpoint> records, newest first."
   (rollback-manager-checkpoints mgr))
@@ -222,7 +224,6 @@ and active registry state. Persists metadata to disk and journal if configured."
 ;;;
 ;;; Rollback Application
 ;;;
-
 (define (restore-registry! reg saved-state)
   "Restore kernel registry to SAVED-STATE."
   (when (and reg (registry? reg) (list? saved-state))
@@ -242,61 +243,66 @@ and active registry state. Persists metadata to disk and journal if configured."
                   (registry-attach! reg f-id impl #:metadata meta)))
               saved-state)))
 
-(define (rollback-to-checkpoint! mgr checkpoint-id)
+(define
+  (rollback-to-checkpoint! mgr checkpoint-id)
   "Rollback workspace files and kernel registry to the state at CHECKPOINT-ID.
 Returns an alist describing restoration results."
   (unless (rollback-manager? mgr)
     (error "rollback-to-checkpoint!: expected <rollback-manager>" mgr))
   (let ((chkpt (get-checkpoint mgr checkpoint-id)))
     (if (not chkpt)
-        `((status . "error") (error . ,(format #f "Checkpoint '~a' not found" checkpoint-id)))
-        (let* ((ws (rollback-manager-workspace-dir mgr))
-               (reg (rollback-manager-registry mgr))
-               (jrn (rollback-manager-journal mgr))
-               (restored-files '())
-               (removed-files '()))
-
-          ;; 1. Restore files recorded in checkpoint
-          (for-each
-           (lambda (entry)
-             (let* ((rel-path (car entry))
-                    (existed? (cadr entry))
-                    (content (cddr entry))
-                    (full-path (if (string-prefix? "/" rel-path)
-                                   rel-path
-                                   (string-append ws "/" rel-path))))
-               (cond
+      `((status . "error")
+        (error . ,(format #f "Checkpoint '~a' not found" checkpoint-id)))
+      (let*
+          ((ws (rollback-manager-workspace-dir mgr))
+           (reg (rollback-manager-registry mgr))
+           (jrn (rollback-manager-journal mgr))
+           (restored-files '())
+           (removed-files '()))
+        ;; 1. Restore files recorded in checkpoint
+        (for-each
+          (lambda (entry)
+            (let*
+                ((rel-path (car entry)) (existed? (cadr entry))
+                 (content (cddr entry))
+                 (full-path
+                   (if (string-prefix? "/" rel-path)
+                     rel-path
+                     (string-append ws "/" rel-path))))
+              (cond
                 (existed?
-                 (write-file-content full-path content)
-                 (set! restored-files (cons rel-path restored-files)))
+                  (unless
+                      (and (file-exists? full-path)
+                           (let ((cur (read-file-content full-path))) (and cur (string=? cur content))))
+                    (write-file-content full-path content))
+                  (set! restored-files (cons rel-path restored-files)))
                 (else
-                 ;; File didn't exist at checkpoint: delete if it was created
-                 (when (file-exists? full-path)
-                   (delete-file full-path)
-                   (set! removed-files (cons rel-path removed-files)))))))
-           (checkpoint-files chkpt))
-
-          ;; 2. Restore Registry
-          (restore-registry! reg (checkpoint-registry-state chkpt))
-
-          ;; 3. Log to Journal
-          (when (and jrn (journal? jrn))
-            (catch #t
-              (lambda ()
-                (journal-append! jrn
-                                 `((checkpoint . ,checkpoint-id)
-                                   (status . "rolled_back")
-                                   (feature-id . "rollback")
-                                   (details . ((description . ,(checkpoint-description chkpt))
-                                               (restored-count . ,(length restored-files))
-                                               (removed-count . ,(length removed-files)))))))
-              (lambda _ #f)))
-
-          `((status . "rolled_back")
-            (checkpoint-id . ,checkpoint-id)
-            (description . ,(checkpoint-description chkpt))
-            (restored-files . ,(reverse restored-files))
-            (removed-files . ,(reverse removed-files)))))))
+                  ;; File didn't exist at checkpoint: delete if it was created
+                  (when (file-exists? full-path)
+                    (delete-file full-path)
+                    (set! removed-files (cons rel-path removed-files)))))))
+          (checkpoint-files chkpt))
+        ;; 2. Restore Registry
+        (restore-registry! reg (checkpoint-registry-state chkpt))
+        ;; 3. Log to Journal
+        (when (and jrn (journal? jrn))
+          (catch #t
+            (lambda ()
+              (journal-append! jrn
+                               `((checkpoint . ,checkpoint-id)
+                                 (status . "rolled_back")
+                                 (feature-id . "rollback")
+                                 (details .
+                                          ((description . ,(checkpoint-description chkpt))
+                                           (restored-count . ,(length restored-files))
+                                           (removed-count . ,(length removed-files)))))))
+            (lambda _
+              #f)))
+        `((status . "rolled_back")
+          (checkpoint-id . ,checkpoint-id)
+          (description . ,(checkpoint-description chkpt))
+          (restored-files . ,(reverse restored-files))
+          (removed-files . ,(reverse removed-files)))))))
 
 (define (rollback-latest! mgr)
   "Rollback to the most recent checkpoint."
@@ -319,20 +325,20 @@ Returns an alist describing restoration results."
 ;;;
 ;;; Reversible Block Execution
 ;;;
-
 (define (with-checkpoint mgr description thunk)
-  "Execute THUNK inside a checkpointed block. If THUNK completes normally without
+        "Execute THUNK inside a checkpointed block. If THUNK completes normally without
 returning #f or error alist, returns the result. If THUNK raises an exception or
 returns #f, automatically rolls back to the checkpoint and re-raises/returns failure."
-  (let ((chkpt (create-checkpoint! mgr description)))
-    (catch #t
-      (lambda ()
-        (let ((result (thunk)))
-          (if (and (pair? result) (equal? (assoc-ref result 'status) "error"))
-              (begin
-                (rollback-to-checkpoint! mgr (checkpoint-id chkpt))
-                result)
-              result)))
-      (lambda (key . args)
-        (rollback-to-checkpoint! mgr (checkpoint-id chkpt))
-        (apply throw key args)))))
+        (let
+            ((chkpt (create-checkpoint! mgr description)))
+          (catch #t
+            (lambda ()
+              (let ((result (thunk)))
+                (if
+                    (or (not result)
+                        (and (pair? result) (equal? (assoc-ref result 'status) "error")))
+                  (begin (rollback-to-checkpoint! mgr (checkpoint-id chkpt)) result)
+                  result)))
+            (lambda (key . args)
+              (rollback-to-checkpoint! mgr (checkpoint-id chkpt))
+              (apply throw key args)))))

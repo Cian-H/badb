@@ -26,7 +26,6 @@
 ;;;
 ;;; 1. Manager Construction
 ;;;
-
 (test-group "rollback-manager-construction"
   (setup-test-env!)
   (let ((mgr (make-rollback-manager #:workspace-dir %test-ws)))
@@ -38,7 +37,6 @@
 ;;;
 ;;; 2. File Checkpointing & Restoration
 ;;;
-
 (test-group "rollback-file-restoration"
   (setup-test-env!)
   (let* ((mgr (make-rollback-manager #:workspace-dir %test-ws))
@@ -71,7 +69,6 @@
 ;;;
 ;;; 3. Registry State Checkpointing & Rollback
 ;;;
-
 (test-group "rollback-registry-restoration"
   (setup-test-env!)
   (let* ((reg (make-registry))
@@ -99,7 +96,6 @@
 ;;;
 ;;; 4. Checkpoint Queries & Latest Rollback
 ;;;
-
 (test-group "rollback-queries-and-latest"
   (setup-test-env!)
   (let* ((mgr (make-rollback-manager #:workspace-dir %test-ws))
@@ -126,31 +122,48 @@
 ;;;
 ;;; 5. with-checkpoint Reversible Block
 ;;;
-
 (test-group "rollback-with-checkpoint"
-  (setup-test-env!)
-  (let* ((mgr (make-rollback-manager #:workspace-dir %test-ws))
-         (main-file (string-append %test-ws "/src/main.scm")))
-
-    ;; Successful block
-    (with-checkpoint mgr "successful block"
-      (lambda ()
-        (call-with-output-file main-file (lambda (p) (display "good-edit\n" p)))
-        'success))
-    (test-equal "good-edit preserved" "good-edit" (call-with-input-file main-file read-line))
-
-    ;; Failing block with exception: auto-rolls back
-    (catch 'test-error
-      (lambda ()
-        (with-checkpoint mgr "failing block"
-          (lambda ()
-            (call-with-output-file main-file (lambda (p) (display "broken-edit\n" p)))
-            (throw 'test-error "something broke"))))
-      (lambda _ #t))
-
-    (test-equal "reverted to good-edit after error"
-      "good-edit"
-      (call-with-input-file main-file read-line)))
-  (teardown-test-env!))
+            (setup-test-env!)
+            (let*
+                ((mgr (make-rollback-manager #:workspace-dir %test-ws))
+                 (main-file (string-append %test-ws "/src/main.scm")))
+              ;; Successful block
+              (with-checkpoint mgr
+                               "successful block"
+                               (lambda ()
+                                 (call-with-output-file main-file
+                                                        (lambda (p)
+                                                          (display "good-edit\n" p)))
+                                 'success))
+              (test-equal "good-edit preserved"
+                          "good-edit"
+                          (call-with-input-file main-file read-line))
+              (with-checkpoint mgr
+                               "falsy block"
+                               (lambda ()
+                                 (call-with-output-file main-file
+                                                        (lambda (p)
+                                                          (display "falsy-edit\n" p)))
+                                 #f))
+              (test-equal
+                "reverted to good-edit after #f return"
+                "good-edit"
+                (call-with-input-file main-file read-line))
+              ;; Failing block with exception: auto-rolls back
+              (catch 'test-error
+                (lambda ()
+                  (with-checkpoint mgr
+                                   "failing block"
+                                   (lambda ()
+                                     (call-with-output-file main-file
+                                                            (lambda (p)
+                                                              (display "broken-edit\n" p)))
+                                     (throw 'test-error "something broke"))))
+                (lambda _
+                  #t))
+              (test-equal "reverted to good-edit after error"
+                          "good-edit"
+                          (call-with-input-file main-file read-line)))
+            (teardown-test-env!))
 
 (test-end "badb-rollback")
