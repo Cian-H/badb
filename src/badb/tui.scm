@@ -1468,9 +1468,12 @@ and core badb modules for interactive evaluation."
           (add-err-msg! (format #f "Unknown command: /~a (type /help for commands)" cmd))))))
 
     ;; Cleanup handler
+    (define (safe-curs-set! v)
+      (catch #t (lambda () (curs-set v)) (lambda _ #f)))
+
     (define (shutdown!)
       (catch #t (lambda () (mcp-manager-stop-all! mcp-mgr)) (lambda _ #f))
-      (catch #t (lambda () (curs-set 1)) (lambda _ #f))
+      (safe-curs-set! 1)
       (catch #t (lambda () (endwin)) (lambda _ #f)))
 
     ;; Initialize Curses
@@ -1478,7 +1481,7 @@ and core badb modules for interactive evaluation."
     (cbreak!)
     (noecho!)
     (keypad! stdscr #t)
-    (catch #t (lambda () (curs-set 1)) (lambda _ #f))
+    (safe-curs-set! 1)
     (set! colors-enabled? (has-colors?))
     (when colors-enabled?
       (start-color!)
@@ -1498,6 +1501,11 @@ and core badb modules for interactive evaluation."
           (when (selector-active? input-buffer)
             (let ((matches (matching-slash-commands input-buffer)))
               (set! selector-index (if (null? matches) 0 (min selector-index (- (length matches) 1)))))))
+
+        (define (selected-command-name matches)
+          (and (pair? matches)
+               (let ((safe-idx (min selector-index (max 0 (- (length matches) 1)))))
+                 (car (list-ref matches safe-idx)))))
         (let loop ()
           (render!)
           (let ((ch (getch stdscr)))
@@ -1516,8 +1524,7 @@ and core badb modules for interactive evaluation."
                                 (when (and action (eq? (car action) 'slash))
                                   (handle-command! (cons (cadr action) (caddr action))))
                                 (loop))))
-                        (let* ((safe-idx (min selector-index (max 0 (- (length matches) 1))))
-                               (chosen (car (list-ref matches safe-idx))))
+                        (let ((chosen (selected-command-name matches)))
                           (cond
                            ((member chosen '("model" "endpoint" "sh" "eval"))
                             (set! input-buffer (string-append "/" chosen " "))
@@ -1571,14 +1578,13 @@ and core badb modules for interactive evaluation."
              ;; Tab key: autocomplete selected slash command
              ((or (eqv? ch #\tab) (eqv? ch 9))
               (when (selector-active? input-buffer)
-                (let ((matches (matching-slash-commands input-buffer)))
-                  (unless (null? matches)
-                    (let* ((safe-idx (min selector-index (max 0 (- (length matches) 1))))
-                           (chosen (car (list-ref matches safe-idx))))
-                      (if (member chosen '("model" "endpoint" "mcp" "config" "sh" "eval"))
-                          (set! input-buffer (string-append "/" chosen " "))
-                          (set! input-buffer (string-append "/" chosen)))
-                      (set! selector-index 0)))))
+                (let* ((matches (matching-slash-commands input-buffer))
+                       (chosen (selected-command-name matches)))
+                  (when chosen
+                    (if (member chosen '("model" "endpoint" "mcp" "config" "sh" "eval"))
+                        (set! input-buffer (string-append "/" chosen " "))
+                        (set! input-buffer (string-append "/" chosen)))
+                    (set! selector-index 0))))
               (loop))
              ;; Escape key: close selector palette or return to normal chat mode
              ((eqv? ch 27)

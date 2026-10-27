@@ -17,7 +17,6 @@
 ;;;
 ;;; 1. Client Record Creation and Accessors
 ;;;
-
 (test-group "client-record"
   (let ((client (make-model-client #:endpoint "https://api.openai.com/v1/chat/completions"
                                    #:api-key "sk-test-12345"
@@ -47,7 +46,6 @@
 ;;;
 ;;; 2. Chat Request Formatting
 ;;;
-
 (test-group "format-chat-request"
   ;; Non-streaming payload with single message alist
   (let* ((json-str (format-chat-request '(("role" . "user") ("content" . "Hello world"))
@@ -131,7 +129,6 @@
 ;;;
 ;;; 3. SSE Line Parsing (parse-sse-line)
 ;;;
-
 (test-group "parse-sse-line"
   ;; Normal data lines
   (test-equal "parse normal data line with space"
@@ -184,7 +181,6 @@
 ;;;
 ;;; 4. SSE Events Reading (read-sse-events)
 ;;;
-
 (test-group "read-sse-events"
   ;; Normal stream with comments, empty lines, and [DONE]
   (let* ((sse-input (string-append
@@ -239,7 +235,6 @@
 ;;;
 ;;; 5. Delta Extraction (extract-chat-delta)
 ;;;
-
 (test-group "extract-chat-delta"
   ;; OpenAI format with content
   (let ((chunk (json-string->scm "{\"choices\": [{\"delta\": {\"content\": \"Hello\"}}]}")))
@@ -275,7 +270,6 @@
 ;;;
 ;;; 5b. Structured Delta Extraction (extract-chat-delta-item)
 ;;;
-
 (test-group "extract-chat-delta-item"
   (let ((content-chunk (json-string->scm "{\"choices\": [{\"delta\": {\"content\": \"Hello world\"}}]}")))
     (test-equal "extract content type and text"
@@ -292,7 +286,6 @@
 ;;;
 ;;; 6. Content Extraction (extract-chat-content)
 ;;;
-
 (test-group "extract-chat-content"
   ;; OpenAI non-streaming
   (let ((res (json-string->scm "{\"choices\": [{\"message\": {\"role\": \"assistant\", \"content\": \"Full OpenAI response\"}}]}")))
@@ -309,137 +302,201 @@
 ;;;
 ;;; 7. Non-Streaming model-complete with Mock HTTP
 ;;;
-
-(define (capture-request uri body headers streaming?)
-  "Helper to bundle mock HTTP request parameters into an alist."
-  (list (cons 'uri uri)
-        (cons 'body body)
-        (cons 'headers headers)
-        (cons 'streaming? streaming?)))
+(begin
+  (define
+    (capture-request uri body headers streaming?)
+    "Helper to bundle mock HTTP request parameters into an alist."
+    (list (cons 'uri uri)
+          (cons 'body body)
+          (cons 'headers headers)
+          (cons 'streaming? streaming?)))
+  (define*
+    (make-mock-poster code response-body #:optional (response-headers '()))
+    (lambda*
+      (uri #:key (body #f) (headers '()) (streaming? #f))
+      (values (build-response #:code code #:headers response-headers) response-body))))
 
 (test-group "model-complete"
-  (let* ((client (make-model-client #:endpoint "http://test-server/v1/chat/completions"
-                                    #:api-key "test-secret-key"
-                                    #:model "test-model"))
-         (captured-req #f)
-         (mock-poster (lambda* (uri #:key (body #f) (headers '()) (streaming? #f))
-                        (set! captured-req (capture-request uri body headers streaming?))
-                        (values (build-response #:code 200
-                                                #:headers '((content-type application/json (charset . "utf-8"))))
-                                "{\"choices\": [{\"message\": {\"content\": \"Hello from mock!\"}}]}"))))
-    (let ((result (model-complete client "Hello" #:http-poster mock-poster)))
-      (test-equal "model-complete returns extracted string content" "Hello from mock!" result)
-      (test-assert "captured request uri matches client endpoint"
-        (string-contains (uri->string (assq-ref captured-req 'uri)) "test-server"))
-      (test-assert "captured request streaming? is #f" (not (assq-ref captured-req 'streaming?)))
-      (let* ((body-str (assq-ref captured-req 'body))
-             (body-json (json-string->scm body-str)))
-        (test-equal "captured request body has correct model" "test-model" (assoc-ref body-json "model"))
-        (test-equal "captured request body stream is false" #f (assoc-ref body-json "stream")))))
-
-  ;; model-complete with raw? #t returns parsed JSON
-  (let* ((client (make-model-client #:endpoint "http://test-server/v1" #:model "m"))
-         (mock-poster (lambda* (uri #:key (body #f) (headers '()) (streaming? #f))
-                        (values (build-response #:code 200
-                                                #:headers '((content-type application/json)))
-                                "{\"id\": \"chat-123\", \"choices\": [{\"message\": {\"content\": \"ok\"}}]}"))))
-    (let ((result (model-complete client "Hi" #:raw? #t #:http-poster mock-poster)))
-      (test-assert "raw? returns alist" (pair? result))
-      (test-equal "raw? contains id" "chat-123" (assoc-ref result "id"))))
-
-  ;; HTTP error handling
-  (let* ((client (make-model-client #:endpoint "http://test-server/v1"))
-         (mock-poster (lambda* (uri #:key (body #f) (headers '()) (streaming? #f))
-                        (values (build-response #:code 401 #:headers '())
-                                "Unauthorized access"))))
-    (test-assert "HTTP 401 raises exception"
-      (catch #t
-        (lambda ()
-          (model-complete client "test" #:http-poster mock-poster)
-          #f)
-        (lambda _ #t))))
-
-  ;; HTTP 402/429 retry logic
-  (let* ((client (make-model-client #:endpoint "http://test-server/v1"))
-         (call-count 0)
-         (retry-poster (lambda* (uri #:key (body #f) (headers '()) (streaming? #f))
-                         (set! call-count (+ call-count 1))
-                         (if (= call-count 1)
-                             (values (build-response #:code 402 #:headers '())
-                                     "{\"error\":{\"message\":\"in_flight_budget_exhausted\"}}")
-                             (values (build-response #:code 200 #:headers '())
-                                     "{\"choices\":[{\"message\":{\"content\":\"Retry succeeded!\"}}]}")))))
-    (let ((res (model-complete client "test"
-                               #:http-poster retry-poster
-                               #:max-retries 2
-                               #:retry-delay-sec 0)))
-      (test-equal "model-complete retries on HTTP 402 and succeeds" "Retry succeeded!" res)
-      (test-equal "retry took 2 attempts" 2 call-count)))
-
-  ;; Clean error message extraction from structured JSON
-  (let* ((client (make-model-client #:endpoint "http://test-server/v1"))
-         (err-poster (lambda* (uri #:key (body #f) (headers '()) (streaming? #f))
-                       (values (build-response #:code 400 #:headers '())
-                               "{\"error\":{\"message\":\"Reasoning required on assistant turns\"}}"))))
-    (test-equal "model-complete extracts clean JSON error message"
-      "Reasoning required on assistant turns"
-      (catch #t
-        (lambda ()
-          (model-complete client "test" #:http-poster err-poster)
-          "no-error")
-        (lambda (key . args)
-          (let ((sub-args (and (pair? args) (caddr args))))
-            (and (list? sub-args) (cadr sub-args)))))))
-
-  ;; Defensive reasoning_content injection in normalize-messages
-  (let* ((raw-asst-msg '((role . "assistant")
-                         (content . "")
-                         (tool_calls . #(((id . "call_1") (type . "function"))))))
-         (normalized (vector-ref (normalize-messages (list raw-asst-msg)) 0)))
-    (test-equal "normalize-messages injects fallback reasoning_content"
-      "Thinking..." (assoc-ref normalized "reasoning_content"))))
+            (let*
+                ((client
+                   (make-model-client #:endpoint
+                                      "http://test-server/v1/chat/completions"
+                                      #:api-key
+                                      "test-secret-key"
+                                      #:model
+                                      "test-model"))
+                 (captured-req #f)
+                 (mock-poster
+                   (lambda*
+                     (uri #:key (body #f) (headers '()) (streaming? #f))
+                     (set! captured-req (capture-request uri body headers streaming?))
+                     (values
+                       (build-response #:code
+                                       200
+                                       #:headers
+                                       '((content-type application/json (charset . "utf-8"))))
+                       "{\"choices\": [{\"message\": {\"content\": \"Hello from mock!\"}}]}"))))
+              (let
+                  ((result (model-complete client "Hello" #:http-poster mock-poster)))
+                (test-equal
+                  "model-complete returns extracted string content"
+                  "Hello from mock!"
+                  result)
+                (test-assert
+                  "captured request uri matches client endpoint"
+                  (string-contains (uri->string (assq-ref captured-req 'uri)) "test-server"))
+                (test-assert "captured request streaming? is #f"
+                             (not (assq-ref captured-req 'streaming?)))
+                (let*
+                    ((body-str (assq-ref captured-req 'body))
+                     (body-json (json-string->scm body-str)))
+                  (test-equal
+                    "captured request body has correct model"
+                    "test-model"
+                    (assoc-ref body-json "model"))
+                  (test-equal
+                    "captured request body stream is false"
+                    #f
+                    (assoc-ref body-json "stream")))))
+            ;; model-complete with raw? #t returns parsed JSON
+            (let*
+                ((client (make-model-client #:endpoint "http://test-server/v1" #:model "m"))
+                 (mock-poster
+                   (make-mock-poster 200
+                                     "{\"id\": \"chat-123\", \"choices\": [{\"message\": {\"content\": \"ok\"}}]}"
+                                     '((content-type application/json)))))
+              (let
+                  ((result (model-complete client "Hi" #:raw? #t #:http-poster mock-poster)))
+                (test-assert "raw? returns alist" (pair? result))
+                (test-equal "raw? contains id" "chat-123" (assoc-ref result "id"))))
+            ;; HTTP error handling
+            (let*
+                ((client (make-model-client #:endpoint "http://test-server/v1"))
+                 (mock-poster (make-mock-poster 401 "Unauthorized access")))
+              (test-assert "HTTP 401 raises exception"
+                           (catch #t
+                             (lambda ()
+                               (model-complete client "test" #:http-poster mock-poster)
+                               #f)
+                             (lambda _
+                               #t))))
+            ;; HTTP 402/429 retry logic
+            (let*
+                ((client (make-model-client #:endpoint "http://test-server/v1"))
+                 (call-count 0)
+                 (retry-poster
+                   (lambda*
+                     (uri #:key (body #f) (headers '()) (streaming? #f))
+                     (set! call-count (+ call-count 1))
+                     (if (= call-count 1)
+                       (values (build-response #:code 402 #:headers '())
+                               "{\"error\":{\"message\":\"in_flight_budget_exhausted\"}}")
+                       (values (build-response #:code 200 #:headers '())
+                               "{\"choices\":[{\"message\":{\"content\":\"Retry succeeded!\"}}]}")))))
+              (let
+                  ((res
+                     (model-complete client
+                                     "test"
+                                     #:http-poster
+                                     retry-poster
+                                     #:max-retries
+                                     2
+                                     #:retry-delay-sec
+                                     0)))
+                (test-equal
+                  "model-complete retries on HTTP 402 and succeeds"
+                  "Retry succeeded!"
+                  res)
+                (test-equal "retry took 2 attempts" 2 call-count)))
+            ;; Clean error message extraction from structured JSON
+            (let*
+                ((client (make-model-client #:endpoint "http://test-server/v1"))
+                 (err-poster
+                   (make-mock-poster 400
+                                     "{\"error\":{\"message\":\"Reasoning required on assistant turns\"}}")))
+              (test-equal
+                "model-complete extracts clean JSON error message"
+                "Reasoning required on assistant turns"
+                (catch #t
+                  (lambda ()
+                    (model-complete client "test" #:http-poster err-poster)
+                    "no-error")
+                  (lambda (key . args)
+                    (let ((sub-args (and (pair? args) (caddr args))))
+                      (and (list? sub-args) (cadr sub-args)))))))
+            ;; Defensive reasoning_content injection in normalize-messages
+            (let*
+                ((raw-asst-msg
+                   '((role . "assistant") (content . "")
+                     (tool_calls . #(((id . "call_1") (type . "function"))))))
+                 (normalized (vector-ref (normalize-messages (list raw-asst-msg)) 0)))
+              (test-equal
+                "normalize-messages injects fallback reasoning_content"
+                "Thinking..."
+                (assoc-ref normalized "reasoning_content"))))
 
 ;;;
 ;;; 8. Streaming model-stream with Mock HTTP
 ;;;
-
 (test-group "model-stream"
-  (let* ((client (make-model-client #:endpoint "http://test-server/v1/chat/completions"
-                                    #:api-key "test-stream-key"
-                                    #:model "stream-model"))
-         (stream-data (string-append
-                       "data: {\"choices\": [{\"delta\": {\"role\": \"assistant\"}}]}\n\n"
-                       "data: {\"choices\": [{\"delta\": {\"content\": \"The \"}}]}\n\n"
-                       "data: {\"choices\": [{\"delta\": {\"content\": \"badb \"}}]}\n\n"
-                       "data: {\"choices\": [{\"delta\": {\"content\": \"kernel!\"}}]}\n\n"
-                       "data: [DONE]\n"))
-         (captured-req #f)
-         (mock-poster (lambda* (uri #:key (body #f) (headers '()) (streaming? #f))
-                        (set! captured-req (capture-request uri body headers streaming?))
-                        (values (build-response #:code 200
-                                                #:headers '((content-type text/event-stream)))
-                                (open-input-string stream-data))))
-         (accumulated '())
-         (final-status (model-stream client "Tell me about badb"
-                                     (lambda (delta)
-                                       (set! accumulated (cons delta accumulated)))
-                                     #:http-poster mock-poster)))
-    (test-equal "model-stream returns 'done" 'done final-status)
-    (test-assert "streaming? flag was #t in HTTP call" (assq-ref captured-req 'streaming?))
-    (test-equal "stream chunks delivered in order" '("The " "badb " "kernel!") (reverse accumulated))
-    (test-equal "concatenated chunks form complete response text"
-      "The badb kernel!" (string-concatenate (reverse accumulated))))
-
-  ;; model-stream error handling
-  (let* ((client (make-model-client #:endpoint "http://test-server/v1"))
-         (mock-poster (lambda* (uri #:key (body #f) (headers '()) (streaming? #f))
-                        (values (build-response #:code 500 #:headers '())
-                                (open-input-string "Internal Server Error")))))
-    (test-assert "HTTP 500 raises error in model-stream"
-      (catch #t
-        (lambda ()
-          (model-stream client "test" (lambda (_) #f) #:http-poster mock-poster)
-          #f)
-        (lambda _ #t)))))
+            (let*
+                ((client
+                   (make-model-client #:endpoint
+                                      "http://test-server/v1/chat/completions"
+                                      #:api-key
+                                      "test-stream-key"
+                                      #:model
+                                      "stream-model"))
+                 (stream-data
+                   (string-append
+                     "data: {\"choices\": [{\"delta\": {\"role\": \"assistant\"}}]}\n\n"
+                     "data: {\"choices\": [{\"delta\": {\"content\": \"The \"}}]}\n\n"
+                     "data: {\"choices\": [{\"delta\": {\"content\": \"badb \"}}]}\n\n"
+                     "data: {\"choices\": [{\"delta\": {\"content\": \"kernel!\"}}]}\n\n"
+                     "data: [DONE]\n"))
+                 (captured-req #f)
+                 (mock-poster
+                   (lambda*
+                     (uri #:key (body #f) (headers '()) (streaming? #f))
+                     (set! captured-req (capture-request uri body headers streaming?))
+                     (values
+                       (build-response #:code 200 #:headers '((content-type text/event-stream)))
+                       (open-input-string stream-data))))
+                 (accumulated '())
+                 (final-status
+                   (model-stream client
+                                 "Tell me about badb"
+                                 (lambda (delta)
+                                   (set! accumulated (cons delta accumulated)))
+                                 #:http-poster
+                                 mock-poster)))
+              (test-equal "model-stream returns 'done" 'done final-status)
+              (test-assert
+                "streaming? flag was #t in HTTP call"
+                (assq-ref captured-req 'streaming?))
+              (test-equal "stream chunks delivered in order"
+                          '("The " "badb " "kernel!")
+                          (reverse accumulated))
+              (test-equal
+                "concatenated chunks form complete response text"
+                "The badb kernel!"
+                (string-concatenate (reverse accumulated))))
+            ;; model-stream error handling
+            (let*
+                ((client (make-model-client #:endpoint "http://test-server/v1"))
+                 (mock-poster (make-mock-poster 500 (open-input-string "Internal Server Error"))))
+              (test-assert
+                "HTTP 500 raises error in model-stream"
+                (catch #t
+                  (lambda ()
+                    (model-stream client
+                                  "test"
+                                  (lambda (_)
+                                    #f)
+                                  #:http-poster
+                                  mock-poster)
+                    #f)
+                  (lambda _
+                    #t)))))
 
 (test-end "badb-model")
