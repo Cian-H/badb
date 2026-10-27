@@ -422,4 +422,70 @@
     (test-equal "divider length matches terminal width"
       80 (string-length divider))))
 
+;;;
+;;; 10. Modal Prompt Switching & Dynamic Hints
+;;;
+
+(test-group "tui-modal-prompt-switching"
+  ;; Mode-based indicators
+  (call-with-values (lambda () (get-prompt-indicator "" "READY" 'shell))
+    (lambda (glyph pair bold?)
+      (test-equal "shell mode indicator is $" "$" glyph)
+      (test-equal "shell mode color is magenta pair 6" 6 pair)
+      (test-assert "shell mode indicator is bold" bold?)))
+
+  (call-with-values (lambda () (get-prompt-indicator "" "READY" 'scheme))
+    (lambda (glyph pair bold?)
+      (test-equal "scheme mode indicator is λ" "λ" glyph)
+      (test-equal "scheme mode color is cyan pair 1" 1 pair)
+      (test-assert "scheme mode indicator is bold" bold?)))
+
+  (call-with-values (lambda () (get-prompt-indicator "" "READY" 'chat))
+    (lambda (glyph pair bold?)
+      (test-equal "chat mode indicator is ❯" "❯" glyph)
+      (test-equal "chat mode color is green pair 2" 2 pair)
+      (test-assert "chat mode indicator is bold" bold?)))
+
+  ;; Mode-based divider hints
+  (let ((shell-div (format-prompt-divider 80 'shell)))
+    (test-assert "shell divider contains shell prompt tag"
+      (string-contains shell-div "shell prompt"))
+    (test-assert "shell divider contains backspace hint"
+      (string-contains shell-div "Backspace: return to chat")))
+
+  (let ((scheme-div (format-prompt-divider 80 'scheme)))
+    (test-assert "scheme divider contains scheme prompt tag"
+      (string-contains scheme-div "scheme prompt"))
+    (test-assert "scheme divider contains backspace hint"
+      (string-contains scheme-div "Backspace: return to chat"))))
+
+;;;
+;;; 11. Scheme Expression Normalization (normalize-scheme-expr)
+;;;
+
+(test-group "tui-scheme-normalization"
+  (test-equal "preserves balanced s-expressions"
+    "(+ 1 2)"
+    (normalize-scheme-expr "(+ 1 2)"))
+
+  (test-equal "auto-wraps multiple tokens without parens"
+    "(+ 1 2)"
+    (normalize-scheme-expr "+ 1 2"))
+
+  (test-equal "auto-wraps trailing paren missing opening paren"
+    "(+ 1 2)"
+    (normalize-scheme-expr "+ 1 2)"))
+
+  (test-equal "preserves standalone identifier"
+    "reg"
+    (normalize-scheme-expr "reg"))
+
+  (test-equal "preserves standalone literal number"
+    "42"
+    (normalize-scheme-expr "42"))
+
+  (test-equal "preserves complex definition"
+    "(define (double x) (* x 2))"
+    (normalize-scheme-expr "(define (double x) (* x 2))")))
+
 (test-end "badb-tui")

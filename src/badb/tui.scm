@@ -2,8 +2,8 @@
 ;;;
 ;;; Interactive full-screen terminal interface for badb powered by guile-ncurses.
 ;;; Provides live streaming LLM chat with separated thought reasoning cards,
-;;; morphing single-character prompt indicators, interactive slash-command
-;;; selector palette, and modern 2020s container styling (lazygit / vibe inspired).
+;;; modal prompt switching (! for shell, ( or , for Scheme, backspace to return),
+;;; interactive slash-command selector palette, and modern 2020s container styling.
 
 (define-module (badb tui)
   #:use-module (badb model)
@@ -22,6 +22,7 @@
             parse-command
             classify-input
             make-repl-mod
+            normalize-scheme-expr
             eval-scheme-code
             execute-shell-command
             split-thoughts-and-content
@@ -168,9 +169,9 @@ Returns (values thoughts content)."
 ;;; Morphing Prompt Indicator
 ;;;
 
-(define (get-prompt-indicator input-buffer status-text)
+(define* (get-prompt-indicator input-buffer status-text #:optional (prompt-mode 'chat))
   "Return (values glyph-char color-pair bold?) for the prompt indicator
-based on current input mode and execution status."
+based on current input mode, execution status, and active prompt mode."
   (cond
    ((string=? status-text "STREAMING...")
     (values "⟳" 1 #t))     ; Cyan bold spinning
@@ -180,12 +181,16 @@ based on current input mode and execution status."
     (values "λ" 1 #t))     ; Cyan bold lambda
    ((string=? status-text "TESTING...")
     (values "⚙" 4 #t))     ; Yellow bold gear
+   ((eq? prompt-mode 'shell)
+    (values "$" 6 #t))     ; Magenta bold shell mode
+   ((eq? prompt-mode 'scheme)
+    (values "λ" 1 #t))     ; Cyan bold scheme mode
    ((string-prefix? "!" input-buffer)
-    (values "$" 6 #t))     ; Magenta bold shell
+    (values "$" 6 #t))     ; Magenta bold shell prefix
    ((or (string-prefix? "," input-buffer) (string-prefix? "(" input-buffer))
-    (values "λ" 1 #t))     ; Cyan bold lambda
+    (values "λ" 1 #t))     ; Cyan bold lambda prefix
    ((string-prefix? "/" input-buffer)
-    (values "/" 4 #t))     ; Yellow bold slash
+    (values "/" 4 #t))     ; Yellow bold slash prefix
    (else
     (values "❯" 2 #t))))   ; Green bold chat
 
@@ -206,13 +211,23 @@ based on current input mode and execution status."
               (string-append short-prefix (make-string (- maxx 1 splen) #\─) "╮")
               (substring (string-append short-prefix (make-string (max 0 (- maxx splen)) #\─) "╮") 0 maxx))))))
 
-(define (format-prompt-divider maxx)
+(define* (format-prompt-divider maxx #:optional (prompt-mode 'chat))
   "Format the divider bar separating message history from the input prompt."
-  (let* ((prefix "├─ prompt ── [Tab: complete │ !: shell │ ,: scheme │ /: commands] ")
+  (let* ((prefix
+          (case prompt-mode
+            ((shell)
+             "├─ shell prompt ── [Enter: run │ Backspace: return to chat] ")
+            ((scheme)
+             "├─ scheme prompt ── [Enter: eval │ Backspace: return to chat] ")
+            (else
+             "├─ prompt ── [Tab: complete │ !: shell │ ,: scheme │ /: commands] ")))
          (plen (string-length prefix)))
     (if (< plen (- maxx 1))
         (string-append prefix (make-string (- maxx 1 plen) #\─) "┤")
-        (let* ((short-p "├─ prompt ── [Tab / ! ,] ")
+        (let* ((short-p (case prompt-mode
+                          ((shell) "├─ shell [Bksp: chat] ")
+                          ((scheme) "├─ scheme [Bksp: chat] ")
+                          (else "├─ prompt [Tab / ! ,] ")))
                (splen (string-length short-p)))
           (if (< splen (- maxx 1))
               (string-append short-p (make-string (- maxx 1 splen) #\─) "┤")
@@ -250,6 +265,25 @@ based on current input mode and execution status."
      (else
       (cons 'chat trimmed)))))
 
+(define (normalize-scheme-expr str)
+  "Normalize user Scheme input string, ensuring s-expressions without outer
+parentheses (e.g. '+ 1 2' or '+ 1 2)') are wrapped for evaluation."
+  (let ((trimmed (string-trim-both str)))
+    (cond
+     ((string-null? trimmed) trimmed)
+     ;; Already properly wrapped
+     ((string-prefix? "(" trimmed) trimmed)
+     ;; Literal string or quote
+     ((or (string-prefix? "\"" trimmed) (string-prefix? "'" trimmed)) trimmed)
+     ;; Ends with ')' but missing '(': e.g. "+ 1 2)"
+     ((and (string-suffix? ")" trimmed) (not (string-prefix? "(" trimmed)))
+      (string-append "(" trimmed))
+     ;; Has spaces and no outer parens: e.g. "+ 1 2"
+     ((string-contains trimmed " ")
+      (string-append "(" trimmed ")"))
+     ;; Standalone identifier or literal number: e.g. "reg", "42"
+     (else trimmed))))
+
 (define (make-repl-mod reg jrn mgr client)
   "Create an isolated user module pre-populated with kernel state bindings
 and core badb modules for interactive evaluation."
@@ -273,27 +307,28 @@ and core badb modules for interactive evaluation."
 
 (define (eval-scheme-code code-str repl-mod)
   "Evaluate CODE-STR in REPL-MOD and return (values result-string error-or-#f)."
-  (catch #t
-    (lambda ()
-      (let* ((p (open-input-string code-str))
-             (output-port (open-output-string)))
-        (let loop ()
-          (let ((expr (read p)))
-            (unless (eof-object? expr)
-              (let ((printed
-                     (with-output-to-string
-                       (lambda ()
-                         (call-with-values (lambda () (eval expr repl-mod))
-                           (lambda vals
-                             (for-each (lambda (v)
-                                         (format #t "=> ~s\n" v))
-                                       vals)))))))
-                (display printed output-port)
-                (loop)))))
-        (let ((res (string-trim-right (get-output-string output-port))))
-          (values (if (string-null? res) "=> #<unspecified>" res) #f))))
-    (lambda (key . args)
-      (values #f (format #f "Scheme error (~a): ~s" key args)))))
+  (let ((normalized (normalize-scheme-expr code-str)))
+    (catch #t
+      (lambda ()
+        (let* ((p (open-input-string normalized))
+               (output-port (open-output-string)))
+          (let loop ()
+            (let ((expr (read p)))
+              (unless (eof-object? expr)
+                (let ((printed
+                       (with-output-to-string
+                         (lambda ()
+                           (call-with-values (lambda () (eval expr repl-mod))
+                             (lambda vals
+                               (for-each (lambda (v)
+                                           (format #t "=> ~s\n" v))
+                                         vals)))))))
+                  (display printed output-port)
+                  (loop)))))
+          (let ((res (string-trim-right (get-output-string output-port))))
+            (values (if (string-null? res) "=> #<unspecified>" res) #f))))
+      (lambda (key . args)
+        (values #f (format #f "Scheme error (~a): ~s" key args))))))
 
 (define (execute-shell-command cmd)
   "Execute shell CMD and return (values output-string exit-code error-or-#f)."
@@ -395,13 +430,15 @@ and core badb modules for interactive evaluation."
                         (content . ,(string-append
                                      "Welcome to badb microharness TUI!\n"
                                      "• Type a message to chat with the model\n"
-                                     "• Type !<cmd> to execute shell commands (e.g. !git status)\n"
-                                     "• Type ,<expr> or (<expr>) to evaluate Scheme (e.g. ,(+ 1 2))\n"
+                                     "• Type ! to switch to shell mode ($)\n"
+                                     "• Type ( or , to switch to Scheme REPL mode (λ)\n"
+                                     "• Type Backspace at empty prompt to return to chat mode (❯)\n"
                                      "• Type / to open command selector palette.")))))
     (define input-buffer "")
     (define scroll-offset 0)
     (define status-text "READY")
     (define selector-index 0)
+    (define prompt-mode 'chat)
 
     (define stdscr #f)
     (define colors-enabled? #f)
@@ -461,7 +498,7 @@ and core badb modules for interactive evaluation."
             (if (null? wrapped)
                 '()
                 (cons (list "user" (string-append "❯ " (car wrapped)))
-                      (map (lambda (l) (list "user" (string-append "  " l))) (cdr wrapped))))))
+                  (map (lambda (l) (list "user" (string-append "  " l))) (cdr wrapped))))))
 
          ((string=? role "system")
           (let ((wrapped (wrap-text content (- content-width 2))))
@@ -604,15 +641,15 @@ and core badb modules for interactive evaluation."
                   (safe-addstr stdscr y 2 text content-width))))
               (loop (cdr lines) (+ y 1)))))
 
-        ;; 4. Prompt divider line
+        ;; 4. Prompt divider line with dynamic mode hint
         (set-color-attr! 1 #t)
-        (safe-addstr stdscr (- maxy 3) 0 (format-prompt-divider maxx) maxx)
+        (safe-addstr stdscr (- maxy 3) 0 (format-prompt-divider maxx prompt-mode) maxx)
         (set-color-attr! 1 #f)
 
         ;; 5. Prompt Input Line (single character morphing indicator)
         (safe-addstr stdscr (- maxy 2) 0 "│" 1)
         (safe-addstr stdscr (- maxy 2) (- maxx 1) "│" 1)
-        (call-with-values (lambda () (get-prompt-indicator input-buffer status-text))
+        (call-with-values (lambda () (get-prompt-indicator input-buffer status-text prompt-mode))
           (lambda (glyph pair-id bold?)
             (let* ((avail-width (max 1 (- maxx 6)))
                    (visible-input (if (> (string-length input-buffer) avail-width)
@@ -800,10 +837,10 @@ and core badb modules for interactive evaluation."
                                              "  /test             Run the bootstrap test suite\n"
                                              "  /clear            Clear chat history\n"
                                              "  /quit, /exit      Exit TUI\n"
-                                             "  !<command>        Execute shell command (e.g. !git status)\n"
-                                             "  ,<expr> or (..)   Send Scheme code to live REPL (e.g. ,(+ 1 2))\n"
-                                             "  /sh <cmd>         Alias for !<command>\n"
-                                             "  /eval <expr>      Alias for ,<expr>")))))))
+                                             "  !<command>        Execute shell command (or press ! at empty prompt)\n"
+                                             "  ,<expr> or (..)   Evaluate Scheme code (or press ( at empty prompt)\n"
+                                             "  /sh <cmd>         Alias for shell command\n"
+                                             "  /eval <expr>      Alias for Scheme eval")))))))
 
          ((string=? cmd "model")
           (if (string-null? arg)
@@ -945,7 +982,7 @@ and core badb modules for interactive evaluation."
           (render!)
           (let ((ch (getch stdscr)))
             (cond
-             ;; Enter key: process buffer or selector item
+             ;; Enter key: process buffer, execute modal command, or complete selector
              ((or (eqv? ch KEY_ENTER) (eqv? ch #\newline) (eqv? ch #\return)
                   (eqv? ch 10) (eqv? ch 13))
               (if (selector-active? input-buffer)
@@ -978,31 +1015,41 @@ and core badb modules for interactive evaluation."
                   (let ((trimmed (string-trim-both input-buffer)))
                     (set! input-buffer "")
                     (set! selector-index 0)
-                    (if (string-null? trimmed)
-                        (loop)
-                        (let ((action (classify-input trimmed)))
-                          (case (car action)
-                            ((slash)
-                             (let* ((cmd (cadr action))
-                                    (arg (caddr action))
-                                    (res (handle-command! (cons cmd arg))))
-                               (unless (eq? res 'exit)
-                                 (loop))))
-                            ((shell)
-                             (let ((shell-cmd (cdr action)))
-                               (set! messages (append messages (list `((role . "shell-cmd") (content . ,shell-cmd)))))
-                               (execute-shell! shell-cmd)
-                               (loop)))
-                            ((scheme)
-                             (let ((code-str (cdr action)))
-                               (set! messages (append messages (list `((role . "scheme-in") (content . ,code-str)))))
-                               (execute-scheme! code-str)
-                               (loop)))
-                            ((chat)
-                             (let ((user-text (cdr action)))
-                               (set! messages (append messages (list `((role . "user") (content . ,user-text)))))
-                               (execute-chat-stream! user-text)
-                               (loop)))))))))
+                    (cond
+                     ((string-null? trimmed)
+                      (loop))
+                     ((eq? prompt-mode 'shell)
+                      (set! messages (append messages (list `((role . "shell-cmd") (content . ,trimmed)))))
+                      (execute-shell! trimmed)
+                      (loop))
+                     ((eq? prompt-mode 'scheme)
+                      (set! messages (append messages (list `((role . "scheme-in") (content . ,trimmed)))))
+                      (execute-scheme! trimmed)
+                      (loop))
+                     (else
+                      (let ((action (classify-input trimmed)))
+                        (case (car action)
+                          ((slash)
+                           (let* ((cmd (cadr action))
+                                  (arg (caddr action))
+                                  (res (handle-command! (cons cmd arg))))
+                             (unless (eq? res 'exit)
+                               (loop))))
+                          ((shell)
+                           (let ((shell-cmd (cdr action)))
+                             (set! messages (append messages (list `((role . "shell-cmd") (content . ,shell-cmd)))))
+                             (execute-shell! shell-cmd)
+                             (loop)))
+                          ((scheme)
+                           (let ((code-str (cdr action)))
+                             (set! messages (append messages (list `((role . "scheme-in") (content . ,code-str)))))
+                             (execute-scheme! code-str)
+                             (loop)))
+                          ((chat)
+                           (let ((user-text (cdr action)))
+                             (set! messages (append messages (list `((role . "user") (content . ,user-text)))))
+                             (execute-chat-stream! user-text)
+                             (loop))))))))))
 
              ;; Tab key: autocomplete selected slash command
              ((or (eqv? ch #\tab) (eqv? ch 9))
@@ -1017,11 +1064,15 @@ and core badb modules for interactive evaluation."
                       (set! selector-index 0)))))
               (loop))
 
-             ;; Escape key: close selector palette / clear input
+             ;; Escape key: close selector palette or return to normal chat mode
              ((or (eqv? ch 27))
-              (when (selector-active? input-buffer)
+              (cond
+               ((selector-active? input-buffer)
                 (set! input-buffer "")
                 (set! selector-index 0))
+               ((not (eq? prompt-mode 'chat))
+                (set! prompt-mode 'chat)
+                (set! input-buffer "")))
               (loop))
 
              ;; Up Arrow: navigate selector up or scroll
@@ -1044,14 +1095,18 @@ and core badb modules for interactive evaluation."
                   (set! scroll-offset (max 0 (- scroll-offset 1))))
               (loop))
 
-             ;; Backspace
+             ;; Backspace: delete character or return to normal mode if prompt is empty
              ((or (eqv? ch KEY_BACKSPACE) (eqv? ch #\backspace)
                   (eqv? ch (integer->char 127)) (eqv? ch 127) (eqv? ch 8))
-              (when (> (string-length input-buffer) 0)
+              (cond
+               ((> (string-length input-buffer) 0)
                 (set! input-buffer (substring input-buffer 0 (- (string-length input-buffer) 1)))
                 (when (selector-active? input-buffer)
                   (let ((matches (matching-slash-commands input-buffer)))
                     (set! selector-index (if (null? matches) 0 (min selector-index (- (length matches) 1)))))))
+               ((not (eq? prompt-mode 'chat))
+                ;; Hitting backspace at an empty prompt returns to normal chat mode
+                (set! prompt-mode 'chat)))
               (loop))
 
              ;; Page Up / Scroll Up
@@ -1070,11 +1125,27 @@ and core badb modules for interactive evaluation."
 
              ;; Printable character input
              ((char? ch)
-              (set! input-buffer (string-append input-buffer (string ch)))
-              (when (selector-active? input-buffer)
-                (let ((matches (matching-slash-commands input-buffer)))
-                  (set! selector-index (if (null? matches) 0 (min selector-index (- (length matches) 1))))))
-              (loop))
+              (cond
+               ;; Hitting mode switch key at an empty prompt in chat mode
+               ((and (string-null? input-buffer) (eq? prompt-mode 'chat))
+                (cond
+                 ;; '!' switches to shell mode
+                 ((eqv? ch #\!)
+                  (set! prompt-mode 'shell)
+                  (loop))
+                 ;; '(' or ',' switches to Scheme REPL mode
+                 ((or (eqv? ch #\() (eqv? ch #\,))
+                  (set! prompt-mode 'scheme)
+                  (loop))
+                 (else
+                  (set! input-buffer (string ch))
+                  (loop))))
+               (else
+                (set! input-buffer (string-append input-buffer (string ch)))
+                (when (selector-active? input-buffer)
+                  (let ((matches (matching-slash-commands input-buffer)))
+                    (set! selector-index (if (null? matches) 0 (min selector-index (- (length matches) 1))))))
+                (loop))))
 
              ;; Other keys
              (else
