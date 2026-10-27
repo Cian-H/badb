@@ -58,33 +58,50 @@
     (paranoid   . 4)))
 
 (define (guardrail-level-rank level)
-  "Return numeric security rank for LEVEL symbol (higher is stricter)."
-  (or (assoc-ref %guardrail-levels level) 2))
+        "Return numeric security rank for LEVEL symbol (higher is stricter)."
+        (or (assq-ref %guardrail-levels level) 2))
 
 ;;;
 ;;; Rule Constructors
 ;;;
-(define* (make-pattern-rule name-pattern args-pattern verdict
-                            #:optional (reason #f))
+(define (compile-guardrail-pattern pat)
+        (cond
+          ((not pat) #f)
+          ((string? pat)
+            (catch #t
+              (lambda ()
+                (make-regexp pat regexp/icase))
+              (lambda _
+                pat)))
+          (else pat)))
+
+(define*
+  (make-pattern-rule name-pattern args-pattern verdict #:optional (reason #f))
   "Create a declarative rule matching tool name and argument strings.
 VERDICT must be 'allow, 'deny, or 'ask.
 NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wildcard)."
-  `((name-pattern . ,name-pattern)
-    (args-pattern . ,args-pattern)
+  `((name-pattern . ,(compile-guardrail-pattern name-pattern))
+    (raw-name-pattern . ,name-pattern)
+    (args-pattern . ,(compile-guardrail-pattern args-pattern))
+    (raw-args-pattern . ,args-pattern)
     (verdict . ,verdict)
-    (reason . ,(or reason (format #f "Matched pattern rule: ~a / ~a" name-pattern args-pattern)))))
+    (reason .
+            ,(or reason
+                 (format #f "Matched pattern rule: ~a / ~a" name-pattern args-pattern)))))
 
 (define (matches-pattern? pattern text)
-  (cond
-   ((not pattern) #t)
-   ((not (string? text)) #f)
-   ((string? pattern)
-    (catch #t
-      (lambda ()
-        (regexp-exec (make-regexp pattern regexp/icase) text))
-      (lambda _
-        (string-contains (string-downcase text) (string-downcase pattern)))))
-   (else #f)))
+        (cond
+          ((not pattern) #t)
+          ((not (string? text)) #f)
+          ((regexp? pattern) (and (regexp-exec pattern text) #t))
+          ((string? pattern)
+            (catch #t
+              (lambda ()
+                (and (regexp-exec (make-regexp pattern regexp/icase) text) #t))
+              (lambda _
+                (and (string-contains (string-downcase text) (string-downcase pattern)) #t))))
+          ((procedure? pattern) (and (pattern text) #t))
+          (else #f)))
 
 ;;;
 ;;; Pre-built Evaluator Strategies
@@ -92,18 +109,22 @@ NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wild
 (define*
   (dangerous-operation? tool-name #:optional (args '()))
   "Return #t if TOOL-NAME and ARGS constitute a dangerous destructive operation."
-  (let
-      ((name-str (ensure-string tool-name))
-       (args-str
-         (if (string? args)
-           args
-           (object->string args))))
-    (and
-      (or (string-contains args-str "rm -rf")
-          (string-contains args-str "drop table")
-          (string-contains args-str "format disk")
-          (string-contains name-str "danger"))
-      #t)))
+  (let ((name-str (ensure-string tool-name)))
+    (if (string-contains name-str "danger")
+      #t
+      (let
+          ((args-str
+             (if (string? args)
+               args
+               (object->string args))))
+        (and
+          (or (string-contains args-str "rm -rf")
+              (string-contains args-str "rm  -rf")
+              (string-contains args-str "rm -r -f")
+              (string-contains args-str "rm --recursive")
+              (string-contains args-str "drop table")
+              (string-contains args-str "format disk"))
+          #t)))))
 
 (define*
   (mutating-operation? tool-name #:optional (args '()))
@@ -122,28 +143,28 @@ NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wild
 (define*
   (default-cautious-evaluator tool-name args level #:optional (context '()))
   "Default built-in evaluator applying standard cautious/permissive/strict policies."
-  (let
-      ((is-danger? (dangerous-operation? tool-name args))
-       (is-mutation? (mutating-operation? tool-name args)))
-    (cond
-      ((eq? level 'disabled) (cons 'allow "Guardrails disabled"))
-      ((and (eq? level 'permissive) is-danger?)
-        (cons 'ask "High-risk command detected in permissive mode"))
-      ((eq? level 'permissive) (cons 'allow "Permissive mode auto-approved"))
-      ((and (eq? level 'cautious) is-danger?)
-        (cons 'deny "Dangerous destructive operation blocked in cautious mode"))
-      ((and (eq? level 'cautious) is-mutation?)
-        (cons 'ask "State mutation requires confirmation in cautious mode"))
-      ((eq? level 'cautious) (cons 'allow "Read-only inspection permitted"))
-      ((and (eq? level 'strict) is-danger?)
-        (cons 'deny "Dangerous operation blocked in strict mode"))
-      ((eq? level 'strict)
-        (cons 'ask "All operations require confirmation in strict mode"))
-      ((and (eq? level 'paranoid) is-mutation?)
-        (cons 'deny "All mutations prohibited in paranoid mode"))
-      ((eq? level 'paranoid)
-        (cons 'ask "Inspection requires confirmation in paranoid mode"))
-      (else (cons 'ask "Unrecognized security level; defaulting to ask")))))
+  (case level
+    ((disabled) (cons 'allow "Guardrails disabled"))
+    ((permissive)
+      (if (dangerous-operation? tool-name args)
+        (cons 'ask "High-risk command detected in permissive mode")
+        (cons 'allow "Permissive mode auto-approved")))
+    ((cautious)
+      (cond
+        ((dangerous-operation? tool-name args)
+          (cons 'deny "Dangerous destructive operation blocked in cautious mode"))
+        ((mutating-operation? tool-name args)
+          (cons 'ask "State mutation requires confirmation in cautious mode"))
+        (else (cons 'allow "Read-only inspection permitted"))))
+    ((strict)
+      (if (dangerous-operation? tool-name args)
+        (cons 'deny "Dangerous operation blocked in strict mode")
+        (cons 'ask "All operations require confirmation in strict mode")))
+    ((paranoid)
+      (if (mutating-operation? tool-name args)
+        (cons 'deny "All mutations prohibited in paranoid mode")
+        (cons 'ask "Inspection requires confirmation in paranoid mode")))
+    (else (cons 'ask "Unrecognized security level; defaulting to ask"))))
 
 (define (make-scheme-predicate-evaluator predicate-fn)
   "Create an algorithmic evaluator driven by custom Scheme PREDICATE-FN.
