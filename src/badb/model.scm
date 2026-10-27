@@ -210,7 +210,8 @@ Returns 'done when [DONE] is encountered, or 'eof upon reaching EOF."
        ((eof-object? line)
         'eof)
        (else
-        (let ((parsed (parse-sse-line line)))
+        (let* ((cleaned (clean-sse-line line))
+               (parsed (parse-sse-line line)))
           (cond
            ((eq? parsed 'done)
             'done)
@@ -220,6 +221,17 @@ Returns 'done when [DONE] is encountered, or 'eof upon reaching EOF."
                           (lambda _ parsed))))
               (callback data)
               (loop)))
+           ((and (string-prefix? "{" cleaned)
+                 (or (string-contains cleaned "\"error\"")
+                     (string-contains cleaned "'error'")))
+            (let ((err-obj (catch #t
+                             (lambda () (json-string->scm cleaned))
+                             (lambda _ #f))))
+              (error "SSE stream received error response"
+                     (or (and (pair? err-obj)
+                              (let ((err-inner (assoc-ref err-obj "error")))
+                                (and (pair? err-inner) (assoc-ref err-inner "message"))))
+                         cleaned))))
            (else
             (loop)))))))))
 
@@ -321,6 +333,13 @@ Returns a pair '(thought . text) or '(content . text) or #f."
            => (lambda (t) (cons 'content t)))
           (else #f))))))
 
+(define (clean-json-string val)
+  "Convert JSON string value to string or #f (treating null/nil as #f)."
+  (cond
+   ((string? val) val)
+   ((or (not val) (eq? val 'null) (null? val)) #f)
+   (else (format #f "~a" val))))
+
 (define (extract-chat-content response-obj)
   "Extract the assistant message text from a non-streaming chat response.
 Supports OpenAI, Anthropic, Ollama, and OpenRouter formats.
@@ -329,34 +348,37 @@ Returns the string content, or #f if not found."
                  (catch #t (lambda () (json-string->scm response-obj)) (lambda _ response-obj))
                  response-obj)))
     (if (not (pair? obj))
-        (if (string? obj) obj #f)
-        (or
-         ;; OpenAI style: choices[0].message.content
-         (let ((choices (json-ref obj "choices")))
-           (and (vector? choices)
-                (> (vector-length choices) 0)
-                (let* ((c0 (vector-ref choices 0))
-                       (msg (json-ref c0 "message")))
-                  (or (and (pair? msg)
-                           (or (json-ref msg "content")
-                               (json-ref msg "reasoning_content")
-                               (json-ref msg "reasoning")))
-                      (json-ref c0 "text")))))
-         ;; Anthropic style: content[0].text or content string
-         (let ((content (json-ref obj "content")))
-           (cond
-            ((string? content) content)
-            ((and (vector? content) (> (vector-length content) 0))
-             (let ((b0 (vector-ref content 0)))
-               (and (pair? b0) (json-ref b0 "text"))))
-            (else #f)))
-         ;; Ollama style: message.content or response
-         (let ((msg (json-ref obj "message")))
-           (and (pair? msg) (json-ref msg "content")))
-         (json-ref obj "response")
-         ;; Direct content or text
-         (json-ref obj "content")
-         (json-ref obj "text")))))
+        (clean-json-string obj)
+        (clean-json-string
+         (or
+          ;; OpenAI style: choices[0].message.content
+          (let ((choices (json-ref obj "choices")))
+            (and (vector? choices)
+                 (> (vector-length choices) 0)
+                 (let* ((c0 (vector-ref choices 0))
+                        (msg (json-ref c0 "message")))
+                   (or (and (pair? msg)
+                            (let ((c (json-ref msg "content")))
+                              (if (or (not c) (eq? c 'null) (null? c))
+                                  (or (json-ref msg "reasoning_content")
+                                      (json-ref msg "reasoning"))
+                                  c)))
+                       (json-ref c0 "text")))))
+          ;; Anthropic style: content[0].text or content string
+          (let ((content (json-ref obj "content")))
+            (cond
+             ((string? content) content)
+             ((and (vector? content) (> (vector-length content) 0))
+              (let ((b0 (vector-ref content 0)))
+                (and (pair? b0) (json-ref b0 "text"))))
+             (else #f)))
+          ;; Ollama style: message.content or response
+          (let ((msg (json-ref obj "message")))
+            (and (pair? msg) (json-ref msg "content")))
+          (json-ref obj "response")
+          ;; Direct content or text
+          (json-ref obj "content")
+          (json-ref obj "text"))))))
 
 (define (extract-chat-tool-calls response-obj)
   "Extract tool calls from a chat completion response (parsed JSON alist or JSON string).
@@ -399,7 +421,9 @@ Returns a list of tool call alists: ((id . \"...\") (name . \"...\") (arguments 
 
 (define* (curl-http-post uri #:key body headers (streaming? #f))
   "Execute an HTTP POST using curl subprocess. Used as a transparent fallback
-when Guile GnuTLS is not available for HTTPS requests."
+when Guile GnuTLS is not available for HTTPS requests.
+Writes payload to a self-cleaning temporary file to handle arbitrarily large payloads
+without argument list limits, captures real HTTP status codes, and silences curl stderr."
   (let* ((url (if (string? uri) uri (uri->string uri)))
          (header-args
           (append-map
@@ -421,17 +445,30 @@ when Guile GnuTLS is not available for HTTPS requests."
                     ((string? body) body)
                     ((bytevector? body) (utf8->string body))
                     (else "")))
-         (cmd-args (append (list "curl" "-s" "-X" "POST" url)
-                           (if streaming? (list "-N") '())
-                           header-args
-                           (list "-d" body-str))))
+         (body-tmpl (string-copy "/tmp/badb-req-XXXXXX"))
+         (body-port (mkstemp! body-tmpl)))
+    (display body-str body-port)
+    (close-port body-port)
     (if streaming?
-        (let ((pipe (apply open-pipe* OPEN_READ cmd-args)))
+        (let* ((cmd (append (list "sh" "-c"
+                                  "TEMP=\"$1\"; shift; curl -s -N \"$@\" --data-binary @\"$TEMP\" 2>/dev/null; rm -f \"$TEMP\""
+                                  "sh" body-tmpl "-X" "POST" url)
+                            header-args))
+               (pipe (apply open-pipe* OPEN_READ cmd)))
           (values (build-response #:code 200) pipe))
-        (let* ((pipe (apply open-pipe* OPEN_READ cmd-args))
+        (let* ((cmd (append (list "sh" "-c"
+                                  "TEMP=\"$1\"; shift; curl -s -w \"\\n%{http_code}\" \"$@\" --data-binary @\"$TEMP\" 2>/dev/null; rm -f \"$TEMP\""
+                                  "sh" body-tmpl "-X" "POST" url)
+                            header-args))
+               (pipe (apply open-pipe* OPEN_READ cmd))
                (out (read-string pipe))
-               (status (close-pipe pipe)))
-          (values (build-response #:code 200) out)))))
+               (status (close-pipe pipe))
+               (trimmed (or out ""))
+               (last-nl (string-rindex trimmed #\newline))
+               (code-str (if last-nl (substring trimmed (+ last-nl 1)) "200"))
+               (body-text (if last-nl (substring trimmed 0 last-nl) trimmed))
+               (status-code (or (string->number (string-trim-both code-str)) 200)))
+          (values (build-response #:code status-code) body-text)))))
 
 (define* (default-http-post uri #:key body headers (streaming? #f))
   "Dispatch HTTP POST to web client, falling back to curl if gnutls is not available."

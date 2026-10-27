@@ -684,7 +684,7 @@ and core badb modules for interactive evaluation."
                         (content . ,(default-system-prompt
                                      #:workspace-dir (getcwd)
                                      #:tools (collect-available-tools reg mcp-mgr))))
-                      `((role . "system")
+                      `((role . "notice")
                         (content . ,(string-append
                                      "Welcome to badb microharness TUI!\n"
                                      "• Type a message to chat with the model (autonomous ReAct loop active)\n"
@@ -1098,43 +1098,44 @@ and core badb modules for interactive evaluation."
       (let ((tools (collect-available-tools reg mcp-mgr)))
         (if (pair? tools)
             ;; Autonomous ReAct Tool-Calling Loop
-            (let ((session (make-react-session
-                            #:messages (filter (lambda (m) (member (assoc-ref m 'role) '("system" "user" "assistant" "tool"))) messages)
-                            #:client client
-                            #:registry reg
-                            #:mcp-manager mcp-mgr
-                            #:journal jrn
-                            #:transaction-manager mgr
-                            #:max-iterations 8
-                            #:guardrail (lambda (t-name t-args)
-                                          (guardrail-evaluate policy t-name t-args))
-                            #:hooks (list
-                                     (cons 'on-step
-                                           (lambda (iter phase)
-                                             (set! status-text (format #f "REACT [~a/8]" iter))
-                                             (render!)))
-                                     (cons 'on-tool-call
-                                           (lambda (tc)
-                                             (let* ((t-name (or (assoc-ref tc 'name) (assoc-ref tc "name")))
-                                                    (t-args (or (assoc-ref tc 'arguments) (assoc-ref tc "arguments"))))
-                                               (set! status-text (format #f "TOOL: ~a..." t-name))
-                                               (set! messages (append messages
-                                                                      (list `((role . "tool")
-                                                                              (content . ,(format #f "⚙ Invoking tool: ~a (~s)" t-name t-args))))))
-                                               (render!))))
-                                     (cons 'on-tool-result
-                                           (lambda (tc res err?)
-                                             (let* ((t-name (or (assoc-ref tc 'name) (assoc-ref tc "name")))
-                                                    (res-str (if (string? res) res (scm->json-string res)))
-                                                    (preview (if (> (string-length res-str) 140)
-                                                                 (string-append (substring res-str 0 140) "...")
-                                                                 res-str)))
-                                               (set! messages (append messages
-                                                                      (list `((role . "tool")
-                                                                              (content . ,(format #f "✓ Tool ~a returned: ~a" t-name preview))))))
-                                               (render!))))))))
-              (catch #t
-                (lambda ()
+            (catch #t
+              (lambda ()
+                (let ((session (make-react-session
+                                #:client client
+                                #:messages (filter (lambda (m) (member (assoc-ref m 'role) '("system" "user" "assistant" "tool"))) messages)
+                                #:registry reg
+                                #:mcp-manager mcp-mgr
+                                #:journal jrn
+                                #:transaction-manager mgr
+                                #:max-iterations 8
+                                #:max-tokens (or (badb-config-model-max-tokens cfg) 4096)
+                                #:guardrail (lambda (t-name t-args)
+                                              (guardrail-evaluate policy t-name t-args))
+                                #:hooks (list
+                                         (cons 'on-step
+                                               (lambda (iter phase)
+                                                 (set! status-text (format #f "REACT [~a/8]" iter))
+                                                 (render!)))
+                                         (cons 'on-tool-call
+                                               (lambda (tc)
+                                                 (let* ((t-name (or (assoc-ref tc 'name) (assoc-ref tc "name")))
+                                                        (t-args (or (assoc-ref tc 'arguments) (assoc-ref tc "arguments"))))
+                                                   (set! status-text (format #f "TOOL: ~a..." t-name))
+                                                   (set! messages (append messages
+                                                                          (list `((role . "tool")
+                                                                                  (content . ,(format #f "⚙ Invoking tool: ~a (~s)" t-name t-args))))))
+                                                   (render!))))
+                                         (cons 'on-tool-result
+                                               (lambda (tc res err?)
+                                                 (let* ((t-name (or (assoc-ref tc 'name) (assoc-ref tc "name")))
+                                                        (res-str (if (string? res) res (scm->json-string res)))
+                                                        (preview (if (> (string-length res-str) 140)
+                                                                     (string-append (substring res-str 0 140) "...")
+                                                                     res-str)))
+                                                   (set! messages (append messages
+                                                                          (list `((role . "tool")
+                                                                                  (content . ,(format #f "✓ Tool ~a returned: ~a" t-name preview))))))
+                                                   (render!))))))))
                   (call-with-values (lambda () (react-run! session))
                     (lambda (verdict final-content sess)
                       (cond
@@ -1152,10 +1153,10 @@ and core badb modules for interactive evaluation."
                        ((eq? verdict 'error)
                         (set! messages (append messages
                                                (list `((role . "error")
-                                                       (content . ,(format #f "ReAct error: ~a" final-content)))))))))))
-                (lambda (key . args)
-                  (set! messages (append messages (list `((role . "error")
-                                                          (content . ,(format #f "Agent loop failure: ~a ~s" key args)))))))))
+                                                       (content . ,(format #f "ReAct error: ~a" final-content))))))))))))
+              (lambda (key . args)
+                (set! messages (append messages (list `((role . "error")
+                                                        (content . ,(format #f "Agent loop failure: ~a ~s" key args))))))))
 
             ;; Direct Streaming Mode when no tools registered
             (begin

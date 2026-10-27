@@ -289,7 +289,18 @@
       result)
     (test-equal "plain text lines delivered as strings"
       '("first-line" "second-line")
-      (reverse collected))))
+      (reverse collected)))
+
+  ;; Stream receiving JSON error payload raises exception
+  (let* ((err-input "{\"error\":{\"message\":\"Rate limit exceeded\",\"code\":429}}\r\n")
+         (port (open-input-string err-input)))
+    (test-assert "read-sse-events throws error on JSON error payload"
+      (catch #t
+        (lambda ()
+          (read-sse-events port (lambda _ #f))
+          #f)
+        (lambda (key . args)
+          #t)))))
 
 ;;;
 ;;; 5. Delta Extraction (extract-chat-delta)

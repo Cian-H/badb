@@ -263,4 +263,28 @@
               3
               (react-session-iteration sess))))))))
 
+;;;
+;;; 7. Flexible Keyword Session Construction
+;;;
+
+(test-group "react-session-keyword-construction"
+  (let* ((client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "mock-llm"))
+         (reg (make-registry))
+         (guard-called #f)
+         (guard-fn (lambda (n a) (set! guard-called #t) #t))
+         (session (make-react-session
+                   #:client client
+                   #:messages '(((role . "user") (content . "test message")))
+                   #:registry reg
+                   #:max-iterations 8
+                   #:max-tokens 2048
+                   #:guardrail guard-fn)))
+    (test-assert "session record created" (react-session? session))
+    (test-equal "messages retrieved" 1 (length (react-session-messages session)))
+    (test-equal "reg matches" reg (react-session-reg session))
+    (test-equal "max-iterations matches" 8 (react-session-max-iterations session))
+    (test-equal "max-tokens matches" 2048 (react-session-max-tokens session))
+    (test-assert "guardrail registered in hooks"
+      (procedure? (assoc-ref (react-session-hooks session) 'guardrail)))))
+
 (test-end "badb-react")

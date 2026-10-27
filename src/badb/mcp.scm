@@ -103,13 +103,18 @@ or #f if not present."
 
 (define (mcp-spawn-client command-args)
   "Spawn an MCP server subprocess for COMMAND-ARGS (a string or list of strings)
-and return a new <mcp-client> connected to its stdio."
+and return a new <mcp-client> connected to its stdio. Stderr is redirected to
+.badb/mcp.log so that server logs and warnings do not corrupt curses TUI screens."
   (let* ((args (cond
                 ((string? command-args) (list command-args))
                 ((list? command-args) command-args)
                 (else (error "mcp-spawn-client: command-args must be a list of strings or string"
                              command-args))))
-         (pipe-port (apply open-pipe* OPEN_BOTH args))
+         (log-dir (if (file-exists? ".badb") ".badb" "/tmp"))
+         (log-file (string-append log-dir "/mcp.log"))
+         (wrapper (list "sh" "-c" (format #f "exec \"$@\" 2>>~a" log-file) "sh"))
+         (wrapped-args (append wrapper args))
+         (pipe-port (apply open-pipe* OPEN_BOTH wrapped-args))
          (pid (hashq-ref port/pid-table pipe-port)))
     (make-mcp-client pipe-port pipe-port #:pid pid)))
 

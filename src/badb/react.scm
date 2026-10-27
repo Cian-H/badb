@@ -29,9 +29,11 @@
             react-session-jrn
             react-session-mgr
             react-session-hooks
+            react-session-max-tokens
             set-react-session-messages!
             set-react-session-status!
             set-react-session-iteration!
+            set-react-session-max-tokens!
 
             collect-available-tools
             registry-feature->tool-spec
@@ -255,7 +257,7 @@ and logs provenance to JRN if provided. Returns (values result-scm is-error?)."
 ;;;
 
 (define-record-type <react-session>
-  (%make-react-session messages status iteration max-iterations hooks client reg mcp-mgr jrn mgr)
+  (%make-react-session messages status iteration max-iterations hooks client reg mcp-mgr jrn mgr max-tokens)
   react-session?
   (messages react-session-messages set-react-session-messages!)
   (status react-session-status set-react-session-status!)
@@ -266,28 +268,51 @@ and logs provenance to JRN if provided. Returns (values result-scm is-error?)."
   (reg react-session-reg)
   (mcp-mgr react-session-mcp-mgr)
   (jrn react-session-jrn)
-  (mgr react-session-mgr))
+  (mgr react-session-mgr)
+  (max-tokens react-session-max-tokens set-react-session-max-tokens!))
 
-(define* (make-react-session client
-                             #:key
-                             (initial-messages '())
-                             (reg #f)
-                             (mcp-mgr #f)
-                             (jrn #f)
-                             (mgr #f)
-                             (max-iterations 10)
-                             (hooks '()))
-  "Construct a new <react-session> record."
-  (%make-react-session (if (list? initial-messages) initial-messages (list initial-messages))
-                       'idle
-                       0
-                       max-iterations
-                       hooks
-                       client
-                       reg
-                       mcp-mgr
-                       jrn
-                       mgr))
+(define (make-react-session . args)
+  "Construct a new <react-session> record.
+Supports positional client: (make-react-session client #:initial-messages ...)
+and pure keyword style: (make-react-session #:client client #:messages ... #:registry ...)"
+  (let* ((has-pos-client? (and (pair? args) (not (keyword? (car args)))))
+         (pos-client (if has-pos-client? (car args) #f))
+         (kw-args (if has-pos-client? (cdr args) args))
+         (get-kw (lambda (kw-list default)
+                   (let loop ((kws kw-list))
+                     (if (null? kws)
+                         default
+                         (let* ((target (car kws))
+                                (probe (let find-arg ((rest kw-args))
+                                         (cond
+                                          ((or (null? rest) (null? (cdr rest))) #f)
+                                          ((eq? (car rest) target) (cadr rest))
+                                          (else (find-arg (cddr rest)))))))
+                           (if probe probe (loop (cdr kws))))))))
+         (client (or pos-client (get-kw '(#:client) #f)))
+         (msgs (get-kw '(#:initial-messages #:messages) '()))
+         (reg (get-kw '(#:reg #:registry) #f))
+         (mcp-mgr (get-kw '(#:mcp-mgr #:mcp-manager) #f))
+         (jrn (get-kw '(#:jrn #:journal) #f))
+         (mgr (get-kw '(#:mgr #:transaction-manager) #f))
+         (max-iter (get-kw '(#:max-iterations) 10))
+         (max-tokens (get-kw '(#:max-tokens) 4096))
+         (raw-hooks (get-kw '(#:hooks) '()))
+         (guardrail-fn (get-kw '(#:guardrail) #f))
+         (hooks (if (and guardrail-fn (not (assoc-ref raw-hooks 'guardrail)))
+                    (cons (cons 'guardrail guardrail-fn) raw-hooks)
+                    raw-hooks)))
+    (%make-react-session (if (list? msgs) msgs (list msgs))
+                         'idle
+                         0
+                         max-iter
+                         hooks
+                         client
+                         reg
+                         mcp-mgr
+                         jrn
+                         mgr
+                         max-tokens)))
 
 ;;;
 ;;; Step & Run Cycle
@@ -307,6 +332,7 @@ Returns:
          (mcp-mgr (react-session-mcp-mgr session))
          (jrn (react-session-jrn session))
          (mgr (react-session-mgr session))
+         (max-tokens (or (react-session-max-tokens session) 4096))
          (hooks (react-session-hooks session))
          (guardrail-fn (assoc-ref hooks 'guardrail))
          (on-step-fn (assoc-ref hooks 'on-step))
@@ -327,8 +353,15 @@ Returns:
             (lambda ()
               (let* ((tools (collect-available-tools reg mcp-mgr))
                      (msgs (react-session-messages session))
-                     (raw-resp (model-complete client msgs #:tools tools #:raw? #t))
-                     (content (or (extract-chat-content raw-resp) ""))
+                     (raw-resp (model-complete client msgs
+                                               #:tools tools
+                                               #:max-tokens max-tokens
+                                               #:raw? #t))
+                     (raw-content (extract-chat-content raw-resp))
+                     (content (cond
+                               ((string? raw-content) raw-content)
+                               ((or (not raw-content) (eq? raw-content 'null) (null? raw-content)) "")
+                               (else (format #f "~a" raw-content))))
                      (tool-calls (parse-tool-calls raw-resp content)))
 
                 (if (null? tool-calls)
@@ -356,7 +389,7 @@ Returns:
                                                        (arguments . ,args-str))))))
                                     tool-calls)))
                              (asst-msg `((role . "assistant")
-                                         (content . ,(if (string-null? content) #f content))
+                                         (content . ,(if (or (not (string? content)) (string-null? content)) #f content))
                                          (tool_calls . ,tool-calls-vec)))
                              (new-msgs (append msgs (list asst-msg)))
                              (results
