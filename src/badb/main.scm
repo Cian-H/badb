@@ -1,7 +1,15 @@
-(define-module (badb main)
-  #:use-module (ice-9 format)
-  #:use-module (badb cli)
-  #:export (%program-name %version main))
+(define-module (badb main) #:use-module
+               (ice-9 format)
+               #:use-module
+               (badb cli)
+               #:autoload
+               (badb tui)
+               (run-tui)
+               #:autoload
+               (test runner)
+               (run-all-tests)
+               #:export
+               (%program-name %version main))
 
 (define %program-name "badb")
 (define %version "0.1.0")
@@ -25,23 +33,17 @@ Microharness kernel.
           (cyan port "-V, --version")))
 
 (define (main args)
-  (let ((options (cdr args)))
-    (cond ((or (null? options)
-               (member (car options) '("tui" "-t" "--tui")))
-           (let ((tui-module (resolve-module '(badb tui))))
-             ((module-ref tui-module 'run-tui))))
-          ((equal? (car options) "test")
-           (let ((runner-module (resolve-module '(test runner))))
-             ((module-ref runner-module 'run-all-tests))))
-          ((member (car options) '("-h" "--help"))
-           (print-usage (current-output-port)))
-          ((member (car options) '("-V" "--version"))
-           (format #t "~a ~a~%"
-                   (bold (current-output-port) %program-name)
-                   %version))
-          (else
-           (format (current-error-port) "~a: unrecognized option '~a'~%"
-                   (red (current-error-port) %program-name)
-                   (car options))
-           (format (current-error-port) "Try 'badb --help' for more information.~%")
-           (exit 1)))))
+        (let ((options (cdr args)))
+          (cond
+            ((or (null? options) (member (car options) '("tui" "-t" "--tui"))) (run-tui))
+            ((equal? (car options) "test") (run-all-tests))
+            ((member (car options) '("-h" "--help")) (print-usage (current-output-port)))
+            ((member (car options) '("-V" "--version"))
+              (format #t "~a ~a~%" (bold (current-output-port) %program-name) %version))
+            (else
+              (format (current-error-port)
+                      "~a: unrecognized option '~a'~%"
+                      (red (current-error-port) %program-name)
+                      (car options))
+              (format (current-error-port) "Try 'badb --help' for more information.~%")
+              (exit 1)))))
