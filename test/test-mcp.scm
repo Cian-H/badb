@@ -3,6 +3,7 @@
 (define-module (test test-mcp)
   #:use-module (srfi srfi-64)
   #:use-module (badb mcp)
+  #:use-module (badb config)
   #:use-module (json)
   #:use-module (ice-9 rdelim)
   #:use-module (ice-9 threads))
@@ -434,5 +435,44 @@
     ;; Test idempotency of close
     (mcp-close-client client)
     (test-assert "client closed cleanly" #t)))
+
+;;;
+;;; 10. MCP Manager Lifecycle and Operations
+;;;
+
+(test-group "mcp-manager-lifecycle"
+  (let* ((cfg (make-badb-config))
+         (_ (badb-config-add-mcp-server! cfg "echo-srv" "sh" '("-c" "while read l; do echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"Echo text\"}]}}'; done")))
+         (mgr (make-mcp-manager cfg)))
+
+    (test-assert "mcp-manager? recognizes manager"
+      (mcp-manager? mgr))
+
+    (let ((servers (mcp-manager-list-servers mgr)))
+      (test-equal "1 server configured" 1 (length servers))
+      (test-equal "server name is echo-srv" "echo-srv" (assoc-ref (car servers) 'name))
+      (test-equal "initial status is stopped" "stopped" (assoc-ref (car servers) 'status)))
+
+    ;; Add server dynamically
+    (mcp-manager-add-server! mgr "math-srv" "sh" '("-c" "exit 0"))
+    (test-equal "2 servers after dynamic add" 2 (length (mcp-manager-list-servers mgr)))
+    (test-assert "math-srv spec present" (mcp-manager-get-server mgr "math-srv"))
+
+    ;; Remove server dynamically
+    (mcp-manager-remove-server! mgr "math-srv")
+    (test-equal "1 server after remove" 1 (length (mcp-manager-list-servers mgr)))
+    (test-assert "math-srv removed" (not (mcp-manager-get-server mgr "math-srv")))
+
+    ;; Stop server when already stopped is safe
+    (test-assert "stopping stopped server is safe"
+      (or (mcp-manager-stop-server! mgr "echo-srv") #t))
+
+    ;; Stop non-existent server is safe
+    (test-assert "stopping unknown server is safe"
+      (not (mcp-manager-stop-server! mgr "non-existent")))
+
+    ;; Stop all servers
+    (mcp-manager-stop-all! mgr)
+    (test-assert "stop-all completed" #t)))
 
 (test-end "mcp")

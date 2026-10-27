@@ -10,6 +10,8 @@
   #:use-module (badb registry)
   #:use-module (badb transaction)
   #:use-module (badb journal)
+  #:use-module (badb config)
+  #:use-module (badb mcp)
   #:use-module (ice-9 format)
   #:use-module (ice-9 popen)
   #:use-module (ice-9 rdelim)
@@ -74,6 +76,8 @@ breaking on whitespace when possible."
   '(("help"     . "Show help manual & shortcuts")
     ("model"    . "Switch or inspect active LLM model")
     ("endpoint" . "Switch or inspect endpoint URL")
+    ("mcp"      . "Manage MCP servers (list, start, stop, add, remove, tools)")
+    ("config"   . "Inspect, reload, or save badb configuration")
     ("features" . "List kernel registered features")
     ("journal"  . "View checkpoint provenance audit log")
     ("test"     . "Run bootstrap verification test suite")
@@ -198,10 +202,12 @@ based on current input mode, execution status, and active prompt mode."
 ;;; Modern 2020s Container Layout Formatters
 ;;;
 
-(define (format-header-line maxx status-text model-name feat-count jrn-count)
+(define* (format-header-line maxx status-text model-name feat-count jrn-count
+                             #:optional (mcp-info #f))
   "Format a modern rounded container header bar with status pills."
-  (let* ((prefix (format #f "╭─ badb ─ ❲● ~a❳ ─ ❲~a❳ ─ ❲~a feats❳ ─ ❲~a chkpts❳ "
-                         status-text model-name feat-count jrn-count))
+  (let* ((mcp-part (if mcp-info (format #f "─ ❲mcp: ~a❳ " mcp-info) ""))
+         (prefix (format #f "╭─ badb ─ ❲● ~a❳ ─ ❲~a❳ ─ ❲~a feats❳ ~a─ ❲~a chkpts❳ "
+                         status-text model-name feat-count mcp-part jrn-count))
          (plen (string-length prefix)))
     (if (< plen (- maxx 1))
         (string-append prefix (make-string (- maxx 1 plen) #\─) "╮")
@@ -284,7 +290,7 @@ parentheses (e.g. '+ 1 2' or '+ 1 2)') are wrapped for evaluation."
      ;; Standalone identifier or literal number: e.g. "reg", "42"
      (else trimmed))))
 
-(define (make-repl-mod reg jrn mgr client)
+(define* (make-repl-mod reg jrn mgr client #:optional (cfg #f) (mcp-mgr #f))
   "Create an isolated user module pre-populated with kernel state bindings
 and core badb modules for interactive evaluation."
   (let ((mod (make-fresh-user-module)))
@@ -293,6 +299,7 @@ and core badb modules for interactive evaluation."
     (module-use! mod (resolve-interface '(badb registry)))
     (module-use! mod (resolve-interface '(badb transaction)))
     (module-use! mod (resolve-interface '(badb journal)))
+    (module-use! mod (resolve-interface '(badb config)))
     (catch #t
       (lambda () (module-use! mod (resolve-interface '(badb mcp))))
       (lambda _ #f))
@@ -303,6 +310,8 @@ and core badb modules for interactive evaluation."
     (module-define! mod 'jrn jrn)
     (module-define! mod 'mgr mgr)
     (module-define! mod 'client client)
+    (when cfg (module-define! mod 'cfg cfg))
+    (when mcp-mgr (module-define! mod 'mcp-mgr mcp-mgr))
     mod))
 
 (define (eval-scheme-code code-str repl-mod)
@@ -350,14 +359,11 @@ and core badb modules for interactive evaluation."
 ;;;
 
 (define* (run-tui #:key
-                  (endpoint (or (getenv "BADB_MODEL_ENDPOINT")
-                                "http://127.0.0.1:10100/inference/v1"))
-                  (model (or (getenv "BADB_MODEL_NAME")
-                             "minicpm5-1b:gguf:q8"))
-                  (api-key (or (getenv "BADB_API_KEY")
-                               (getenv "OPENAI_API_KEY")
-                               #f))
-                  (journal-path ".badb/journal.jsonl"))
+                  (endpoint #f)
+                  (model #f)
+                  (api-key #f)
+                  (journal-path #f)
+                  (config #f))
   "Launch the interactive badb curses TUI."
 
   ;; Ensure guile-ncurses is available
@@ -412,17 +418,73 @@ and core badb modules for interactive evaluation."
          (KEY_PPAGE (module-ref ncurses-mod 'KEY_PPAGE))
          (KEY_NPAGE (module-ref ncurses-mod 'KEY_NPAGE)))
 
-    ;; Initialize Kernel State
+    ;; Initialize Configuration & Kernel State
+    (define cfg (or config (load-config)))
+    (define cur-endpoint (or endpoint
+                             (getenv "BADB_MODEL_ENDPOINT")
+                             (badb-config-model-endpoint cfg)))
+    (define cur-model (or model
+                          (getenv "BADB_MODEL_NAME")
+                          (badb-config-model-name cfg)))
+    (define cur-api-key (or api-key
+                            (getenv "BADB_API_KEY")
+                            (getenv "OPENAI_API_KEY")
+                            (badb-config-model-api-key cfg)))
+    (define cur-journal-path (or journal-path
+                                 (getenv "BADB_JOURNAL_PATH")
+                                 (badb-config-journal-path cfg)))
+
     (define reg (make-registry))
-    (define jrn (make-journal journal-path))
+    (define jrn (make-journal cur-journal-path))
     (define mgr (make-transaction-manager reg #:journal jrn))
-    (define cur-endpoint endpoint)
-    (define cur-model model)
-    (define cur-api-key api-key)
+    (define mcp-mgr (make-mcp-manager cfg))
+
+    ;; Register MCP Kernel Features for Agent & User Automation
+    (registry-attach! reg "mcp.list"
+                      (lambda () (mcp-manager-list-servers mcp-mgr))
+                      '((description . "List all configured MCP servers and their status")))
+    (registry-attach! reg "mcp.start"
+                      (lambda (name) (mcp-manager-start-server! mcp-mgr name))
+                      '((description . "Start a configured MCP server by name")))
+    (registry-attach! reg "mcp.stop"
+                      (lambda (name) (mcp-manager-stop-server! mcp-mgr name))
+                      '((description . "Stop a running MCP server by name")))
+    (registry-attach! reg "mcp.add"
+                      (lambda (name cmd args)
+                        (mcp-manager-add-server! mcp-mgr name cmd args #:auto-start #t))
+                      '((description . "Add a new MCP server specification and persist to config")))
+    (registry-attach! reg "mcp.remove"
+                      (lambda (name) (mcp-manager-remove-server! mcp-mgr name))
+                      '((description . "Remove an MCP server from configuration and stop it")))
+    (registry-attach! reg "mcp.tools"
+                      (lambda* (#:optional server-name)
+                        (mcp-manager-list-tools mcp-mgr server-name))
+                      '((description . "List available tools discovered from running MCP servers")))
+    (registry-attach! reg "mcp.call"
+                      (lambda (name-or-server tool-or-args . maybe-args)
+                        (if (pair? maybe-args)
+                            (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args (car maybe-args))
+                            (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args)))
+                      '((description . "Call a tool on an MCP server")))
+
+    ;; Auto-start configured MCP servers with auto-start: #t
+    (catch #t
+      (lambda ()
+        (for-each
+         (lambda (server-spec)
+           (let ((name (assoc-ref server-spec 'name))
+                 (auto? (assoc-ref server-spec 'auto-start)))
+             (when (and name auto?)
+               (catch #t
+                 (lambda () (mcp-manager-start-server! mcp-mgr name))
+                 (lambda _ #f)))))
+         (badb-config-mcp-servers cfg)))
+      (lambda _ #f))
+
     (define client (make-model-client #:endpoint cur-endpoint
                                       #:api-key cur-api-key
                                       #:model cur-model))
-    (define repl-mod (make-repl-mod reg jrn mgr client))
+    (define repl-mod (make-repl-mod reg jrn mgr client cfg mcp-mgr))
 
     ;; UI State
     (define messages (list
@@ -552,15 +614,20 @@ and core badb modules for interactive evaluation."
         (erase stdscr)
 
         ;; 1. Header Bar with Rounded Frame & Status Pills
-        (set-color-attr! 1 #t)
-        (safe-addstr stdscr 0 0
-                     (format-header-line maxx
-                                         status-text
-                                         cur-model
-                                         (length (registry-list reg))
-                                         (journal-count jrn))
-                     maxx)
-        (set-color-attr! 1 #f)
+        (let* ((active-count (length (filter (lambda (s) (assoc-ref s 'running?))
+                                             (mcp-manager-list-servers mcp-mgr))))
+               (total-count (length (badb-config-mcp-servers cfg)))
+               (mcp-info (format #f "~a/~a" active-count total-count)))
+          (set-color-attr! 1 #t)
+          (safe-addstr stdscr 0 0
+                       (format-header-line maxx
+                                           status-text
+                                           cur-model
+                                           (length (registry-list reg))
+                                           (journal-count jrn)
+                                           mcp-info)
+                       maxx)
+          (set-color-attr! 1 #f))
 
         ;; 2. Side borders for viewport rows
         (let loop-borders ((y view-top))
@@ -818,6 +885,234 @@ and core badb modules for interactive evaluation."
       (set! status-text "READY")
       (render!))
 
+    ;; Handle MCP subcommands
+    (define (handle-mcp-cmd! arg)
+      (let* ((tokens (filter (lambda (s) (not (string-null? s)))
+                             (string-split (string-trim-both arg) #\space)))
+             (subcmd (if (null? tokens) "list" (car tokens)))
+             (rest (if (null? tokens) '() (cdr tokens))))
+        (cond
+         ((or (string=? subcmd "list") (string=? subcmd "ls") (string-null? arg))
+          (let ((servers (mcp-manager-list-servers mcp-mgr)))
+            (if (null? servers)
+                (set! messages (append messages
+                                       (list `((role . "system")
+                                               (content . "No MCP servers configured.\nUse /mcp add <name> <cmd> [args...] to register one.")))))
+                (let ((desc (map (lambda (s)
+                                   (let* ((name (assoc-ref s 'name))
+                                          (cmd (assoc-ref s 'command))
+                                          (s-args (or (assoc-ref s 'args) '()))
+                                          (running? (assoc-ref s 'running?))
+                                          (pid (assoc-ref s 'pid))
+                                          (tools (assoc-ref s 'tools))
+                                          (t-count (if (list? tools) (length tools) 0))
+                                          (auto? (assoc-ref s 'auto-start))
+                                          (auto-str (if auto? " (auto-start)" ""))
+                                          (status (if running?
+                                                      (format #f "[RUNNING pid:~a tools:~a]" pid t-count)
+                                                      "[STOPPED]")))
+                                     (format #f "• ~a ~a~a\n  command: ~a ~a"
+                                             name status auto-str cmd (string-join s-args " "))))
+                                 servers)))
+                  (set! messages (append messages
+                                         (list `((role . "system")
+                                                 (content . ,(string-append "Configured MCP Servers:\n"
+                                                                            (string-join desc "\n")))))))))))
+
+         ((string=? subcmd "start")
+          (if (null? rest)
+              (set! messages (append messages (list `((role . "error") (content . "Usage: /mcp start <name>")))))
+              (let* ((name (car rest))
+                     (res (catch #t
+                            (lambda () (mcp-manager-start-server! mcp-mgr name))
+                            (lambda (k . a) (cons 'err (format #f "~a" a))))))
+                (if (and (pair? res) (eq? (car res) 'err))
+                    (set! messages (append messages (list `((role . "error") (content . ,(cdr res))))))
+                    (set! messages (append messages (list `((role . "system")
+                                                           (content . ,(format #f "Started MCP server '~a'." name))))))))))
+
+         ((string=? subcmd "stop")
+          (if (null? rest)
+              (set! messages (append messages (list `((role . "error") (content . "Usage: /mcp stop <name>")))))
+              (let* ((name (car rest))
+                     (res (mcp-manager-stop-server! mcp-mgr name)))
+                (if res
+                    (set! messages (append messages (list `((role . "system")
+                                                           (content . ,(format #f "Stopped MCP server '~a'." name))))))
+                    (set! messages (append messages (list `((role . "error")
+                                                           (content . ,(format #f "MCP server '~a' was not running." name))))))))))
+
+         ((string=? subcmd "restart")
+          (if (null? rest)
+              (set! messages (append messages (list `((role . "error") (content . "Usage: /mcp restart <name>")))))
+              (let ((name (car rest)))
+                (mcp-manager-stop-server! mcp-mgr name)
+                (catch #t
+                  (lambda ()
+                    (mcp-manager-start-server! mcp-mgr name)
+                    (set! messages (append messages (list `((role . "system")
+                                                           (content . ,(format #f "Restarted MCP server '~a'." name)))))))
+                  (lambda (k . a)
+                    (set! messages (append messages (list `((role . "error")
+                                                           (content . ,(format #f "Failed to restart '~a': ~s" name a)))))))))))
+
+         ((string=? subcmd "add")
+          (if (< (length rest) 2)
+              (set! messages (append messages (list `((role . "error")
+                                                     (content . "Usage: /mcp add <name> <command> [args...]")))))
+              (let* ((name (car rest))
+                     (cmd (cadr rest))
+                     (cmd-args (cddr rest)))
+                (mcp-manager-add-server! mcp-mgr name cmd cmd-args #:auto-start #t)
+                (set! messages (append messages
+                                       (list `((role . "system")
+                                               (content . ,(format #f "Added MCP server '~a' (~a ~a).\nSaved to ~a."
+                                                                  name cmd (string-join cmd-args " ")
+                                                                  (default-local-config-path))))))))))
+
+         ((or (string=? subcmd "remove") (string=? subcmd "rm"))
+          (if (null? rest)
+              (set! messages (append messages (list `((role . "error") (content . "Usage: /mcp remove <name>")))))
+              (let* ((name (car rest))
+                     (removed? (mcp-manager-remove-server! mcp-mgr name)))
+                (if removed?
+                    (set! messages (append messages (list `((role . "system")
+                                                           (content . ,(format #f "Removed MCP server '~a'. Configuration updated." name))))))
+                    (set! messages (append messages (list `((role . "error")
+                                                           (content . ,(format #f "MCP server '~a' not found." name))))))))))
+
+         ((string=? subcmd "tools")
+          (let* ((target-server (if (null? rest) #f (car rest)))
+                 (tools (mcp-manager-list-tools mcp-mgr target-server)))
+            (if (null? tools)
+                (set! messages (append messages
+                                       (list `((role . "system")
+                                               (content . ,(if target-server
+                                                              (format #f "No tools available from server '~a' (is it running?)." target-server)
+                                                              "No MCP tools available. Make sure servers are running with /mcp start <name>."))))))
+                (let ((desc (map (lambda (t)
+                                   (let ((tname (assoc-ref t 'name))
+                                         (sname (assoc-ref t 'server))
+                                         (tdesc (or (assoc-ref t 'description) "no description")))
+                                     (format #f "• ~a (~a): ~a" tname sname tdesc)))
+                                 tools)))
+                  (set! messages (append messages
+                                         (list `((role . "system")
+                                                 (content . ,(string-append "Discovered MCP Tools:\n"
+                                                                            (string-join desc "\n")))))))))))
+
+         (else
+          (set! messages (append messages
+                                 (list `((role . "error")
+                                         (content . ,(format #f "Unknown /mcp subcommand '~a'. Valid: list, start, stop, restart, add, remove, tools" subcmd))))))))))
+
+    ;; Handle configuration subcommands
+    (define (handle-config-cmd! arg)
+      (let* ((tokens (filter (lambda (s) (not (string-null? s)))
+                             (string-split (string-trim-both arg) #\space)))
+             (subcmd (if (null? tokens) "show" (car tokens)))
+             (rest (if (null? tokens) '() (cdr tokens))))
+        (cond
+         ((or (string=? subcmd "show") (string-null? arg))
+          (let* ((global-path (default-global-config-path))
+                 (local-path (default-local-config-path))
+                 (global? (file-exists? global-path))
+                 (local? (file-exists? local-path))
+                 (mcp-count (length (badb-config-mcp-servers cfg)))
+                 (info (format #f
+                               "badb Configuration:\n~
+                                • Model: ~a\n~
+                                • Endpoint: ~a\n~
+                                • Temperature: ~a\n~
+                                • Journal Path: ~a\n~
+                                • Global Config: ~a (~a)\n~
+                                • Local Config:  ~a (~a)\n~
+                                • MCP Servers Configured: ~a"
+                               cur-model
+                               cur-endpoint
+                               (badb-config-model-temperature cfg)
+                               cur-journal-path
+                               global-path (if global? "active" "not found")
+                               local-path  (if local? "active" "not found")
+                               mcp-count)))
+            (set! messages (append messages (list `((role . "system") (content . ,info)))))))
+
+         ((string=? subcmd "reload")
+          (catch #t
+            (lambda ()
+              (set! cfg (load-config))
+              (set! cur-model (badb-config-model-name cfg))
+              (set! cur-endpoint (badb-config-model-endpoint cfg))
+              (set! client (make-model-client #:endpoint cur-endpoint
+                                              #:api-key cur-api-key
+                                              #:model cur-model))
+              (set! mcp-mgr (make-mcp-manager cfg))
+              (module-define! repl-mod 'cfg cfg)
+              (module-define! repl-mod 'mcp-mgr mcp-mgr)
+              (module-define! repl-mod 'client client)
+              (set! messages (append messages
+                                     (list `((role . "system")
+                                             (content . "Configuration reloaded from disk successfully."))))))
+            (lambda (k . a)
+              (set! messages (append messages
+                                     (list `((role . "error")
+                                             (content . ,(format #f "Failed to reload config: ~a ~s" k a)))))))))
+
+         ((string=? subcmd "save")
+          (catch #t
+            (lambda ()
+              (save-local-config! cfg)
+              (set! messages (append messages
+                                     (list `((role . "system")
+                                             (content . ,(format #f "Configuration saved to ~a" (default-local-config-path))))))))
+            (lambda (k . a)
+              (set! messages (append messages
+                                     (list `((role . "error")
+                                             (content . ,(format #f "Failed to save config: ~a ~s" k a)))))))))
+
+         ((string=? subcmd "set")
+          (if (< (length rest) 2)
+              (set! messages (append messages
+                                     (list `((role . "error")
+                                             (content . "Usage: /config set <model|endpoint|temperature> <value>")))))
+              (let ((prop (car rest))
+                    (val (cadr rest)))
+                (cond
+                 ((string=? prop "model")
+                  (set! cur-model val)
+                  (badb-config-set-model-name! cfg val)
+                  (set! client (make-model-client #:endpoint cur-endpoint #:api-key cur-api-key #:model cur-model))
+                  (module-define! repl-mod 'client client)
+                  (catch #t (lambda () (save-local-config! cfg)) (lambda _ #f))
+                  (set! messages (append messages (list `((role . "system")
+                                                         (content . ,(format #f "Model set to '~a' and saved." val)))))))
+                 ((string=? prop "endpoint")
+                  (set! cur-endpoint val)
+                  (badb-config-set-model-endpoint! cfg val)
+                  (set! client (make-model-client #:endpoint cur-endpoint #:api-key cur-api-key #:model cur-model))
+                  (module-define! repl-mod 'client client)
+                  (catch #t (lambda () (save-local-config! cfg)) (lambda _ #f))
+                  (set! messages (append messages (list `((role . "system")
+                                                         (content . ,(format #f "Endpoint set to '~a' and saved." val)))))))
+                 ((string=? prop "temperature")
+                  (let ((temp (string->number val)))
+                    (if (and temp (number? temp))
+                        (begin
+                          (badb-config-set-model-temperature! cfg temp)
+                          (catch #t (lambda () (save-local-config! cfg)) (lambda _ #f))
+                          (set! messages (append messages (list `((role . "system")
+                                                                 (content . ,(format #f "Temperature set to ~a and saved." temp)))))))
+                        (set! messages (append messages (list `((role . "error")
+                                                               (content . "Invalid temperature: must be a number."))))))))
+                 (else
+                  (set! messages (append messages (list `((role . "error")
+                                                         (content . ,(format #f "Unknown config property: ~a" prop)))))))))))
+
+         (else
+          (set! messages (append messages
+                                 (list `((role . "error")
+                                         (content . ,(format #f "Unknown /config subcommand '~a'. Valid: show, reload, save, set" subcmd))))))))))
+
     ;; Handle slash commands
     (define (handle-command! cmd-pair)
       (let ((cmd (car cmd-pair))
@@ -827,20 +1122,22 @@ and core badb modules for interactive evaluation."
           (set! messages
                 (append messages
                         (list `((role . "system")
-                                (content . ,(string-append
-                                             "Available Commands:\n"
-                                             "  /help             Display this help message\n"
-                                             "  /model [NAME]     Show or switch active LLM model\n"
-                                             "  /endpoint [URL]   Show or switch endpoint URL\n"
-                                             "  /features         List active registry features\n"
-                                             "  /journal          View recent checkpoint provenance\n"
-                                             "  /test             Run the bootstrap test suite\n"
-                                             "  /clear            Clear chat history\n"
-                                             "  /quit, /exit      Exit TUI\n"
-                                             "  !<command>        Execute shell command (or press ! at empty prompt)\n"
-                                             "  ,<expr> or (..)   Evaluate Scheme code (or press ( at empty prompt)\n"
-                                             "  /sh <cmd>         Alias for shell command\n"
-                                             "  /eval <expr>      Alias for Scheme eval")))))))
+                                 (content . ,(string-append
+                                              "Available Commands:\n"
+                                              "  /help             Display this help message\n"
+                                              "  /model [NAME]     Show or switch active LLM model\n"
+                                              "  /endpoint [URL]   Show or switch endpoint URL\n"
+                                              "  /mcp [CMD]        Manage MCP servers (list, start, stop, add, remove, tools)\n"
+                                              "  /config [CMD]     Inspect or reload configuration (show, reload, save, set)\n"
+                                              "  /features         List active registry features\n"
+                                              "  /journal          View recent checkpoint provenance\n"
+                                              "  /test             Run the bootstrap test suite\n"
+                                              "  /clear            Clear chat history\n"
+                                              "  /quit, /exit      Exit TUI\n"
+                                              "  !<command>        Execute shell command (or press ! at empty prompt)\n"
+                                              "  ,<expr> or (..)   Evaluate Scheme code (or press ( at empty prompt)\n"
+                                              "  /sh <cmd>         Alias for shell command\n"
+                                              "  /eval <expr>      Alias for Scheme eval")))))))
 
          ((string=? cmd "model")
           (if (string-null? arg)
@@ -849,13 +1146,15 @@ and core badb modules for interactive evaluation."
                                              (content . ,(format #f "Current model: ~a" cur-model))))))
               (begin
                 (set! cur-model arg)
+                (badb-config-set-model-name! cfg arg)
+                (catch #t (lambda () (save-local-config! cfg)) (lambda _ #f))
                 (set! client (make-model-client #:endpoint cur-endpoint
                                                 #:api-key cur-api-key
                                                 #:model cur-model))
                 (module-define! repl-mod 'client client)
                 (set! messages (append messages
                                        (list `((role . "system")
-                                               (content . ,(format #f "Model switched to: ~a" cur-model)))))))))
+                                               (content . ,(format #f "Model switched to: ~a (saved to config)" cur-model)))))))))
 
          ((string=? cmd "endpoint")
           (if (string-null? arg)
@@ -864,13 +1163,21 @@ and core badb modules for interactive evaluation."
                                              (content . ,(format #f "Current endpoint: ~a" cur-endpoint))))))
               (begin
                 (set! cur-endpoint arg)
+                (badb-config-set-model-endpoint! cfg arg)
+                (catch #t (lambda () (save-local-config! cfg)) (lambda _ #f))
                 (set! client (make-model-client #:endpoint cur-endpoint
                                                 #:api-key cur-api-key
                                                 #:model cur-model))
                 (module-define! repl-mod 'client client)
                 (set! messages (append messages
                                        (list `((role . "system")
-                                               (content . ,(format #f "Endpoint updated to: ~a" cur-endpoint)))))))))
+                                               (content . ,(format #f "Endpoint updated to: ~a (saved to config)" cur-endpoint)))))))))
+
+         ((string=? cmd "mcp")
+          (handle-mcp-cmd! arg))
+
+         ((string=? cmd "config")
+          (handle-config-cmd! arg))
 
          ((or (string=? cmd "sh") (string=? cmd "shell"))
           (if (string-null? arg)
@@ -954,6 +1261,7 @@ and core badb modules for interactive evaluation."
 
     ;; Cleanup handler
     (define (shutdown!)
+      (catch #t (lambda () (mcp-manager-stop-all! mcp-mgr)) (lambda _ #f))
       (catch #t (lambda () (curs-set 1)) (lambda _ #f))
       (catch #t (lambda () (endwin)) (lambda _ #f)))
 
@@ -1058,7 +1366,7 @@ and core badb modules for interactive evaluation."
                   (unless (null? matches)
                     (let* ((safe-idx (min selector-index (max 0 (- (length matches) 1))))
                            (chosen (car (list-ref matches safe-idx))))
-                      (if (member chosen '("model" "endpoint" "sh" "eval"))
+                      (if (member chosen '("model" "endpoint" "mcp" "config" "sh" "eval"))
                           (set! input-buffer (string-append "/" chosen " "))
                           (set! input-buffer (string-append "/" chosen)))
                       (set! selector-index 0)))))

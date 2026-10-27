@@ -9,6 +9,8 @@
   #:use-module (badb registry)
   #:use-module (badb transaction)
   #:use-module (badb journal)
+  #:use-module (badb config)
+  #:use-module (badb mcp)
   #:use-module (badb tui))
 
 (test-begin "badb-tui")
@@ -170,7 +172,9 @@
          (jrn (make-journal "/tmp/badb-test-tui-jrn.jsonl"))
          (mgr (make-transaction-manager reg #:journal jrn))
          (client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "dummy"))
-         (repl-mod (make-repl-mod reg jrn mgr client)))
+         (cfg (make-badb-config #:model-name "test-model"))
+         (mcp-mgr (make-mcp-manager cfg))
+         (repl-mod (make-repl-mod reg jrn mgr client cfg mcp-mgr)))
 
     ;; Simple arithmetic
     (call-with-values (lambda () (eval-scheme-code "(+ 10 25)" repl-mod))
@@ -198,6 +202,16 @@
       (lambda (res err)
         (test-assert "jrn handle accessible" (not err))
         (test-equal "jrn handle is journal" "=> #t" res)))
+
+    (call-with-values (lambda () (eval-scheme-code "(badb-config? cfg)" repl-mod))
+      (lambda (res err)
+        (test-assert "cfg handle accessible" (not err))
+        (test-equal "cfg handle is config" "=> #t" res)))
+
+    (call-with-values (lambda () (eval-scheme-code "(mcp-manager? mcp-mgr)" repl-mod))
+      (lambda (res err)
+        (test-assert "mcp-mgr handle accessible" (not err))
+        (test-equal "mcp-mgr handle is manager" "=> #t" res)))
 
     ;; Error handling: numerical overflow / division by zero
     (call-with-values (lambda () (eval-scheme-code "(/ 1 0)" repl-mod))
@@ -297,6 +311,10 @@
     (assoc "model" %slash-commands))
   (test-assert "slash commands list contains endpoint"
     (assoc "endpoint" %slash-commands))
+  (test-assert "slash commands list contains mcp"
+    (assoc "mcp" %slash-commands))
+  (test-assert "slash commands list contains config"
+    (assoc "config" %slash-commands))
   (test-assert "slash commands list contains features"
     (assoc "features" %slash-commands))
   (test-assert "slash commands list contains journal"
@@ -410,6 +428,12 @@
       (string-contains header "❲5 chkpts❳"))
     (test-equal "header length matches terminal width"
       80 (string-length header)))
+
+  (let ((header-mcp (format-header-line 100 "READY" "minicpm5-1b:gguf:q8" 3 5 "1/2")))
+    (test-assert "header contains mcp status pill when provided"
+      (string-contains header-mcp "❲mcp: 1/2❳"))
+    (test-equal "header with mcp matches terminal width"
+      100 (string-length header-mcp)))
 
   ;; Prompt Divider
   (let ((divider (format-prompt-divider 80)))
