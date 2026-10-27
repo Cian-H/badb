@@ -141,6 +141,12 @@
              entries))
       '()))
 
+(define (resolve-workspace-path ws rel-path)
+  "Resolve REL-PATH against workspace directory WS."
+  (if (string-prefix? "/" rel-path)
+      rel-path
+      (string-append ws "/" rel-path)))
+
 (define* (create-checkpoint! mgr description #:key (files #f))
   "Create a snapshot checkpoint of the specified FILES (or entire workspace if #f)
 and active registry state. Persists metadata to disk and journal if configured."
@@ -159,10 +165,7 @@ and active registry state. Persists metadata to disk and journal if configured."
          (map
            (lambda (rel-path)
              (let*
-                 ((full-path
-                    (if (string-prefix? "/" rel-path)
-                      rel-path
-                      (string-append ws "/" rel-path)))
+                 ((full-path (resolve-workspace-path ws rel-path))
                   (existed? (file-exists? full-path))
                   (content (and existed? (read-file-content full-path))))
                (cons rel-path (cons existed? content))))
@@ -260,9 +263,7 @@ Returns an alist describing restoration results."
              (let* ((rel-path (car entry))
                     (existed? (cadr entry))
                     (content (cddr entry))
-                    (full-path (if (string-prefix? "/" rel-path)
-                                   rel-path
-                                   (string-append ws "/" rel-path))))
+                    (full-path (resolve-workspace-path ws rel-path)))
                (cond
                 (existed?
                  (unless (and (file-exists? full-path)
