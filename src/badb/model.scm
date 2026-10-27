@@ -25,6 +25,7 @@
             extract-chat-delta
             extract-chat-delta-item
             extract-chat-content
+            extract-chat-tool-calls
             current-http-post
             model-complete
             model-stream))
@@ -125,6 +126,8 @@ or with positional arguments:
                               (model #f)
                               (temperature #f)
                               (stream #f)
+                              (tools #f)
+                              (tool-choice #f)
                               (as-alist #f))
   "Format a chat completion request payload.
 MESSAGES can be a string prompt, a list of message alists, a single message alist,
@@ -133,12 +136,20 @@ Optional keyword arguments:
   #:model       - Model name string
   #:temperature - Float temperature value
   #:stream      - Boolean indicating streaming mode
+  #:tools       - List or vector of tool specification alists
+  #:tool-choice - Tool choice policy string or object (e.g. \"auto\")
   #:as-alist    - When true, returns the Scheme alist instead of JSON string."
   (let* ((msgs (normalize-messages messages))
          (entries (list (cons "messages" msgs)))
          (entries (if model (cons (cons "model" model) entries) entries))
          (entries (if (number? temperature)
                       (cons (cons "temperature" temperature) entries)
+                      entries))
+         (entries (if (and tools (or (pair? tools) (vector? tools)))
+                      (cons (cons "tools" (if (list? tools) (list->vector tools) tools)) entries)
+                      entries))
+         (entries (if tool-choice
+                      (cons (cons "tool_choice" tool-choice) entries)
                       entries))
          (entries (cons (cons "stream" (if stream #t #f)) entries))
          (alist (reverse entries)))
@@ -339,6 +350,41 @@ Returns the string content, or #f if not found."
          (json-ref obj "content")
          (json-ref obj "text")))))
 
+(define (extract-chat-tool-calls response-obj)
+  "Extract tool calls from a chat completion response (parsed JSON alist or JSON string).
+Returns a list of tool call alists: ((id . \"...\") (name . \"...\") (arguments . ...)), or '() if none found."
+  (let ((obj (if (string? response-obj)
+                 (catch #t (lambda () (json-string->scm response-obj)) (lambda _ response-obj))
+                 response-obj)))
+    (if (not (pair? obj))
+        '()
+        (let* ((choices (json-ref obj "choices"))
+               (msg (and (vector? choices)
+                         (> (vector-length choices) 0)
+                         (json-ref (vector-ref choices 0) "message")))
+               (raw-calls (or (and (pair? msg) (json-ref msg "tool_calls"))
+                              (json-ref obj "tool_calls"))))
+          (cond
+           ((vector? raw-calls)
+            (map (lambda (tc)
+                   (let* ((fn (json-ref tc "function"))
+                          (id (or (json-ref tc "id") "call_0"))
+                          (name (if (pair? fn) (or (json-ref fn "name") "") ""))
+                          (raw-args (if (pair? fn) (or (json-ref fn "arguments") "{}") "{}"))
+                          (parsed-args (cond
+                                        ((string? raw-args)
+                                         (catch #t
+                                           (lambda () (json-string->scm raw-args))
+                                           (lambda _ raw-args)))
+                                        (else raw-args))))
+                     `((id . ,id)
+                       (name . ,name)
+                       (arguments . ,parsed-args))))
+                 (vector->list raw-calls)))
+           ((list? raw-calls)
+            raw-calls)
+           (else '()))))))
+
 ;;;
 ;;; HTTP Request Execution
 ;;;
@@ -384,6 +430,8 @@ append /chat/completions."
 (define* (model-complete client messages
                         #:key
                         (temperature 0.7)
+                        (tools #f)
+                        (tool-choice #f)
                         (raw? #f)
                         (http-poster #f))
   "Perform a non-streaming chat completion request.
@@ -395,7 +443,9 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
          (payload  (format-chat-request messages
                                         #:model model
                                         #:temperature temperature
-                                        #:stream #f))
+                                        #:stream #f
+                                        #:tools tools
+                                        #:tool-choice tool-choice))
          (headers  (build-headers api-key #f))
          (poster   (or http-poster (current-http-post))))
     (call-with-values
