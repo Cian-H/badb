@@ -190,7 +190,7 @@ and core badb modules for interactive evaluation."
       (format (current-error-port)
               "Error: (ncurses curses) module is not installed.~%~
                Please run badb within the Guix dev environment:~%~
-                 ./scripts/devenv -- ./scripts/badb tui~%")
+                 ./scripts/devenv -- ./scripts/badb~%")
       (exit 1)))
 
   ;; Dynamically load ncurses procedures

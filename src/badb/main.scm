@@ -12,24 +12,22 @@
 Microharness kernel.
 
 ~a
-  ~a        launch interactive terminal user interface
-  ~a       run bootstrap test suite
-  ~a      display this help and exit
-  ~a   output version information and exit
+  ~a   launch interactive terminal user interface (default)
+  ~a          run bootstrap test suite
+  ~a    display this help and exit
+  ~a output version information and exit
 "
           (bold port "Usage:") %program-name
           (bold port "Commands & Options:")
-          (cyan port "tui")
+          (cyan port "tui, (none)")
           (cyan port "test")
           (cyan port "-h, --help")
           (cyan port "-V, --version")))
 
 (define (main args)
   (let ((options (cdr args)))
-    (cond ((null? options)
-           (format #t "~a~%"
-                   (green (current-output-port) "OK")))
-          ((member (car options) '("tui" "-t" "--tui"))
+    (cond ((or (null? options)
+               (member (car options) '("tui" "-t" "--tui")))
            (let ((tui-module (resolve-module '(badb tui))))
              ((module-ref tui-module 'run-tui))))
           ((equal? (car options) "test")
