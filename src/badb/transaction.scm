@@ -175,72 +175,74 @@ if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed mod
 ;;;
 ;;; Transaction Application Protocol
 ;;;
-(define* (apply-transaction! mgr feature-id forms test-thunk
-                             #:optional (meta-pos '())
-                             #:key (metadata '()))
+(define*
+  (apply-transaction! mgr
+                      feature-id
+                      forms
+                      test-thunk
+                      #:optional
+                      (meta-pos #f)
+                      #:key
+                      (metadata #f))
   "Apply an atomic transaction for FEATURE-ID:
-1. Looks up prior implementation and metadata in (transaction-manager-registry mgr).
-2. Creates a staged child module inheriting from prior module (or fresh) and evaluates FORMS.
-3. Executes (test-thunk staged-module).
-4. If test-thunk succeeds: commits to registry, logs commit checkpoint if journal configured,
-   returns '((status . \"committed\") (feature-id . feature-id)).
-5. If test-thunk returns #f or raises an error: reverts (registry untouched), logs revert checkpoint,
-   returns '((status . \"reverted\") (error . error-message))."
+1. Looks up prior implementation and metadata (or initializes fresh).
+2. Evaluates FORMS in a staging child sandbox module.
+3. Runs TEST-THUNK (receiving the staged module).
+4. On success: commits new implementation to registry with updated metadata
+   and logs commit checkpoint.
+5. On failure or error: discards staged module, logs revert checkpoint,
+   and returns diagnostics alist."
   (unless (transaction-manager? mgr)
     (error "apply-transaction!: expected <transaction-manager>" mgr))
-  (let* ((reg (transaction-manager-registry mgr))
-         (journal (transaction-manager-journal mgr))
-         (effective-meta (if (pair? metadata) metadata meta-pos))
-         (prior-impl (registry-lookup reg feature-id))
-         (prior-meta (registry-metadata reg feature-id))
-         (target-module (cond
-                         ((module? prior-impl) prior-impl)
-                         ((and (list? prior-meta)
-                               (assoc-ref prior-meta 'module)
-                               (module? (assoc-ref prior-meta 'module)))
-                          (assoc-ref prior-meta 'module))
-                         (else #f))))
+  (let*
+      ((reg (transaction-manager-registry mgr))
+       (journal (transaction-manager-journal mgr))
+       (effective-meta (or metadata meta-pos '()))
+       (prior-impl (registry-lookup reg feature-id))
+       (prior-meta (or (registry-metadata reg feature-id) '()))
+       (target-module
+         (cond
+           ((and prior-meta (assoc-ref prior-meta 'module)) => identity)
+           (else #f))))
+    (define (revert-and-log! err-msg details)
+            (when journal
+              (log-journal! journal
+                            `((checkpoint . "revert") (status . "fail")
+                              (feature-id . ,(canonical-id-string feature-id))
+                              (test-verdict . "fail")
+                              (error . ,err-msg)
+                              (details . ,details))))
+            `((status . "reverted") (error . ,err-msg)))
     (catch #t
       (lambda ()
-        (let* ((staged-module (stage-patch target-module forms))
-               (test-result (invoke-test-thunk test-thunk staged-module)))
+        (let*
+            ((staged-module (stage-patch target-module forms))
+             (test-result (invoke-test-thunk test-thunk staged-module)))
           (if test-result
-                ;; Commit
-                (let* ((impl (resolve-implementation staged-module feature-id test-result effective-meta))
-                       (merged-meta (merge-metadata prior-meta effective-meta))
-                       (updated-meta (cons (cons 'module staged-module)
-                                           (filter (lambda (p) (not (eq? (car p) 'module)))
-                                                   merged-meta))))
-                  (registry-attach! reg feature-id impl #:metadata updated-meta)
-                  (when journal
-                    (log-journal! journal
-                                  `((checkpoint . "commit")
-                                    (status . "pass")
-                                    (feature-id . ,(canonical-id-string feature-id))
-                                    (test-verdict . "pass")
-                                    (metadata . ,(sanitize-for-json effective-meta)))))
-                  `((status . "committed") (feature-id . ,feature-id)))
-                ;; Test returned #f: Revert
-                (let ((err-msg "test verification failed: test thunk returned #f"))
-                  (when journal
-                    (log-journal! journal
-                                  `((checkpoint . "revert")
-                                    (status . "fail")
-                                    (feature-id . ,(canonical-id-string feature-id))
-                                    (test-verdict . "fail")
-                                    (error . ,err-msg)
-                                    (details . ((reason . ,err-msg))))))
-                  `((status . "reverted") (error . ,err-msg))))))
+            ;; Commit
+            (let*
+                ((impl
+                   (resolve-implementation staged-module feature-id test-result effective-meta))
+                 (merged-meta (merge-metadata prior-meta effective-meta))
+                 (updated-meta
+                   (cons (cons 'module staged-module)
+                         (filter
+                           (lambda (p)
+                             (not (eq? (car p) 'module)))
+                           merged-meta))))
+              (registry-attach! reg feature-id impl #:metadata updated-meta)
+              (when journal
+                (log-journal! journal
+                              `((checkpoint . "commit") (status . "pass")
+                                (feature-id . ,(canonical-id-string feature-id))
+                                (test-verdict . "pass")
+                                (metadata . ,(sanitize-for-json effective-meta)))))
+              `((status . "committed") (feature-id . ,feature-id)))
+            ;; Test returned #f: Revert
+            (let
+                ((err-msg "test verification failed: test thunk returned #f"))
+              (revert-and-log! err-msg `((reason . ,err-msg)))))))
       (lambda (key . args)
         ;; Exception during staging or test execution: Revert
-        (let ((err-msg (format-exception key args)))
-          (when journal
-            (log-journal! journal
-                          `((checkpoint . "revert")
-                            (status . "fail")
-                            (feature-id . ,(canonical-id-string feature-id))
-                            (test-verdict . "fail")
-                            (error . ,err-msg)
-                            (details . ((key . ,(symbol->string key))
-                                        (args . ,(format #f "~s" args)))))))
-          `((status . "reverted") (error . ,err-msg)))))))
+        (revert-and-log! (format-exception key args)
+                         `((key . ,(symbol->string key)) (args . ,(format #f "~s" args))))))))

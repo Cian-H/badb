@@ -78,62 +78,60 @@ or with positional arguments:
 ;;;
 ;;; Chat Request Formatting
 ;;;
-(define (single-message-alist? x)
-  (and (pair? x)
-       (pair? (car x))
-       (or (prop-ref x "role")
-           (prop-ref x "content"))))
+(begin
+  (define (message-alist? x) (and (pair? x) (pair? (car x))))
+  (define (role-content-pair? x) (and (pair? x) (not (pair? (car x)))))
+  (define (single-message-alist? x)
+          (and (message-alist? x) (or (prop-ref x "role") (prop-ref x "content")))))
 
 (define (valid-api-message? msg)
-  "Predicate to check if MSG is a valid OpenAI/Anthropic chat protocol message.
+        "Predicate to check if MSG is a valid OpenAI/Anthropic chat protocol message.
 Rejects internal UI logs or tool responses missing required tool_call_id."
-  (cond
-   ;; Pair of (role . content), e.g. (user . "hello")
-   ((and (pair? msg) (not (pair? (car msg))))
-    (let ((r (ensure-string (car msg))))
-      (and (member r '("system" "user" "assistant")) #t)))
-   ;; Alist of message fields:
-   ((and (pair? msg) (pair? (car msg)))
-    (let* ((role (or (assoc-ref msg "role") (assoc-ref msg 'role)))
-           (role-str (if role (ensure-string role) "")))
-      (cond
-       ((member role-str '("system" "user" "assistant"))
-        #t)
-       ((string=? role-str "tool")
-        (let ((tid (or (assoc-ref msg "tool_call_id") (assoc-ref msg 'tool_call_id))))
-          (and (string? tid) (not (string-null? tid)))))
-       (else #f))))
-   ((string? msg) #t)
-   (else #f)))
+        (cond
+          ((role-content-pair? msg)
+            (let ((r (ensure-string (car msg))))
+              (and (member r '("system" "user" "assistant")) #t)))
+          ((message-alist? msg)
+            (let*
+                ((role (prop-ref msg 'role))
+                 (role-str
+                   (if role
+                     (ensure-string role)
+                     "")))
+              (cond
+                ((member role-str '("system" "user" "assistant")) #t)
+                ((string=? role-str "tool") (non-empty-string? (prop-ref msg 'tool_call_id)))
+                (else #f))))
+          ((string? msg) #t)
+          (else #f)))
 
 (define (normalize-message msg)
-  (cond
-   ;; Alist of key-value pairs representing an object:
-   ;; e.g. ((role . "user") (content . "hello")) or (("role" . "user") ("content" . "hello"))
-   ((and (pair? msg) (pair? (car msg)))
-    (let* ((stringified
-            (map (lambda (pair)
-                   (cons (ensure-string (car pair))
-                         (cdr pair)))
-                 msg))
-           (role (assoc-ref stringified "role"))
-           (tc (assoc-ref stringified "tool_calls"))
-           (rc (assoc-ref stringified "reasoning_content")))
-      ;; Upstream reasoning models (Together, Nebius, Beam) require non-empty reasoning_content on assistant tool turns
-      (if (and role (string=? role "assistant") tc (or (not rc) (and (string? rc) (string-null? (string-trim-both rc)))))
-          (cons (cons "reasoning_content" "Thinking...")
-                (filter (lambda (p) (not (string=? (car p) "reasoning_content"))) stringified))
-          stringified)))
-   ;; Pair of (role . content):
-   ;; e.g. (user . "hello") or ("user" . "hello")
-   ((and (pair? msg) (not (pair? (car msg))))
-    (list (cons "role" (ensure-string (car msg)))
-          (cons "content" (cdr msg))))
-   ;; Bare string: assume user role
-   ((string? msg)
-    (list (cons "role" "user")
-          (cons "content" msg)))
-   (else msg)))
+        (cond
+          ((message-alist? msg)
+            (let*
+                ((stringified
+                   (map
+                     (lambda (pair)
+                       (cons (ensure-string (car pair)) (cdr pair)))
+                     msg))
+                 (role (assoc-ref stringified "role"))
+                 (tc (assoc-ref stringified "tool_calls"))
+                 (rc (assoc-ref stringified "reasoning_content")))
+              (if
+                  (and role
+                       (string=? role "assistant")
+                       tc
+                       (or (not rc) (and (string? rc) (string-null? (string-trim-both rc)))))
+                (cons (cons "reasoning_content" "Thinking...")
+                      (filter
+                        (lambda (p)
+                          (not (string=? (car p) "reasoning_content")))
+                        stringified))
+                stringified)))
+          ((role-content-pair? msg)
+            (list (cons "role" (ensure-string (car msg))) (cons "content" (cdr msg))))
+          ((string? msg) (list (cons "role" "user") (cons "content" msg)))
+          (else msg)))
 
 (define (normalize-messages msgs)
   (cond
@@ -375,21 +373,20 @@ Returns the string delta, or #f if no content is found."
     (and (pair? msg) (json-ref msg "content"))))
 
 (define (extract-chat-content response-obj)
-  "Extract the assistant message text from a non-streaming chat response.
+        "Extract the assistant message text from a non-streaming chat response.
 Supports OpenAI, Anthropic, Ollama, and OpenRouter formats.
 Returns the string content, or #f if not found."
-  (let ((obj (if (string? response-obj)
-                 (safe-json-parse response-obj response-obj)
-                 response-obj)))
-    (if (pair? obj)
-        (clean-json-string
-         (or (extract-openai-content obj)
-             (extract-anthropic-content obj)
-             (extract-ollama-content obj)
-             (json-ref obj "response")
-             (json-ref obj "content")
-             (json-ref obj "text")))
-        (clean-json-string obj))))
+        (let
+            ((obj (safe-json-parse response-obj response-obj)))
+          (if (pair? obj)
+            (clean-json-string
+              (or (extract-openai-content obj)
+                  (extract-anthropic-content obj)
+                  (extract-ollama-content obj)
+                  (json-ref obj "response")
+                  (json-ref obj "content")
+                  (json-ref obj "text")))
+            (clean-json-string obj))))
 
 (define (parse-single-tool-call tc)
   "Parse a single raw tool call object from an API response."
@@ -405,25 +402,24 @@ Returns the string content, or #f if not found."
       (arguments . ,parsed-args))))
 
 (define (extract-chat-tool-calls response-obj)
-  "Extract tool calls from a chat completion response (parsed JSON alist or JSON string).
+        "Extract tool calls from a chat completion response (parsed JSON alist or JSON string).
 Returns a list of tool call alists: ((id . \"...\") (name . \"...\") (arguments . ...)), or '() if none found."
-  (let ((obj (if (string? response-obj)
-                 (safe-json-parse response-obj response-obj)
-                 response-obj)))
-    (if (pair? obj)
-        (let* ((choices (json-ref obj "choices"))
-               (msg (and (vector? choices)
-                         (> (vector-length choices) 0)
-                         (json-ref (vector-ref choices 0) "message")))
-               (raw-calls (or (and (pair? msg) (json-ref msg "tool_calls"))
-                              (json-ref obj "tool_calls"))))
-          (cond
-           ((vector? raw-calls)
-            (map parse-single-tool-call (vector->list raw-calls)))
-           ((list? raw-calls)
-            raw-calls)
-           (else '())))
-        '())))
+        (let
+            ((obj (safe-json-parse response-obj response-obj)))
+          (if (pair? obj)
+            (let*
+                ((choices (json-ref obj "choices"))
+                 (msg
+                   (and (vector? choices)
+                        (> (vector-length choices) 0)
+                        (json-ref (vector-ref choices 0) "message")))
+                 (raw-calls
+                   (or (and (pair? msg) (json-ref msg "tool_calls")) (json-ref obj "tool_calls"))))
+              (cond
+                ((vector? raw-calls) (map parse-single-tool-call (vector->list raw-calls)))
+                ((list? raw-calls) raw-calls)
+                (else '())))
+            '())))
 
 ;;;
 ;;; HTTP Request Execution
