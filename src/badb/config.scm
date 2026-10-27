@@ -51,6 +51,9 @@
                                  badb-config-add-mcp-server!
                                  badb-config-merge-mcp-servers!
                                  badb-config-remove-mcp-server!
+                                 badb-config-providers
+                                 badb-config-get-provider
+                                 badb-config-switch-provider!
                                  parse-config-sexp
                                  config->sexp
                                  read-config-file
@@ -207,10 +210,49 @@
                                 (alist-merge (badb-config-mcp-servers config) new-entries))
   config)
 
-(define (badb-config-remove-mcp-server! config name)
+(define
+  (badb-config-remove-mcp-server! config name)
   "Remove MCP server NAME from CONFIG."
-  (set-badb-config-mcp-servers! config (alist-remove name (badb-config-mcp-servers config)))
+  (set-badb-config-mcp-servers! config
+                                (alist-remove name (badb-config-mcp-servers config)))
   config)
+
+(define (badb-config-providers config)
+        "Extract the providers alist from CONFIG options, or '()."
+        (let ((opts (badb-config-options config)))
+          (or (get-prop opts 'providers #f) '())))
+
+(define (badb-config-get-provider config name)
+        "Retrieve provider entry for NAME (symbol or string) from CONFIG options, or #f."
+        (let*
+            ((name-sym (ensure-symbol name))
+             (name-str (symbol->string name-sym))
+             (provs (badb-config-providers config)))
+          (or (assq-ref provs name-sym) (assoc-ref provs name-str))))
+
+(define
+  (badb-config-switch-provider! config name)
+  "Switch active model configuration in CONFIG to match named provider preset.
+Returns #t on success, or #f if provider NAME was not found."
+  (let
+      ((prov (badb-config-get-provider config name)))
+    (if prov
+      (let*
+          ((ep (get-prop prov 'endpoint #f))
+           (key (get-prop prov 'api-key #f))
+           (models (get-prop prov 'models #f))
+           (m
+             (cond
+               ((string? models) models)
+               ((and (pair? models) (string? (car models))) (car models))
+               ((and (pair? models) (pair? (car models)) (string? (caar models)))
+                 (caar models))
+               (else #f))))
+        (when ep (set-badb-config-model-endpoint! config ep))
+        (when key (set-badb-config-model-api-key! config key))
+        (when m (set-badb-config-model-name! config m))
+        #t)
+      #f)))
 
 ;;;
 ;;; S-Expression Parsing and Serialization

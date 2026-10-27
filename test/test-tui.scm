@@ -18,7 +18,6 @@
 ;;;
 ;;; 1. Word Wrapping (wrap-line and wrap-text)
 ;;;
-
 (test-group "tui-wrapping"
   (let ((short-line "hello world"))
     (test-equal "short line is not wrapped" '("hello world") (wrap-line short-line 20)))
@@ -46,78 +45,83 @@
 ;;;
 ;;; 2. Command Parsing (parse-command)
 ;;;
-
 (test-group "tui-command-parser"
-  ;; Basic commands without arguments
-  (test-equal "parse /help" '("help" . "") (parse-command "/help"))
-
-  (test-equal "parse /quit" '("quit" . "") (parse-command "/quit"))
-
-  (test-equal "parse /features" '("features" . "") (parse-command "/features"))
-
-  ;; Commands with arguments
-  (test-equal "parse /model with argument"
-    '("model" . "minicpm5-1b:gguf:q8") (parse-command "/model minicpm5-1b:gguf:q8"))
-
-  (test-equal "parse /endpoint with URL"
-    '("endpoint" . "http://127.0.0.1:10100/inference/v1")
-    (parse-command "/endpoint http://127.0.0.1:10100/inference/v1"))
-
-  ;; Whitespace trimming
-  (test-equal "parse with leading and trailing whitespace" '("test" . "") (parse-command "   /test   "))
-
-  (test-equal "parse argument with extra spaces"
-    '("model" . "llama-3") (parse-command "  /model   llama-3  "))
-
-  ;; Non-command inputs
-  (test-assert "regular chat prompt returns #f" (not (parse-command "Why GNU Guile?")))
-
-  (test-assert "empty string returns #f" (not (parse-command "")))
-
-  (test-assert "string with slash in middle returns #f" (not (parse-command "and/or question"))))
+            ;; Basic commands without arguments
+            (test-equal "parse /help" '("help" . "") (parse-command "/help"))
+            (test-equal "parse /quit" '("quit" . "") (parse-command "/quit"))
+            (test-equal "parse /features" '("features" . "") (parse-command "/features"))
+            ;; Commands with arguments
+            (test-equal "parse /model with argument"
+                        '("model" . "minicpm5-1b:gguf:q8")
+                        (parse-command "/model minicpm5-1b:gguf:q8"))
+            (test-equal "parse /endpoint with URL"
+                        '("endpoint" . "http://127.0.0.1:10100/inference/v1")
+                        (parse-command "/endpoint http://127.0.0.1:10100/inference/v1"))
+            (test-equal "parse /provider with argument"
+                        '("provider" . "lmstudio")
+                        (parse-command "/provider lmstudio"))
+            ;; Whitespace trimming
+            (test-equal
+              "parse with leading and trailing whitespace"
+              '("test" . "")
+              (parse-command "   /test   "))
+            (test-equal "parse argument with extra spaces"
+                        '("model" . "llama-3")
+                        (parse-command "  /model   llama-3  "))
+            ;; Non-command inputs
+            (test-assert "regular chat prompt returns #f"
+                         (not (parse-command "Why GNU Guile?")))
+            (test-assert "empty string returns #f" (not (parse-command "")))
+            (test-assert
+              "string with slash in middle returns #f"
+              (not (parse-command "and/or question"))))
 
 ;;;
 ;;; 3. Input Classification (classify-input)
 ;;;
-
 (test-group "tui-input-classifier"
-  ;; Shell commands with '!'
-  (test-equal "classify !ls" '(shell . "ls -la") (classify-input "!ls -la"))
-
-  (test-equal "classify ! with space" '(shell . "git status") (classify-input "! git status"))
-
-  (test-equal "classify ! with trailing spaces" '(shell . "make test") (classify-input "  ! make test   "))
-
-  (test-equal "classify bare !" '(shell . "") (classify-input "!"))
-
-  ;; Scheme expressions with ',' or '('
-  (test-equal "classify ,(+ 1 2)" '(scheme . "(+ 1 2)") (classify-input ",(+ 1 2)"))
-
-  (test-equal "classify , (+ 1 2) with space" '(scheme . "(+ 1 2)") (classify-input ", (+ 1 2)"))
-
-  (test-equal "classify bare ," '(scheme . "") (classify-input ","))
-
-  (test-equal "classify direct s-expression" '(scheme . "(define x 42)") (classify-input "(define x 42)"))
-
-  (test-equal "classify s-expression with leading whitespace"
-    '(scheme . "(* x 2)") (classify-input "   (* x 2)  "))
-
-  ;; Slash commands
-  (test-equal "classify /help" '(slash "help" "") (classify-input "/help"))
-
-  (test-equal "classify /model arg" '(slash "model" "llama3") (classify-input "/model llama3"))
-
-  ;; Regular chat inputs
-  (test-equal "classify chat message" '(chat . "Why GNU Guile?") (classify-input "Why GNU Guile?"))
-
-  (test-assert "classify empty string is #f" (not (classify-input "")))
-
-  (test-assert "classify whitespace is #f" (not (classify-input "    "))))
+            ;; Shell commands with '!'
+            (test-equal "classify !ls" '(shell . "ls -la") (classify-input "!ls -la"))
+            (test-equal "classify ! with space"
+                        '(shell . "git status")
+                        (classify-input "! git status"))
+            (test-equal "classify ! with trailing spaces"
+                        '(shell . "make test")
+                        (classify-input "  ! make test   "))
+            (test-equal "classify bare !" '(shell . "") (classify-input "!"))
+            ;; Scheme expressions with ',' or '('
+            (test-equal "classify ,(+ 1 2)"
+                        '(scheme . "(+ 1 2)")
+                        (classify-input ",(+ 1 2)"))
+            (test-equal "classify , (+ 1 2) with space"
+                        '(scheme . "(+ 1 2)")
+                        (classify-input ", (+ 1 2)"))
+            (test-equal "classify bare ," '(scheme . "") (classify-input ","))
+            (test-equal "classify direct s-expression"
+                        '(scheme . "(define x 42)")
+                        (classify-input "(define x 42)"))
+            (test-equal
+              "classify s-expression with leading whitespace"
+              '(scheme . "(* x 2)")
+              (classify-input "   (* x 2)  "))
+            ;; Slash commands
+            (test-equal "classify /help" '(slash "help" "") (classify-input "/help"))
+            (test-equal "classify /model arg"
+                        '(slash "model" "llama3")
+                        (classify-input "/model llama3"))
+            (test-equal "classify /provider arg"
+                        '(slash "provider" "lmstudio")
+                        (classify-input "/provider lmstudio"))
+            ;; Regular chat inputs
+            (test-equal "classify chat message"
+                        '(chat . "Why GNU Guile?")
+                        (classify-input "Why GNU Guile?"))
+            (test-assert "classify empty string is #f" (not (classify-input "")))
+            (test-assert "classify whitespace is #f" (not (classify-input "    "))))
 
 ;;;
 ;;; 4. Scheme REPL Evaluation (eval-scheme-code & make-repl-mod)
 ;;;
-
 (test-group "tui-scheme-eval"
   (let* ((reg (make-registry))
          (jrn (make-journal "/tmp/badb-test-tui-jrn.jsonl"))
@@ -179,7 +183,6 @@
 ;;;
 ;;; 5. Shell Execution (execute-shell-command)
 ;;;
-
 (test-group "tui-shell-exec"
   ;; Successful echo
   (call-with-values (lambda () (execute-shell-command "echo 'hello badb shell'"))
@@ -198,7 +201,6 @@
 ;;;
 ;;; 6. Model Thoughts and Reasoning Separation (split-thoughts-and-content)
 ;;;
-
 (test-group "tui-thoughts-separation"
   ;; Closed <think> tag
   (call-with-values (lambda () (split-thoughts-and-content "<think>Let me reason carefully.</think>The answer is 42."))
@@ -239,52 +241,85 @@
 ;;;
 ;;; 7. Slash Command Palette & Selector Filtering
 ;;;
-
 (test-group "tui-slash-selector"
-  ;; selector-active?
-  (test-assert "selector is active when buffer starts with /" (selector-active? "/"))
-  (test-assert "selector is active when query is being typed" (selector-active? "/mod"))
-  (test-assert "selector is inactive once a space is typed (argument mode)" (not (selector-active? "/model ")))
-  (test-assert "selector is inactive for normal chat" (not (selector-active? "hello /help")))
-  (test-assert "selector is inactive for shell command" (not (selector-active? "!ls")))
-
-  ;; %slash-commands registry contents
-  (test-assert "slash commands list contains help" (assoc "help" %slash-commands))
-  (test-assert "slash commands list contains model" (assoc "model" %slash-commands))
-  (test-assert "slash commands list contains endpoint" (assoc "endpoint" %slash-commands))
-  (test-assert "slash commands list contains mcp" (assoc "mcp" %slash-commands))
-  (test-assert "slash commands list contains config" (assoc "config" %slash-commands))
-  (test-assert "slash commands list contains guardrail" (assoc "guardrail" %slash-commands))
-  (test-assert "slash commands list contains compact" (assoc "compact" %slash-commands))
-  (test-assert "slash commands list contains checkpoint" (assoc "checkpoint" %slash-commands))
-  (test-assert "slash commands list contains rollback" (assoc "rollback" %slash-commands))
-  (test-assert "slash commands list contains rules" (assoc "rules" %slash-commands))
-  (test-assert "slash commands list contains context" (assoc "context" %slash-commands))
-  (test-assert "slash commands list contains features" (assoc "features" %slash-commands))
-  (test-assert "slash commands list contains journal" (assoc "journal" %slash-commands))
-  (test-assert "slash commands list contains test" (assoc "test" %slash-commands))
-  (test-assert "slash commands list contains sh" (assoc "sh" %slash-commands))
-  (test-assert "slash commands list contains eval" (assoc "eval" %slash-commands))
-  (test-assert "slash commands list contains clear" (assoc "clear" %slash-commands))
-  (test-assert "slash commands list contains quit" (assoc "quit" %slash-commands))
-
-  ;; matching-slash-commands filtering
-  (let ((all-matches (matching-slash-commands "/")))
-    (test-equal "bare / returns all slash commands" (length %slash-commands) (length all-matches)))
-
-  (let ((m-matches (matching-slash-commands "/m")))
-    (test-assert "matches commands containing m" (member "model" (map car m-matches))))
-
-  (let ((exact-matches (matching-slash-commands "/jour")))
-    (test-equal "matches journal command" '("journal") (map car exact-matches)))
-
-  (let ((no-matches (matching-slash-commands "/xyznonexistent")))
-    (test-assert "empty list for non-matching query" (null? no-matches))))
+            ;; selector-active?
+            (test-assert
+              "selector is active when buffer starts with /"
+              (selector-active? "/"))
+            (test-assert
+              "selector is active when query is being typed"
+              (selector-active? "/mod"))
+            (test-assert
+              "selector is inactive once a space is typed (argument mode)"
+              (not (selector-active? "/model ")))
+            (test-assert
+              "selector is inactive for normal chat"
+              (not (selector-active? "hello /help")))
+            (test-assert
+              "selector is inactive for shell command"
+              (not (selector-active? "!ls")))
+            ;; %slash-commands registry contents
+            (test-assert "slash commands list contains help" (assoc "help" %slash-commands))
+            (test-assert "slash commands list contains model"
+                         (assoc "model" %slash-commands))
+            (test-assert
+              "slash commands list contains endpoint"
+              (assoc "endpoint" %slash-commands))
+            (test-assert
+              "slash commands list contains provider"
+              (assoc "provider" %slash-commands))
+            (test-assert "slash commands list contains mcp" (assoc "mcp" %slash-commands))
+            (test-assert
+              "slash commands list contains config"
+              (assoc "config" %slash-commands))
+            (test-assert
+              "slash commands list contains guardrail"
+              (assoc "guardrail" %slash-commands))
+            (test-assert
+              "slash commands list contains compact"
+              (assoc "compact" %slash-commands))
+            (test-assert
+              "slash commands list contains checkpoint"
+              (assoc "checkpoint" %slash-commands))
+            (test-assert
+              "slash commands list contains rollback"
+              (assoc "rollback" %slash-commands))
+            (test-assert "slash commands list contains rules"
+                         (assoc "rules" %slash-commands))
+            (test-assert
+              "slash commands list contains context"
+              (assoc "context" %slash-commands))
+            (test-assert
+              "slash commands list contains features"
+              (assoc "features" %slash-commands))
+            (test-assert
+              "slash commands list contains journal"
+              (assoc "journal" %slash-commands))
+            (test-assert "slash commands list contains test" (assoc "test" %slash-commands))
+            (test-assert "slash commands list contains sh" (assoc "sh" %slash-commands))
+            (test-assert "slash commands list contains eval" (assoc "eval" %slash-commands))
+            (test-assert "slash commands list contains clear"
+                         (assoc "clear" %slash-commands))
+            (test-assert "slash commands list contains quit" (assoc "quit" %slash-commands))
+            ;; matching-slash-commands filtering
+            (let
+                ((all-matches (matching-slash-commands "/")))
+              (test-equal "bare / returns all slash commands"
+                          (length %slash-commands)
+                          (length all-matches)))
+            (let ((m-matches (matching-slash-commands "/m")))
+              (test-assert "matches commands containing m"
+                           (member "model" (map car m-matches))))
+            (let
+                ((exact-matches (matching-slash-commands "/jour")))
+              (test-equal "matches journal command" '("journal") (map car exact-matches)))
+            (let
+                ((no-matches (matching-slash-commands "/xyznonexistent")))
+              (test-assert "empty list for non-matching query" (null? no-matches))))
 
 ;;;
 ;;; 8. Morphing Single-Character Prompt Indicators (get-prompt-indicator)
 ;;;
-
 (test-group "tui-prompt-indicator"
   ;; Idle prompt: single-character ❯
   (call-with-values (lambda () (get-prompt-indicator "" "READY"))
@@ -352,7 +387,6 @@
 ;;;
 ;;; 9. Modern 2020s Container Frame Formatters
 ;;;
-
 (test-group "tui-modern-frame-formatters"
   ;; Header Line
   (let ((header (format-header-line 80 "READY" "minicpm5-1b:gguf:q8" 3 5)))
@@ -381,7 +415,6 @@
 ;;;
 ;;; 10. Modal Prompt Switching & Dynamic Hints
 ;;;
-
 (test-group "tui-modal-prompt-switching"
   ;; Mode-based indicators
   (call-with-values (lambda () (get-prompt-indicator "" "READY" 'shell))
@@ -416,7 +449,6 @@
 ;;;
 ;;; 11. Scheme Expression Normalization (normalize-scheme-expr)
 ;;;
-
 (test-group "tui-scheme-normalization"
   (test-equal "preserves balanced s-expressions" "(+ 1 2)" (normalize-scheme-expr "(+ 1 2)"))
 
@@ -434,7 +466,6 @@
 ;;;
 ;;; 12. Visual Hierarchy & Token Segmentation (segment-line)
 ;;;
-
 (test-group "tui-token-segmentation"
   ;; Plain text without special tokens
   (let ((segs (segment-line "Simple text with no tokens")))

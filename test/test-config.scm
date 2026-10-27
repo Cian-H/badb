@@ -13,7 +13,6 @@
 ;;;
 ;;; 1. Configuration Construction and Accessors
 ;;;
-
 (test-group "config-construction"
   (let ((cfg (make-badb-config)))
     (test-assert "badb-config? recognizes config record" (badb-config? cfg))
@@ -40,7 +39,6 @@
 ;;;
 ;;; 2. MCP Server Specification Management
 ;;;
-
 (test-group "config-mcp-servers"
   (let ((cfg (make-badb-config)))
     (test-assert "initially no mcp servers" (null? (badb-config-mcp-servers cfg)))
@@ -73,7 +71,6 @@
 ;;;
 ;;; 3. S-Expression Parsing and Serialization
 ;;;
-
 (test-group "config-sexp-parsing"
   (let* ((sexp '(badb-config
                  (model
@@ -118,7 +115,6 @@
 ;;;
 ;;; 4. File Read and Write Persistence
 ;;;
-
 (test-group "config-file-io"
   (let* ((tmp-path (string-append "/tmp/badb-test-config-" (number->string (current-time)) ".scm"))
          (cfg (make-badb-config
@@ -142,7 +138,6 @@
 ;;;
 ;;; 5. Configuration Merging (Hierarchical Resolution)
 ;;;
-
 (test-group "config-merging"
   (let ((global-cfg (make-badb-config
                      #:model-name "global-model"
@@ -177,5 +172,61 @@
         '("local-args") (assoc-ref (badb-config-get-mcp-server merged "git") 'args))
       (test-assert "project-db is present" (badb-config-get-mcp-server merged "project-db"))
       (test-assert "global memory server is preserved" (badb-config-get-mcp-server merged "memory")))))
+
+(test-group "config-providers"
+            (let*
+                ((sexp
+                   '(badb-config
+                     (model (name "default-model") (endpoint "http://localhost:8000"))
+                     (options
+                      (providers
+                       (lmstudio (endpoint "http://127.0.0.1:1234/v1")
+                        (api-key "lm-studio")
+                        (models ("meta-llama-3.1-8b-instruct" "qwen2.5-coder")))
+                       (ollama (endpoint "http://127.0.0.1:11434/v1")
+                        (api-key "ollama")
+                        (models "llama3.2"))))))
+                 (cfg (parse-config-sexp sexp)))
+              (test-assert
+                "badb-config-providers returns list of providers"
+                (pair? (badb-config-providers cfg)))
+              (test-equal "badb-config-providers count is 2"
+                          2
+                          (length (badb-config-providers cfg)))
+              (test-assert
+                "badb-config-get-provider finds lmstudio by symbol"
+                (badb-config-get-provider cfg 'lmstudio))
+              (test-assert
+                "badb-config-get-provider finds lmstudio by string"
+                (badb-config-get-provider cfg "lmstudio"))
+              (test-assert
+                "badb-config-get-provider returns #f for unknown provider"
+                (not (badb-config-get-provider cfg "nonexistent")))
+              (test-assert "switch to lmstudio succeeds"
+                           (badb-config-switch-provider! cfg "lmstudio"))
+              (test-equal
+                "active endpoint switched to lmstudio"
+                "http://127.0.0.1:1234/v1"
+                (badb-config-model-endpoint cfg))
+              (test-equal
+                "active model switched to first model in lmstudio list"
+                "meta-llama-3.1-8b-instruct"
+                (badb-config-model-name cfg))
+              (test-equal
+                "active api-key switched to lmstudio key"
+                "lm-studio"
+                (badb-config-model-api-key cfg))
+              (test-assert "switch to ollama succeeds"
+                           (badb-config-switch-provider! cfg 'ollama))
+              (test-equal "active endpoint switched to ollama"
+                          "http://127.0.0.1:11434/v1"
+                          (badb-config-model-endpoint cfg))
+              (test-equal
+                "active model switched to ollama string model"
+                "llama3.2"
+                (badb-config-model-name cfg))
+              (test-assert
+                "switch to unknown provider returns #f"
+                (not (badb-config-switch-provider! cfg "unknown")))))
 
 (test-end "badb-config")
