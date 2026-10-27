@@ -4,81 +4,97 @@
 ;;; AST syntax checking, test runner execution, security policy gating,
 ;;; and transactional rollback on verification failure.
 
-(define-module (badb verify)
-  #:use-module (badb rollback)
-  #:use-module (badb transaction)
-  #:use-module (badb guardrail)
-  #:use-module (ice-9 popen)
-  #:use-module (ice-9 rdelim)
-  #:use-module (ice-9 format)
-  #:use-module (ice-9 optargs)
-  #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-9)
-  #:export (<verifier>
-            make-verifier
-            verifier?
-            verifier-check-syntax?
-            verifier-run-tests?
-            verifier-test-command
-            verifier-custom-validators
-            set-verifier-check-syntax!
-            set-verifier-run-tests!
-            set-verifier-test-command!
-            add-verifier-validator!
-
-            ;; Symbolic Verification Checks
-            verify-scheme-syntax
-            verify-test-suite
-            verify-action
-
-            ;; Neuro-Symbolic Gated Execution
-            with-neuro-symbolic-gate))
+(define-module (badb verify) #:use-module
+               (badb rollback)
+               #:use-module
+               (ice-9 popen)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:export
+               (verify-scheme-syntax verify-test-suite
+                                     make-verifier
+                                     verifier?
+                                     verifier-check-syntax?
+                                     set-verifier-check-syntax!
+                                     verifier-run-tests?
+                                     set-verifier-run-tests!
+                                     verifier-test-command
+                                     set-verifier-test-command!
+                                     verifier-custom-validators
+                                     set-verifier-custom-validators!
+                                     add-verifier-validator!
+                                     verify-action
+                                     with-neuro-symbolic-gate))
 
 ;;;
 ;;; Symbolic Checks
 ;;;
-
 (define (verify-scheme-syntax code-or-path)
-  "Verify syntax of Scheme code (passed as string or filepath).
+        "Verify syntax of Scheme code (passed as string or filepath).
 Returns '((passed? . #t)) or '((passed? . #f) (error . reason))."
-  (catch #t
-    (lambda ()
-      (let ((port (if (and (string? code-or-path) (file-exists? code-or-path))
-                      (open-input-file code-or-path)
-                      (open-input-string code-or-path))))
-        (let loop ()
-          (let ((form (read port)))
-            (if (eof-object? form)
-                (begin (close-port port) '((passed? . #t)))
-                (loop))))))
-    (lambda (key . args)
-      `((passed? . #f)
-        (error . ,(format #f "Syntax error (~a): ~s" key args))))))
+        (catch #t
+          (lambda ()
+            (let*
+                ((is-file?
+                   (and (string? code-or-path)
+                        (not
+                          (string-contains code-or-path
+                                           "
+"))
+                        (file-exists? code-or-path)))
+                 (port
+                   (if is-file?
+                     (open-input-file code-or-path)
+                     (open-input-string code-or-path))))
+              (dynamic-wind
+                (lambda ()
+                  #f)
+                (lambda ()
+                  (let loop
+                    ()
+                    (let ((form (read port)))
+                      (if (eof-object? form)
+                        '((passed? . #t))
+                        (loop)))))
+                (lambda ()
+                  (close-port port)))))
+          (lambda (key . args)
+            `((passed? . #f) (error . ,(format #f "Syntax error (~a): ~s" key args))))))
 
-(define* (verify-test-suite #:key (command "./scripts/test") (dir #f))
+(define*
+  (verify-test-suite #:key (command "./scripts/test") (dir #f))
   "Execute test suite COMMAND and capture exit code and output.
 Returns '((passed? . #t/#f) (exit-code . code) (output . output-string))."
   (catch #t
     (lambda ()
-      (let* ((orig-dir (and dir (getcwd)))
-             (_ (when dir (chdir dir)))
-             (pipe (open-input-pipe (string-append command " 2>&1")))
-             (output (read-string pipe))
-             (status (close-pipe pipe))
-             (exit-code (status:exit-val status)))
-        (when orig-dir (chdir orig-dir))
-        `((passed? . ,(zero? exit-code))
-          (exit-code . ,exit-code)
-          (output . ,(or output "")))))
+      (let ((orig-dir (and dir (getcwd))))
+        (dynamic-wind
+          (lambda ()
+            (when dir (chdir dir)))
+          (lambda ()
+            (let*
+                ((pipe (open-input-pipe (string-append command " 2>&1")))
+                 (output (read-string pipe))
+                 (status (close-pipe pipe))
+                 (exit-code (status:exit-val status)))
+              `((passed? . ,(zero? exit-code))
+                (exit-code . ,exit-code)
+                (output . ,(or output "")))))
+          (lambda ()
+            (when orig-dir (chdir orig-dir))))))
     (lambda (key . args)
-      `((passed? . #f)
-        (exit-code . -1)
+      `((passed? . #f) (exit-code . -1)
         (output . ,(format #f "Failed to run test suite (~a): ~s" key args))))))
 
 ;;;
 ;;; Verifier Record
 ;;;
-
 (define-record-type <verifier>
   (%make-verifier check-syntax? run-tests? test-command custom-validators)
   verifier?
@@ -104,7 +120,6 @@ Returns '((passed? . #t/#f) (exit-code . code) (output . output-string))."
 ;;;
 ;;; Action Verification
 ;;;
-
 (define* (verify-action verifier #:key (code #f) (file #f) (workspace-dir #f))
   "Run active verification checks against candidate CODE or FILE."
   (let ((failures '()))
@@ -145,7 +160,6 @@ Returns '((passed? . #t/#f) (exit-code . code) (output . output-string))."
 ;;;
 ;;; Gated Execution with Rollback
 ;;;
-
 (define* (with-neuro-symbolic-gate verifier rollback-mgr desc thunk
                                   #:key (verify-target #f))
   "Execute THUNK inside a rollback checkpoint and verify the resulting state
