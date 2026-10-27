@@ -41,8 +41,7 @@
 
 (define* (make-transaction-manager registry #:optional (journal-pos #f) #:key (journal #f))
   "Create a transaction manager record holding a reference to REGISTRY and optional JOURNAL."
-  (let ((eff-journal (if (not (eq? journal #f)) journal journal-pos)))
-    (%make-transaction-manager registry eff-journal)))
+  (%make-transaction-manager registry (or journal journal-pos)))
 
 ;;;
 ;;; Form normalization & AST evaluation
@@ -66,38 +65,34 @@ Handles string input, single forms, or lists of forms."
    (else forms)))
 
 (define (stage-patch target-module forms)
-        "Create a child/sandbox module inheriting from TARGET-MODULE (or fresh module
+  "Create a child/sandbox module inheriting from TARGET-MODULE (or fresh module
 if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed module."
-        (let ((sandbox (make-fresh-feature-module #f)))
-          (when (module? target-module)
-            (for-each
-              (lambda (u)
-                (unless (member u (module-uses sandbox)) (module-use! sandbox u)))
-              (module-uses target-module))
-            (module-for-each
-              (lambda (sym var)
-                (module-define! sandbox sym (variable-ref var)))
-              target-module))
-          (for-each
-            (lambda (form)
-              (eval-in-feature-module sandbox form))
-            (ensure-forms forms))
-          sandbox))
+  (let ((sandbox (make-fresh-feature-module #f)))
+    (when (module? target-module)
+      (for-each
+        (lambda (u)
+          (unless (member u (module-uses sandbox)) (module-use! sandbox u)))
+        (module-uses target-module))
+      (module-for-each
+        (lambda (sym var)
+          (module-define! sandbox sym (variable-ref var)))
+        target-module))
+    (for-each
+      (lambda (form)
+        (eval-in-feature-module sandbox form))
+      (ensure-forms forms))
+    sandbox))
 
 (define* (eval-patch forms #:optional (base-module-pos #f) #:key (base-module #f))
   "Helper to evaluate FORMS in a sandboxed module, optionally inheriting from BASE-MODULE."
-  (let ((eff-base (if (not (eq? base-module #f)) base-module base-module-pos)))
-    (stage-patch eff-base forms)))
+  (stage-patch (or base-module base-module-pos) forms))
 
 ;;;
 ;;; Helpers for metadata, error formatting, and journaling
 ;;;
 (define (canonical-id-string id)
   "Convert feature-id to string."
-  (cond
-   ((string? id) id)
-   ((symbol? id) (symbol->string id))
-   (else (format #f "~a" id))))
+  (ensure-string id))
 
 (define (merge-metadata old-meta new-meta)
         "Merge OLD-META with NEW-META, with NEW-META entries taking precedence."
@@ -207,9 +202,9 @@ if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed mod
                          (else #f))))
     (catch #t
       (lambda ()
-        (let ((staged-module (stage-patch target-module forms)))
-          (let ((test-result (invoke-test-thunk test-thunk staged-module)))
-            (if test-result
+        (let* ((staged-module (stage-patch target-module forms))
+               (test-result (invoke-test-thunk test-thunk staged-module)))
+          (if test-result
                 ;; Commit
                 (let* ((impl (resolve-implementation staged-module feature-id test-result effective-meta))
                        (merged-meta (merge-metadata prior-meta effective-meta))
@@ -235,7 +230,7 @@ if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed mod
                                     (test-verdict . "fail")
                                     (error . ,err-msg)
                                     (details . ((reason . ,err-msg))))))
-                  `((status . "reverted") (error . ,err-msg)))))))
+                  `((status . "reverted") (error . ,err-msg))))))
       (lambda (key . args)
         ;; Exception during staging or test execution: Revert
         (let ((err-msg (format-exception key args)))
