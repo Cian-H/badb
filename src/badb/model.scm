@@ -122,10 +122,19 @@ Rejects internal UI logs or tool responses missing required tool_call_id."
    ;; Alist of key-value pairs representing an object:
    ;; e.g. ((role . "user") (content . "hello")) or (("role" . "user") ("content" . "hello"))
    ((and (pair? msg) (pair? (car msg)))
-    (map (lambda (pair)
-           (cons (symbol-or-string->string (car pair))
-                 (cdr pair)))
-         msg))
+    (let* ((stringified
+            (map (lambda (pair)
+                   (cons (symbol-or-string->string (car pair))
+                         (cdr pair)))
+                 msg))
+           (role (assoc-ref stringified "role"))
+           (tc (assoc-ref stringified "tool_calls"))
+           (rc (assoc-ref stringified "reasoning_content")))
+      ;; Upstream reasoning models (Together, Nebius, Beam) require non-empty reasoning_content on assistant tool turns
+      (if (and role (string=? role "assistant") tc (or (not rc) (and (string? rc) (string-null? (string-trim-both rc)))))
+          (cons (cons "reasoning_content" "Thinking...")
+                (filter (lambda (p) (not (string=? (car p) "reasoning_content"))) stringified))
+          stringified)))
    ;; Pair of (role . content):
    ;; e.g. (user . "hello") or ("user" . "hello")
    ((and (pair? msg) (not (pair? (car msg))))
@@ -365,8 +374,16 @@ Returns a pair '(thought . text) or '(content . text) or #f."
 (define (clean-json-string val)
   "Convert JSON string value to string or #f (treating null/nil as #f)."
   (cond
-   ((string? val) val)
-   ((or (not val) (eq? val 'null) (null? val)) #f)
+   ((or (not val)
+        (null? val)
+        (eq? val 'null)
+        (and (symbol? val) (member (symbol->string val) '("null" ":null")))
+        (and (keyword? val) (string=? (symbol->string (keyword->symbol val)) "null")))
+    #f)
+   ((string? val)
+    (if (or (string=? val "null") (string=? val ":null"))
+        #f
+        val))
    (else (format #f "~a" val))))
 
 (define (extract-chat-content response-obj)
@@ -555,7 +572,9 @@ append /chat/completions."
                         (tools #f)
                         (tool-choice #f)
                         (raw? #f)
-                        (http-poster #f))
+                        (http-poster #f)
+                        (max-retries #f)
+                        (retry-delay-sec #f))
   "Perform a non-streaming chat completion request.
 Returns the response content text string, or parsed JSON alist if raw? is #t."
   (let* ((endpoint (model-client-endpoint client))
@@ -571,25 +590,42 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
                                         #:tool-choice tool-choice))
          (headers  (build-headers api-key #f))
          (poster   (or http-poster (current-http-post))))
-    (call-with-values
-        (lambda ()
-          (poster uri #:body payload #:headers headers #:streaming? #f))
-      (lambda (response body)
-        (let ((code (response-code response)))
-          (unless (<= 200 code 299)
-            (error "model-complete HTTP request failed" code body))
-          (let* ((text (cond
-                        ((bytevector? body) (utf8->string body))
-                        ((string? body) body)
-                        (else body)))
-                 (parsed (if (string? text)
-                             (catch #t
-                               (lambda () (json-string->scm text))
-                               (lambda _ text))
-                             text)))
-            (if raw?
-                parsed
-                (or (extract-chat-content parsed) parsed))))))))
+    (let loop ((retries (or max-retries (if http-poster 0 2)))
+               (delay-sec (or retry-delay-sec 2)))
+      (call-with-values
+          (lambda ()
+            (poster uri #:body payload #:headers headers #:streaming? #f))
+        (lambda (response body)
+          (let ((code (response-code response)))
+            (cond
+             ((and (or (= code 402) (= code 429) (= code 503)) (> retries 0))
+              (when (> delay-sec 0) (sleep delay-sec))
+              (loop (- retries 1) (* delay-sec 2)))
+             ((not (<= 200 code 299))
+              (let* ((parsed-err (catch #t
+                                   (lambda ()
+                                     (let ((obj (if (string? body) (json-string->scm body) body)))
+                                       (and (pair? obj) (json-ref obj "error"))))
+                                   (lambda _ #f)))
+                     (err-msg (cond
+                               ((and (pair? parsed-err) (json-ref parsed-err "message"))
+                                (json-ref parsed-err "message"))
+                               ((string? body) body)
+                               (else (format #f "HTTP ~a error" code)))))
+                (error "model-complete HTTP request failed" code err-msg)))
+             (else
+              (let* ((text (cond
+                            ((bytevector? body) (utf8->string body))
+                            ((string? body) body)
+                            (else body)))
+                     (parsed (if (string? text)
+                                 (catch #t
+                                   (lambda () (json-string->scm text))
+                                   (lambda _ text))
+                                 text)))
+                (if raw?
+                    parsed
+                    (or (extract-chat-content parsed) parsed)))))))))))
 
 (define* (model-stream client messages chunk-callback
                        #:key

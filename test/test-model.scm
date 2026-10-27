@@ -498,7 +498,52 @@
         (lambda ()
           (model-complete client "test" #:http-poster mock-poster)
           #f)
-        (lambda _ #t)))))
+        (lambda _ #t))))
+
+  ;; HTTP 402/429 retry logic
+  (let* ((client (make-model-client #:endpoint "http://test-server/v1"))
+         (call-count 0)
+         (retry-poster (lambda* (uri #:key (body #f) (headers '()) (streaming? #f))
+                         (set! call-count (+ call-count 1))
+                         (if (= call-count 1)
+                             (values (build-response #:code 402 #:headers '())
+                                     "{\"error\":{\"message\":\"in_flight_budget_exhausted\"}}")
+                             (values (build-response #:code 200 #:headers '())
+                                     "{\"choices\":[{\"message\":{\"content\":\"Retry succeeded!\"}}]}")))))
+    (let ((res (model-complete client "test"
+                               #:http-poster retry-poster
+                               #:max-retries 2
+                               #:retry-delay-sec 0)))
+      (test-equal "model-complete retries on HTTP 402 and succeeds"
+        "Retry succeeded!"
+        res)
+      (test-equal "retry took 2 attempts"
+        2
+        call-count)))
+
+  ;; Clean error message extraction from structured JSON
+  (let* ((client (make-model-client #:endpoint "http://test-server/v1"))
+         (err-poster (lambda* (uri #:key (body #f) (headers '()) (streaming? #f))
+                       (values (build-response #:code 400 #:headers '())
+                               "{\"error\":{\"message\":\"Reasoning required on assistant turns\"}}"))))
+    (test-equal "model-complete extracts clean JSON error message"
+      "Reasoning required on assistant turns"
+      (catch #t
+        (lambda ()
+          (model-complete client "test" #:http-poster err-poster)
+          "no-error")
+        (lambda (key . args)
+          (let ((sub-args (and (pair? args) (caddr args))))
+            (and (list? sub-args) (cadr sub-args)))))))
+
+  ;; Defensive reasoning_content injection in normalize-messages
+  (let* ((raw-asst-msg '((role . "assistant")
+                         (content . "")
+                         (tool_calls . #(((id . "call_1") (type . "function"))))))
+         (normalized (vector-ref (normalize-messages (list raw-asst-msg)) 0)))
+    (test-equal "normalize-messages injects fallback reasoning_content"
+      "Thinking..."
+      (assoc-ref normalized "reasoning_content"))))
 
 ;;;
 ;;; 8. Streaming model-stream with Mock HTTP

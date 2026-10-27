@@ -218,6 +218,10 @@
           3
           (length (react-session-messages session)))
 
+        (test-equal "assistant message has effective reasoning_content"
+          "Invoking get_weather..."
+          (assoc-ref (cadr (react-session-messages session)) 'reasoning_content))
+
         ;; Step 2: Model provides final answer
         (call-with-values (lambda () (react-step! session))
           (lambda (status answer)
@@ -229,6 +233,29 @@
         (test-equal "session status is completed"
           'completed
           (react-session-status session))))))
+
+;;;
+;;; 6. Reasoning-only model completion fallback
+;;;
+
+(test-group "react-reasoning-only-completion"
+  (let* ((client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "reasoning-llm"))
+         (mock-poster
+          (lambda* (uri #:key body headers streaming?)
+            (let ((resp-body (scm->json-string
+                              '((choices . #(((message . ((role . "assistant")
+                                                          (content . :null)
+                                                          (reasoning_content . "Detailed chain of thought."))))))))))
+              (values (build-response #:code 200) resp-body)))))
+    (parameterize ((current-http-post mock-poster))
+      (let ((session (make-react-session client
+                                         #:initial-messages '(((role . "user") (content . "Analyze.")))
+                                         #:reg (make-registry))))
+        (call-with-values (lambda () (react-step! session))
+          (lambda (status answer)
+            (test-equal "reasoning-only turn completed" 'completed status)
+            (test-assert "answer contains reasoning in think block"
+              (string-contains answer "<think>Detailed chain of thought.</think>"))))))))
 
 ;;;
 ;;; 6. Safety Bound: Max Iterations Reached

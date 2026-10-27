@@ -52,31 +52,39 @@
 (define (wrap-line line max-width)
   "Wrap a single LINE into a list of strings with length <= MAX-WIDTH,
 breaking on whitespace when possible."
-  (if (or (<= (string-length line) max-width) (<= max-width 0))
-      (list line)
-      (let ((words (string-split line #\space)))
-        (let loop ((words words) (current "") (acc '()))
-          (if (null? words)
-              (reverse (if (string-null? current) acc (cons current acc)))
-              (let* ((w (car words))
-                     (candidate (if (string-null? current)
-                                    w
-                                    (string-append current " " w))))
-                (cond
-                 ((<= (string-length candidate) max-width)
-                  (loop (cdr words) candidate acc))
-                 ((string-null? current)
-                  ;; Single word longer than max-width: hard-break it
-                  (loop (cons (substring w max-width) (cdr words))
-                        ""
-                        (cons (substring w 0 max-width) acc)))
-                 (else
-                  (loop words "" (cons current acc))))))))))
+  (let ((line-str (cond
+                   ((string? line) line)
+                   ((not line) "")
+                   (else (format #f "~a" line)))))
+    (if (or (<= (string-length line-str) max-width) (<= max-width 0))
+        (list line-str)
+        (let ((words (string-split line-str #\space)))
+          (let loop ((words words) (current "") (acc '()))
+            (if (null? words)
+                (reverse (if (string-null? current) acc (cons current acc)))
+                (let* ((w (car words))
+                       (candidate (if (string-null? current)
+                                      w
+                                      (string-append current " " w))))
+                  (cond
+                   ((<= (string-length candidate) max-width)
+                    (loop (cdr words) candidate acc))
+                   ((string-null? current)
+                    ;; Single word longer than max-width: hard-break it
+                    (loop (cons (substring w max-width) (cdr words))
+                          ""
+                          (cons (substring w 0 max-width) acc)))
+                   (else
+                    (loop words "" (cons current acc)))))))))))
 
 (define (wrap-text text max-width)
   "Wrap multi-line TEXT into lines that each fit within MAX-WIDTH."
-  (let ((raw-lines (string-split text #\newline)))
-    (append-map (lambda (line) (wrap-line line max-width)) raw-lines)))
+  (let* ((safe-str (cond
+                    ((string? text) text)
+                    ((not text) "")
+                    (else (format #f "~a" text))))
+         (raw-lines (string-split safe-str #\newline)))
+    (append-map (lambda (line) (wrap-line (if (string? line) line "") max-width)) raw-lines)))
 
 ;;;
 ;;; Slash Commands Registry & Parsing
@@ -784,9 +792,20 @@ and core badb modules for interactive evaluation."
 
     ;; Format a single message entry into card structure rows
     (define (format-message-entry msg content-width)
-      (let* ((role (assoc-ref msg 'role))
-             (content (or (assoc-ref msg 'content) ""))
-             (thoughts (assoc-ref msg 'thoughts))
+      (let* ((role-val (assoc-ref msg 'role))
+             (role (cond
+                    ((string? role-val) role-val)
+                    ((symbol? role-val) (symbol->string role-val))
+                    (else "system")))
+             (raw-content (or (assoc-ref msg 'content) ""))
+             (content (cond
+                       ((string? raw-content) raw-content)
+                       (else (format #f "~a" raw-content))))
+             (raw-thoughts (assoc-ref msg 'thoughts))
+             (thoughts (cond
+                        ((string? raw-thoughts) raw-thoughts)
+                        ((not raw-thoughts) #f)
+                        (else (format #f "~a" raw-thoughts))))
              (card-w content-width)
              (inner-w (max 10 (- card-w 4))))
         (cond
@@ -801,7 +820,11 @@ and core badb modules for interactive evaluation."
                                                 (wrap-text content inner-w)
                                                 card-w inner-w)
                                '())))
-            (append th-lines ct-lines)))
+            (if (and (null? th-lines) (null? ct-lines))
+                (make-card-entry "🤖 ASSISTANT" 3 "assistant"
+                                 (wrap-text (if (string-null? content) "(empty response)" content) inner-w)
+                                 card-w inner-w)
+                (append th-lines ct-lines))))
 
          ((string=? role "user")
           (make-card-entry "👤 USER" 2 "user"
@@ -985,256 +1008,267 @@ and core badb modules for interactive evaluation."
 
     ;; Render entire screen
     (define (render!)
-      (let* ((maxy (getmaxy stdscr))
-             (maxx (getmaxx stdscr))
-             (view-top 1)
-             (view-bottom (- maxy 3))
-             (view-height (max 1 (- view-bottom view-top)))
-             (content-width (max 10 (- maxx 4))))
+      (catch #t
+        (lambda ()
+          (let* ((maxy (getmaxy stdscr))
+                 (maxx (getmaxx stdscr))
+                 (view-top 1)
+                 (view-bottom (- maxy 3))
+                 (view-height (max 1 (- view-bottom view-top)))
+                 (content-width (max 10 (- maxx 4))))
 
-        (erase stdscr)
+            (erase stdscr)
 
-        ;; 1. Header Bar with Rounded Frame & Status Pills
-        (let* ((active-count (length (filter (lambda (s) (assoc-ref s 'running?))
-                                             (mcp-manager-list-servers mcp-mgr))))
-                (total-count (length (badb-config-mcp-servers cfg)))
-                (mcp-info (format #f "~a/~a" active-count total-count)))
-          (set-color-attr! 1 #t)
-          (safe-addstr stdscr 0 0
-                       (format-header-line maxx
-                                           status-text
-                                           cur-model
-                                           (length (registry-list reg))
-                                           (journal-count jrn)
-                                           mcp-info)
-                       maxx)
-          (set-color-attr! 1 #f))
+            ;; 1. Header Bar with Rounded Frame & Status Pills
+            (let* ((active-count (length (filter (lambda (s) (assoc-ref s 'running?))
+                                                 (mcp-manager-list-servers mcp-mgr))))
+                   (total-count (length (badb-config-mcp-servers cfg)))
+                   (mcp-info (format #f "~a/~a" active-count total-count)))
+              (set-color-attr! 1 #t)
+              (safe-addstr stdscr 0 0
+                           (format-header-line maxx
+                                               status-text
+                                               cur-model
+                                               (length (registry-list reg))
+                                               (journal-count jrn)
+                                               mcp-info)
+                           maxx)
+              (set-color-attr! 1 #f))
 
-        ;; 2. Side borders for viewport rows
-        (set-color-attr! 7 #t)
-        (let loop-borders ((y view-top))
-          (when (< y view-bottom)
-            (safe-addstr stdscr y 0 "│" 1)
-            (safe-addstr stdscr y (- maxx 1) "│" 1)
-            (loop-borders (+ y 1))))
-        (set-color-attr! 7 #f)
+            ;; 2. Side borders for viewport rows
+            (set-color-attr! 7 #t)
+            (let loop-borders ((y view-top))
+              (when (< y view-bottom)
+                (safe-addstr stdscr y 0 "│" 1)
+                (safe-addstr stdscr y (- maxx 1) "│" 1)
+                (loop-borders (+ y 1))))
+            (set-color-attr! 7 #f)
 
-        ;; 3. Formatted Message History Cards
-        (let* ((formatted-lines
-                (append-map (lambda (msg) (format-message-entry msg content-width))
-                            messages))
-               (total-lines (length formatted-lines))
-               (start-line (max 0 (- total-lines view-height scroll-offset)))
-               (visible-lines (take (drop formatted-lines start-line)
-                                    (min view-height (- total-lines start-line)))))
+            ;; 3. Formatted Message History Cards
+            (let* ((formatted-lines
+                    (append-map (lambda (msg) (format-message-entry msg content-width))
+                                messages))
+                   (total-lines (length formatted-lines))
+                   (start-line (max 0 (- total-lines view-height scroll-offset)))
+                   (visible-lines (take (drop formatted-lines start-line)
+                                        (min view-height (- total-lines start-line)))))
 
-          (let loop ((lines visible-lines) (y view-top))
-            (unless (or (null? lines) (>= y view-bottom))
-              (let ((entry (car lines)))
-                (draw-card-line y entry content-width)
-                (loop (cdr lines) (+ y 1))))))
+              (let loop ((lines visible-lines) (y view-top))
+                (unless (or (null? lines) (>= y view-bottom))
+                  (let ((entry (car lines)))
+                    (draw-card-line y entry content-width)
+                    (loop (cdr lines) (+ y 1))))))
 
-        ;; 4. Prompt divider line with dynamic mode hint
-        (set-color-attr! 1 #t)
-        (safe-addstr stdscr (- maxy 3) 0 (format-prompt-divider maxx prompt-mode) maxx)
-        (set-color-attr! 1 #f)
+            ;; 4. Prompt divider line with dynamic mode hint
+            (set-color-attr! 1 #t)
+            (safe-addstr stdscr (- maxy 3) 0 (format-prompt-divider maxx prompt-mode) maxx)
+            (set-color-attr! 1 #f)
 
-        ;; 5. Prompt Input Line (single character morphing indicator)
-        (set-color-attr! 7 #t)
-        (safe-addstr stdscr (- maxy 2) 0 "│" 1)
-        (safe-addstr stdscr (- maxy 2) (- maxx 1) "│" 1)
-        (set-color-attr! 7 #f)
-        (call-with-values (lambda () (get-prompt-indicator input-buffer status-text prompt-mode))
-          (lambda (glyph pair-id bold?)
-            (let* ((avail-width (max 1 (- maxx 6)))
-                   (visible-input (if (> (string-length input-buffer) avail-width)
-                                      (substring input-buffer (- (string-length input-buffer) avail-width))
-                                      input-buffer)))
-              (set-color-attr! pair-id #t)
-              (when bold? (attr-on! stdscr A_BOLD))
-              (safe-addstr stdscr (- maxy 2) 2 glyph 1)
-              (when bold? (attr-off! stdscr A_BOLD))
-              (set-color-attr! pair-id #f)
+            ;; 5. Prompt Input Line (single character morphing indicator)
+            (set-color-attr! 7 #t)
+            (safe-addstr stdscr (- maxy 2) 0 "│" 1)
+            (safe-addstr stdscr (- maxy 2) (- maxx 1) "│" 1)
+            (set-color-attr! 7 #f)
+            (call-with-values (lambda () (get-prompt-indicator input-buffer status-text prompt-mode))
+              (lambda (glyph pair-id bold?)
+                (let* ((avail-width (max 1 (- maxx 6)))
+                       (visible-input (if (> (string-length input-buffer) avail-width)
+                                          (substring input-buffer (- (string-length input-buffer) avail-width))
+                                          input-buffer)))
+                  (set-color-attr! pair-id #t)
+                  (when bold? (attr-on! stdscr A_BOLD))
+                  (safe-addstr stdscr (- maxy 2) 2 glyph 1)
+                  (when bold? (attr-off! stdscr A_BOLD))
+                  (set-color-attr! pair-id #f)
 
-              (safe-addstr stdscr (- maxy 2) 4 visible-input avail-width)
-              ;; Position cursor at end of input
-              (move stdscr (- maxy 2) (+ 4 (string-length visible-input))))))
+                  (safe-addstr stdscr (- maxy 2) 4 visible-input avail-width)
+                  ;; Position cursor at end of input
+                  (move stdscr (- maxy 2) (+ 4 (string-length visible-input))))))
 
-        ;; 6. Bottom container border
-        (set-color-attr! 1 #t)
-        (safe-addstr stdscr (- maxy 1) 0
-                     (string-append "╰" (make-string (max 0 (- maxx 2)) #\─) "╯")
-                     maxx)
-        (set-color-attr! 1 #f)
+            ;; 6. Bottom container border
+            (set-color-attr! 1 #t)
+            (safe-addstr stdscr (- maxy 1) 0
+                         (string-append "╰" (make-string (max 0 (- maxx 2)) #\─) "╯")
+                         maxx)
+            (set-color-attr! 1 #f)
 
-        ;; 7. Floating Slash Command Selector Popup Overlay
-        (when (selector-active? input-buffer)
-          (let* ((matches (matching-slash-commands input-buffer))
-                 (box-w (min 62 (max 20 (- maxx 4))))
-                 (vis-count (min (length matches) 7)))
-            (when (> vis-count 0)
-              (let* ((box-h (+ vis-count 2))
-                     (start-y (- maxy 3 box-h))
-                     (start-x 2))
-                ;; Top line
-                (let* ((top-tag "╭─ Commands ")
-                       (top-fill (make-string (max 0 (- box-w (string-length top-tag) 1)) #\─))
-                       (top-str (string-append top-tag top-fill "╮")))
-                  (set-color-attr! 4 #t)
-                  (safe-addstr stdscr start-y start-x top-str box-w)
-                  (set-color-attr! 4 #f))
-                ;; Items
-                (let loop ((items matches) (idx 0))
-                  (when (and (not (null? items)) (< idx vis-count))
-                    (let* ((item (car items))
-                           (cmd (car item))
-                           (desc (cdr item))
-                           (is-sel? (= idx selector-index))
-                           (row-y (+ start-y 1 idx))
-                           (inner-w (- box-w 4))
-                           (cursor (if is-sel? "❯ " "  "))
-                           (cmd-text (format #f "/~a" cmd))
-                           (pad-cmd (make-string (max 1 (- 12 (string-length cmd-text))) #\space))
-                           (content (string-append cursor cmd-text pad-cmd desc))
-                           (clipped (if (> (string-length content) inner-w)
-                                        (substring content 0 inner-w)
-                                        content))
-                           (pad (make-string (max 0 (- inner-w (string-length clipped))) #\space))
-                           (row-text (string-append "│ " clipped pad " │")))
-                      (if is-sel?
-                          (begin
-                            (set-color-attr! 1 #t)
-                            (attr-on! stdscr A_BOLD)
-                            (attr-on! stdscr A_REVERSE)
-                            (safe-addstr stdscr row-y start-x row-text box-w)
-                            (attr-off! stdscr A_REVERSE)
-                            (attr-off! stdscr A_BOLD)
-                            (set-color-attr! 1 #f))
-                          (begin
-                            (safe-addstr stdscr row-y start-x row-text box-w)))
-                      (loop (cdr items) (+ idx 1)))))
-                ;; Bottom line
-                (let* ((bot-str (string-append "╰" (make-string (- box-w 2) #\─) "╯")))
-                  (set-color-attr! 4 #t)
-                  (safe-addstr stdscr (+ start-y 1 vis-count) start-x bot-str box-w)
-                  (set-color-attr! 4 #f))))))
+            ;; 7. Floating Slash Command Selector Popup Overlay
+            (when (selector-active? input-buffer)
+              (let* ((matches (matching-slash-commands input-buffer))
+                     (box-w (min 62 (max 20 (- maxx 4))))
+                     (vis-count (min (length matches) 7)))
+                (when (> vis-count 0)
+                  (let* ((box-h (+ vis-count 2))
+                         (start-y (- maxy 3 box-h))
+                         (start-x 2))
+                    ;; Top line
+                    (let* ((top-tag "╭─ Commands ")
+                           (top-fill (make-string (max 0 (- box-w (string-length top-tag) 1)) #\─))
+                           (top-str (string-append top-tag top-fill "╮")))
+                      (set-color-attr! 4 #t)
+                      (safe-addstr stdscr start-y start-x top-str box-w)
+                      (set-color-attr! 4 #f))
+                    ;; Items
+                    (let loop ((items matches) (idx 0))
+                      (when (and (not (null? items)) (< idx vis-count))
+                        (let* ((item (car items))
+                               (cmd (car item))
+                               (desc (cdr item))
+                               (is-sel? (= idx selector-index))
+                               (row-y (+ start-y 1 idx))
+                               (inner-w (- box-w 4))
+                               (cursor (if is-sel? "❯ " "  "))
+                               (cmd-text (format #f "/~a" cmd))
+                               (pad-cmd (make-string (max 1 (- 12 (string-length cmd-text))) #\space))
+                               (content (string-append cursor cmd-text pad-cmd desc))
+                               (clipped (if (> (string-length content) inner-w)
+                                            (substring content 0 inner-w)
+                                            content))
+                               (pad (make-string (max 0 (- inner-w (string-length clipped))) #\space))
+                               (row-text (string-append "│ " clipped pad " │")))
+                          (if is-sel?
+                              (begin
+                                (set-color-attr! 1 #t)
+                                (attr-on! stdscr A_BOLD)
+                                (attr-on! stdscr A_REVERSE)
+                                (safe-addstr stdscr row-y start-x row-text box-w)
+                                (attr-off! stdscr A_REVERSE)
+                                (attr-off! stdscr A_BOLD)
+                                (set-color-attr! 1 #f))
+                              (begin
+                                (safe-addstr stdscr row-y start-x row-text box-w)))
+                          (loop (cdr items) (+ idx 1)))))
+                    ;; Bottom line
+                    (let* ((bot-str (string-append "╰" (make-string (- box-w 2) #\─) "╯")))
+                      (set-color-attr! 4 #t)
+                      (safe-addstr stdscr (+ start-y 1 vis-count) start-x bot-str box-w)
+                      (set-color-attr! 4 #f))))))
 
-        (refresh stdscr)))
+            (refresh stdscr)))
+        (lambda (key . args)
+          #f)))
 
     ;; Execute streaming query against LLM with separated thoughts
     (define (execute-chat-stream! user-prompt)
       (set! scroll-offset 0)
-      ;; 1. Append user prompt to dedicated LLM conversation history
-      (set! llm-history (append llm-history (list `((role . "user") (content . ,user-prompt)))))
+      (catch #t
+        (lambda ()
+          ;; 1. Append user prompt to dedicated LLM conversation history
+          (set! llm-history (append llm-history (list `((role . "user") (content . ,user-prompt)))))
 
-      ;; 2. Check if context compaction is needed on LLM history
-      (when (compaction-needed? compactor llm-history)
-        (set! llm-history (compact-messages compactor llm-history)))
+          ;; 2. Check if context compaction is needed on LLM history
+          (when (compaction-needed? compactor llm-history)
+            (set! llm-history (compact-messages compactor llm-history)))
 
-      ;; 2. Determine execution mode: Autonomous ReAct loop if tools present, or direct stream
-      (let ((tools (collect-available-tools reg mcp-mgr)))
-        (if (pair? tools)
-            ;; Autonomous ReAct Tool-Calling Loop
-            (catch #t
-              (lambda ()
-                (let* ((max-react-iters 15)
-                       (session (make-react-session
-                                 #:client client
-                                 #:messages llm-history
-                                 #:registry reg
-                                 #:mcp-manager mcp-mgr
-                                 #:journal jrn
-                                 #:transaction-manager mgr
-                                 #:max-iterations max-react-iters
-                                 #:max-tokens (or (badb-config-model-max-tokens cfg) 4096)
-                                 #:guardrail (lambda (t-name t-args)
-                                               (evaluate-guardrail policy t-name t-args))
-                                #:hooks (list
-                                         (cons 'on-step
-                                               (lambda (iter phase)
-                                                 (set! status-text (format #f "REACT [~a/~a]" iter max-react-iters))
-                                                 (render!)))
-                                         (cons 'on-tool-call
-                                               (lambda (tc)
-                                                 (let* ((t-name (or (assoc-ref tc 'name) (assoc-ref tc "name")))
-                                                        (t-args (or (assoc-ref tc 'arguments) (assoc-ref tc "arguments"))))
-                                                   (set! status-text (format #f "TOOL: ~a..." t-name))
-                                                   (set! messages (append messages
-                                                                          (list `((role . "tool-call")
-                                                                                  (content . ,(format #f "⚙ Invoking tool: ~a (~s)" t-name t-args))))))
-                                                   (render!))))
-                                         (cons 'on-tool-result
-                                               (lambda (tc res err?)
-                                                 (let* ((t-name (or (assoc-ref tc 'name) (assoc-ref tc "name")))
-                                                        (res-str (if (string? res) res (scm->json-string res)))
-                                                        (preview (if (> (string-length res-str) 140)
-                                                                     (string-append (substring res-str 0 140) "...")
-                                                                     res-str)))
-                                                   (set! messages (append messages
-                                                                          (list `((role . "tool-result")
-                                                                                  (content . ,(format #f "✓ Tool ~a returned: ~a" t-name preview))))))
-                                                   (render!))))))))
-                  (call-with-values (lambda () (react-run! session))
-                    (lambda (verdict final-content sess)
-                      ;; Synchronize the full authentic LLM message transcript from the session
-                      (set! llm-history (react-session-messages sess))
-                      (cond
-                       ((eq? verdict 'completed)
-                        (call-with-values (lambda () (split-thoughts-and-content (or final-content "")))
-                          (lambda (th ct)
+          ;; 3. Determine execution mode: Autonomous ReAct loop if tools present, or direct stream
+          (let ((tools (collect-available-tools reg mcp-mgr)))
+            (if (pair? tools)
+                ;; Autonomous ReAct Tool-Calling Loop
+                (catch #t
+                  (lambda ()
+                    (let* ((max-react-iters 15)
+                           (session (make-react-session
+                                     #:client client
+                                     #:messages llm-history
+                                     #:registry reg
+                                     #:mcp-manager mcp-mgr
+                                     #:journal jrn
+                                     #:transaction-manager mgr
+                                     #:max-iterations max-react-iters
+                                     #:max-tokens (or (badb-config-model-max-tokens cfg) 4096)
+                                     #:guardrail (lambda (t-name t-args)
+                                                   (evaluate-guardrail policy t-name t-args))
+                                     #:hooks (list
+                                              (cons 'on-step
+                                                    (lambda (iter phase)
+                                                      (set! status-text (format #f "REACT [~a/~a]" iter max-react-iters))
+                                                      (render!)))
+                                              (cons 'on-tool-call
+                                                    (lambda (tc)
+                                                      (let* ((t-name (or (assoc-ref tc 'name) (assoc-ref tc "name")))
+                                                             (t-args (or (assoc-ref tc 'arguments) (assoc-ref tc "arguments"))))
+                                                        (set! status-text (format #f "TOOL: ~a..." t-name))
+                                                        (set! messages (append messages
+                                                                               (list `((role . "tool-call")
+                                                                                       (content . ,(format #f "⚙ Invoking tool: ~a (~s)" t-name t-args))))))
+                                                        (render!))))
+                                              (cons 'on-tool-result
+                                                    (lambda (tc res err?)
+                                                      (let* ((t-name (or (assoc-ref tc 'name) (assoc-ref tc "name")))
+                                                             (res-str (if (string? res) res (scm->json-string res)))
+                                                             (preview (if (> (string-length res-str) 140)
+                                                                          (string-append (substring res-str 0 140) "...")
+                                                                          res-str)))
+                                                        (set! messages (append messages
+                                                                               (list `((role . "tool-result")
+                                                                                       (content . ,(format #f "✓ Tool ~a returned: ~a" t-name preview))))))
+                                                        (render!))))))))
+                      (call-with-values (lambda () (react-run! session))
+                        (lambda (verdict final-content sess)
+                          ;; Synchronize the full authentic LLM message transcript from the session
+                          (set! llm-history (react-session-messages sess))
+                          (cond
+                           ((eq? verdict 'completed)
+                            (call-with-values (lambda () (split-thoughts-and-content (or final-content "")))
+                              (lambda (th ct)
+                                (set! messages (append messages
+                                                       (list `((role . "assistant")
+                                                               (thoughts . ,th)
+                                                               (content . ,ct))))))))
+                           ((eq? verdict 'max-iterations-reached)
                             (set! messages (append messages
-                                                   (list `((role . "assistant")
-                                                           (thoughts . ,th)
-                                                           (content . ,ct))))))))
-                       ((eq? verdict 'max-iterations-reached)
-                        (set! messages (append messages
-                                               (list `((role . "system")
-                                                       (content . ,(format #f "ReAct iteration ceiling reached (~a iterations). Type 'Continue' or follow up to proceed." max-react-iters)))))))
-                       ((eq? verdict 'error)
-                        (set! messages (append messages
-                                               (list `((role . "error")
-                                                       (content . ,(format #f "ReAct error: ~a" final-content))))))))))))
-              (lambda (key . args)
-                (set! messages (append messages (list `((role . "error")
-                                                        (content . ,(format #f "Agent loop failure: ~a ~s" key args))))))))
+                                                   (list `((role . "system")
+                                                           (content . ,(format #f "ReAct iteration ceiling reached (~a iterations). Type 'Continue' or follow up to proceed." max-react-iters)))))))
+                           ((eq? verdict 'error)
+                            (set! messages (append messages
+                                                   (list `((role . "error")
+                                                           (content . ,(format #f "ReAct error: ~a" final-content))))))))))))
+                  (lambda (key . args)
+                    (set! messages (append messages (list `((role . "error")
+                                                            (content . ,(format #f "Agent loop failure: ~a ~s" key args))))))))
 
-            ;; Direct Streaming Mode when no tools registered
-            (begin
-              (set! status-text "STREAMING...")
-              (set! messages (append messages
-                                     (list `((role . "assistant") (thoughts . #f) (content . "")))))
-              (render!)
-              (catch #t
-                (lambda ()
-                  (let ((raw-api-thoughts "")
-                        (raw-api-content ""))
-                    (model-stream client llm-history
-                                  (lambda (delta . type-args)
-                                    (let ((chunk-type (if (pair? type-args) (car type-args) 'content)))
-                                      (if (eq? chunk-type 'thought)
-                                          (set! raw-api-thoughts (string-append raw-api-thoughts delta))
-                                          (set! raw-api-content (string-append raw-api-content delta)))
-                                      (call-with-values (lambda () (split-thoughts-and-content raw-api-content))
-                                        (lambda (inline-th inline-ct)
-                                          (let* ((total-th (cond
-                                                            ((and (not (string-null? raw-api-thoughts)) inline-th)
-                                                             (string-append raw-api-thoughts "\n\n" inline-th))
-                                                            ((not (string-null? raw-api-thoughts))
-                                                             raw-api-thoughts)
-                                                            (else inline-th)))
-                                                 (updated-msg `((role . "assistant")
-                                                                (thoughts . ,total-th)
-                                                                (content . ,inline-ct))))
-                                            (set! messages (append (drop-right messages 1) (list updated-msg)))
-                                            (render!))))))
-                                  #:max-tokens (or (badb-config-model-max-tokens cfg) 4096))
-                    (set! llm-history (append llm-history (list `((role . "assistant") (content . ,raw-api-content)))))))
-                (lambda (key . args)
-                  (let ((err-msg (format #f "Stream error (~a): ~s" key args)))
-                    (set! messages (append messages `(((role . "error") (content . ,err-msg)))))))))))
+                ;; Direct Streaming Mode when no tools registered
+                (begin
+                  (set! status-text "STREAMING...")
+                  (set! messages (append messages
+                                         (list `((role . "assistant") (thoughts . #f) (content . "")))))
+                  (render!)
+                  (catch #t
+                    (lambda ()
+                      (let ((raw-api-thoughts "")
+                            (raw-api-content ""))
+                        (model-stream client llm-history
+                                      (lambda (delta . type-args)
+                                        (let ((chunk-type (if (pair? type-args) (car type-args) 'content)))
+                                          (if (eq? chunk-type 'thought)
+                                              (set! raw-api-thoughts (string-append raw-api-thoughts delta))
+                                              (set! raw-api-content (string-append raw-api-content delta)))
+                                          (call-with-values (lambda () (split-thoughts-and-content raw-api-content))
+                                            (lambda (inline-th inline-ct)
+                                              (let* ((total-th (cond
+                                                                ((and (not (string-null? raw-api-thoughts)) inline-th)
+                                                                 (string-append raw-api-thoughts "\n\n" inline-th))
+                                                                ((not (string-null? raw-api-thoughts))
+                                                                 raw-api-thoughts)
+                                                                (else inline-th)))
+                                                     (updated-msg `((role . "assistant")
+                                                                    (thoughts . ,total-th)
+                                                                    (content . ,inline-ct))))
+                                                (set! messages (append (drop-right messages 1) (list updated-msg)))
+                                                (render!))))))
+                                      #:max-tokens (or (badb-config-model-max-tokens cfg) 4096))
+                        (set! llm-history (append llm-history (list `((role . "assistant") (content . ,raw-api-content)))))))
+                    (lambda (key . args)
+                      (let ((err-msg (format #f "Stream error (~a): ~s" key args)))
+                        (set! messages (append messages (list `((role . "error") (content . ,err-msg)))))))))))
 
-      (set! status-text "READY")
-      (render!))
+          (set! status-text "READY")
+          (render!))
+        (lambda (key . args)
+          (set! messages (append messages (list `((role . "error")
+                                                  (content . ,(format #f "Chat stream failure (~a): ~s" key args))))))
+          (set! status-text "READY")
+          (render!))))
 
     ;; Execute shell command and append results
     (define (execute-shell! cmd)
@@ -1911,7 +1945,13 @@ and core badb modules for interactive evaluation."
                           ((chat)
                            (let ((user-text (cdr action)))
                              (set! messages (append messages (list `((role . "user") (content . ,user-text)))))
-                             (execute-chat-stream! user-text)
+                             (catch #t
+                               (lambda () (execute-chat-stream! user-text))
+                               (lambda (key . args)
+                                 (set! messages (append messages (list `((role . "error")
+                                                                         (content . ,(format #f "Chat error (~a): ~s" key args))))))
+                                 (set! status-text "READY")
+                                 (render!)))
                              (loop))))))))))
 
              ;; Tab key: autocomplete selected slash command
