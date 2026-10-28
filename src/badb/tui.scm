@@ -1727,6 +1727,11 @@ header, an optional thinking section, and the content. Pure - no I/O."
     ;; Signature of the most recent surfaced render error, so repeat
     ;; failures are reported once instead of flooding the transcript.
     (define last-render-error-sig #f)
+    ;; Live-stream state for the ReAct loop: accumulated deltas of the
+    ;; in-flight model call and the timestamp of the last streamed paint.
+    (define react-stream-content "")
+    (define react-stream-thoughts "")
+    (define react-stream-last-render 0)
     ;; Agent steering state: the queue is shared with every react session
     ;; and persists across runs (and /clear, which only resets the
     ;; transcript) so /steer and /interrupt can pre-queue entries between
@@ -2377,6 +2382,63 @@ and append it to the persistent history journal file."
                     (set! last-render-error-sig sig)
                     (add-err-msg! (format #f "render error: ~a ~s" key args))))
                 #f)))
+    ;; Live streaming display: one flagged assistant card grows in the
+    ;; transcript as deltas arrive ('streaming flag); later steps replace
+    ;; exactly that placeholder, commit it permanently, or remove it.
+    (define (react-stream-placeholder-index)
+            (list-index (lambda (m) (assoc-ref m 'streaming)) messages))
+    (define (update-react-stream-message! delta type)
+            (cond
+              ((eq? type 'thought)
+                (set! react-stream-thoughts (string-append react-stream-thoughts delta)))
+              ((eq? type 'content)
+                (set! react-stream-content (string-append react-stream-content delta)))
+              (else #f))
+            (call-with-values
+              (lambda () (split-thoughts-and-content react-stream-content))
+              (lambda (inline-th inline-ct)
+                (let*
+                    ((total-th
+                       (cond
+                         ((and (non-empty-string? react-stream-thoughts) inline-th)
+                           (string-append react-stream-thoughts "\n\n" inline-th))
+                         ((non-empty-string? react-stream-thoughts) react-stream-thoughts)
+                         (else inline-th)))
+                     (updated
+                       (cons
+                         (cons 'streaming #t)
+                         (default-collapse-message
+                           `((role . "assistant") (thoughts . ,total-th) (content . ,inline-ct))))))
+                  (let ((idx (react-stream-placeholder-index)))
+                    (if idx
+                      (set! messages
+                            (append (take messages idx)
+                                    (list updated)
+                                    (drop messages (+ idx 1))))
+                      (set! messages (append messages (list updated)))))))))
+    (define (commit-react-stream-message!)
+            "Keep the streamed assistant card permanently but drop its
+placeholder flag, so the next streamed call starts a fresh card."
+            (set! messages
+                  (map
+                    (lambda (m)
+                      (if (assoc-ref m 'streaming)
+                        (filter (lambda (p) (not (eq? (car p) 'streaming))) m)
+                        m))
+                    messages)))
+    (define (remove-react-stream-message!)
+            (set! messages (filter (lambda (m) (not (assoc-ref m 'streaming))) messages)))
+    (define (reset-react-stream-state!)
+            (set! react-stream-content "")
+            (set! react-stream-thoughts ""))
+    (define (throttled-stream-render!)
+            ;; Repaint at most ~15fps while streaming: every delta updates
+            ;; state cheaply, full-frame paints are rate-limited.
+            (let ((now (get-internal-run-time)))
+              (when (>= (- now react-stream-last-render)
+                        (quotient internal-time-units-per-second 15))
+                (set! react-stream-last-render now)
+                (render!))))
     ;; Execute streaming query against LLM with separated thoughts
     (define (execute-chat-stream! user-prompt)
             (set! scroll-offset 0)
@@ -2420,6 +2482,9 @@ and append it to the persistent history journal file."
                                                    (list
                                                      (cons 'on-step
                                                            (lambda (iter phase)
+                                                             (when (eq? phase 'starting)
+                                                               (commit-react-stream-message!)
+                                                               (reset-react-stream-state!))
                                                              (set! status-text (format #f "REACT [~a/~a]" iter max-react-iters))
                                                              (poll-steering-input!)
                                                              (render!)))
@@ -2448,7 +2513,12 @@ and append it to the persistent history journal file."
                                                                              (format #f "Tool ~a failed: ~a" t-name preview)
                                                                              (format #f "Tool ~a returned: ~a" t-name preview)))
                                                                (poll-steering-input!)
-                                                               (render!))))))))
+                                                               (render!))))
+                                                     (cons 'on-delta
+                                                           (lambda (delta type)
+                                                             (update-react-stream-message! delta type)
+                                                             (poll-steering-input!)
+                                                             (throttled-stream-render!)))))))
                           (call-with-values
                             (lambda ()
                               ;; Non-blocking key capture spans the whole
@@ -2475,6 +2545,7 @@ and append it to the persistent history journal file."
                               (set! llm-history (react-session-messages sess))
                               (cond
                                 ((eq? verdict 'completed)
+                                  (remove-react-stream-message!)
                                   (call-with-values
                                     (lambda ()
                                       (split-thoughts-and-content (or final-content "")))
@@ -2485,14 +2556,17 @@ and append it to the persistent history journal file."
                                                       (default-collapse-message
                                                         `((role . "assistant") (thoughts . ,th) (content . ,ct)))))))))
                                 ((eq? verdict 'max-iterations-reached)
+                                  (commit-react-stream-message!)
                                   (add-sys-msg!
                                     (format #f
                                             "ReAct iteration ceiling reached (~a iterations). Type 'Continue' or follow up to proceed."
                                             max-react-iters)))
                                 ((eq? verdict 'interrupted)
+                                  (commit-react-stream-message!)
                                   (add-sys-msg!
                                     "Agent run interrupted — the loop halted at the current iteration boundary. Type a message to continue."))
                                 ((eq? verdict 'error)
+                                  (commit-react-stream-message!)
                                   (add-err-msg! (format #f "ReAct error: ~a" final-content))))))))
                       (lambda (key . args)
                         (add-err-msg! (format #f "Agent loop failure: ~a ~s" key args))))
@@ -2516,9 +2590,22 @@ and append it to the persistent history journal file."
                                                         (if (pair? type-args)
                                                           (car type-args)
                                                           'content)))
-                                                   (if (eq? chunk-type 'thought)
-                                                     (set! raw-api-thoughts (string-append raw-api-thoughts delta))
-                                                     (set! raw-api-content (string-append raw-api-content delta)))
+                                                   (cond
+                                                     ((eq? chunk-type 'complete-json)
+                                                       ;; Endpoint ignored stream:true:
+                                                       ;; deliver the whole completion
+                                                       ;; as one update.
+                                                       (call-with-values
+                                                         (lambda () (determine-step-content delta))
+                                                         (lambda (ct rc)
+                                                           (set! raw-api-content
+                                                                 (string-append raw-api-content ct))
+                                                           (set! raw-api-thoughts
+                                                                 (string-append raw-api-thoughts (or rc ""))))))
+                                                     ((eq? chunk-type 'thought)
+                                                       (set! raw-api-thoughts (string-append raw-api-thoughts delta)))
+                                                     (else
+                                                       (set! raw-api-content (string-append raw-api-content delta))))
                                                    (call-with-values
                                                      (lambda ()
                                                        (split-thoughts-and-content raw-api-content))
@@ -2536,7 +2623,7 @@ and append it to the persistent history journal file."
                                                          (if (pair? target-cell)
                                                            (set-car! target-cell updated-msg)
                                                            (set! messages (append (drop-right messages 1) (list updated-msg))))
-                                                         (render!))))))
+                                                         (throttled-stream-render!))))))
                                                #:max-tokens
                                                (or (badb-config-model-max-tokens cfg) 4096))
                                  (set! llm-history

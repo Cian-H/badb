@@ -62,6 +62,9 @@
                                    mcp-tool->tool-spec
                                    sanitize-tool-parameters
                                    parse-tool-calls
+                                   determine-step-content
+                                   reasoning-fallback-content
+                                   stream-model-completion
                                    parse-xml-tool-calls
                                    execute-tool-call
                                    react-step!
@@ -207,6 +210,62 @@ If 'properties' is missing from an object schema, inject an empty properties ali
                     (reverse calls)))
                 (reverse calls))))
           '()))
+
+(define (reasoning-fallback-content reasoning)
+  "Render REASONING as step content for models that answer only in the
+reasoning trace, matching determine-step-content's fallback policy."
+  (format #f "<think>~a\n\n(Response provided in model reasoning trace)" reasoning))
+
+(define* (stream-model-completion client messages tools max-tokens on-delta)
+  "Run one streamed chat completion for the ReAct loop: accumulate content
+and reasoning deltas and assemble streamed tool-call fragments
+(merge-tool-call-fragment), invoking (ON-DELTA payload type) for every
+chunk - guarded, so a throwing ON-DELTA never aborts the stream. Return
+(values content reasoning tool-calls) in the same shapes as the
+non-streaming path (finalize-tool-call-fragments matches
+parse-single-tool-call). When the endpoint ignored streaming and
+delivered nothing, fall back to a single model-complete call."
+  (let ((content "") (reasoning "") (frag-acc #f) (complete-result #f))
+    (model-stream client messages
+      (lambda (payload type)
+        (case type
+          ((thought) (set! reasoning (string-append reasoning payload)))
+          ((content) (set! content (string-append content payload)))
+          ((tool-call)
+            (set! frag-acc (merge-tool-call-fragment frag-acc payload)))
+          ((complete-json)
+            ;; Endpoint ignored stream:true: whole completion at once.
+            (call-with-values
+              (lambda () (determine-step-content payload))
+              (lambda (c r)
+                (set! complete-result (list c r (parse-tool-calls payload c))))))
+          (else #f))
+        (when (procedure? on-delta)
+          (catch #t
+            (lambda () (on-delta payload type))
+            (lambda _ #f))))
+      #:tools tools
+      #:max-tokens max-tokens)
+    (if complete-result
+      (apply values complete-result)
+      (if (and (string-null? (string-trim-both content))
+               (string-null? (string-trim-both reasoning))
+               (not (pair? frag-acc)))
+        (let ((raw-resp (model-complete client messages #:tools tools #:max-tokens max-tokens #:raw? #t)))
+          (call-with-values
+            (lambda () (determine-step-content raw-resp))
+            (lambda (fb-content fb-reasoning)
+              (values fb-content fb-reasoning (parse-tool-calls raw-resp fb-content)))))
+        (let ((native-calls (finalize-tool-call-fragments frag-acc))
+              (final-content
+                (cond
+                  ((not (string-null? (string-trim-both content))) content)
+                  ((non-empty-string? reasoning) (reasoning-fallback-content reasoning))
+                  (else ""))))
+          (values final-content reasoning
+                  (if (pair? native-calls)
+                    native-calls
+                    (parse-xml-tool-calls content))))))))
 
 (define (parse-tool-calls raw-response content-text)
   "Extract tool calls from RAW-RESPONSE (native OpenAI format) or CONTENT-TEXT (XML tags)."
@@ -583,7 +642,8 @@ Returns:
              (guardrail-fn (assoc-ref hooks 'guardrail))
              (on-step-fn (assoc-ref hooks 'on-step))
              (on-tool-call-fn (assoc-ref hooks 'on-tool-call))
-             (on-tool-result-fn (assoc-ref hooks 'on-tool-result)))
+             (on-tool-result-fn (assoc-ref hooks 'on-tool-result))
+             (on-delta-fn (assoc-ref hooks 'on-delta)))
           (if (>= iter max-iter)
             (begin
               (set-react-session-status! session 'max-iterations-reached)
@@ -604,16 +664,12 @@ Returns:
                                ((compacted (compact-messages compactor raw-msgs)))
                              (set-react-session-messages! session compacted)
                              compacted)
-                           raw-msgs))
-                       (raw-resp
-                         (model-complete client msgs #:tools tools #:max-tokens max-tokens #:raw? #t)))
+                           raw-msgs)))
                     (call-with-values
                       (lambda ()
-                        (determine-step-content raw-resp))
-                      (lambda (content reasoning)
-                        (let
-                            ((tool-calls (parse-tool-calls raw-resp content)))
-                          (if (null? tool-calls)
+                        (stream-model-completion client msgs tools max-tokens on-delta-fn))
+                      (lambda (content reasoning tool-calls)
+                        (if (null? tool-calls)
                             (let
                                 ((final-msg ` ((role . "assistant") (content . ,content))))
                               (set-react-session-messages! session (append msgs (list final-msg)))
@@ -638,7 +694,7 @@ Returns:
                                 (set-react-session-messages! session (append msgs new-turn))
                                 (set-react-session-status! session 'running)
                                 (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'tools-executed))
-                                (values 'continue results)))))))))
+                                (values 'continue results))))))))
                 (lambda (key . args)
                   (let
                       ((err-msg (format #f "ReAct loop error (~a): ~s" key args)))
