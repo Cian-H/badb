@@ -32,6 +32,12 @@
             extract-chat-content
             extract-chat-tool-calls
             current-http-post
+            current-http-get
+            parse-models-response
+            choose-model
+            list-models
+            model-available?
+            auto-detect-model
             model-complete
             model-stream))
 
@@ -717,3 +723,176 @@ as SSE chunks arrive. Returns 'done or 'eof."
             (when
                 (and (port? body-port) (not (port-closed? body-port)))
               (close-port body-port))))))))
+
+;;;
+;;; Model Listing & Auto-Detection
+;;;
+(define (model-entry-id entry)
+  "Extract the model id string from a /models data entry, or #f."
+  (let ((id (and (pair? entry) (json-ref entry "id"))))
+    (and (string? id) (not (string-null? id)) id)))
+
+(define (parse-models-response response)
+  "Parse an OpenAI-compatible GET /models response into the list of model id
+strings. RESPONSE may be a raw JSON body string or an already-parsed JSON
+alist. Returns '() when the payload is malformed or contains no models."
+  (let ((obj (if (string? response) (safe-json-parse response #f) response)))
+    (if (pair? obj)
+        (let ((data (json-ref obj "data")))
+          (cond
+           ((vector? data) (filter-map model-entry-id (vector->list data)))
+           ((list? data) (filter-map model-entry-id data))
+           (else '())))
+        '())))
+
+(define (generic-model? model)
+  "Return #t when MODEL is an unset or generic placeholder
+(#f, empty, or the literal \"default\")."
+  (or (not (non-empty-string? model))
+      (string=? (string-trim-both model) "default")))
+
+(define (choose-model current-model ids)
+  "Pure selection policy for automatic model detection.
+Returns CURRENT-MODEL unchanged when it is a specific model present in IDS,
+the first entry of IDS when CURRENT-MODEL is generic (#f, empty, or
+\"default\") or absent from IDS, and #f when IDS is empty."
+  (cond
+   ((null? ids) #f)
+   ((and (not (generic-model? current-model))
+         (member current-model ids))
+    current-model)
+   (else (car ids))))
+
+(define* (curl-http-get uri #:key headers)
+  "Execute an HTTP GET using a curl subprocess. Used as a transparent fallback
+when Guile GnuTLS is not available for HTTPS requests.
+Captures real HTTP status codes."
+  (let* ((url (if (string? uri) uri (uri->string uri)))
+         (header-args
+          (append-map
+           (lambda (h)
+             (let* ((key (car h)) (val (cdr h))
+                    (str-val
+                     (cond
+                      ((string? val) val)
+                      ((and (eq? key 'authorization) (pair? val))
+                       (format #f "Bearer ~a" (cadr val)))
+                      ((eq? key 'content-type) "application/json; charset=utf-8")
+                      ((eq? key 'accept) "application/json")
+                      (else (format #f "~a" val)))))
+               (list "-H" (format #f "~a: ~a" key str-val))))
+           (or headers '())))
+         (cmd (append (list "curl"
+                            "-s"
+                            "-w"
+                            (format #f "~a%{http_code}" #\newline)
+                            url)
+                      header-args)))
+    (call-with-values
+        (lambda () (pipeline (list cmd)))
+      (lambda (in out pids)
+        (close-port out)
+        (let* ((out-str (read-string in)))
+          (close-port in)
+          (for-each
+           (lambda (p)
+             (catch 'system-error
+               (lambda () (waitpid p))
+               (lambda _ #f)))
+           pids)
+          (let* ((trimmed (or out-str ""))
+                 (last-nl (string-rindex trimmed #\newline))
+                 (code-str (if last-nl (substring trimmed (+ last-nl 1)) "200"))
+                 (body-text (if last-nl (substring trimmed 0 last-nl) trimmed))
+                 (status-code (or (string->number (string-trim-both code-str)) 200)))
+            (values (build-response #:code status-code) body-text)))))))
+
+(define* (default-http-get uri #:key headers)
+  "Dispatch HTTP GET to web client, falling back to curl if gnutls is not available."
+  (catch #t
+    (lambda ()
+      (http-get uri #:headers headers))
+    (lambda (key . args)
+      (if (or (eq? key 'gnutls-not-available)
+              (and (pair? args) (string? (car args)) (string-contains (car args) "gnutls")))
+          (curl-http-get uri #:headers headers)
+          (apply throw key args)))))
+
+(define current-http-get
+  (make-parameter default-http-get))
+
+(define (resolve-models-uri endpoint)
+  "Normalize ENDPOINT string or uri to a models listing URI.
+Strips any chat-completions style suffix (/chat/completions, /completions,
+/messages, or /chat) from the path and appends /models."
+  (let* ((uri (if (string? endpoint) (string->uri endpoint) endpoint))
+         (path (or (uri-path uri) "/"))
+         (base-path
+          (cond
+           ((string-suffix? "/chat/completions" path)
+            (substring path 0 (- (string-length path) 17)))
+           ((string-suffix? "/completions" path)
+            (substring path 0 (- (string-length path) 12)))
+           ((string-suffix? "/messages" path)
+            (substring path 0 (- (string-length path) 9)))
+           ((string-suffix? "/chat" path)
+            (substring path 0 (- (string-length path) 5)))
+           (else (string-trim-right path #\/)))))
+    (build-uri (uri-scheme uri)
+               #:userinfo (uri-userinfo uri)
+               #:host (uri-host uri)
+               #:port (uri-port uri)
+               #:path (string-append base-path "/models")
+               #:query (uri-query uri)
+               #:fragment (uri-fragment uri))))
+
+(define* (list-models client #:key (http-getter #f))
+  "Query the OpenAI-compatible GET /models endpoint for CLIENT.
+Returns (values model-ids error-string-or-#f), where model-ids is the list
+of available model id strings, or #f on failure."
+  (let* ((uri (resolve-models-uri (model-client-endpoint client)))
+         (headers (build-headers (model-client-api-key client) #f))
+         (getter (or http-getter (current-http-get))))
+    (catch #t
+      (lambda ()
+        (call-with-values
+            (lambda () (getter uri #:headers headers))
+          (lambda (response body)
+            (let* ((code (response-code response))
+                   (body-str
+                    (cond
+                     ((bytevector? body) (utf8->string body))
+                     ((string? body) body)
+                     (else ""))))
+              (if (not (<= 200 code 299))
+                  (values #f (format #f "HTTP ~a error: ~a" code body-str))
+                  (let ((obj (safe-json-parse body-str #f)))
+                    (if (pair? obj)
+                        (values (parse-models-response obj) #f)
+                        (values #f "failed to parse /models response"))))))))
+      (lambda (key . args)
+        (values #f (format #f "list-models request failed: ~a"
+                           (format-exception key args)))))))
+
+(define* (model-available? client id #:key (http-getter #f))
+  "Return #t when model ID is listed by CLIENT's /models endpoint.
+Issues a live HTTP request; returns #f on error or when ID is not found."
+  (and id
+       (call-with-values
+           (lambda () (list-models client #:http-getter http-getter))
+         (lambda (ids err)
+           (and (not err) (member id ids) #t)))))
+
+(define* (auto-detect-model client #:key (http-getter #f))
+  "Automatically select a model for CLIENT from its /models endpoint.
+Returns (values model-id-or-#f error-string-or-#f): the client's current model
+is kept when it is non-generic and present in the list, otherwise the first
+available entry is chosen. Returns #f with an error message on
+connection/parse failure or when no models are listed."
+  (call-with-values
+      (lambda () (list-models client #:http-getter http-getter))
+    (lambda (ids err)
+      (cond
+       (err (values #f err))
+       ((null? ids) (values #f "no models available"))
+       (else (values (choose-model (model-client-model client) ids) #f))))))

@@ -521,4 +521,173 @@
                   (lambda _
                     #t)))))
 
+;;;
+;;; 9. Model Listing & Auto-Detection
+;;;
+(begin
+  (define (make-mock-getter code response-body)
+    "Helper building a mock HTTP GET procedure returning (response body)."
+    (lambda* (uri #:key (headers '()))
+      (values (build-response #:code code) response-body))))
+
+(test-group "parse-models-response"
+  ;; Realistic OpenAI-compatible /models payload
+  (let* ((payload "{\"object\":\"list\",\"data\":[{\"id\":\"qwen3-1.7b\",\"object\":\"model\",\"created\":1748102400},{\"id\":\"llama-3.2-3b-instruct\",\"object\":\"model\",\"created\":1748102401},{\"id\":\"gpt-4o-mini\",\"object\":\"model\",\"created\":1748102402}]}")
+         (ids (parse-models-response payload)))
+    (test-equal "realistic payload yields ordered model ids"
+      '("qwen3-1.7b" "llama-3.2-3b-instruct" "gpt-4o-mini") ids))
+
+  ;; Already-parsed alist input
+  (test-equal "accepts already-parsed alist"
+    '("m1" "m2")
+    (parse-models-response
+      (json-string->scm "{\"data\":[{\"id\":\"m1\"},{\"id\":\"m2\"}]}")))
+
+  ;; Empty list
+  (test-equal "empty data list yields '()" '() (parse-models-response "{\"object\":\"list\",\"data\":[]}"))
+
+  ;; Malformed JSON error path
+  (test-equal "malformed JSON yields '()" '() (parse-models-response "{\"data\":[{\"id\":\"broke"))
+
+  ;; Missing or non-list data
+  (test-equal "missing data key yields '()" '() (parse-models-response "{\"object\":\"list\"}"))
+  (test-equal "non-alist payload yields '()" '() (parse-models-response 42)))
+
+(test-group "choose-model"
+  (let ((ids '("qwen3-1.7b" "llama-3.2-3b-instruct" "gpt-4o-mini")))
+    (test-equal "current model kept when present"
+      "gpt-4o-mini" (choose-model "gpt-4o-mini" ids))
+    (test-equal "generic 'default' picks first id"
+      "qwen3-1.7b" (choose-model "default" ids))
+    (test-equal "#f current model picks first id"
+      "qwen3-1.7b" (choose-model #f ids))
+    (test-equal "empty current model picks first id"
+      "qwen3-1.7b" (choose-model "" ids))
+    (test-equal "absent current model picks first id"
+      "qwen3-1.7b" (choose-model "claude-4-opus" ids)))
+  (test-equal "empty id list with generic model yields #f"
+    #f (choose-model "default" '()))
+  (test-equal "empty id list with specific model yields #f"
+    #f (choose-model "gpt-4o" '())))
+
+(test-group "list-models"
+  ;; Success path, URI derivation, and auth header
+  (let* ((client (make-model-client #:endpoint "http://127.0.0.1:1234/v1/chat/completions"
+                                    #:api-key "sk-list-key"))
+         (captured #f)
+         (getter (lambda* (uri #:key (headers '()))
+                    (set! captured (list uri headers))
+                    (values (build-response #:code 200)
+                            "{\"object\":\"list\",\"data\":[{\"id\":\"qwen3-1.7b\"},{\"id\":\"gpt-4o-mini\"}]}"))))
+    (call-with-values
+        (lambda () (list-models client #:http-getter getter))
+      (lambda (ids err)
+        (test-equal "list-models returns model ids" '("qwen3-1.7b" "gpt-4o-mini") ids)
+        (test-equal "list-models returns no error on success" #f err)
+        (test-equal "models uri derived from chat-completions endpoint"
+          "http://127.0.0.1:1234/v1/models" (uri->string (car captured)))
+        (test-assert "authorization header is sent"
+          (assq-ref (cadr captured) 'authorization)))))
+
+  ;; Base endpoint (no chat/completions suffix) and empty list
+  (let* ((client (make-model-client #:endpoint "http://127.0.0.1:1234/v1"))
+         (captured-uri #f)
+         (getter (lambda* (uri #:key (headers '()))
+                    (set! captured-uri uri)
+                    (values (build-response #:code 200) "{\"object\":\"list\",\"data\":[]}"))))
+    (call-with-values
+        (lambda () (list-models client #:http-getter getter))
+      (lambda (ids err)
+        (test-equal "base endpoint also derives /v1/models"
+          "http://127.0.0.1:1234/v1/models" (uri->string captured-uri))
+        (test-equal "empty data list yields empty ids" '() ids)
+        (test-equal "empty data list yields no error" #f err))))
+
+  ;; HTTP error path
+  (let* ((client (make-model-client #:endpoint "http://127.0.0.1:1234/v1"))
+         (getter (make-mock-getter 404 "{\"error\":{\"message\":\"not found\"}}")))
+    (call-with-values
+        (lambda () (list-models client #:http-getter getter))
+      (lambda (ids err)
+        (test-equal "HTTP error yields #f ids" #f ids)
+        (test-assert "HTTP error yields error string containing status"
+          (and (string? err) (string-contains err "404"))))))
+
+  ;; Malformed JSON body
+  (let* ((client (make-model-client #:endpoint "http://127.0.0.1:1234/v1"))
+         (getter (make-mock-getter 200 "<html>gateway error</html>")))
+    (call-with-values
+        (lambda () (list-models client #:http-getter getter))
+      (lambda (ids err)
+        (test-equal "malformed body yields #f ids" #f ids)
+        (test-assert "malformed body yields error string" (string? err)))))
+
+  ;; Connection failure
+  (let* ((client (make-model-client #:endpoint "http://127.0.0.1:1234/v1"))
+         (getter (lambda* (uri #:key (headers '()))
+                    (throw 'system-error "connect-failed" '()))))
+    (call-with-values
+        (lambda () (list-models client #:http-getter getter))
+      (lambda (ids err)
+        (test-equal "connection failure yields #f ids" #f ids)
+        (test-assert "connection failure yields error string" (string? err))))))
+
+(test-group "model-available?"
+  (let* ((client (make-model-client #:endpoint "http://127.0.0.1:1234/v1"))
+         (getter (make-mock-getter 200
+                                    "{\"data\":[{\"id\":\"qwen3-1.7b\"},{\"id\":\"gpt-4o-mini\"}]}")))
+    (test-assert "listed model is available"
+      (model-available? client "qwen3-1.7b" #:http-getter getter))
+    (test-assert "unlisted model is not available"
+      (not (model-available? client "claude-4-opus" #:http-getter getter))))
+  (let* ((client (make-model-client #:endpoint "http://127.0.0.1:1234/v1"))
+         (getter (make-mock-getter 500 "boom")))
+    (test-assert "error response means model is not available"
+      (not (model-available? client "qwen3-1.7b" #:http-getter getter)))))
+
+(test-group "auto-detect-model"
+  (let ((body "{\"object\":\"list\",\"data\":[{\"id\":\"qwen3-1.7b\"},{\"id\":\"gpt-4o-mini\"},{\"id\":\"llama-3.2-3b-instruct\"}]}"))
+    ;; Non-generic current model present in the list is kept unchanged
+    (let* ((client (make-model-client #:endpoint "http://127.0.0.1:1234/v1"
+                                      #:api-key "sk-key" #:model "gpt-4o-mini"))
+           (getter (make-mock-getter 200 body)))
+      (call-with-values
+          (lambda () (auto-detect-model client #:http-getter getter))
+        (lambda (model err)
+          (test-equal "present non-generic current model is kept" "gpt-4o-mini" model)
+          (test-equal "kept model yields no error" #f err))))
+    ;; Generic 'default' current model replaced with first available
+    (let* ((client (make-model-client #:endpoint "http://127.0.0.1:1234/v1" #:model "default"))
+           (getter (make-mock-getter 200 body)))
+      (call-with-values
+          (lambda () (auto-detect-model client #:http-getter getter))
+        (lambda (model err)
+          (test-equal "generic current model replaced with first id" "qwen3-1.7b" model)
+          (test-equal "auto-picked model yields no error" #f err))))
+    ;; Absent current model replaced with first available
+    (let* ((client (make-model-client #:endpoint "http://127.0.0.1:1234/v1" #:model "mistral-large"))
+           (getter (make-mock-getter 200 body)))
+      (call-with-values
+          (lambda () (auto-detect-model client #:http-getter getter))
+        (lambda (model err)
+          (test-equal "absent current model replaced with first id" "qwen3-1.7b" model)
+          (test-equal "replaced model yields no error" #f err)))))
+  ;; Connection failure yields #f model and error message
+  (let* ((client (make-model-client #:endpoint "http://127.0.0.1:1234/v1"))
+         (getter (lambda* (uri #:key (headers '()))
+                    (throw 'system-error "connect-failed" '()))))
+    (call-with-values
+        (lambda () (auto-detect-model client #:http-getter getter))
+      (lambda (model err)
+        (test-equal "connection failure yields #f model" #f model)
+        (test-assert "connection failure yields error string" (string? err)))))
+  ;; Empty model list yields #f model with error message
+  (let* ((client (make-model-client #:endpoint "http://127.0.0.1:1234/v1"))
+         (getter (make-mock-getter 200 "{\"object\":\"list\",\"data\":[]}")))
+    (call-with-values
+        (lambda () (auto-detect-model client #:http-getter getter))
+      (lambda (model err)
+        (test-equal "empty model list yields #f model" #f model)
+        (test-assert "empty model list yields error string" (string? err))))))
+
 (test-end "badb-model")
