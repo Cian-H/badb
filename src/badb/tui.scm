@@ -10,7 +10,7 @@
 ;;; rounded pop-ups. All colors resolve through the (badb theme) module, so
 ;;; the six built-in themes restyle the whole interface. Message blocks are
 ;;; collapsible: reasoning collapses to a single summary line by default;
-;;; Ctrl+P/Ctrl+N select a block and Ctrl+E toggles collapse. While the
+;;; Ctrl+H/Ctrl+J select a block and Ctrl+E toggles collapse. While the
 ;;; autonomous ReAct loop runs, the terminal is polled non-blocking so the
 ;;; user can type steering messages (Enter sends, Ctrl+I interrupts) that
 ;;; the running agent sees at the next iteration boundary.
@@ -418,7 +418,7 @@ MODE (a symbol: chat, shell, scheme, selector, menu or steering)."
     ((selector) "up/down:choose tab:complete enter:run esc:dismiss")
     ((menu) "up/down:move enter:apply esc:close")
     ((steering) "type:steer enter:send ^i:interrupt bs:edit esc:clear")
-    (else "!:shell ,:scheme /:cmds ^p/^n:select ^e:collapse pgup/pgdn:scroll")))
+    (else "!:shell ,:scheme /:cmds ^h/^j:select ^e:collapse up/dn+pgup/dn:scroll")))
 
 ;;;
 ;;; Agent Steering Helpers
@@ -1743,7 +1743,7 @@ header, an optional thinking section, and the content. Pure - no I/O."
                                 "• While the agent runs you can steer it: type a course correction, enter sends it, ctrl+i interrupts (applied at the next iteration)\n"
                                 "• ! switches to shell mode, ( or , to Scheme REPL; backspace on an empty prompt returns to chat\n"
                                 "• / opens the command palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context)\n"
-                                "• ctrl+p / ctrl+n select a message block, ctrl+e collapse or expand it\n"
+                                "• ctrl+h / ctrl+j select a message block, ctrl+e collapse or expand it\n"
                                 "• /config, /model or /endpoint alone open interactive menus (up/down move, enter apply, esc close)\n"
                                 "• The bottom line lists the keys active in the current mode.")))))
     (define llm-history (list (make-system-turn)))
@@ -1762,11 +1762,12 @@ header, an optional thinking section, and the content. Pure - no I/O."
     (define active-menu #f)
     ;; Viewport message selection index (#f = inactive) for collapse control.
     ;; Key bindings (single control chars, non-conflicting with existing codes):
-    ;;   Ctrl+P (char 16) = Ctrl+Up   select previous message card
-    ;;   Ctrl+N (char 14) = Ctrl+Down select next message card
-    ;;   Ctrl+E (char 5)   = toggle collapse on the selected message
-    ;;                       (falls back to cursor-to-end when no selection,
-    ;;                       preserving the pre-existing Ctrl+E binding)
+    ;;   Ctrl+H (char 8)  = select previous message card (vim h/j tradition;
+    ;;                      modern terminals send 127 for backspace)
+    ;;   Ctrl+J (char 10) = select next message card (Enter sends 13)
+    ;;   Ctrl+E (char 5)  = toggle collapse on the selected message
+    ;;                      (falls back to cursor-to-end when no selection,
+    ;;                      preserving the pre-existing Ctrl+E binding)
     (define msgsel-index #f)
     (define prompt-mode 'chat)
     (define stdscr #f)
@@ -3388,7 +3389,7 @@ any open menu first; submenu actions open the next menu in its place."
                                    "  /dump [PATH]      Export the conversation to a text file\n"
                                    "  !<command>        Execute shell command\n"
                                    "  ,<expr> or (..)   Evaluate Scheme code\n"
-                                   "  ctrl+p / ctrl+n   Select a message block\n"
+                                   "  ctrl+h / ctrl+j   Select a message block\n"
                                    "  ctrl+e            Collapse or expand the selected message\n"
                                    "  while agent runs  type to steer it: enter sends, ctrl+i interrupts\n"
                                    "  menus             up/down move, enter apply, esc close (/config, /model, /endpoint)\n"
@@ -3567,13 +3568,14 @@ any open menu first; submenu actions open the next menu in its place."
                   ((eqv? ch KEY_UP) (set! active-menu (menu-move active-menu -1)))
                   ((eqv? ch KEY_DOWN) (set! active-menu (menu-move active-menu 1)))
                   ((eqv? ch 27) (set! active-menu #f))
-                  ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
+                  ((or (eqv? ch KEY_ENTER) (eqv? ch 13))
                     (let ((item (menu-selected-item active-menu)))
                       (when item (apply-menu-selection! item))))
                   (else #f))
                 (loop))
-              ;; Enter key: process buffer, execute modal command, or complete selector
-              ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
+              ;; Enter key: process buffer, execute modal command, or
+              ;; complete selector (Ctrl+J is select-next, not Enter)
+              ((or (eqv? ch KEY_ENTER) (eqv? ch 13))
                 (if (selector-active? input-buffer)
                   (let
                       ((matches (matching-slash-commands input-buffer)))
@@ -3682,43 +3684,55 @@ any open menu first; submenu actions open the next menu in its place."
                     (set! cursor-pos 0))
                   ((and msgsel-index (string-null? input-buffer)) (set! msgsel-index #f)))
                 (loop))
-              ;; Up Arrow: navigate selector up, or recall older history
+              ;; Up Arrow: selector navigation, input history recall while
+              ;; typing, or scrolling back through the transcript on an
+              ;; empty prompt
               ((eqv? ch KEY_UP)
-                (if (selector-active? input-buffer)
-                  (let
-                      ((matches (matching-slash-commands input-buffer)))
-                    (unless (null? matches)
-                      (set! selector-index
-                            (if (<= selector-index 0)
-                              (- (length matches) 1)
-                              (- selector-index 1)))))
-                  (begin
+                (cond
+                  ((selector-active? input-buffer)
+                    (let
+                        ((matches (matching-slash-commands input-buffer)))
+                      (unless (null? matches)
+                        (set! selector-index
+                              (if (<= selector-index 0)
+                                (- (length matches) 1)
+                                (- selector-index 1))))))
+                  ((or (> (string-length input-buffer) 0)
+                       (history-recall-position input-history))
                     (unless (history-recall-position input-history)
                       (set! history-draft input-buffer)
                       (set! history-draft-pos cursor-pos))
                     (let ((entry (history-recall input-history -1)))
                       (when entry
                         (set! input-buffer entry)
-                        (set! cursor-pos (string-length entry))))))
+                        (set! cursor-pos (string-length entry)))))
+                  (else (set! scroll-offset (+ scroll-offset 1))))
                 (loop))
-              ;; Down Arrow: navigate selector down, or recall newer history
+              ;; Down Arrow: selector navigation, history recall while
+              ;; typing, or scrolling forward through the transcript
               ((eqv? ch KEY_DOWN)
-                (if (selector-active? input-buffer)
-                  (let
-                      ((matches (matching-slash-commands input-buffer)))
-                    (unless (null? matches)
-                      (set! selector-index (remainder (+ selector-index 1) (length matches)))))
-                  (let*
-                      ((was-recalling? (history-recall-position input-history))
-                       (entry (history-recall input-history 1)))
-                    (if entry
-                      (begin (set! input-buffer entry) (set! cursor-pos (string-length entry)))
-                      (when was-recalling?
-                        (set! input-buffer history-draft)
-                        (set! cursor-pos history-draft-pos)))))
+                (cond
+                  ((selector-active? input-buffer)
+                    (let
+                        ((matches (matching-slash-commands input-buffer)))
+                      (unless (null? matches)
+                        (set! selector-index (remainder (+ selector-index 1) (length matches))))))
+                  ((or (> (string-length input-buffer) 0)
+                       (history-recall-position input-history))
+                    (let*
+                        ((was-recalling? (history-recall-position input-history))
+                         (entry (history-recall input-history 1)))
+                      (if entry
+                        (begin (set! input-buffer entry) (set! cursor-pos (string-length entry)))
+                        (when was-recalling?
+                          (set! input-buffer history-draft)
+                          (set! cursor-pos history-draft-pos)))))
+                  (else (set! scroll-offset (max 0 (- scroll-offset 1)))))
                 (loop))
-              ;; Backspace: delete character or return to normal mode if prompt is empty
-              ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 127) (eqv? ch 8))
+              ;; Backspace: delete character or return to normal mode if
+              ;; prompt is empty (Ctrl+H no longer backspaces: it is the
+              ;; vim-tradition select-previous key)
+              ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 127))
                 (cond
                   ((> (string-length input-buffer) 0)
                     (call-with-values
@@ -3730,22 +3744,28 @@ any open menu first; submenu actions open the next menu in its place."
                     (clamp-selector-index!))
                   ((not (eq? prompt-mode 'chat)) (set! prompt-mode 'chat)))
                 (loop))
-              ;; Page Up / Scroll Up
-              ((eqv? ch KEY_PPAGE) (set! scroll-offset (+ scroll-offset 5)) (loop))
-              ;; Page Down / Scroll Down
-              ((eqv? ch KEY_NPAGE) (set! scroll-offset (max 0 (- scroll-offset 5))) (loop))
-              ;; Ctrl+P (control char 16, arrives as Ctrl+Up): select the
-              ;; previous message card, starting from the newest message
-              ((eqv? ch 16)
+              ;; Page Up / Page Down: half-viewport jumps
+              ((eqv? ch KEY_PPAGE)
+                (set! scroll-offset
+                      (+ scroll-offset (max 1 (quotient (- (getmaxy stdscr) 6) 2))))
+                (loop))
+              ((eqv? ch KEY_NPAGE)
+                (set! scroll-offset
+                      (max 0 (- scroll-offset (max 1 (quotient (- (getmaxy stdscr) 6) 2)))))
+                (loop))
+              ;; Ctrl+H (control char 8): select the previous message card,
+              ;; starting from the newest message - h/j follow vim's
+              ;; movement key tradition
+              ((eqv? ch 8)
                 (unless (null? messages)
                   (set! msgsel-index
                         (if msgsel-index
                           (max 0 (- msgsel-index 1))
                           (- (length messages) 1))))
                 (loop))
-              ;; Ctrl+N (control char 14, arrives as Ctrl+Down): advance the
-              ;; message selection to the next card (no-op without selection)
-              ((eqv? ch 14)
+              ;; Ctrl+J (control char 10): advance the message selection to
+              ;; the next card (no-op without selection)
+              ((eqv? ch 10)
                 (when (and msgsel-index (pair? messages))
                   (set! msgsel-index (min (- (length messages) 1) (+ msgsel-index 1))))
                 (loop))

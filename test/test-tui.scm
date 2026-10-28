@@ -445,7 +445,7 @@
   (test-assert "chat keymap lists the modal prompt keys"
                (string-contains (format-keymap-line 'chat) "!:shell"))
   (test-assert "chat keymap lists the message selection keys"
-               (string-contains (format-keymap-line 'chat) "^p/^n:select"))
+               (string-contains (format-keymap-line 'chat) "^h/^j:select"))
   (test-assert "chat keymap lists the collapse key"
                (string-contains (format-keymap-line 'chat) "^e:collapse"))
   (test-assert "shell keymap documents the run key"
