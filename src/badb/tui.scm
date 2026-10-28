@@ -4,6 +4,8 @@
 ;;; Provides live streaming LLM chat with separated thought reasoning cards,
 ;;; modal prompt switching (! for shell, ( or , for Scheme, backspace to return),
 ;;; interactive slash-command selector palette, and modern 2020s container styling.
+;;; Message cards are collapsible: reasoning collapses to a single summary line
+;;; by default; Ctrl+Up/Ctrl+Down select a card and Ctrl+E toggles collapse.
 
 (define-module (badb tui)
   #:use-module (badb model)
@@ -65,7 +67,17 @@
             jsonl-line->history-entry
             default-history-file-path
             load-history-file
-            append-history-file-entry!))
+            append-history-file-entry!
+            message-collapsed?
+            make-collapsed-message
+            message-with-collapsed
+            message-toggle-collapsed
+            default-collapsed-role?
+            message-collapsible?
+            default-collapse-message
+            thoughts-preview
+            collapsed-summary-suffix
+            format-message-entry))
 
 ;;;
 ;;; Text Formatting & Word Wrapping Helpers
@@ -694,6 +706,247 @@ and #f on any filesystem failure."
     (lambda _ #f)))
 
 ;;;
+;;; Message Collapse State & Card Formatting
+;;;
+;; Message alists are immutable data: collapsing a message produces a new
+;; alist carrying a 'collapsed? flag, it never mutates the original.
+(define (replace-nth lst idx val)
+  "Return a copy of LST with the element at position IDX replaced by VAL."
+  (append (take lst idx) (list val) (drop lst (+ idx 1))))
+
+(define (message-collapsed? msg)
+  "Return #t when MSG carries a truthy 'collapsed? flag. An absent flag
+means the message is expanded."
+  (and (assoc-ref msg 'collapsed?) #t))
+
+(define (message-with-collapsed msg collapsed?)
+  "Return a new message alist with MSG's 'collapsed? flag set to COLLAPSED?.
+A false value removes the flag entirely, so an expanded message carries no
+'collapsed? key at all."
+  (if collapsed?
+      (prop-set msg 'collapsed? #t)
+      (alist-remove 'collapsed? msg)))
+
+(define (make-collapsed-message msg)
+  "Return a new message alist with MSG's 'collapsed? flag set to #t."
+  (message-with-collapsed msg #t))
+
+(define (message-toggle-collapsed msg)
+  "Return a new message alist with MSG's collapse state flipped."
+  (message-with-collapsed msg (not (message-collapsed? msg))))
+
+(define (default-collapsed-role? role)
+  "Return #t when a card tagged with ROLE collapses by default: reasoning
+('thought' / 'thinking') cards do, every other role stays expanded."
+  (let ((r (cond
+            ((string? role) role)
+            ((symbol? role) (symbol->string role))
+            (else (format #f "~a" (or role ""))))))
+    (or (string=? r "thought") (string=? r "thinking"))))
+
+(define (message-collapsible? msg)
+  "Return #t when MSG has renderable content or thoughts and can therefore
+be collapsed into a summary row."
+  (or (non-empty-string? (assoc-ref msg 'content))
+      (non-empty-string? (assoc-ref msg 'thoughts))))
+
+(define (default-collapse-message msg)
+  "Apply the default collapse policy to MSG: assistant reasoning collapses
+to a summary row by default. An explicit 'collapsed? flag (set by the user)
+is always preserved."
+  (cond
+   ((assoc 'collapsed? msg) msg)
+   ((and (non-empty-string? (assoc-ref msg 'thoughts))
+         (default-collapsed-role? "thought"))
+    (make-collapsed-message msg))
+   (else msg)))
+
+(define %collapsed-preview-chars 40)
+
+(define (thoughts-preview thoughts)
+  "Return a single-line preview of THOUGHTS trimmed to roughly
+%collapsed-preview-chars characters for a collapsed summary row."
+  (let* ((first-line (car (string-split (string-trim-both thoughts) #\newline)))
+         (clean (string-trim-both
+                 (string-map (lambda (c) (if (char=? c #\tab) #\space c))
+                             first-line))))
+    (if (> (string-length clean) %collapsed-preview-chars)
+        (substring clean 0 %collapsed-preview-chars)
+        clean)))
+
+(define (collapsed-summary-suffix msg hidden-lines)
+  "Build the dim suffix text shown on the summary row of a collapsed MSG,
+mentioning the toggle key and the HIDDEN-LINES row count it hides. Thought
+blocks additionally preview the beginning of the reasoning text."
+  (let ((thoughts (assoc-ref msg 'thoughts)))
+    (if (non-empty-string? thoughts)
+        (format #f "~a… [+~a lines, ctrl+e to expand]"
+                (thoughts-preview thoughts)
+                hidden-lines)
+        (format #f "(collapsed - ctrl+e to expand) [~a lines hidden]" hidden-lines))))
+
+;; Determine system badge text and color pair from content
+(define (system-badge-and-pair content)
+  "Pick the badge text and color pair for a system message from CONTENT."
+  (cond
+   ((or (string-contains content "MCP Server")
+        (string-prefix? "Active Model:" content))
+    (cons "ℹ MCP SERVERS" 1))
+   ((string-contains content "Configuration") (cons "⚙ CONFIGURATION" 1))
+   ((string-contains content "Guardrail") (cons "🛡 GUARDRAILS" 4))
+   ((string-contains content "Context Statistics") (cons "📊 CONTEXT" 1))
+   ((string-contains content "Features & Architecture") (cons "⚡ FEATURES" 1))
+   ((string-contains content "Help & Commands") (cons "📖 HELP" 1))
+   ((string-contains content "Test Suite") (cons "🧪 TESTS" 1))
+   ((string-contains content "ReAct") (cons "🔄 REACT" 4))
+   ((or (string-contains content "Journal") (string-contains content "Checkpoint"))
+    (cons "📓 JOURNAL" 1))
+   (else (cons "ℹ SYSTEM" 1))))
+
+;; Helper to wrap lines into a framed card descriptor
+(define (make-card-entry badge badge-pair-id role lines card-w inner-w)
+  "Turn wrapped LINES into card rows: a card-top header carrying BADGE, one
+card-body row per line, a card-bot border, and a trailing spacer row."
+  (if (null? lines)
+      '()
+      (append
+       (list (list "card-top" badge badge-pair-id card-w))
+       (map
+        (lambda (l)
+          (list "card-body" role l inner-w))
+        lines)
+       (list (list "card-bot" card-w))
+       (list (list "spacer" "")))))
+
+;; Format a single message entry into card structure rows
+(define (format-message-entry msg content-width)
+  "Format MSG into card structure rows for a viewport CONTENT-WIDTH wide.
+Collapsed messages (truthy 'collapsed? flag and collapsible content) render
+a single card-summary row instead of the full card, except assistant
+messages whose thoughts collapse to a summary row while their content card
+stays visible."
+  (let*
+      ((role-val (assoc-ref msg 'role))
+       (role
+         (cond
+           ((string? role-val) role-val)
+           ((symbol? role-val) (symbol->string role-val))
+           (else "system")))
+       (raw-content (or (assoc-ref msg 'content) ""))
+       (content
+         (if (string? raw-content)
+           raw-content
+           (format #f "~a" raw-content)))
+       (raw-thoughts (assoc-ref msg 'thoughts))
+       (thoughts
+         (and raw-thoughts
+              (if (string? raw-thoughts)
+                raw-thoughts
+                (format #f "~a" raw-thoughts))))
+       (card-w content-width)
+       (inner-w (max 10 (- card-w 4))))
+    (cond
+      ((and (message-collapsed? msg) (message-collapsible? msg))
+        (format-collapsed-message-rows msg role content thoughts card-w inner-w))
+      ((string=? role "assistant")
+        (let*
+            ((th-lines
+               (if (non-empty-string? thoughts)
+                 (make-card-entry "💭 THOUGHT PROCESS"
+                                  1
+                                  "thought"
+                                  (wrap-text (string-trim-both thoughts) inner-w)
+                                  card-w
+                                  inner-w)
+                 '()))
+             (ct-lines
+               (if (non-empty-string? content)
+                 (make-card-entry "🤖 ASSISTANT"
+                                  3
+                                  "assistant"
+                                  (wrap-text content inner-w)
+                                  card-w
+                                  inner-w)
+                 '())))
+          (if (and (null? th-lines) (null? ct-lines))
+            (make-card-entry "🤖 ASSISTANT"
+                             3
+                             "assistant"
+                             (wrap-text
+                               (if (string-null? content)
+                                 "(empty response)"
+                                 content)
+                               inner-w)
+                             card-w
+                             inner-w)
+            (append th-lines ct-lines))))
+      (else
+        (let-values
+          (((badge pair-id role-tag text)
+            (cond
+              ((string=? role "user") (values "👤 USER" 2 "user" (string-trim-both content)))
+              ((string=? role "system")
+                (let ((bp (system-badge-and-pair content)))
+                  (values (car bp) (cdr bp) "system" content)))
+              ((string=? role "error") (values "✗ ERROR" 5 "error" content))
+              ((string=? role "shell-cmd") (values "🐚 SHELL COMMAND" 6 "shell-cmd" content))
+              ((string=? role "shell-out") (values "🐚 SHELL OUTPUT" 6 "shell-out" content))
+              ((string=? role "scheme-in") (values "λ SCHEME INPUT" 1 "scheme-in" content))
+              ((string=? role "scheme-out")
+                (values "λ SCHEME EVALUATION" 1 "scheme-out" content))
+              ((or (string=? role "tool-call") (string=? role "tool"))
+                (values "⚙ TOOL CALL" 4 "tool" content))
+              ((string=? role "tool-result") (values "✓ TOOL RESULT" 2 "tool" content))
+              (else (values "ℹ NOTICE" 1 "system" content)))))
+          (make-card-entry badge pair-id role-tag (wrap-text text inner-w) card-w inner-w))))))
+
+;; Rows for a collapsed message: one card-summary row (plus the visible
+;; assistant content card when only the reasoning collapses).
+(define (format-collapsed-message-rows msg role content thoughts card-w inner-w)
+  "Return the card rows for collapsed MSG with pre-normalized ROLE, CONTENT
+and THOUGHTS fields. CARD-W and INNER-W follow make-card-entry geometry."
+  (cond
+    ((and (string=? role "assistant") (non-empty-string? thoughts))
+      (let*
+          ((th-rows
+             (make-card-entry "💭 THOUGHT PROCESS"
+                              1
+                              "thought"
+                              (wrap-text (string-trim-both thoughts) inner-w)
+                              card-w
+                              inner-w))
+           (hidden (max 0 (- (length th-rows) 2)))
+           (summary-row
+             (list "card-summary" "💭 THOUGHT PROCESS" 1
+                   (collapsed-summary-suffix msg hidden) card-w))
+           (ct-rows
+             (if (non-empty-string? content)
+               (make-card-entry "🤖 ASSISTANT"
+                                3
+                                "assistant"
+                                (wrap-text content inner-w)
+                                card-w
+                                inner-w)
+               '())))
+        (append (list summary-row)
+                ct-rows
+                (if (null? ct-rows)
+                  (list (list "spacer" ""))
+                  '()))))
+    (else
+      (let*
+          ((expanded (format-message-entry
+                       `((role . ,role) (content . ,content))
+                       card-w))
+           (top (find (lambda (e) (string=? (car e) "card-top")) expanded))
+           (hidden (max 0 (- (length expanded) 2))))
+        (if (not top)
+          (list (list "spacer" ""))
+          (list (list "card-summary" (cadr top) (caddr top)
+                      (collapsed-summary-suffix msg hidden) card-w)
+                (list "spacer" "")))))))
+
+;;;
 ;;; Main TUI Controller
 ;;;
 (define*
@@ -1027,6 +1280,7 @@ and #f on any filesystem failure."
                                 "• Type ! to switch to shell mode ($)\n"
                                 "• Type ( or , to switch to Scheme REPL mode (λ)\n"
                                 "• Type Backspace at empty prompt to return to chat mode (❯)\n"
+                                "• Press Ctrl+Up / Ctrl+Down to select a message, Ctrl+E to collapse or expand it\n"
                                 "• Type / to open command selector palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context).")))))
     (define llm-history (list (make-system-turn)))
     (define input-buffer "")
@@ -1038,6 +1292,14 @@ and #f on any filesystem failure."
     (define scroll-offset 0)
     (define status-text "READY")
     (define selector-index 0)
+    ;; Viewport message selection index (#f = inactive) for collapse control.
+    ;; Key bindings (single control chars, non-conflicting with existing codes):
+    ;;   Ctrl+P (char 16) = Ctrl+Up   select previous message card
+    ;;   Ctrl+N (char 14) = Ctrl+Down select next message card
+    ;;   Ctrl+E (char 5)   = toggle collapse on the selected message
+    ;;                       (falls back to cursor-to-end when no selection,
+    ;;                       preserving the pre-existing Ctrl+E binding)
+    (define msgsel-index #f)
     (define prompt-mode 'chat)
     (define stdscr #f)
     (define colors-enabled? #f)
@@ -1049,6 +1311,15 @@ and #f on any filesystem failure."
     (define (add-cmd-msg! content) (add-msg! "shell-cmd" content))
     (define (add-scm-msg! content) (add-msg! "scheme-in" content))
     (define (add-user-msg! content) (add-msg! "user" content))
+    ;; Toggle collapse of the currently selected message card. Selection may
+    ;; point at any message, but only collapsible ones (with content or
+    ;; thoughts) change state; the toggle itself is a pure alist update.
+    (define (toggle-selected-collapse!)
+            (let ((idx (min msgsel-index (- (length messages) 1))))
+              (let ((msg (list-ref messages idx)))
+                (when (message-collapsible? msg)
+                  (set! messages
+                        (replace-nth messages idx (message-toggle-collapsed msg)))))))
     (define (record-history! input mode)
             "Record a submitted INPUT under MODE in the shared input history
 and append it to the persistent history journal file."
@@ -1091,109 +1362,6 @@ and append it to the persistent history journal file."
                     (addstr win safe-str))
                   (lambda _
                     #f)))))
-    ;; Determine system badge text and color pair from content
-    (define (system-badge-and-pair content)
-            (cond
-              ((or (string-contains content "MCP Server")
-                   (string-prefix? "Active Model:" content))
-                (cons "ℹ MCP SERVERS" 1))
-              ((string-contains content "Configuration") (cons "⚙ CONFIGURATION" 1))
-              ((string-contains content "Guardrail") (cons "🛡 GUARDRAILS" 4))
-              ((string-contains content "Context Statistics") (cons "📊 CONTEXT" 1))
-              ((string-contains content "Features & Architecture") (cons "⚡ FEATURES" 1))
-              ((string-contains content "Help & Commands") (cons "📖 HELP" 1))
-              ((string-contains content "Test Suite") (cons "🧪 TESTS" 1))
-              ((string-contains content "ReAct") (cons "🔄 REACT" 4))
-              ((or (string-contains content "Journal") (string-contains content "Checkpoint"))
-                (cons "📓 JOURNAL" 1))
-              (else (cons "ℹ SYSTEM" 1))))
-    ;; Helper to wrap lines into a framed card descriptor
-    (define
-      (make-card-entry badge badge-pair-id role lines card-w inner-w)
-      (if (null? lines)
-        '()
-        (append
-          (list (list "card-top" badge badge-pair-id card-w))
-          (map
-            (lambda (l)
-              (list "card-body" role l inner-w))
-            lines)
-          (list (list "card-bot" card-w))
-          (list (list "spacer" "")))))
-    ;; Format a single message entry into card structure rows
-    (define (format-message-entry msg content-width)
-            (let*
-                ((role-val (assoc-ref msg 'role))
-                 (role
-                   (cond
-                     ((string? role-val) role-val)
-                     ((symbol? role-val) (symbol->string role-val))
-                     (else "system")))
-                 (raw-content (or (assoc-ref msg 'content) ""))
-                 (content
-                   (if (string? raw-content)
-                     raw-content
-                     (format #f "~a" raw-content)))
-                 (raw-thoughts (assoc-ref msg 'thoughts))
-                 (thoughts
-                   (and raw-thoughts
-                        (if (string? raw-thoughts)
-                          raw-thoughts
-                          (format #f "~a" raw-thoughts))))
-                 (card-w content-width)
-                 (inner-w (max 10 (- card-w 4))))
-              (cond
-                ((string=? role "assistant")
-                  (let*
-                      ((th-lines
-                         (if (non-empty-string? thoughts)
-                           (make-card-entry "💭 THOUGHT PROCESS"
-                                            1
-                                            "thought"
-                                            (wrap-text (string-trim-both thoughts) inner-w)
-                                            card-w
-                                            inner-w)
-                           '()))
-                       (ct-lines
-                         (if (non-empty-string? content)
-                           (make-card-entry "🤖 ASSISTANT"
-                                            3
-                                            "assistant"
-                                            (wrap-text content inner-w)
-                                            card-w
-                                            inner-w)
-                           '())))
-                    (if (and (null? th-lines) (null? ct-lines))
-                      (make-card-entry "🤖 ASSISTANT"
-                                       3
-                                       "assistant"
-                                       (wrap-text
-                                         (if (string-null? content)
-                                           "(empty response)"
-                                           content)
-                                         inner-w)
-                                       card-w
-                                       inner-w)
-                      (append th-lines ct-lines))))
-                (else
-                  (let-values
-                    (((badge pair-id role-tag text)
-                      (cond
-                        ((string=? role "user") (values "👤 USER" 2 "user" (string-trim-both content)))
-                        ((string=? role "system")
-                          (let ((bp (system-badge-and-pair content)))
-                            (values (car bp) (cdr bp) "system" content)))
-                        ((string=? role "error") (values "✗ ERROR" 5 "error" content))
-                        ((string=? role "shell-cmd") (values "🐚 SHELL COMMAND" 6 "shell-cmd" content))
-                        ((string=? role "shell-out") (values "🐚 SHELL OUTPUT" 6 "shell-out" content))
-                        ((string=? role "scheme-in") (values "λ SCHEME INPUT" 1 "scheme-in" content))
-                        ((string=? role "scheme-out")
-                          (values "λ SCHEME EVALUATION" 1 "scheme-out" content))
-                        ((or (string=? role "tool-call") (string=? role "tool"))
-                          (values "⚙ TOOL CALL" 4 "tool" content))
-                        ((string=? role "tool-result") (values "✓ TOOL RESULT" 2 "tool" content))
-                        (else (values "ℹ NOTICE" 1 "system" content)))))
-                    (make-card-entry badge pair-id role-tag (wrap-text text inner-w) card-w inner-w))))))
     ;; Render interior text of a card body row with semantic token highlights
     (define
       (draw-styled-interior y start-x text inner-w role)
@@ -1241,8 +1409,9 @@ and append it to the persistent history journal file."
                       (when bold? (attr-off! stdscr A_BOLD))
                       (set-color-attr! pair-id #f))
                     (loop (cdr segs) (+ cur-x len))))))))))
-    ;; Draw a single card row (top, body, bot, or spacer)
-    (define (draw-card-line y entry content-width)
+    ;; Draw a single card row (top, body, bot, summary, or spacer). SELECTED?
+    ;; paints an accent marker glyph into the top border of the selected card.
+    (define (draw-card-line y entry content-width selected?)
             (let ((kind (car entry)))
               (cond
                 ((string=? kind "spacer") #t)
@@ -1251,9 +1420,17 @@ and append it to the persistent history journal file."
                       ((badge (cadr entry)) (badge-pair (caddr entry))
                        (card-w (cadddr entry))
                        (right-col (+ 2 (- card-w 1))))
-                    (set-color-attr! 7 #t)
-                    (safe-addstr stdscr y 2 "╭─ " 3)
-                    (set-color-attr! 7 #f)
+                    (if selected?
+                      (begin
+                        (set-color-attr! 4 #t)
+                        (attr-on! stdscr A_BOLD)
+                        (safe-addstr stdscr y 2 "╭❯ " 3)
+                        (attr-off! stdscr A_BOLD)
+                        (set-color-attr! 4 #f))
+                      (begin
+                        (set-color-attr! 7 #t)
+                        (safe-addstr stdscr y 2 "╭─ " 3)
+                        (set-color-attr! 7 #f)))
                     (set-color-attr! badge-pair #t)
                     (attr-on! stdscr A_BOLD)
                     (when (string=? badge "💭 THOUGHT PROCESS") (attr-on! stdscr A_DIM))
@@ -1275,6 +1452,57 @@ and append it to the persistent history journal file."
                         (safe-addstr stdscr
                                      y
                                      cur-x
+                                     (make-string dash-count #\─)
+                                     dash-count))
+                      (safe-addstr stdscr y right-col "╮" 1)
+                      (set-color-attr! 7 #f))))
+                ;; Collapsed-message summary row: card-top border with the
+                ;; badge followed by a dim suffix (preview / expand hint)
+                ((string=? kind "card-summary")
+                  (let*
+                      ((badge (cadr entry)) (badge-pair (caddr entry))
+                       (suffix (cadddr entry))
+                       (card-w (car (cddddr entry)))
+                       (right-col (+ 2 (- card-w 1))))
+                    (if selected?
+                      (begin
+                        (set-color-attr! 4 #t)
+                        (attr-on! stdscr A_BOLD)
+                        (safe-addstr stdscr y 2 "╭❯ " 3)
+                        (attr-off! stdscr A_BOLD)
+                        (set-color-attr! 4 #f))
+                      (begin
+                        (set-color-attr! 7 #t)
+                        (safe-addstr stdscr y 2 "╭─ " 3)
+                        (set-color-attr! 7 #f)))
+                    (set-color-attr! badge-pair #t)
+                    (attr-on! stdscr A_BOLD)
+                    (when (string=? badge "💭 THOUGHT PROCESS") (attr-on! stdscr A_DIM))
+                    (let*
+                        ((avail-badge (max 1 (- card-w 8)))
+                         (badge-str
+                           (if (> (string-length badge) avail-badge)
+                             (substring badge 0 avail-badge)
+                             badge))
+                         (badge-padded (string-append badge-str " ")))
+                      (safe-addstr stdscr y 5 badge-padded (string-length badge-padded)))
+                    (when (string=? badge "💭 THOUGHT PROCESS") (attr-off! stdscr A_DIM))
+                    (attr-off! stdscr A_BOLD)
+                    (set-color-attr! badge-pair #f)
+                    (let*
+                        ((cur-x (+ 5 (string-length badge) 1))
+                         (suffix-len (min (string-length suffix)
+                                          (max 0 (- right-col cur-x))))
+                         (dash-count (max 0 (- right-col (+ cur-x suffix-len)))))
+                      (when (> suffix-len 0)
+                        (attr-on! stdscr A_DIM)
+                        (safe-addstr stdscr y cur-x suffix suffix-len)
+                        (attr-off! stdscr A_DIM))
+                      (set-color-attr! 7 #t)
+                      (when (> dash-count 0)
+                        (safe-addstr stdscr
+                                     y
+                                     (+ cur-x suffix-len)
                                      (make-string dash-count #\─)
                                      dash-count))
                       (safe-addstr stdscr y right-col "╮" 1)
@@ -1350,22 +1578,61 @@ and append it to the persistent history journal file."
                       (loop-borders (+ y 1))))
                   (set-color-attr! 7 #f)
                   ;; 3. Formatted Message History Cards
+                  ;; Rows are tagged with their owning message index so the
+                  ;; selection marker and auto-scroll can address messages,
+                  ;; not screen lines.
                   (let*
-                      ((formatted-lines
-                         (append-map
-                           (lambda (msg)
-                             (format-message-entry msg content-width))
+                      ((msg-count (length messages))
+                       (sel-idx (and msgsel-index
+                                     (< msgsel-index msg-count)
+                                     msgsel-index))
+                       (indexed-rows
+                         (map
+                           (lambda (idx msg)
+                             (map (lambda (entry)
+                                    (cons idx entry))
+                                  (format-message-entry msg content-width)))
+                           (iota msg-count)
                            messages))
+                       (formatted-lines (apply append indexed-rows))
                        (total-lines (length formatted-lines))
-                       (start-line (max 0 (- total-lines view-height scroll-offset)))
-                       (visible-lines
-                         (take (drop formatted-lines start-line)
-                               (min view-height (- total-lines start-line)))))
-                    (let loop
-                      ((lines visible-lines) (y view-top))
-                      (unless (or (null? lines) (>= y view-bottom))
-                        (draw-card-line y (car lines) content-width)
-                        (loop (cdr lines) (+ y 1)))))
+                       (max-scroll (max 0 (- total-lines view-height))))
+                    ;; Clamp scroll after collapse state changed line counts
+                    (set! scroll-offset (min scroll-offset max-scroll))
+                    ;; Keep the selected message inside the visible window
+                    (when sel-idx
+                      (let*
+                          ((row-counts (map length indexed-rows))
+                           (starts
+                             (let loop ((counts row-counts) (pos 0))
+                               (if (null? counts)
+                                 '()
+                                 (cons pos (loop (cdr counts) (+ pos (car counts)))))))
+                           (sel-start (list-ref starts sel-idx))
+                           (sel-end (+ sel-start (list-ref row-counts sel-idx)))
+                           (base-start (max 0 (- total-lines view-height scroll-offset)))
+                           (win-end (+ base-start view-height)))
+                        (cond
+                          ((< sel-start base-start)
+                            (set! scroll-offset
+                                  (min max-scroll (+ scroll-offset (- base-start sel-start)))))
+                          ((> sel-end win-end)
+                            (set! scroll-offset
+                                  (max 0 (- scroll-offset (- sel-end win-end))))))))
+                    (let*
+                        ((start-line (max 0 (- total-lines view-height scroll-offset)))
+                         (visible-lines
+                           (take (drop formatted-lines start-line)
+                                 (min view-height (- total-lines start-line)))))
+                      (let loop
+                        ((lines visible-lines) (y view-top))
+                        (unless (or (null? lines) (>= y view-bottom))
+                          (let ((tagged (car lines)))
+                            (draw-card-line y
+                                            (cdr tagged)
+                                            content-width
+                                            (and sel-idx (= (car tagged) sel-idx))))
+                          (loop (cdr lines) (+ y 1))))))
                   ;; 4. Prompt divider line with dynamic mode hint
                   (set-color-attr! 1 #t)
                   (safe-addstr stdscr (- maxy 3) 0 (format-prompt-divider maxx prompt-mode) maxx)
@@ -1540,7 +1807,11 @@ and append it to the persistent history journal file."
                                     (lambda (th ct)
                                       (set! messages
                                             (append messages
-                                                    (list `((role . "assistant") (thoughts . ,th) (content . ,ct))))))))
+                                                    (list
+                                                      (default-collapse-message
+                                                        `((role . "assistant")
+                                                          (thoughts . ,th)
+                                                          (content . ,ct)))))))))
                                 ((eq? verdict 'max-iterations-reached)
                                   (add-sys-msg!
                                     (format #f
@@ -1553,7 +1824,12 @@ and append it to the persistent history journal file."
                     ;; Direct Streaming Mode when no tools registered
                     (begin (set! status-text "STREAMING...")
                            (set! messages
-                                 (append messages (list `((role . "assistant") (thoughts . #f) (content . "")))))
+                                 (append messages
+                                         (list
+                                           (default-collapse-message
+                                             `((role . "assistant")
+                                               (thoughts . #f)
+                                               (content . ""))))))
                            (render!)
                            (catch #t
                              (lambda ()
@@ -1582,7 +1858,10 @@ and append it to the persistent history journal file."
                                                                 ((not (string-null? raw-api-thoughts)) raw-api-thoughts)
                                                                 (else inline-th)))
                                                             (updated-msg
-                                                              `((role . "assistant") (thoughts . ,total-th) (content . ,inline-ct))))
+                                                              (default-collapse-message
+                                                                `((role . "assistant")
+                                                                  (thoughts . ,total-th)
+                                                                  (content . ,inline-ct)))))
                                                          (if (pair? target-cell)
                                                            (set-car! target-cell updated-msg)
                                                            (set! messages (append (drop-right messages 1) (list updated-msg))))
@@ -2037,6 +2316,8 @@ and append it to the persistent history journal file."
                                    "  /quit, /exit      Exit TUI\n"
                                    "  !<command>        Execute shell command (or press ! at empty prompt)\n"
                                    "  ,<expr> or (..)   Evaluate Scheme code (or press ( at empty prompt)\n"
+                                   "  Ctrl+Up/Down      Select a message card in the viewport\n"
+                                   "  Ctrl+E            Expand or collapse the selected message\n"
                                    "  /sh <cmd>         Alias for shell command\n"
                                    "  /eval <expr>      Alias for Scheme eval")))
                 ((string=? cmd "guardrail") (handle-guardrail-cmd! arg))
@@ -2125,7 +2406,8 @@ and append it to the persistent history journal file."
                   (set! status-text "READY"))
                 ((string=? cmd "clear") (set! messages '())
                                         (set! llm-history (list (make-system-turn)))
-                                        (set! scroll-offset 0))
+                                        (set! scroll-offset 0)
+                                        (set! msgsel-index #f))
                 ((or (string=? cmd "quit") (string=? cmd "exit")) 'exit)
                 (else
                   (add-err-msg! (format #f "Unknown command: /~a (type /help for commands)" cmd))))))
@@ -2287,11 +2569,13 @@ and append it to the persistent history journal file."
                       (set! cursor-pos (string-length input-buffer))
                       (set! selector-index 0))))
                 (loop))
-              ;; Escape key: close selector palette or return to normal chat mode
+              ;; Escape key: close selector palette, return to normal chat
+              ;; mode, or clear the message selection on an empty buffer
               ((eqv? ch 27)
                 (cond
                   ((selector-active? input-buffer) (set! input-buffer "") (set! cursor-pos 0) (set! selector-index 0))
-                  ((not (eq? prompt-mode 'chat)) (set! prompt-mode 'chat) (set! input-buffer "") (set! cursor-pos 0)))
+                  ((not (eq? prompt-mode 'chat)) (set! prompt-mode 'chat) (set! input-buffer "") (set! cursor-pos 0))
+                  ((and msgsel-index (string-null? input-buffer)) (set! msgsel-index #f)))
                 (loop))
               ;; Up Arrow: navigate selector up, or recall older history
               ((eqv? ch KEY_UP)
@@ -2348,6 +2632,22 @@ and append it to the persistent history journal file."
               ((eqv? ch KEY_PPAGE) (set! scroll-offset (+ scroll-offset 5)) (loop))
               ;; Page Down / Scroll Down
               ((eqv? ch KEY_NPAGE) (set! scroll-offset (max 0 (- scroll-offset 5))) (loop))
+              ;; Ctrl+P (control char 16, arrives as Ctrl+Up): select the
+              ;; previous message card, starting from the newest message
+              ((eqv? ch 16)
+                (unless (null? messages)
+                  (set! msgsel-index
+                        (if msgsel-index
+                          (max 0 (- msgsel-index 1))
+                          (- (length messages) 1))))
+                (loop))
+              ;; Ctrl+N (control char 14, arrives as Ctrl+Down): advance the
+              ;; message selection to the next card (no-op without selection)
+              ((eqv? ch 14)
+                (when (and msgsel-index (pair? messages))
+                  (set! msgsel-index
+                        (min (- (length messages) 1) (+ msgsel-index 1))))
+                (loop))
               ;; Left Arrow: move editing cursor left
               ((eqv? ch KEY_LEFT)
                 (set! cursor-pos (clamp-cursor (- cursor-pos 1) input-buffer))
@@ -2360,9 +2660,19 @@ and append it to the persistent history journal file."
               ((or (eqv? ch KEY_HOME) (eqv? ch 1))
                 (set! cursor-pos 0)
                 (loop))
-              ;; End or Ctrl+E: move editing cursor to end of input
-              ((or (eqv? ch KEY_END) (eqv? ch 5))
+              ;; End: move editing cursor to end of input
+              ((eqv? ch KEY_END)
                 (set! cursor-pos (string-length input-buffer))
+                (loop))
+              ;; Ctrl+E (control char 5): toggle collapse of the selected
+              ;; message card, or move editing cursor to end of input when
+              ;; no message is selected (pre-existing binding)
+              ((eqv? ch 5)
+                (if (and msgsel-index
+                         (pair? messages)
+                         (< msgsel-index (length messages)))
+                  (toggle-selected-collapse!)
+                  (set! cursor-pos (string-length input-buffer)))
                 (loop))
               ;; Delete: delete character at editing cursor
               ((eqv? ch KEY_DC)

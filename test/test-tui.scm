@@ -829,4 +829,198 @@
                   (car loaded)))
     (catch #t (lambda () (delete-file path)) (lambda _ #f))))
 
+;;;
+;;; 17. Message Collapse State Helpers
+;;;
+(test-group "tui-message-collapse"
+  ;; Flag presence & lookup
+  (test-assert "absent collapsed flag means not collapsed"
+               (not (message-collapsed? `((role . "user") (content . "hi")))))
+  (test-assert "truthy collapsed flag means collapsed"
+               (message-collapsed? `((role . "user") (content . "hi") (collapsed? . #t))))
+
+  ;; make-collapsed-message: pure constructor
+  (let ((orig `((role . "assistant") (thoughts . "abc") (content . "def"))))
+    (test-assert "make-collapsed-message sets the flag"
+                 (message-collapsed? (make-collapsed-message orig)))
+    (test-assert "make-collapsed-message leaves the original untouched"
+                 (not (message-collapsed? orig))))
+
+  ;; message-with-collapsed: pure update / removal
+  (let* ((orig `((role . "user") (content . "hi")))
+         (collapsed (message-with-collapsed orig #t))
+         (restored (message-with-collapsed collapsed #f)))
+    (test-assert "message-with-collapsed #t collapses" (message-collapsed? collapsed))
+    (test-assert "message-with-collapsed #f expands" (not (message-collapsed? restored)))
+    (test-equal "flag removal round-trips to the original alist" orig restored))
+
+  ;; Toggle round-trip preserving payload fields
+  (let* ((m `((role . "assistant") (thoughts . "deep thoughts") (content . "final answer")))
+         (once (message-toggle-collapsed m))
+         (twice (message-toggle-collapsed once)))
+    (test-assert "toggle collapses an expanded message" (message-collapsed? once))
+    (test-assert "toggle expands a collapsed message" (not (message-collapsed? twice)))
+    (test-equal "round-trip preserves role" "assistant" (assoc-ref twice 'role))
+    (test-equal "round-trip preserves thoughts" "deep thoughts" (assoc-ref twice 'thoughts))
+    (test-equal "round-trip preserves content" "final answer" (assoc-ref twice 'content)))
+
+  ;; default-collapsed-role? per role
+  (test-assert "thought cards collapse by default" (default-collapsed-role? "thought"))
+  (test-assert "thinking cards collapse by default" (default-collapsed-role? "thinking"))
+  (test-assert "symbol thought collapses by default" (default-collapsed-role? 'thought))
+  (for-each
+    (lambda (r)
+      (test-assert (format #f "role '~a' stays expanded by default" r)
+                   (not (default-collapsed-role? r))))
+    '("user" "assistant" "system" "notice" "error" "shell-cmd" "shell-out"
+      "scheme-in" "scheme-out" "tool-call" "tool-result"))
+
+  ;; message-collapsible?
+  (test-assert "user message with content is collapsible"
+               (message-collapsible? `((role . "user") (content . "hi"))))
+  (test-assert "assistant message with thoughts is collapsible"
+               (message-collapsible? `((role . "assistant") (thoughts . "hmm") (content . ""))))
+  (test-assert "empty message is not collapsible"
+               (not (message-collapsible? `((role . "user") (content . "")))))
+  (test-assert "whitespace-only message is not collapsible"
+               (not (message-collapsible? `((role . "notice") (content . "   ")))))
+
+  ;; default-collapse-message policy
+  (test-assert "assistant with thoughts collapses by default"
+               (message-collapsed?
+                 (default-collapse-message
+                   `((role . "assistant") (thoughts . "hmm") (content . "c")))))
+  (test-assert "assistant without thoughts stays expanded"
+               (not (message-collapsed?
+                      (default-collapse-message
+                        `((role . "assistant") (thoughts . #f) (content . "c"))))))
+  (test-assert "user messages never collapse by default"
+               (not (message-collapsed?
+                      (default-collapse-message `((role . "user") (content . "hi"))))))
+  (test-assert "explicit user collapse is preserved"
+               (message-collapsed?
+                 (default-collapse-message
+                   `((role . "user") (content . "hi") (collapsed? . #t)))))
+  (test-assert "explicit user expansion is preserved"
+               (not (message-collapsed?
+                       (default-collapse-message
+                         `((role . "assistant") (thoughts . "hmm") (content . "c")
+                           (collapsed? . #f))))))
+
+  ;; Summary suffixes
+  (let ((s (collapsed-summary-suffix
+             `((role . "assistant")
+               (thoughts . "I need to think about this problem")
+               (content . "x"))
+             5)))
+    (test-assert "thought suffix previews the reasoning text"
+                 (string-contains s "I need to think"))
+    (test-assert "thought suffix mentions the toggle key"
+                 (string-contains s "ctrl+e"))
+    (test-assert "thought suffix mentions the hidden line count"
+                 (string-contains s "5")))
+  (let ((s (collapsed-summary-suffix `((role . "user") (content . "hi")) 3)))
+    (test-assert "generic suffix uses the collapse hint"
+                 (string-contains s "(collapsed - ctrl+e to expand)"))
+    (test-assert "generic suffix mentions the hidden line count"
+                 (string-contains s "3 lines hidden")))
+
+  ;; Thought previews
+  (test-equal "preview keeps short thoughts intact"
+              "short thought"
+              (thoughts-preview "short thought"))
+  (test-equal "preview truncates at 40 characters"
+              40
+              (string-length (thoughts-preview (make-string 90 #\a))))
+  (test-equal "preview uses only the first line"
+              "first line"
+              (thoughts-preview "first line\nsecond line")))
+
+;;;
+;;; 18. Collapse-Aware Card Rendering (format-message-entry)
+;;;
+(test-group "tui-collapse-rendering"
+  ;; Collapsed non-assistant message: exactly one content row
+  (let* ((msg `((role . "user")
+               (content . "a longer user message that wraps across a couple of lines")))
+         (rows (format-message-entry (make-collapsed-message msg) 40))
+         (content-rows (filter (lambda (e) (not (string=? (car e) "spacer"))) rows)))
+    (test-equal "collapsed message renders exactly one content row"
+                1
+                (length content-rows))
+    (test-equal "collapsed row is a card-summary row"
+                "card-summary"
+                (car (car content-rows)))
+    (test-equal "collapsed row keeps the expanded badge"
+                "👤 USER"
+                (cadr (car content-rows)))
+    (test-assert "collapsed suffix documents the expand key"
+                 (string-contains (cadddr (car content-rows)) "ctrl+e")))
+
+  ;; Expanded message renders the full card
+  (let* ((msg `((role . "user") (content . "hello from the user")))
+         (rows (format-message-entry msg 40)))
+    (test-assert "expanded message renders a card-top row"
+                 (any (lambda (e) (string=? (car e) "card-top")) rows))
+    (test-assert "expanded message renders a card-body row"
+                 (any (lambda (e) (string=? (car e) "card-body")) rows))
+    (test-assert "expanded message renders a card-bot row"
+                 (any (lambda (e) (string=? (car e) "card-bot")) rows))
+    (test-equal "expanded message ends with a spacer row"
+                "spacer"
+                (car (last rows))))
+
+  ;; Collapsed assistant reasoning: one summary row, content card visible
+  (let* ((msg `((role . "assistant")
+                (thoughts . "internal reasoning about the task")
+                (content . "final answer")))
+         (rows (format-message-entry (make-collapsed-message msg) 60))
+         (summaries (filter (lambda (e) (string=? (car e) "card-summary")) rows))
+         (bodies (filter (lambda (e) (string=? (car e) "card-body")) rows)))
+    (test-equal "collapsed thoughts render one summary row"
+                1
+                (length summaries))
+    (test-equal "summary row carries the thought badge"
+                "💭 THOUGHT PROCESS"
+                (cadr (car summaries)))
+    (test-assert "summary row previews the reasoning text"
+                 (string-contains (cadddr (car summaries)) "internal reasoning"))
+    (test-equal "assistant content body stays visible"
+                "final answer"
+                (caddr (car bodies)))
+    (test-assert "no thought body rows while collapsed"
+                 (not (any (lambda (e)
+                             (and (string=? (car e) "card-body")
+                                  (string=? (cadr e) "thought")))
+                           rows))))
+
+  ;; Expanded assistant reasoning: full thought card plus content card
+  (let* ((msg `((role . "assistant") (thoughts . "internal reasoning") (content . "answer")))
+         (rows (format-message-entry msg 60)))
+    (test-assert "expanded thoughts render thought body rows"
+                 (any (lambda (e)
+                        (and (string=? (car e) "card-body")
+                             (string=? (cadr e) "thought")))
+                      rows))
+    (test-assert "expanded assistant renders content body rows"
+                 (any (lambda (e)
+                        (and (string=? (car e) "card-body")
+                             (string=? (cadr e) "assistant")))
+                      rows))
+    (test-assert "expanded reasoning renders no summary rows"
+                 (not (any (lambda (e) (string=? (car e) "card-summary")) rows))))
+
+  ;; Collapsing shrinks the rendered row count
+  (let* ((msg `((role . "user")
+                (content . "line one of a fairly long message that will wrap around the narrow column limit")))
+         (expanded-count (length (format-message-entry msg 40)))
+         (collapsed-count (length (format-message-entry (make-collapsed-message msg) 40))))
+    (test-assert "collapsed renders fewer rows than expanded"
+                 (< collapsed-count expanded-count)))
+
+  ;; Non-collapsible message ignores the collapse flag
+  (let ((rows (format-message-entry `((role . "user") (content . "") (collapsed? . #t)) 40)))
+    (test-assert "empty message ignores the collapse flag"
+                 (any (lambda (e) (string=? (car e) "card-top")) rows))))
+
 (test-end "badb-tui")
