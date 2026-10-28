@@ -3,9 +3,11 @@
 ;;; Interactive full-screen terminal interface for badb powered by guile-ncurses.
 ;;; Provides live streaming LLM chat with separated thought reasoning cards,
 ;;; modal prompt switching (! for shell, ( or , for Scheme, backspace to return),
-;;; interactive slash-command selector palette, and modern 2020s container styling.
-;;; Message cards are collapsible: reasoning collapses to a single summary line
-;;; by default; Ctrl+Up/Ctrl+Down select a card and Ctrl+E toggles collapse.
+;;; interactive slash-command selector palette, menu-driven configuration
+;;; flows (/config, /model, /endpoint open interactive menus), and modern
+;;; 2020s container styling. Message cards are collapsible: reasoning
+;;; collapses to a single summary line by default; Ctrl+Up/Ctrl+Down select a
+;;; card and Ctrl+E toggles collapse.
 
 (define-module (badb tui)
   #:use-module (badb model)
@@ -19,6 +21,7 @@
   #:use-module (badb context)
   #:use-module (badb prompt)
   #:use-module (badb rollback)
+  #:use-module (badb theme)
   #:use-module (badb verify)
   #:use-module (badb util)
   #:use-module (json)
@@ -44,6 +47,19 @@
             %slash-commands
             matching-slash-commands
             selector-active?
+            %menu-max-visible
+            make-menu
+            menu?
+            menu-title
+            menu-items
+            menu-selected-index
+            menu-count
+            menu-move
+            menu-selected-item
+            menu-visible-slice
+            menu-item-label
+            menu-item-description
+            menu-item-action
             get-prompt-indicator
             format-header-line
             format-prompt-divider
@@ -947,6 +963,109 @@ and THOUGHTS fields. CARD-W and INNER-W follow make-card-entry geometry."
                 (list "spacer" "")))))))
 
 ;;;
+;;; Interactive Menu Model
+;;;
+;; Pure data model for the interactive menu pop-ups (the /config, /model and
+;; /endpoint flows). A menu is a plain record of a title, an item list, and
+;; a selected index; items carry their actions as data — a symbol or a small
+;; (tag . value) pair — so the model stays pure and testable without any
+;; curses or handler wiring.
+(define %menu-max-visible 12)
+
+(define-record-type <menu>
+  (%make-menu title items selected-index)
+  menu?
+  (title menu-title)
+  (items menu-items)
+  (selected-index menu-selected-index))
+
+(define (normalize-menu-item item)
+  "Coerce raw ITEM into canonical ((label . description) . action) form.
+Accepts a head that is a (label . description) pair or a bare label, with
+the action data carried in the tail."
+  (let* ((head (if (pair? item) (car item) item))
+         (label (if (pair? head) (car head) head))
+         (desc (if (pair? head) (cdr head) #f))
+         (action (if (pair? item) (cdr item) #f)))
+    (cons (cons (ensure-string label) (ensure-string (or desc ""))) action)))
+
+(define* (make-menu title items #:key (selected-index 0))
+  "Create a menu titled TITLE from ITEMS, each of the form
+((label . description) . action), with SELECTED-INDEX preselected. The
+index is clamped into the valid range and the title coerced to a string."
+  (let* ((norm-items (map normalize-menu-item (if (list? items) items '())))
+         (count (length norm-items))
+         (idx (min (max 0 selected-index) (max 0 (- count 1)))))
+    (%make-menu (ensure-string (or title "Menu")) norm-items idx)))
+
+(define (menu-count menu)
+  "Return the number of items in MENU."
+  (length (menu-items menu)))
+
+(define (menu-move menu delta)
+  "Return a new MENU with the selection moved by DELTA positions, wrapping
+around at both ends. Empty menus are returned unchanged."
+  (let ((count (menu-count menu)))
+    (if (= count 0)
+        menu
+        (let ((m (remainder (+ (menu-selected-index menu) delta) count)))
+          (%make-menu (menu-title menu)
+                      (menu-items menu)
+                      (if (< m 0) (+ m count) m))))))
+
+(define (menu-selected-item menu)
+  "Return the currently selected item of MENU, or #f when it is empty."
+  (let ((count (menu-count menu)))
+    (if (= count 0)
+        #f
+        (list-ref (menu-items menu)
+                  (min (max 0 (menu-selected-index menu)) (- count 1))))))
+
+(define (menu-visible-slice menu max-visible)
+  "Return (values visible-items offset): the window of at most MAX-VISIBLE
+items of MENU positioned so the selected item stays on screen. OFFSET is
+the index of the first returned item within the full item list, for scroll
+indicators. Menus that fit return every item with offset 0."
+  (let* ((items (menu-items menu))
+         (count (length items))
+         (cap (max 1 max-visible))
+         (sel (min (max 0 (menu-selected-index menu)) (max 0 (- count 1)))))
+    (if (<= count cap)
+        (values items 0)
+        (let ((start (min (max 0 (- (+ sel 1) cap)) (- count cap))))
+          (values (take (drop items start) cap) start)))))
+
+(define (menu-item-label item)
+  "Return the label string of menu ITEM."
+  (if (and (pair? item) (pair? (car item))) (ensure-string (caar item)) ""))
+
+(define (menu-item-description item)
+  "Return the description string of menu ITEM."
+  (if (and (pair? item) (pair? (car item))) (ensure-string (cdar item)) ""))
+
+(define (menu-item-action item)
+  "Return the action data carried by menu ITEM (a symbol, a small pair, or
+other plain data); #f when the item carries none."
+  (if (pair? item) (cdr item) #f))
+
+;; Short descriptions for the built-in themes shown in the Theme menu.
+(define %theme-descriptions
+  '(("badb-dark" . "Cyan & green on black (default)")
+    ("midnight" . "Deep blue night palette")
+    ("nord" . "Nord-inspired cool blues")
+    ("solarized-dark" . "Solarized dark warm tones")
+    ("paper" . "Light paper-like scheme")
+    ("mono" . "Monochrome, no colors")))
+
+;; Guardrail policy levels with short descriptions for the Guardrail menu.
+(define %guardrail-levels
+  '((disabled . "No guardrail restrictions")
+    (permissive . "Ask only on high-risk commands")
+    (cautious . "Deny destructive, ask mutations (default)")
+    (strict . "Deny dangerous, ask for everything")
+    (paranoid . "Deny all state mutations")))
+
+;;;
 ;;; Main TUI Controller
 ;;;
 (define*
@@ -1281,7 +1400,8 @@ and THOUGHTS fields. CARD-W and INNER-W follow make-card-entry geometry."
                                 "• Type ( or , to switch to Scheme REPL mode (λ)\n"
                                 "• Type Backspace at empty prompt to return to chat mode (❯)\n"
                                 "• Press Ctrl+Up / Ctrl+Down to select a message, Ctrl+E to collapse or expand it\n"
-                                "• Type / to open command selector palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context).")))))
+                                "• Type / to open command selector palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context)\n"
+                                "• Type /config, /model or /endpoint alone to browse interactive menus (Up/Down move, Enter apply, Esc close).")))))
     (define llm-history (list (make-system-turn)))
     (define input-buffer "")
     (define cursor-pos 0)
@@ -1292,6 +1412,10 @@ and THOUGHTS fields. CARD-W and INNER-W follow make-card-entry geometry."
     (define scroll-offset 0)
     (define status-text "READY")
     (define selector-index 0)
+    ;; Active interactive menu (a <menu> record or #f). While set it renders
+    ;; as a floating pop-up and takes key priority: Up/Down move, Enter
+    ;; applies the selected item, Esc closes.
+    (define active-menu #f)
     ;; Viewport message selection index (#f = inactive) for collapse control.
     ;; Key bindings (single control chars, non-conflicting with existing codes):
     ;;   Ctrl+P (char 16) = Ctrl+Up   select previous message card
@@ -1727,6 +1851,118 @@ and append it to the persistent history journal file."
                             (set-color-attr! 4 #t)
                             (safe-addstr stdscr (+ start-y 1 vis-count) start-x bot-str box-w)
                             (set-color-attr! 4 #f))))))
+                  ;; 8. Floating Menu Popup Overlay (same visual language as
+                  ;; the slash selector: rounded box, ❯ cursor, reversed
+                  ;; selected row, capped visible rows with scroll indicators)
+                  (when active-menu
+                    (let ((m-count (menu-count active-menu)))
+                      (when (> m-count 0)
+                        (call-with-values
+                          (lambda ()
+                            (menu-visible-slice
+                              active-menu
+                              (min %menu-max-visible (max 1 (- maxy 5)))))
+                          (lambda (vis-items offset)
+                            (let*
+                                ((vis-count (length vis-items))
+                                 (sel-idx (menu-selected-index active-menu))
+                                 (label-w
+                                   (fold
+                                     (lambda (it acc)
+                                       (max acc (string-length (menu-item-label it))))
+                                     0 vis-items))
+                                 (desc-w
+                                   (fold
+                                     (lambda (it acc)
+                                       (max acc (string-length (menu-item-description it))))
+                                     0 vis-items))
+                                 (box-w (min (max 24 (+ 8 label-w desc-w))
+                                             (max 20 (- maxx 4))))
+                                 (box-h (+ vis-count 2))
+                                 (start-y (- maxy 3 box-h))
+                                 (start-x 2)
+                                 (inner-w (- box-w 4))
+                                 (top-tag
+                                   (string-append
+                                     "╭─ "
+                                     (menu-title active-menu)
+                                     (if (> offset 0)
+                                       (format #f " ↑~a " offset)
+                                       " ")))
+                                 (top-str
+                                   (string-append
+                                     top-tag
+                                     (make-string
+                                       (max 0 (- box-w (string-length top-tag) 1))
+                                       #\─)
+                                     "╮")))
+                              (when (>= start-y 1)
+                                (set-color-attr! 4 #t)
+                                (safe-addstr stdscr start-y start-x top-str box-w)
+                                (set-color-attr! 4 #f)
+                                (let loop
+                                  ((items vis-items) (idx offset))
+                                  (unless (null? items)
+                                    (let*
+                                        ((item (car items))
+                                         (is-sel? (= idx sel-idx))
+                                         (cursor
+                                           (if is-sel?
+                                             "❯ "
+                                             "  "))
+                                         (label (menu-item-label item))
+                                         (desc (menu-item-description item))
+                                         (label-pad
+                                           (make-string
+                                             (max 1 (- label-w (string-length label)))
+                                             #\space))
+                                         (content
+                                           (string-append cursor label label-pad " " desc))
+                                         (clipped
+                                           (if (> (string-length content) inner-w)
+                                             (substring content 0 inner-w)
+                                             content))
+                                         (pad
+                                           (make-string
+                                             (max 0 (- inner-w (string-length clipped)))
+                                             #\space))
+                                         (row-text
+                                           (string-append "│ " clipped pad " │"))
+                                         (row-y (+ start-y 1 (- idx offset))))
+                                      (if is-sel?
+                                        (begin (set-color-attr! 1 #t)
+                                               (attr-on! stdscr A_BOLD)
+                                               (attr-on! stdscr A_REVERSE)
+                                               (safe-addstr stdscr
+                                                            row-y
+                                                            start-x
+                                                            row-text
+                                                            box-w)
+                                               (attr-off! stdscr A_REVERSE)
+                                               (attr-off! stdscr A_BOLD)
+                                               (set-color-attr! 1 #f))
+                                        (safe-addstr stdscr row-y start-x row-text box-w))
+                                      (loop (cdr items) (+ idx 1)))))
+                                (let*
+                                    ((below (- m-count (+ offset vis-count)))
+                                     (bot-tag
+                                       (if (> below 0)
+                                         (format #f "╰─ ↓ ~a more " below)
+                                         "╰"))
+                                     (bot-str
+                                       (string-append
+                                         bot-tag
+                                         (make-string
+                                           (max 0 (- box-w (string-length bot-tag) 1))
+                                           #\─)
+                                         "╯")))
+                                  (set-color-attr! 4 #t)
+                                  (safe-addstr stdscr
+                                               (+ start-y 1 vis-count)
+                                               start-x
+                                               bot-str
+                                               box-w)
+                                  (set-color-attr! 4 #f)))))))))
                   (refresh stdscr)))
               (lambda (key . args)
                 #f)))
@@ -2109,7 +2345,10 @@ and append it to the persistent history journal file."
                      '()
                      (cdr tokens))))
               (cond
-                ((or (string=? subcmd "show") (string-null? arg))
+                ((string-null? arg)
+                  (set! active-menu
+                        (make-menu "Configuration" (config-menu-items))))
+                ((string=? subcmd "show")
                   (let*
                       ((global-path (default-global-config-path))
                        (local-path (default-local-config-path))
@@ -2205,6 +2444,201 @@ and append it to the persistent history journal file."
                     (begin (set-guardrail-policy-level! policy sym)
                            (add-sys-msg! (format #f "Guardrail policy level set to '~a'." sym)))
                     (add-err-msg! "Valid levels: disabled, permissive, cautious, strict, paranoid"))))))
+    ;; Interactive menu wiring: item lists for the config, model, endpoint,
+    ;; theme and guardrail menus plus selection dispatch. Items carry pure
+    ;; action data (symbols or (tag . value) pairs) interpreted by
+    ;; apply-menu-selection!, keeping construction and effects separated
+    ;; exactly like the pure menu model.
+    (define (prefill-input! text)
+            "Place TEXT in the input buffer with the cursor at its end and
+close any open menu, ready for the user to complete the command."
+            (set! active-menu #f)
+            (set! prompt-mode 'chat)
+            (set! input-buffer text)
+            (set! cursor-pos (string-length text)))
+    (define (switch-provider-preset! name)
+            "Switch the active model configuration to provider preset NAME,
+refreshing the client, saving, and reporting the outcome."
+            (if (badb-config-switch-provider! cfg name)
+              (begin (set! cur-model (badb-config-model-name cfg))
+                     (set! cur-endpoint (badb-config-model-endpoint cfg))
+                     (set! cur-api-key (badb-config-model-api-key cfg))
+                     (refresh-client!)
+                     (try-save-config!)
+                     (add-sys-msg!
+                       (format #f
+                               "Switched to provider '~a': model ~a at ~a (saved to config)"
+                               name
+                               cur-model
+                               cur-endpoint)))
+              (add-err-msg!
+                (format #f
+                        "Unknown provider preset '~a'. Use /provider to list presets."
+                        name))))
+    (define (handle-provider-cmd! arg)
+            "List configured provider presets or switch to the one named in ARG."
+            (let ((trimmed (string-trim-both arg)))
+              (if (string-null? trimmed)
+                (let ((provs (badb-config-providers cfg)))
+                  (if (null? provs)
+                    (add-sys-msg!
+                      "No provider presets configured.\nDefine presets under (options (providers ...)) in .badb/config.scm.")
+                    (add-sys-msg!
+                      (string-append
+                        "Configured Provider Presets:\n"
+                        (string-join
+                          (map
+                            (lambda (p)
+                              (format #f
+                                      "• ~a -> ~a"
+                                      (car p)
+                                      (or (get-prop (cdr p) 'endpoint #f)
+                                          "(no endpoint)")))
+                            provs)
+                          "\n")
+                        "\nUsage: /provider <name> to switch the active preset."))))
+                (switch-provider-preset! trimmed))))
+    (define (config-recorded-models)
+            "Collect the model names recorded in the configuration: the
+models of every provider preset, deduplicated in declaration order."
+            (delete-duplicates
+              (append-map
+                (lambda (p)
+                  (let ((raw (get-prop (cdr p) 'models #f)))
+                    (cond
+                      ((string? raw) (list raw))
+                      ((list? raw)
+                       (filter-map
+                         (lambda (m)
+                           (cond
+                             ((string? m) m)
+                             ((and (pair? m) (string? (car m))) (car m))
+                             ((and (pair? m) (string? (cdr m))) (cdr m))
+                             (else #f)))
+                         raw))
+                      (else '()))))
+                (badb-config-providers cfg))
+              equal?))
+    (define (model-menu-items)
+            "Build the model menu items: known models first (the active
+model plus models recorded in provider presets), then a manual entry item.
+The list is computed live so a future dynamic model listing drops in here."
+            (let ((known (delete-duplicates (cons cur-model (config-recorded-models))
+                                            equal?)))
+              (append
+                (map
+                  (lambda (m)
+                    (cons (cons m
+                                (if (string=? m cur-model)
+                                  "current model"
+                                  "recorded in config"))
+                          (cons 'set-model m)))
+                  known)
+                (list (cons (cons "Set model..." "Type a model name manually")
+                            'prefill-model)))))
+    (define (endpoint-menu-items)
+            "Build the endpoint menu items: configured provider presets plus
+a manual entry item."
+            (append
+              (map
+                (lambda (p)
+                  (let ((name (ensure-string (car p))))
+                    (cons (cons name (or (get-prop (cdr p) 'endpoint #f)
+                                         "provider preset"))
+                          (cons 'switch-provider name))))
+                (badb-config-providers cfg))
+              (list (cons (cons "Set endpoint..." "Type an endpoint URL manually")
+                          'prefill-endpoint))))
+    (define (theme-menu-items)
+            "Build the theme menu items from the built-in theme list."
+            (map
+              (lambda (name)
+                (cons (cons name
+                            (or (assoc-ref %theme-descriptions name)
+                                "Built-in color theme"))
+                      (cons 'set-theme name)))
+              (all-theme-names)))
+    (define (guardrail-menu-items)
+            "Build the guardrail level menu items; selecting one applies the
+level exactly like /guardrail <level> does."
+            (map
+              (lambda (entry)
+                (cons (cons (symbol->string (car entry)) (cdr entry))
+                      (cons 'set-guardrail (car entry))))
+              %guardrail-levels))
+    (define (config-menu-items)
+            "Build the top-level config menu items with live state woven
+into the descriptions."
+            (list (cons (cons "Model"
+                              (format #f "Switch active model (~a)" cur-model))
+                        'open-model-menu)
+                  (cons (cons "Endpoint"
+                              (format #f "Switch endpoint (~a)" cur-endpoint))
+                        'open-endpoint-menu)
+                  (cons (cons "Temperature"
+                              (format #f "Set sampling temperature (~a)"
+                                      (badb-config-model-temperature cfg)))
+                        'prefill-temperature)
+                  (cons (cons "Theme"
+                              (format #f "Choose UI color theme (~a)"
+                                      (or (badb-config-ui-theme cfg) "default")))
+                        'open-theme-menu)
+                  (cons (cons "Guardrail"
+                              (format #f "Set policy level (~a)"
+                                      (guardrail-policy-level policy)))
+                        'open-guardrail-menu)
+                  (cons (cons "Reload" "Reload configuration from disk")
+                        'config-reload)
+                  (cons (cons "Save" "Save configuration to disk") 'config-save)))
+    (define (apply-menu-selection! item)
+            "Apply the action data carried by the selected menu ITEM, closing
+any open menu first; submenu actions open the next menu in its place."
+            (set! active-menu #f)
+            (let ((action (menu-item-action item)))
+              (cond
+                ((symbol? action)
+                  (case action
+                    ((open-config-menu)
+                      (set! active-menu
+                            (make-menu "Configuration" (config-menu-items))))
+                    ((open-model-menu)
+                      (set! active-menu (make-menu "Model" (model-menu-items))))
+                    ((open-endpoint-menu)
+                      (set! active-menu (make-menu "Endpoint" (endpoint-menu-items))))
+                    ((open-theme-menu)
+                      (set! active-menu (make-menu "Theme" (theme-menu-items))))
+                    ((open-guardrail-menu)
+                      (set! active-menu
+                            (make-menu "Guardrail" (guardrail-menu-items))))
+                    ((prefill-model) (prefill-input! "/model "))
+                    ((prefill-endpoint) (prefill-input! "/endpoint "))
+                    ((prefill-temperature)
+                      (prefill-input! "/config set temperature "))
+                    ((config-reload) (handle-config-cmd! "reload"))
+                    ((config-save) (handle-config-cmd! "save"))
+                    (else
+                      (add-err-msg! (format #f "Unknown menu action: ~a" action)))))
+                ((and (pair? action) (eq? (car action) 'set-model))
+                  (let ((m (cdr action)))
+                    (set! cur-model m)
+                    (badb-config-set-model-name! cfg m)
+                    (refresh-client!)
+                    (try-save-config!)
+                    (add-sys-msg!
+                      (format #f "Model switched to: ~a (saved to config)" m))))
+                ((and (pair? action) (eq? (car action) 'switch-provider))
+                  (switch-provider-preset! (cdr action)))
+                ((and (pair? action) (eq? (car action) 'set-theme))
+                  (let ((name (cdr action)))
+                    (badb-config-set-ui-theme! cfg name)
+                    (try-save-config!)
+                    (add-sys-msg!
+                      (format #f
+                              "UI theme set to '~a' and saved. Restart the TUI to apply it."
+                              name))))
+                ((and (pair? action) (eq? (car action) 'set-guardrail))
+                  (handle-guardrail-cmd! (symbol->string (cdr action))))
+                (else (add-err-msg! "Unsupported menu action.")))))
     ;; Handle context compaction command
     (define (handle-compact-cmd! arg)
             (let*
@@ -2299,10 +2733,10 @@ and append it to the persistent history journal file."
                   (add-sys-msg!
                     (string-append "Available Commands:\n"
                                    "  /help             Display this help message\n"
-                                   "  /model [NAME]     Show or switch active LLM model\n"
-                                   "  /endpoint [URL]   Show or switch endpoint URL\n"
+                                   "  /model [NAME]     Switch LLM model; no argument opens a menu\n"
+                                   "  /endpoint [URL]   Switch endpoint URL; no argument opens a menu\n"
                                    "  /mcp [CMD]        Manage MCP servers (list, start, stop, add, remove, tools)\n"
-                                   "  /config [CMD]     Inspect or reload configuration (show, reload, save, set)\n"
+                                   "  /config [CMD]     Inspect, reload, save, set configuration; no argument opens a menu\n"
                                    "  /guardrail [LVL]  Set policy level (disabled, permissive, cautious, strict, paranoid)\n"
                                    "  /compact          Compact conversation history\n"
                                    "  /checkpoint [DSC] Create a rollback checkpoint snapshot\n"
@@ -2318,6 +2752,7 @@ and append it to the persistent history journal file."
                                    "  ,<expr> or (..)   Evaluate Scheme code (or press ( at empty prompt)\n"
                                    "  Ctrl+Up/Down      Select a message card in the viewport\n"
                                    "  Ctrl+E            Expand or collapse the selected message\n"
+                                   "  Menu keys         Up/Down move, Enter apply, Esc close (menus: /config, /model, /endpoint)\n"
                                    "  /sh <cmd>         Alias for shell command\n"
                                    "  /eval <expr>      Alias for Scheme eval")))
                 ((string=? cmd "guardrail") (handle-guardrail-cmd! arg))
@@ -2328,7 +2763,7 @@ and append it to the persistent history journal file."
                 ((string=? cmd "context") (handle-context-cmd! arg))
                 ((string=? cmd "model")
                   (if (string-null? arg)
-                    (add-sys-msg! (format #f "Current model: ~a" cur-model))
+                    (set! active-menu (make-menu "Model" (model-menu-items)))
                     (begin (set! cur-model arg)
                            (badb-config-set-model-name! cfg arg)
                            (refresh-client!)
@@ -2336,7 +2771,7 @@ and append it to the persistent history journal file."
                            (add-sys-msg! (format #f "Model switched to: ~a (saved to config)" cur-model)))))
                 ((string=? cmd "endpoint")
                   (if (string-null? arg)
-                    (add-sys-msg! (format #f "Current endpoint: ~a" cur-endpoint))
+                    (set! active-menu (make-menu "Endpoint" (endpoint-menu-items)))
                     (begin (set! cur-endpoint arg)
                            (badb-config-set-model-endpoint! cfg arg)
                            (refresh-client!)
@@ -2478,6 +2913,27 @@ and append it to the persistent history journal file."
             (unless (or (eqv? ch KEY_UP) (eqv? ch KEY_DOWN))
               (history-reset-nav input-history))
             (cond
+              ;; Active menu popup: takes priority over the selector, input
+              ;; and scroll keys. Up/Down move the selection, Enter applies
+              ;; it, Esc closes; other keys are swallowed while the menu is
+              ;; open, except Ctrl+C / Ctrl+D which still exit below.
+              ((and active-menu (not (or (eqv? ch 3) (eqv? ch 4))))
+                (cond
+                  ((eqv? ch KEY_UP)
+                    (set! active-menu (menu-move active-menu -1)))
+                  ((eqv? ch KEY_DOWN)
+                    (set! active-menu (menu-move active-menu 1)))
+                  ((eqv? ch 27) (set! active-menu #f))
+                  ((or (eqv? ch KEY_ENTER)
+                       (eqv? ch #\newline)
+                       (eqv? ch #\return)
+                       (eqv? ch 10)
+                       (eqv? ch 13))
+                    (let ((item (menu-selected-item active-menu)))
+                      (when item
+                        (apply-menu-selection! item))))
+                  (else #f))
+                (loop))
               ;; Enter key: process buffer, execute modal command, or complete selector
               ((or (eqv? ch KEY_ENTER)
                    (eqv? ch #\newline)
@@ -2500,7 +2956,10 @@ and append it to the persistent history journal file."
                             (loop))))
                       (let ((chosen (selected-command-name matches)))
                         (cond
-                          ((member chosen '("model" "endpoint" "provider" "sh" "eval"))
+                          ;; Commands that still need a typed argument get
+                          ;; prefilled; model/endpoint/config now open their
+                          ;; interactive menus via the no-argument flow.
+                          ((member chosen '("provider" "sh" "eval"))
                             (set! input-buffer (string-append "/" chosen " "))
                             (set! cursor-pos (string-length input-buffer))
                             (set! selector-index 0)

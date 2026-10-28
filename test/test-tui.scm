@@ -1023,4 +1023,123 @@
     (test-assert "empty message ignores the collapse flag"
                  (any (lambda (e) (string=? (car e) "card-top")) rows))))
 
+;;;
+;;; 19. Interactive Menu Model (make-menu & friends)
+;;;
+(test-group "tui-menu-model"
+  ;; Construction & accessors
+  (let* ((items (list (cons (cons "Model" "Switch model") 'open-model)
+                      (cons (cons "Endpoint" "Switch endpoint") 'open-endpoint)
+                      (cons (cons "Theme" "Choose theme") 'open-theme)))
+         (m (make-menu "Configuration" items)))
+    (test-assert "make-menu returns a menu" (menu? m))
+    (test-equal "menu title is stored" "Configuration" (menu-title m))
+    (test-equal "menu count is 3" 3 (menu-count m))
+    (test-equal "default selected index is 0" 0 (menu-selected-index m))
+    (test-equal "selected item is the first item" (car items) (menu-selected-item m))
+    (test-equal "menu items are preserved" 3 (length (menu-items m))))
+
+  ;; Item accessors: label, description, action data
+  (let ((item (cons (cons "Theme" "Choose UI theme") (cons 'set-theme "nord"))))
+    (test-equal "menu-item-label returns the label" "Theme" (menu-item-label item))
+    (test-equal "menu-item-description returns the description"
+                "Choose UI theme"
+                (menu-item-description item))
+    (test-equal "menu-item-action returns the action data"
+                '(set-theme . "nord")
+                (menu-item-action item)))
+
+  ;; Bare-string items are normalized with an empty description
+  (let ((m (make-menu "T" (list "plain"))))
+    (test-equal "bare string item normalized to a label"
+                "plain"
+                (menu-item-label (menu-selected-item m)))
+    (test-equal "bare string item has empty description"
+                ""
+                (menu-item-description (menu-selected-item m))))
+
+  ;; #:selected-index keyword & clamping
+  (let ((m (make-menu "T"
+                      (list (cons (cons "a" "1") 'x)
+                            (cons (cons "b" "2") 'y)
+                            (cons (cons "c" "3") "z"))
+                      #:selected-index 1)))
+    (test-equal "selected index keyword is honored" 1 (menu-selected-index m))
+    (test-equal "selected item follows the index"
+                "b"
+                (menu-item-label (menu-selected-item m))))
+  (let ((m (make-menu "T" (list (cons (cons "a" "1") 'x)) #:selected-index 42)))
+    (test-equal "selected index clamps to the last item" 0 (menu-selected-index m)))
+  (let ((m (make-menu "T" '())))
+    (test-equal "empty menu count is 0" 0 (menu-count m))
+    (test-equal "empty menu selected index stays 0" 0 (menu-selected-index m))
+    (test-assert "empty menu has no selected item" (not (menu-selected-item m))))
+
+  ;; menu-move: advancing, retreating, and wrap-around
+  (let* ((items (map (lambda (i) (cons (cons (format #f "i~a" i) "") i)) (iota 3)))
+         (m (make-menu "T" items)))
+    (test-assert "menu-move returns a fresh menu" (menu? (menu-move m 1)))
+    (test-equal "menu-move preserves the item list"
+                (menu-items m)
+                (menu-items (menu-move m 1)))
+    (test-equal "move down advances the selection" 1 (menu-selected-index (menu-move m 1)))
+    (test-equal "move up retreats the selection"
+                1
+                (menu-selected-index
+                  (menu-move (make-menu "T" items #:selected-index 2) -1)))
+    (test-equal "move down past the end wraps to the top"
+                0
+                (menu-selected-index (menu-move (menu-move (menu-move m 1) 1) 1)))
+    (test-equal "move up at the top wraps to the bottom"
+                2
+                (menu-selected-index (menu-move m -1)))
+    (test-equal "large deltas wrap modulo the count"
+                1
+                (menu-selected-index (menu-move m 7))))
+
+  ;; menu-move on an empty menu is a no-op
+  (let ((m (make-menu "T" '())))
+    (test-equal "moving an empty menu changes nothing" m (menu-move m 1)))
+
+  ;; menu-visible-slice: short menus return everything with offset 0
+  (let ((m (make-menu "T" (list (cons (cons "a" "1") 'x)
+                                (cons (cons "b" "2") 'y)))))
+    (call-with-values (lambda () (menu-visible-slice m 5))
+      (lambda (vis offset)
+        (test-equal "short menu returns all items" 2 (length vis))
+        (test-equal "short menu offset is 0" 0 offset))))
+
+  ;; menu-visible-slice: long menus window around the selection
+  (let* ((items (map (lambda (i) (cons (cons (format #f "item ~a" i) "") i)) (iota 20)))
+         (m (make-menu "Long" items)))
+    ;; selection at the top: window anchored at the start
+    (call-with-values (lambda () (menu-visible-slice m 5))
+      (lambda (vis offset)
+        (test-equal "window caps at max-visible items" 5 (length vis))
+        (test-equal "window anchored at the top initially" 0 offset)
+        (test-equal "first visible item is the first item"
+                    "item 0"
+                    (menu-item-label (car vis)))))
+    ;; selection near the bottom: window scrolls to keep it visible
+    (let ((m9 (make-menu "Long" items #:selected-index 9)))
+      (call-with-values (lambda () (menu-visible-slice m9 5))
+        (lambda (vis offset)
+          (test-equal "window scrolls to follow the selection" 5 offset)
+          (test-equal "selected item stays visible at the window bottom"
+                      "item 9"
+                      (menu-item-label (car (reverse vis)))))))
+    ;; selection at the very end: window clamps to the list end
+    (let ((m19 (make-menu "Long" items #:selected-index 19)))
+      (call-with-values (lambda () (menu-visible-slice m19 5))
+        (lambda (vis offset)
+          (test-equal "window ends at the last item" 15 offset)
+          (test-equal "last item is visible"
+                      "item 19"
+                      (menu-item-label (car (reverse vis)))))))
+    ;; cap larger than the menu returns everything
+    (call-with-values (lambda () (menu-visible-slice m 50))
+      (lambda (vis offset)
+        (test-equal "cap beyond count returns all items" 20 (length vis))
+        (test-equal "offset is 0 when everything fits" 0 offset)))))
+
 (test-end "badb-tui")
