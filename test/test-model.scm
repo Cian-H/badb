@@ -690,4 +690,27 @@
         (test-equal "empty model list yields #f model" #f model)
         (test-assert "empty model list yields error string" (string? err))))))
 
+;;;
+;;; Request timeout (call-with-request-timeout)
+;;;
+(test-group "model-request-timeout"
+  (test-equal "thunk result passes through when timeout disabled"
+    'ok (parameterize ((%request-timeout-seconds 0))
+          (call-with-request-timeout (lambda () 'ok))))
+  (test-equal "short work completes under a generous timeout"
+    'ok (parameterize ((%request-timeout-seconds 30))
+          (call-with-request-timeout (lambda () 'ok))))
+  (test-assert "stalled request is interrupted with request-timeout"
+    (parameterize ((%request-timeout-seconds 2))
+      (catch 'request-timeout
+        (lambda ()
+          (call-with-request-timeout
+            (lambda ()
+              (sleep 30)
+              'not-reached)))
+        (lambda (secs)
+          (and (number? secs) (>= secs 1))))))
+  (test-assert "SIGALRM handler and timer restored afterwards"
+    (pair? (sigaction SIGALRM))))
+
 (test-end "badb-model")

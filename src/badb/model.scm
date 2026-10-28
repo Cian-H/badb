@@ -33,6 +33,8 @@
             extract-chat-tool-calls
             current-http-post
             current-http-get
+            %request-timeout-seconds
+            call-with-request-timeout
             parse-models-response
             choose-model
             list-models
@@ -522,15 +524,47 @@ Streams payload directly over standard input without temporary files, captures r
                 (values (build-response #:code status-code) body-text)))))))))
 
 (define* (default-http-post uri #:key body headers (streaming? #f))
-  "Dispatch HTTP POST to web client, falling back to curl if gnutls is not available."
-  (catch #t
+  "Dispatch HTTP POST to web client, falling back to curl if gnutls is not
+available. Bounded by the request timeout (BADB_REQUEST_TIMEOUT seconds)."
+  (call-with-request-timeout
     (lambda ()
-      (http-post uri #:body body #:headers headers #:streaming? streaming?))
-    (lambda (key . args)
-      (if (or (eq? key 'gnutls-not-available)
-              (and (pair? args) (string? (car args)) (string-contains (car args) "gnutls")))
-          (curl-http-post uri #:body body #:headers headers #:streaming? streaming?)
-          (apply throw key args)))))
+      (catch #t
+        (lambda ()
+          (http-post uri #:body body #:headers headers #:streaming? streaming?))
+        (lambda (key . args)
+          (if (or (eq? key 'gnutls-not-available)
+                  (and (pair? args) (string? (car args)) (string-contains (car args) "gnutls")))
+              (curl-http-post uri #:body body #:headers headers #:streaming? streaming?)
+              (apply throw key args)))))))
+
+(define %request-timeout-seconds
+  (make-parameter
+    (or (and=> (getenv "BADB_REQUEST_TIMEOUT") string->number)
+        600)))
+
+(define (call-with-request-timeout thunk)
+  "Call THUNK bounded by the request timeout: a request that stalls longer
+than BADB_REQUEST_TIMEOUT seconds (default 600, <= 0 disables) is
+interrupted with a 'request-timeout error, so a hung endpoint surfaces as
+a visible error instead of freezing the harness forever. The SIGALRM
+handler and timer are always restored afterwards."
+  (let ((secs (%request-timeout-seconds)))
+    (if (or (not secs) (<= secs 0))
+      (thunk)
+      (let ((prev #f))
+        (dynamic-wind
+          (lambda ()
+            (set! prev (sigaction SIGALRM))
+            (sigaction SIGALRM
+                       (lambda ()
+                         (throw 'request-timeout secs)))
+            (alarm secs))
+          thunk
+          (lambda ()
+            (alarm 0)
+            (if (pair? prev)
+              (sigaction SIGALRM (car prev) (cdr prev))
+              (sigaction SIGALRM SIG_DFL))))))))
 
 (define current-http-post
   (make-parameter default-http-post))
