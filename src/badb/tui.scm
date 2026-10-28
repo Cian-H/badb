@@ -15,102 +15,128 @@
 ;;; user can type steering messages (Enter sends, Ctrl+I interrupts) that
 ;;; the running agent sees at the next iteration boundary.
 
-(define-module (badb tui)
-  #:use-module (badb model)
-  #:use-module (badb registry)
-  #:use-module (badb transaction)
-  #:use-module (badb journal)
-  #:use-module (badb config)
-  #:use-module (badb mcp)
-  #:use-module (badb react)
-  #:use-module (badb guardrail)
-  #:use-module (badb context)
-  #:use-module (badb prompt)
-  #:use-module (badb rollback)
-  #:use-module (badb theme)
-  #:use-module (badb verify)
-  #:use-module (badb util)
-  #:use-module (json)
-  #:use-module (ice-9 format)
-  #:use-module (ice-9 popen)
-  #:use-module (ice-9 rdelim)
-  #:use-module (ice-9 optargs)
-  #:use-module (ice-9 regex)
-  #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-9)
-  #:use-module (srfi srfi-11)
-  #:use-module (srfi srfi-19)
-  #:export (run-tui
-            wrap-line
-            wrap-text
-            parse-command
-            classify-input
-            make-repl-mod
-            normalize-scheme-expr
-            eval-scheme-code
-            execute-shell-command
-            split-thoughts-and-content
-            %slash-commands
-            matching-slash-commands
-            detect-model-decision
-            build-model-menu-items
-            selector-active?
-            %menu-max-visible
-            make-menu
-            menu?
-            menu-title
-            menu-items
-            menu-selected-index
-            menu-count
-            menu-move
-            menu-selected-item
-            menu-visible-slice
-            menu-item-label
-            menu-item-description
-            menu-item-action
-            get-prompt-indicator
-            format-header-segments
-            format-rule-line
-            format-keymap-line
-            steering-key-handle
-            steering-pending-line
-            agent-run-active?
-            segment-line
-            clamp-cursor
-            insert-at
-            backspace-at
-            delete-at
-            input-visible-window
-            make-history
-            input-history?
-            %history-max-entries
-            history-cap-entries
-            history-entries
-            history-length
-            history-add
-            history-recall
-            history-recall-position
-            history-reset-nav
-            history-entry->jsonl-line
-            jsonl-line->history-entry
-            default-history-file-path
-            load-history-file
-            append-history-file-entry!
-            message-collapsed?
-            make-collapsed-message
-            message-with-collapsed
-            message-toggle-collapsed
-            default-collapsed-role?
-            message-collapsible?
-            default-collapse-message
-            thoughts-preview
-            format-collapsed-summary-line
-            message-role-label
-            message-role->theme-role
-            system-message-label
-            color-symbol->ncurses-constant
-            key->code
-            format-message-entry))
+(define-module (badb tui) #:use-module
+               (badb model)
+               #:use-module
+               (badb registry)
+               #:use-module
+               (badb transaction)
+               #:use-module
+               (badb journal)
+               #:use-module
+               (badb config)
+               #:use-module
+               (badb mcp)
+               #:use-module
+               (badb react)
+               #:use-module
+               (badb guardrail)
+               #:use-module
+               (badb context)
+               #:use-module
+               (badb prompt)
+               #:use-module
+               (badb rollback)
+               #:use-module
+               (badb theme)
+               #:use-module
+               (badb log)
+               #:use-module
+               (badb verify)
+               #:use-module
+               (badb util)
+               #:use-module
+               (json)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 popen)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 optargs)
+               #:use-module
+               (ice-9 regex)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:use-module
+               (srfi srfi-11)
+               #:use-module
+               (srfi srfi-19)
+               #:export
+               (run-tui format-conversation-transcript
+                        wrap-line
+                        wrap-text
+                        parse-command
+                        classify-input
+                        make-repl-mod
+                        normalize-scheme-expr
+                        eval-scheme-code
+                        execute-shell-command
+                        split-thoughts-and-content
+                        %slash-commands
+                        matching-slash-commands
+                        detect-model-decision
+                        build-model-menu-items
+                        selector-active?
+                        %menu-max-visible
+                        make-menu
+                        menu?
+                        menu-title
+                        menu-items
+                        menu-selected-index
+                        menu-count
+                        menu-move
+                        menu-selected-item
+                        menu-visible-slice
+                        menu-item-label
+                        menu-item-description
+                        menu-item-action
+                        get-prompt-indicator
+                        format-header-segments
+                        format-rule-line
+                        format-keymap-line
+                        steering-key-handle
+                        steering-pending-line
+                        agent-run-active?
+                        segment-line
+                        clamp-cursor
+                        insert-at
+                        backspace-at
+                        delete-at
+                        input-visible-window
+                        make-history
+                        input-history?
+                        %history-max-entries
+                        history-cap-entries
+                        history-entries
+                        history-length
+                        history-add
+                        history-recall
+                        history-recall-position
+                        history-reset-nav
+                        history-entry->jsonl-line
+                        jsonl-line->history-entry
+                        default-history-file-path
+                        load-history-file
+                        append-history-file-entry!
+                        message-collapsed?
+                        make-collapsed-message
+                        message-with-collapsed
+                        message-toggle-collapsed
+                        default-collapsed-role?
+                        message-collapsible?
+                        default-collapse-message
+                        thoughts-preview
+                        format-collapsed-summary-line
+                        message-role-label
+                        message-role->theme-role
+                        system-message-label
+                        color-symbol->ncurses-constant
+                        key->code
+                        format-message-entry))
 
 ;;;
 ;;; Text Formatting & Word Wrapping Helpers
@@ -177,7 +203,9 @@ breaking on whitespace when possible."
           ("steer" . "Queue steering text for the running agent")
           ("interrupt" . "Halt the running agent at its next boundary")
           ("clear" . "Clear chat viewport history")
-          ("quit" . "Exit badb microharness")))
+          ("quit" . "Exit badb microharness")
+          ("exit" . "Exit badb microharness")
+          ("dump" . "Export the conversation to a text file [path]")))
 
 (define (selector-active? input-buffer)
   "Return #t if the slash command selector palette should be visible."
@@ -1273,6 +1301,42 @@ its description, plus the trailing 'Set model...' manual entry item."
 ;;;
 ;;; Main TUI Controller
 ;;;
+(define (format-conversation-transcript messages)
+        "Render MESSAGES (the TUI conversation alist with role/content/thoughts
+entries) as a plain-text transcript: one block per message with a role
+header, an optional thinking section, and the content. Pure - no I/O."
+        (let
+            ((blocks
+               (map
+                 (lambda (msg)
+                   (let*
+                       ((role
+                          (let ((r (assoc-ref msg 'role)))
+                            (cond
+                              ((string? r) r)
+                              ((symbol? r) (symbol->string r))
+                              (else "system"))))
+                        (content
+                          (let ((c (assoc-ref msg 'content)))
+                            (cond
+                              ((string? c) c)
+                              ((not c) "")
+                              (else (format #f "~a" c)))))
+                        (thoughts
+                          (let ((t (assoc-ref msg 'thoughts))) (and (string? t) (not (string-null? t)) t))))
+                     (string-append "=== "
+                                    (string-upcase role)
+                                    " ===\n"
+                                    (if thoughts
+                                      (string-append "[thinking]\n" thoughts "\n\n")
+                                      "")
+                                    (if (string-null? content)
+                                      ""
+                                      (string-append content "\n"))
+                                    "\n")))
+                 messages)))
+          (string-append ";; badb conversation transcript\n" (string-join blocks ""))))
+
 (define*
   (run-tui #:key
            (endpoint #f)
@@ -1337,8 +1401,7 @@ its description, plus the trailing 'Set model...' manual entry item."
     ;; the default theme; every draw site resolves colors through its roles.
     (define ui-theme
             (let ((configured (badb-config-ui-theme cfg)))
-              (or (and (string? configured) (lookup-theme configured))
-                  (default-theme))))
+              (or (and (string? configured) (lookup-theme configured)) (default-theme))))
     (define cur-endpoint
             (or endpoint (getenv "BADB_MODEL_ENDPOINT") (badb-config-model-endpoint cfg)))
     (define cur-model
@@ -1647,15 +1710,34 @@ its description, plus the trailing 'Set model...' manual entry item."
     ;; polling is disabled and steering stays available between runs
     ;; through /steer and /interrupt.
     (define nodelay-proc
-            (or (catch #t (lambda () (nref 'nodelay!)) (lambda _ #f))
-                (catch #t (lambda () (nref 'nodelay)) (lambda _ #f))))
+            (or
+              (catch #t
+                (lambda ()
+                  (nref 'nodelay!))
+                (lambda _
+                  #f))
+              (catch #t
+                (lambda ()
+                  (nref 'nodelay))
+                (lambda _
+                  #f))))
     (define steering-err-val
-            (catch #t (lambda () (nref 'ERR)) (lambda _ -1)))
+            (catch #t
+              (lambda ()
+                (nref 'ERR))
+              (lambda _
+                -1)))
     ;; Message appending helpers
     (define (add-msg! role content)
             (set! messages (append messages (list `((role . ,role) (content . ,content))))))
     (define (add-sys-msg! content) (add-msg! "system" content))
-    (define (add-err-msg! content) (add-msg! "error" content))
+    (define (add-err-msg! content)
+            (log-error!
+              (if (string? content)
+                content
+                (format #f "~s" content))
+              "tui")
+            (add-msg! "error" content))
     (define (add-cmd-msg! content) (add-msg! "shell-cmd" content))
     (define (add-scm-msg! content) (add-msg! "scheme-in" content))
     (define (add-user-msg! content) (add-msg! "user" content))
@@ -1668,16 +1750,26 @@ its description, plus the trailing 'Set model...' manual entry item."
     ;; characters when only partially arrived — accepted for simplicity.
     (define (poll-steering-input!)
             (when (and nodelay-proc stdscr)
-              (let poll-loop ()
-                (let ((ch (catch #t (lambda () (getch stdscr)) (lambda _ #f))))
-                  (when (and ch
-                             (not (and (integer? ch)
-                                       (or (= ch -1) (eqv? ch steering-err-val)))))
-                    (let ((norm-ch (cond ((eqv? ch KEY_ENTER) 10)
-                                          ((eqv? ch KEY_BACKSPACE) 127)
-                                          (else ch))))
+              (let poll-loop
+                ()
+                (let
+                    ((ch
+                       (catch #t
+                         (lambda ()
+                           (getch stdscr))
+                         (lambda _
+                           #f))))
+                  (when
+                      (and ch (not (and (integer? ch) (or (= ch -1) (eqv? ch steering-err-val)))))
+                    (let
+                        ((norm-ch
+                           (cond
+                             ((eqv? ch KEY_ENTER) 10)
+                             ((eqv? ch KEY_BACKSPACE) 127)
+                             (else ch))))
                       (call-with-values
-                        (lambda () (steering-key-handle steering-buffer norm-ch))
+                        (lambda ()
+                          (steering-key-handle steering-buffer norm-ch))
                         (lambda (new-buffer action)
                           (let ((prev-buffer steering-buffer))
                             (set! steering-buffer new-buffer)
@@ -1685,8 +1777,7 @@ its description, plus the trailing 'Set model...' manual entry item."
                               ((queue)
                                 (let ((text (string-trim-both prev-buffer)))
                                   (steering-push! steering-queue text)
-                                  (add-msg! "steer"
-                                            (format #f "Steering queued: ~a" text))))
+                                  (add-msg! "steer" (format #f "Steering queued: ~a" text))))
                               ((interrupt)
                                 (steering-push! steering-queue 'interrupt)
                                 (set! interrupt-requested? #t)
@@ -1698,19 +1789,22 @@ its description, plus the trailing 'Set model...' manual entry item."
     ;; point at any message, but only collapsible ones (with content or
     ;; thoughts) change state; the toggle itself is a pure alist update.
     (define (toggle-selected-collapse!)
-            (let ((idx (min msgsel-index (- (length messages) 1))))
+            (let
+                ((idx (min msgsel-index (- (length messages) 1))))
               (let ((msg (list-ref messages idx)))
                 (when (message-collapsible? msg)
-                  (set! messages
-                        (replace-nth messages idx (message-toggle-collapsed msg)))))))
+                  (set! messages (replace-nth messages idx (message-toggle-collapsed msg)))))))
     (define (record-history! input mode)
             "Record a submitted INPUT under MODE in the shared input history
 and append it to the persistent history journal file."
-            (let ((trimmed (string-trim-both (if (string? input) input ""))))
+            (let
+                ((trimmed
+                   (string-trim-both
+                     (if (string? input)
+                       input
+                       ""))))
               (when (history-add input-history trimmed)
-                (append-history-file-entry! (default-history-file-path)
-                                            trimmed
-                                            mode))))
+                (append-history-file-entry! (default-history-file-path) trimmed mode))))
     (define (try-save-config!)
             (catch #t
               (lambda ()
@@ -1731,8 +1825,8 @@ and append it to the persistent history journal file."
     ;; listing to pick one and adopt it. The request is wrapped in catch so
     ;; a dead endpoint never blocks startup, and a specific configured model
     ;; skips detection entirely.
-    (let ((config-model-was-generic?
-            (generic-model-name? (badb-config-model-name cfg))))
+    (let
+        ((config-model-was-generic? (generic-model-name? (badb-config-model-name cfg))))
       (call-with-values
         (lambda ()
           (if (generic-model-name? cur-model)
@@ -1740,8 +1834,7 @@ and append it to the persistent history journal file."
               (lambda ()
                 (auto-detect-model client))
               (lambda (key . args)
-                (values #f
-                        (format #f "Detection error (~a): ~s" key args))))
+                (values #f (format #f "Detection error (~a): ~s" key args))))
             (values #f #f)))
         (lambda (detected-model detection-error)
           (call-with-values
@@ -1749,20 +1842,15 @@ and append it to the persistent history journal file."
               (detect-model-decision cur-model detected-model detection-error))
             (lambda (new-model kind)
               (case kind
-                ((adopted)
-                  (set! cur-model new-model)
-                  (badb-config-set-model-name! cfg new-model)
-                  (refresh-client!)
-                  (when config-model-was-generic? (try-save-config!))
-                  (add-msg! "notice"
-                            (format #f "model auto-detected: ~a" new-model)))
+                ((adopted) (set! cur-model new-model)
+                           (badb-config-set-model-name! cfg new-model)
+                           (refresh-client!)
+                           (when config-model-was-generic? (try-save-config!))
+                           (add-msg! "notice" (format #f "model auto-detected: ~a" new-model)))
                 ((failed)
-                  (add-msg! "notice"
-                            (format #f "model detection failed: ~a"
-                                    detection-error)))
+                  (add-msg! "notice" (format #f "model detection failed: ~a" detection-error)))
                 ((unavailable)
-                  (add-msg! "notice"
-                            "model detection found no models on the endpoint"))
+                  (add-msg! "notice" "model detection found no models on the endpoint"))
                 (else #f)))))))
     ;; Theme-driven color engine: each unique (fg bg) spec of the active UI
     ;; theme is memoized to one ncurses color pair on first use, so all draw
@@ -1791,39 +1879,36 @@ and append it to the persistent history journal file."
                        (let ((id next-pair-id))
                          (catch #t
                            (lambda ()
-                             (init-pair!
-                               id
-                               (nref (color-symbol->ncurses-constant fg))
-                               (nref (color-symbol->ncurses-constant bg))))
-                           (lambda _ #f))
+                             (init-pair! id
+                                         (nref (color-symbol->ncurses-constant fg))
+                                         (nref (color-symbol->ncurses-constant bg))))
+                           (lambda _
+                             #f))
                          (set! role-pair-cache (acons key id role-pair-cache))
                          (set! next-pair-id (+ next-pair-id 1))
                          id))
                   0)))
     (define (draw-role! role on?)
-            (let ((spec (theme-ref ui-theme role))
-                  (attrs (role-attrs role)))
+            (let
+                ((spec (theme-ref ui-theme role)) (attrs (role-attrs role)))
               (define (pair-off?)
                       (and colors-enabled?
-                           (not (and (eq? (car spec) 'default)
-                                     (eq? (cadr spec) 'default)))))
+                           (not (and (eq? (car spec) 'default) (eq? (cadr spec) 'default)))))
               (if on?
                 (begin
                   (when (pair-off?)
-                    (attr-on! stdscr
-                              (color-pair (ensure-color-pair! (car spec) (cadr spec)))))
-                  (for-each (lambda (a)
-                              (let ((c (theme-attr-constant a)))
-                                (when c (attr-on! stdscr c))))
-                            attrs))
+                    (attr-on! stdscr (color-pair (ensure-color-pair! (car spec) (cadr spec)))))
+                  (for-each
+                    (lambda (a)
+                      (let ((c (theme-attr-constant a))) (when c (attr-on! stdscr c))))
+                    attrs))
                 (begin
-                  (for-each (lambda (a)
-                              (let ((c (theme-attr-constant a)))
-                                (when c (attr-off! stdscr c))))
-                            attrs)
+                  (for-each
+                    (lambda (a)
+                      (let ((c (theme-attr-constant a))) (when c (attr-off! stdscr c))))
+                    attrs)
                   (when (pair-off?)
-                    (attr-off! stdscr
-                               (color-pair (ensure-color-pair! (car spec) (cadr spec)))))))))
+                    (attr-off! stdscr (color-pair (ensure-color-pair! (car spec) (cadr spec)))))))))
     (define (safe-addstr win y x str max-len)
             (when (and (>= y 0) (>= x 0) (> max-len 0))
               (let
@@ -1841,188 +1926,193 @@ and append it to the persistent history journal file."
     ;; rows (error / user / thought) draw as a single chunk, every other role
     ;; runs the segment engine so status pills, bullets and key labels pick
     ;; up their theme accents inside plain text.
-    (define (draw-styled-interior y start-x text inner-w theme-role)
-            (let*
-                ((text-len (string-length text))
-                 (pad-len (max 0 (- inner-w text-len)))
-                 (padded
-                   (if (> pad-len 0)
-                     (string-append text (make-string pad-len #\space))
-                     (if (> text-len inner-w)
-                       (substring text 0 inner-w)
-                       text))))
-              (define (draw-simple)
-                      (draw-role! theme-role #t)
-                      (safe-addstr stdscr y start-x padded inner-w)
-                      (draw-role! theme-role #f))
-              (cond
-                ((memq theme-role '(error user thought)) (draw-simple))
-                (else
-                  (let loop
-                    ((segs (segment-line padded)) (cur-x start-x))
-                    (unless
-                        (or (null? segs) (>= cur-x (+ start-x inner-w)))
-                      (let*
-                          ((seg (car segs)) (str (car seg))
-                           (seg-role (cadr seg))
-                           (bold? (caddr seg))
-                           (dim? (cadddr seg))
-                           (len (min (string-length str)
-                                     (max 0 (- (+ start-x inner-w) cur-x)))))
-                        (when (> len 0)
-                          (draw-role! seg-role #t)
-                          (when bold? (attr-on! stdscr A_BOLD))
-                          (when dim? (attr-on! stdscr A_DIM))
-                          (safe-addstr stdscr y cur-x str len)
-                          (when dim? (attr-off! stdscr A_DIM))
-                          (when bold? (attr-off! stdscr A_BOLD))
-                          (draw-role! seg-role #f))
-                        (loop (cdr segs) (+ cur-x len)))))))))
+    (define
+      (draw-styled-interior y start-x text inner-w theme-role)
+      (let*
+          ((text-len (string-length text))
+           (pad-len (max 0 (- inner-w text-len)))
+           (padded
+             (if (> pad-len 0)
+               (string-append text (make-string pad-len #\space))
+               (if (> text-len inner-w)
+                 (substring text 0 inner-w)
+                 text))))
+        (define (draw-simple) (draw-role! theme-role #t)
+                (safe-addstr stdscr y start-x padded inner-w)
+                (draw-role! theme-role #f))
+        (cond
+          ((memq theme-role '(error user thought)) (draw-simple))
+          (else
+            (let loop
+              ((segs (segment-line padded)) (cur-x start-x))
+              (unless
+                  (or (null? segs) (>= cur-x (+ start-x inner-w)))
+                (let*
+                    ((seg (car segs)) (str (car seg))
+                     (seg-role (cadr seg))
+                     (bold? (caddr seg))
+                     (dim? (cadddr seg))
+                     (len (min (string-length str) (max 0 (- (+ start-x inner-w) cur-x)))))
+                  (when (> len 0)
+                    (draw-role! seg-role #t)
+                    (when bold? (attr-on! stdscr A_BOLD))
+                    (when dim? (attr-on! stdscr A_DIM))
+                    (safe-addstr stdscr y cur-x str len)
+                    (when dim? (attr-off! stdscr A_DIM))
+                    (when bold? (attr-off! stdscr A_BOLD))
+                    (draw-role! seg-role #f))
+                  (loop (cdr segs) (+ cur-x len)))))))))
     ;; Left accent gutter shared by every row of a message block: a thin
     ;; role-tinted bar, upgraded to a strong 2-char bar when SELECTED?.
     (define (draw-gutter! y theme-role selected?)
             (draw-role! theme-role #t)
             (when selected? (attr-on! stdscr A_BOLD))
-            (safe-addstr stdscr y 0 (if selected? "██" "▏ ") 2)
+            (safe-addstr stdscr
+                         y
+                         0
+                         (if selected?
+                           "██"
+                           "▏ ")
+                         2)
             (when selected? (attr-off! stdscr A_BOLD))
             (draw-role! theme-role #f))
     ;; Draw a single flat block row (label, body, summary, or spacer).
-    (define (draw-block-line y entry content-width selected?)
-            (let ((kind (car entry)))
-              (cond
-                ((string=? kind "spacer") #t)
-                ((string=? kind "block-label")
-                  (let*
-                      ((label (cadr entry)) (theme-role (caddr entry)))
-                    (draw-gutter! y theme-role selected?)
-                    (draw-role! theme-role #t)
-                    (let*
-                        ((label-str
-                           (if (> (string-length label) content-width)
-                             (substring label 0 content-width)
-                             label))
-                         (pad-len (max 0 (- content-width (string-length label-str))))
-                         (padded (string-append label-str (make-string pad-len #\space))))
-                      (safe-addstr stdscr y 2 padded content-width))
-                    (draw-role! theme-role #f)))
-                ((string=? kind "block-body")
-                  (let*
-                      ((theme-role (cadr entry)) (text (caddr entry)))
-                    (draw-gutter! y theme-role selected?)
-                    (draw-styled-interior y 2 text content-width theme-role)))
-                ;; Collapsed-message summary row: role-tinted chevron
-                ;; followed by a single dim line (label, count, expand hint)
-                ((string=? kind "block-summary")
-                  (let*
-                      ((theme-role (cadr entry)) (text (caddr entry)))
-                    (draw-gutter! y theme-role selected?)
-                    (draw-role! theme-role #t)
-                    (safe-addstr stdscr y 2 "› " 2)
-                    (draw-role! theme-role #f)
-                    (draw-role! 'dim #t)
-                    (let*
-                        ((text-len (string-length text))
-                         (avail (max 0 (- content-width 2)))
-                         (text-str
-                           (if (> text-len avail)
-                             (substring text 0 avail)
-                             text))
-                         (pad-len (max 0 (- avail (string-length text-str))))
-                         (padded (string-append text-str (make-string pad-len #\space))))
-                      (safe-addstr stdscr y 4 padded avail))
-                    (draw-role! 'dim #f))))))
+    (define
+      (draw-block-line y entry content-width selected?)
+      (let ((kind (car entry)))
+        (cond
+          ((string=? kind "spacer") #t)
+          ((string=? kind "block-label")
+            (let*
+                ((label (cadr entry)) (theme-role (caddr entry)))
+              (draw-gutter! y theme-role selected?)
+              (draw-role! theme-role #t)
+              (let*
+                  ((label-str
+                     (if (> (string-length label) content-width)
+                       (substring label 0 content-width)
+                       label))
+                   (pad-len (max 0 (- content-width (string-length label-str))))
+                   (padded (string-append label-str (make-string pad-len #\space))))
+                (safe-addstr stdscr y 2 padded content-width))
+              (draw-role! theme-role #f)))
+          ((string=? kind "block-body")
+            (let*
+                ((theme-role (cadr entry)) (text (caddr entry)))
+              (draw-gutter! y theme-role selected?)
+              (draw-styled-interior y 2 text content-width theme-role)))
+          ;; Collapsed-message summary row: role-tinted chevron
+          ;; followed by a single dim line (label, count, expand hint)
+          ((string=? kind "block-summary")
+            (let*
+                ((theme-role (cadr entry)) (text (caddr entry)))
+              (draw-gutter! y theme-role selected?)
+              (draw-role! theme-role #t)
+              (safe-addstr stdscr y 2 "› " 2)
+              (draw-role! theme-role #f)
+              (draw-role! 'dim #t)
+              (let*
+                  ((text-len (string-length text))
+                   (avail (max 0 (- content-width 2)))
+                   (text-str
+                     (if (> text-len avail)
+                       (substring text 0 avail)
+                       text))
+                   (pad-len (max 0 (- avail (string-length text-str))))
+                   (padded (string-append text-str (make-string pad-len #\space))))
+                (safe-addstr stdscr y 4 padded avail))
+              (draw-role! 'dim #f))))))
     ;; Draw a floating rounded pop-up (slash selector palette, menus): an
     ;; accent-colored border, dim descriptions, and a bold selected row
     ;; (reversed on terminals without colors). ROWS is a list of
     ;; (label . description); SEL-POS is the selected index within ROWS or a
     ;; position outside them for no highlight; ABOVE-COUNT and BELOW-COUNT
     ;; drive the scroll indicators in the borders.
-    (define (draw-popup! title rows sel-pos box-w start-y start-x
-                         above-count below-count)
+    (define
+      (draw-popup! title rows sel-pos box-w start-y start-x above-count below-count)
+      (let*
+          ((inner-w (- box-w 4)) (vis-count (length rows))
+           (label-w
+             (fold
+               (lambda (r acc)
+                 (max acc (string-length (car r))))
+               0
+               rows))
+           (top-tag
+             (string-append "╭─ "
+                            title
+                            (if (> above-count 0)
+                              (format #f " ↑~a " above-count)
+                              " ")))
+           (top-str
+             (string-append top-tag
+                            (make-string
+                              (max 0 (- box-w (string-length top-tag) 1))
+                              #\─)
+                            "╮"))
+           (bot-tag
+             (if (> below-count 0)
+               (format #f "╰─ ↓ ~a more " below-count)
+               "╰"))
+           (bot-str
+             (string-append bot-tag
+                            (make-string
+                              (max 0 (- box-w (string-length bot-tag) 1))
+                              #\─)
+                            "╯")))
+        (draw-role! 'accent #t)
+        (safe-addstr stdscr start-y start-x top-str box-w)
+        (draw-role! 'accent #f)
+        (let loop
+          ((items rows) (idx 0))
+          (unless (null? items)
             (let*
-                ((inner-w (- box-w 4))
-                 (vis-count (length rows))
-                 (label-w
-                   (fold
-                     (lambda (r acc) (max acc (string-length (car r))))
-                     0 rows))
-                 (top-tag
-                   (string-append
-                     "╭─ " title
-                     (if (> above-count 0) (format #f " ↑~a " above-count) " ")))
-                 (top-str
-                   (string-append
-                     top-tag
-                     (make-string (max 0 (- box-w (string-length top-tag) 1)) #\─)
-                     "╮"))
-                 (bot-tag
-                   (if (> below-count 0)
-                     (format #f "╰─ ↓ ~a more " below-count)
-                     "╰"))
-                 (bot-str
-                   (string-append
-                     bot-tag
-                     (make-string (max 0 (- box-w (string-length bot-tag) 1)) #\─)
-                     "╯")))
-              (draw-role! 'accent #t)
-              (safe-addstr stdscr start-y start-x top-str box-w)
-              (draw-role! 'accent #f)
-              (let loop
-                ((items rows) (idx 0))
-                (unless (null? items)
-                  (let*
-                      ((label (caar items)) (desc (cdar items))
-                       (is-sel? (= idx sel-pos))
-                       (row-y (+ start-y 1 idx))
-                       (cursor (if is-sel? "❯ " "  "))
-                       (label-pad
-                         (make-string (max 1 (- label-w (string-length label))) #\space))
-                       (content (string-append cursor label label-pad " " desc))
-                       (clipped
-                         (if (> (string-length content) inner-w)
-                           (substring content 0 inner-w)
-                           content))
-                       (pad
-                         (make-string (max 0 (- inner-w (string-length clipped))) #\space))
-                       (row-text (string-append "│ " clipped pad " │")))
-                    (if is-sel?
-                      (begin
-                        (draw-role! 'selection #t)
-                        (attr-on! stdscr A_BOLD)
-                        (unless colors-enabled? (attr-on! stdscr A_REVERSE))
-                        (safe-addstr stdscr row-y start-x row-text box-w)
-                        (unless colors-enabled? (attr-off! stdscr A_REVERSE))
-                        (attr-off! stdscr A_BOLD)
-                        (draw-role! 'selection #f))
-                      (begin
-                        (draw-role! 'accent #t)
-                        (safe-addstr stdscr row-y start-x "│ " 2)
-                        (draw-role! 'accent #f)
-                        (draw-role! 'default #t)
-                        (safe-addstr stdscr
-                                     row-y
-                                     (+ start-x 2)
-                                     (string-append cursor label label-pad)
-                                     (+ 2 (string-length cursor)
-                                        (string-length label)
-                                        (string-length label-pad)))
-                        (draw-role! 'default #f)
-                        (draw-role! 'dim #t)
-                        (let*
-                            ((desc-x (+ start-x 2 (string-length cursor)
-                                        label-w 1))
-                             (desc-len (min (string-length desc)
-                                            (max 0 (- (+ start-x box-w -2) desc-x)))))
-                          (when (> desc-len 0)
-                            (safe-addstr stdscr row-y desc-x desc desc-len))
-                          (draw-role! 'dim #f))
-                        (draw-role! 'accent #t)
-                        (safe-addstr stdscr row-y (+ start-x box-w -2) " │" 2)
-                        (draw-role! 'accent #f)))
-                    (loop (cdr items) (+ idx 1)))))
-              (draw-role! 'accent #t)
-              (safe-addstr stdscr (+ start-y 1 vis-count) start-x bot-str box-w)
-              (draw-role! 'accent #f)))
+                ((label (caar items)) (desc (cdar items))
+                 (is-sel? (= idx sel-pos))
+                 (row-y (+ start-y 1 idx))
+                 (cursor
+                   (if is-sel?
+                     "❯ "
+                     "  "))
+                 (label-pad (make-string (max 1 (- label-w (string-length label))) #\space))
+                 (content (string-append cursor label label-pad " " desc))
+                 (clipped
+                   (if (> (string-length content) inner-w)
+                     (substring content 0 inner-w)
+                     content))
+                 (pad (make-string (max 0 (- inner-w (string-length clipped))) #\space))
+                 (row-text (string-append "│ " clipped pad " │")))
+              (if is-sel?
+                (begin (draw-role! 'selection #t)
+                       (attr-on! stdscr A_BOLD)
+                       (unless colors-enabled? (attr-on! stdscr A_REVERSE))
+                       (safe-addstr stdscr row-y start-x row-text box-w)
+                       (unless colors-enabled? (attr-off! stdscr A_REVERSE))
+                       (attr-off! stdscr A_BOLD)
+                       (draw-role! 'selection #f))
+                (begin (draw-role! 'accent #t)
+                       (safe-addstr stdscr row-y start-x "│ " 2)
+                       (draw-role! 'accent #f)
+                       (draw-role! 'default #t)
+                       (safe-addstr stdscr
+                                    row-y
+                                    (+ start-x 2)
+                                    (string-append cursor label label-pad)
+                                    (+ 2 (string-length cursor) (string-length label) (string-length label-pad)))
+                       (draw-role! 'default #f)
+                       (draw-role! 'dim #t)
+                       (let*
+                           ((desc-x (+ start-x 2 (string-length cursor) label-w 1))
+                            (desc-len (min (string-length desc) (max 0 (- (+ start-x box-w -2) desc-x)))))
+                         (when (> desc-len 0) (safe-addstr stdscr row-y desc-x desc desc-len))
+                         (draw-role! 'dim #f))
+                       (draw-role! 'accent #t)
+                       (safe-addstr stdscr row-y (+ start-x box-w -2) " │" 2)
+                       (draw-role! 'accent #f)))
+              (loop (cdr items) (+ idx 1)))))
+        (draw-role! 'accent #t)
+        (safe-addstr stdscr (+ start-y 1 vis-count) start-x bot-str box-w)
+        (draw-role! 'accent #f)))
     ;; Render entire screen
     (define (render!)
             (catch #t
@@ -2044,26 +2134,22 @@ and append it to the persistent history journal file."
                                (assoc-ref s 'running?))
                              (mcp-manager-list-servers mcp-mgr))))
                        (total-count (length (badb-config-mcp-servers cfg)))
-                       (mcp-info
-                         (and (> total-count 0)
-                              (format #f "~a/~a" active-count total-count))))
+                       (mcp-info (and (> total-count 0) (format #f "~a/~a" active-count total-count))))
                     (for-each
                       (lambda (seg)
-                        (let ((x (car seg))
-                              (text (cadr seg))
-                              (role (caddr seg))
-                              (bold? (cadddr seg)))
+                        (let
+                            ((x (car seg)) (text (cadr seg)) (role (caddr seg)) (bold? (cadddr seg)))
                           (draw-role! role #t)
                           (when bold? (attr-on! stdscr A_BOLD))
                           (safe-addstr stdscr 0 x text (max 0 (- maxx x)))
                           (when bold? (attr-off! stdscr A_BOLD))
                           (draw-role! role #f)))
                       (format-header-segments maxx
-                                               status-text
-                                               cur-model
-                                               (length (registry-list reg))
-                                               (journal-count jrn)
-                                               mcp-info))
+                                              status-text
+                                              cur-model
+                                              (length (registry-list reg))
+                                              (journal-count jrn)
+                                              mcp-info))
                     (draw-role! 'frame #t)
                     (safe-addstr stdscr 1 0 (format-rule-line maxx) maxx)
                     (draw-role! 'frame #f))
@@ -2073,15 +2159,14 @@ and append it to the persistent history journal file."
                   ;; not screen lines.
                   (let*
                       ((msg-count (length messages))
-                       (sel-idx (and msgsel-index
-                                     (< msgsel-index msg-count)
-                                     msgsel-index))
+                       (sel-idx (and msgsel-index (< msgsel-index msg-count) msgsel-index))
                        (indexed-rows
                          (map
                            (lambda (idx msg)
-                             (map (lambda (entry)
-                                    (cons idx entry))
-                                  (format-message-entry msg content-width)))
+                             (map
+                               (lambda (entry)
+                                 (cons idx entry))
+                               (format-message-entry msg content-width)))
                            (iota msg-count)
                            messages))
                        (formatted-lines (apply append indexed-rows))
@@ -2094,7 +2179,8 @@ and append it to the persistent history journal file."
                       (let*
                           ((row-counts (map length indexed-rows))
                            (starts
-                             (let loop ((counts row-counts) (pos 0))
+                             (let loop
+                               ((counts row-counts) (pos 0))
                                (if (null? counts)
                                  '()
                                  (cons pos (loop (cdr counts) (+ pos (car counts)))))))
@@ -2104,11 +2190,9 @@ and append it to the persistent history journal file."
                            (win-end (+ base-start view-height)))
                         (cond
                           ((< sel-start base-start)
-                            (set! scroll-offset
-                                  (min max-scroll (+ scroll-offset (- base-start sel-start)))))
+                            (set! scroll-offset (min max-scroll (+ scroll-offset (- base-start sel-start)))))
                           ((> sel-end win-end)
-                            (set! scroll-offset
-                                  (max 0 (- scroll-offset (- sel-end win-end))))))))
+                            (set! scroll-offset (max 0 (- scroll-offset (- sel-end win-end))))))))
                     (let*
                         ((start-line (max 0 (- total-lines view-height scroll-offset)))
                          (visible-lines
@@ -2126,9 +2210,11 @@ and append it to the persistent history journal file."
                   ;; Pending steering line: dim feedback above the prompt
                   ;; for text being typed mid-run, queued steering
                   ;; entries, and pending interrupt requests
-                  (let ((pending (steering-pending-line steering-buffer
-                                                         (steering-count steering-queue)
-                                                         interrupt-requested?)))
+                  (let
+                      ((pending
+                         (steering-pending-line steering-buffer
+                                                (steering-count steering-queue)
+                                                interrupt-requested?)))
                     (when pending
                       (draw-role! 'dim #t)
                       (safe-addstr stdscr (- maxy 3) 0 pending maxx)
@@ -2151,13 +2237,14 @@ and append it to the persistent history journal file."
                           (lambda (visible-input _cursor-x)
                             (safe-addstr stdscr (- maxy 2) 2 visible-input avail-width))))))
                   ;; 4. Bottom keymap hint line in dim, per active mode
-                  (let ((hint
-                          (format-keymap-line
-                            (cond
-                              (active-menu 'menu)
-                              ((selector-active? input-buffer) 'selector)
-                              ((and (agent-run-active? status-text) nodelay-proc) 'steering)
-                              (else prompt-mode)))))
+                  (let
+                      ((hint
+                         (format-keymap-line
+                           (cond
+                             (active-menu 'menu)
+                             ((selector-active? input-buffer) 'selector)
+                             ((and (agent-run-active? status-text) nodelay-proc) 'steering)
+                             (else prompt-mode)))))
                     (draw-role! 'dim #t)
                     (safe-addstr stdscr (- maxy 1) 0 hint maxx)
                     (draw-role! 'dim #f))
@@ -2177,14 +2264,7 @@ and append it to the persistent history journal file."
                                    (cons (format #f "/~a" (car item)) (cdr item)))
                                  (take matches vis-count))))
                           (when (>= start-y 2)
-                            (draw-popup! "commands"
-                                         rows
-                                         selector-index
-                                         box-w
-                                         start-y
-                                         2
-                                         0
-                                         0))))))
+                            (draw-popup! "commands" rows selector-index box-w start-y 2 0 0))))))
                   ;; 6. Floating Menu Popup Overlay (same visual language as
                   ;; the slash selector: accent rounded box, bold selected
                   ;; row, capped visible rows with scroll indicators)
@@ -2193,9 +2273,7 @@ and append it to the persistent history journal file."
                       (when (> m-count 0)
                         (call-with-values
                           (lambda ()
-                            (menu-visible-slice
-                              active-menu
-                              (min %menu-max-visible (max 1 (- maxy 5)))))
+                            (menu-visible-slice active-menu (min %menu-max-visible (max 1 (- maxy 5)))))
                           (lambda (vis-items offset)
                             (let*
                                 ((vis-count (length vis-items))
@@ -2203,32 +2281,31 @@ and append it to the persistent history journal file."
                                    (fold
                                      (lambda (it acc)
                                        (max acc (string-length (menu-item-label it))))
-                                     0 vis-items))
+                                     0
+                                     vis-items))
                                  (desc-w
                                    (fold
                                      (lambda (it acc)
                                        (max acc (string-length (menu-item-description it))))
-                                     0 vis-items))
-                                 (box-w (min (max 24 (+ 8 label-w desc-w))
-                                             (max 20 (- maxx 4))))
+                                     0
+                                     vis-items))
+                                 (box-w (min (max 24 (+ 8 label-w desc-w)) (max 20 (- maxx 4))))
                                  (box-h (+ vis-count 2))
                                  (start-y (- maxy 3 box-h))
                                  (rows
                                    (map
                                      (lambda (it)
-                                       (cons (menu-item-label it)
-                                             (menu-item-description it)))
+                                       (cons (menu-item-label it) (menu-item-description it)))
                                      vis-items)))
                               (when (>= start-y 2)
-                                (draw-popup!
-                                  (menu-title active-menu)
-                                  rows
-                                  (- (menu-selected-index active-menu) offset)
-                                  box-w
-                                  start-y
-                                  2
-                                  offset
-                                  (- m-count offset vis-count)))))))))
+                                (draw-popup! (menu-title active-menu)
+                                             rows
+                                             (- (menu-selected-index active-menu) offset)
+                                             box-w
+                                             start-y
+                                             2
+                                             offset
+                                             (- m-count offset vis-count)))))))))
                   ;; Position the terminal cursor at the editing position
                   ;; LAST: row draws below the input line (keymap hint,
                   ;; pop-ups) displace the cursor, so reposition right
@@ -2236,8 +2313,7 @@ and append it to the persistent history journal file."
                   ;; rests after the last drawn row.
                   (call-with-values
                     (lambda ()
-                      (input-visible-window input-buffer cursor-pos
-                                             (max 1 (- maxx 3))))
+                      (input-visible-window input-buffer cursor-pos (max 1 (- maxx 3))))
                     (lambda (_visible cursor-x)
                       (move stdscr (- maxy 2) (+ 2 cursor-x))))
                   (refresh stdscr)))
@@ -2311,12 +2387,18 @@ and append it to the persistent history journal file."
                                                                   (res-str
                                                                     (if (string? res)
                                                                       res
-                                                                      (scm->json-string res)))
+                                                                      (safe-json-string res)))
                                                                   (preview
                                                                     (if (> (string-length res-str) 140)
                                                                       (string-append (substring res-str 0 140) "...")
                                                                       res-str)))
-                                                               (add-msg! "tool-result" (format #f "Tool ~a returned: ~a" t-name preview))
+                                                               (add-msg! "tool-result"
+                                                                         (format #f
+                                                                                 (if err?
+                                                                                   "Tool ~a failed: ~a"
+                                                                                   "Tool ~a returned: ~a")
+                                                                                 t-name
+                                                                                 preview))
                                                                (poll-steering-input!)
                                                                (render!))))))))
                           (call-with-values
@@ -2328,15 +2410,19 @@ and append it to the persistent history journal file."
                                 (lambda ()
                                   (when nodelay-proc
                                     (catch #t
-                                      (lambda () (nodelay-proc stdscr #t))
-                                      (lambda _ #f))))
+                                      (lambda ()
+                                        (nodelay-proc stdscr #t))
+                                      (lambda _
+                                        #f))))
                                 (lambda ()
                                   (react-run! session))
                                 (lambda ()
                                   (when nodelay-proc
                                     (catch #t
-                                      (lambda () (nodelay-proc stdscr #f))
-                                      (lambda _ #f))))))
+                                      (lambda ()
+                                        (nodelay-proc stdscr #f))
+                                      (lambda _
+                                        #f))))))
                             (lambda (verdict final-content sess)
                               (set! llm-history (react-session-messages sess))
                               (cond
@@ -2349,9 +2435,7 @@ and append it to the persistent history journal file."
                                             (append messages
                                                     (list
                                                       (default-collapse-message
-                                                        `((role . "assistant")
-                                                          (thoughts . ,th)
-                                                          (content . ,ct)))))))))
+                                                        `((role . "assistant") (thoughts . ,th) (content . ,ct)))))))))
                                 ((eq? verdict 'max-iterations-reached)
                                   (add-sys-msg!
                                     (format #f
@@ -2370,9 +2454,7 @@ and append it to the persistent history journal file."
                                  (append messages
                                          (list
                                            (default-collapse-message
-                                             `((role . "assistant")
-                                               (thoughts . #f)
-                                               (content . ""))))))
+                                             `((role . "assistant") (thoughts . #f) (content . ""))))))
                            (render!)
                            (catch #t
                              (lambda ()
@@ -2402,9 +2484,7 @@ and append it to the persistent history journal file."
                                                                 (else inline-th)))
                                                             (updated-msg
                                                               (default-collapse-message
-                                                                `((role . "assistant")
-                                                                  (thoughts . ,total-th)
-                                                                  (content . ,inline-ct)))))
+                                                                `((role . "assistant") (thoughts . ,total-th) (content . ,inline-ct)))))
                                                          (if (pair? target-cell)
                                                            (set-car! target-cell updated-msg)
                                                            (set! messages (append (drop-right messages 1) (list updated-msg))))
@@ -2657,8 +2737,7 @@ and append it to the persistent history journal file."
                      (cdr tokens))))
               (cond
                 ((string-null? arg)
-                  (set! active-menu
-                        (make-menu "Configuration" (config-menu-items))))
+                  (set! active-menu (make-menu "Configuration" (config-menu-items))))
                 ((string=? subcmd "show")
                   (let*
                       ((global-path (default-global-config-path))
@@ -2771,21 +2850,20 @@ close any open menu, ready for the user to complete the command."
             "Switch the active model configuration to provider preset NAME,
 refreshing the client, saving, and reporting the outcome."
             (if (badb-config-switch-provider! cfg name)
-              (begin (set! cur-model (badb-config-model-name cfg))
-                     (set! cur-endpoint (badb-config-model-endpoint cfg))
-                     (set! cur-api-key (badb-config-model-api-key cfg))
-                     (refresh-client!)
-                     (try-save-config!)
-                     (add-sys-msg!
-                       (format #f
-                               "Switched to provider '~a': model ~a at ~a (saved to config)"
-                               name
-                               cur-model
-                               cur-endpoint)))
+              (begin
+                (set! cur-model (badb-config-model-name cfg))
+                (set! cur-endpoint (badb-config-model-endpoint cfg))
+                (set! cur-api-key (badb-config-model-api-key cfg))
+                (refresh-client!)
+                (try-save-config!)
+                (add-sys-msg!
+                  (format #f
+                          "Switched to provider '~a': model ~a at ~a (saved to config)"
+                          name
+                          cur-model
+                          cur-endpoint)))
               (add-err-msg!
-                (format #f
-                        "Unknown provider preset '~a'. Use /provider to list presets."
-                        name))))
+                (format #f "Unknown provider preset '~a'. Use /provider to list presets." name))))
     (define (handle-provider-cmd! arg)
             "List configured provider presets or switch to the one named in ARG."
             (let ((trimmed (string-trim-both arg)))
@@ -2795,19 +2873,17 @@ refreshing the client, saving, and reporting the outcome."
                     (add-sys-msg!
                       "No provider presets configured.\nDefine presets under (options (providers ...)) in .badb/config.scm.")
                     (add-sys-msg!
-                      (string-append
-                        "Configured Provider Presets:\n"
-                        (string-join
-                          (map
-                            (lambda (p)
-                              (format #f
-                                      "• ~a -> ~a"
-                                      (car p)
-                                      (or (get-prop (cdr p) 'endpoint #f)
-                                          "(no endpoint)")))
-                            provs)
-                          "\n")
-                        "\nUsage: /provider <name> to switch the active preset."))))
+                      (string-append "Configured Provider Presets:\n"
+                                     (string-join
+                                       (map
+                                         (lambda (p)
+                                           (format #f
+                                                   "• ~a -> ~a"
+                                                   (car p)
+                                                   (or (get-prop (cdr p) 'endpoint #f) "(no endpoint)")))
+                                         provs)
+                                       "\n")
+                                     "\nUsage: /provider <name> to switch the active preset."))))
                 (switch-provider-preset! trimmed))))
     (define (config-recorded-models)
             "Collect the model names recorded in the configuration: the
@@ -2819,14 +2895,14 @@ models of every provider preset, deduplicated in declaration order."
                     (cond
                       ((string? raw) (list raw))
                       ((list? raw)
-                       (filter-map
-                         (lambda (m)
-                           (cond
-                             ((string? m) m)
-                             ((and (pair? m) (string? (car m))) (car m))
-                             ((and (pair? m) (string? (cdr m))) (cdr m))
-                             (else #f)))
-                         raw))
+                        (filter-map
+                          (lambda (m)
+                            (cond
+                              ((string? m) m)
+                              ((and (pair? m) (string? (car m))) (car m))
+                              ((and (pair? m) (string? (cdr m))) (cdr m))
+                              (else #f)))
+                          raw))
                       (else '()))))
                 (badb-config-providers cfg))
               equal?))
@@ -2837,58 +2913,57 @@ ERROR the failure description or #f. Never throws."
             (catch #t
               (lambda ()
                 (call-with-values
-                  (lambda () (list-models client))
+                  (lambda ()
+                    (list-models client))
                   (lambda (ids err)
                     (if (or err (null? ids))
                       (values #f (or err "no models listed on endpoint"))
                       (values ids #f)))))
               (lambda (key . args)
-                (values #f
-                        (format #f "model list request failed (~a): ~s"
-                                key args)))))
+                (values #f (format #f "model list request failed (~a): ~s" key args)))))
     (define (model-menu-items)
             "Build the model menu items: the models actually available on
 the active endpoint when its listing can be fetched, otherwise the active
 model plus the models recorded in provider presets; the manual entry item
 always trails the list."
             (call-with-values
-              (lambda () (fetch-live-models))
+              (lambda ()
+                (fetch-live-models))
               (lambda (live-ids live-err)
                 (if live-ids
                   (build-model-menu-items live-ids cur-model)
-                  (let ((known (delete-duplicates
-                                 (cons cur-model (config-recorded-models))
-                                 equal?)))
+                  (let
+                      ((known (delete-duplicates (cons cur-model (config-recorded-models)) equal?)))
                     (append
                       (map
                         (lambda (m)
-                          (cons (cons m
-                                      (if (string=? m cur-model)
-                                        "current model"
-                                        "recorded in config"))
-                                (cons 'set-model m)))
+                          (cons
+                            (cons m
+                                  (if (string=? m cur-model)
+                                    "current model"
+                                    "recorded in config"))
+                            (cons 'set-model m)))
                         known)
-                      (list (cons (cons "Set model..." "Type a model name manually")
-                                  'prefill-model))))))))
+                      (list (cons (cons "Set model..." "Type a model name manually") 'prefill-model))))))))
     (define (handle-models-cmd!)
             "Show the models available on the active endpoint as a system
 message, or a clear error notice when the listing fails."
             (call-with-values
-              (lambda () (fetch-live-models))
+              (lambda ()
+                (fetch-live-models))
               (lambda (ids err)
                 (if ids
                   (add-sys-msg!
-                    (string-append
-                      "Models available on endpoint:\n"
-                      (string-join
-                        (map
-                          (lambda (id)
-                            (if (and (string? cur-model)
-                                     (string=? id cur-model))
-                              (format #f "• ~a (active)" id)
-                              (format #f "• ~a" id)))
-                          ids)
-                        "\n")))
+                    (string-append "Models available on endpoint:\n"
+                                   (string-join
+                                     (map
+                                       (lambda (id)
+                                         (if
+                                             (and (string? cur-model) (string=? id cur-model))
+                                           (format #f "• ~a (active)" id)
+                                           (format #f "• ~a" id)))
+                                       ids)
+                                     "\n")))
                   (add-err-msg! (format #f "Failed to list models: ~a" err))))))
     (define (endpoint-menu-items)
             "Build the endpoint menu items: configured provider presets plus
@@ -2897,53 +2972,57 @@ a manual entry item."
               (map
                 (lambda (p)
                   (let ((name (ensure-string (car p))))
-                    (cons (cons name (or (get-prop (cdr p) 'endpoint #f)
-                                         "provider preset"))
-                          (cons 'switch-provider name))))
+                    (cons
+                      (cons name (or (get-prop (cdr p) 'endpoint #f) "provider preset"))
+                      (cons 'switch-provider name))))
                 (badb-config-providers cfg))
-              (list (cons (cons "Set endpoint..." "Type an endpoint URL manually")
-                          'prefill-endpoint))))
+              (list
+                (cons
+                  (cons "Set endpoint..." "Type an endpoint URL manually")
+                  'prefill-endpoint))))
     (define (theme-menu-items)
             "Build the theme menu items from the built-in theme list."
             (map
               (lambda (name)
-                (cons (cons name
-                            (or (assoc-ref %theme-descriptions name)
-                                "Built-in color theme"))
-                      (cons 'set-theme name)))
+                (cons
+                  (cons name (or (assoc-ref %theme-descriptions name) "Built-in color theme"))
+                  (cons 'set-theme name)))
               (all-theme-names)))
     (define (guardrail-menu-items)
             "Build the guardrail level menu items; selecting one applies the
 level exactly like /guardrail <level> does."
             (map
               (lambda (entry)
-                (cons (cons (symbol->string (car entry)) (cdr entry))
-                      (cons 'set-guardrail (car entry))))
+                (cons
+                  (cons (symbol->string (car entry)) (cdr entry))
+                  (cons 'set-guardrail (car entry))))
               %guardrail-levels))
     (define (config-menu-items)
             "Build the top-level config menu items with live state woven
 into the descriptions."
-            (list (cons (cons "Model"
-                              (format #f "Switch active model (~a)" cur-model))
-                        'open-model-menu)
-                  (cons (cons "Endpoint"
-                              (format #f "Switch endpoint (~a)" cur-endpoint))
-                        'open-endpoint-menu)
-                  (cons (cons "Temperature"
-                              (format #f "Set sampling temperature (~a)"
-                                      (badb-config-model-temperature cfg)))
-                        'prefill-temperature)
-                  (cons (cons "Theme"
-                              (format #f "Choose UI color theme (~a)"
-                                      (or (badb-config-ui-theme cfg) "default")))
-                        'open-theme-menu)
-                  (cons (cons "Guardrail"
-                              (format #f "Set policy level (~a)"
-                                      (guardrail-policy-level policy)))
-                        'open-guardrail-menu)
-                  (cons (cons "Reload" "Reload configuration from disk")
-                        'config-reload)
-                  (cons (cons "Save" "Save configuration to disk") 'config-save)))
+            (list
+              (cons
+                (cons "Model" (format #f "Switch active model (~a)" cur-model))
+                'open-model-menu)
+              (cons
+                (cons "Endpoint" (format #f "Switch endpoint (~a)" cur-endpoint))
+                'open-endpoint-menu)
+              (cons
+                (cons "Temperature"
+                      (format #f "Set sampling temperature (~a)" (badb-config-model-temperature cfg)))
+                'prefill-temperature)
+              (cons
+                (cons "Theme"
+                      (format #f
+                              "Choose UI color theme (~a)"
+                              (or (badb-config-ui-theme cfg) "default")))
+                'open-theme-menu)
+              (cons
+                (cons "Guardrail"
+                      (format #f "Set policy level (~a)" (guardrail-policy-level policy)))
+                'open-guardrail-menu)
+              (cons (cons "Reload" "Reload configuration from disk") 'config-reload)
+              (cons (cons "Save" "Save configuration to disk") 'config-save)))
     (define (apply-menu-selection! item)
             "Apply the action data carried by the selected menu ITEM, closing
 any open menu first; submenu actions open the next menu in its place."
@@ -2953,45 +3032,37 @@ any open menu first; submenu actions open the next menu in its place."
                 ((symbol? action)
                   (case action
                     ((open-config-menu)
-                      (set! active-menu
-                            (make-menu "Configuration" (config-menu-items))))
-                    ((open-model-menu)
-                      (set! active-menu (make-menu "Model" (model-menu-items))))
+                      (set! active-menu (make-menu "Configuration" (config-menu-items))))
+                    ((open-model-menu) (set! active-menu (make-menu "Model" (model-menu-items))))
                     ((open-endpoint-menu)
                       (set! active-menu (make-menu "Endpoint" (endpoint-menu-items))))
-                    ((open-theme-menu)
-                      (set! active-menu (make-menu "Theme" (theme-menu-items))))
+                    ((open-theme-menu) (set! active-menu (make-menu "Theme" (theme-menu-items))))
                     ((open-guardrail-menu)
-                      (set! active-menu
-                            (make-menu "Guardrail" (guardrail-menu-items))))
+                      (set! active-menu (make-menu "Guardrail" (guardrail-menu-items))))
                     ((prefill-model) (prefill-input! "/model "))
                     ((prefill-endpoint) (prefill-input! "/endpoint "))
-                    ((prefill-temperature)
-                      (prefill-input! "/config set temperature "))
+                    ((prefill-temperature) (prefill-input! "/config set temperature "))
                     ((config-reload) (handle-config-cmd! "reload"))
                     ((config-save) (handle-config-cmd! "save"))
-                    (else
-                      (add-err-msg! (format #f "Unknown menu action: ~a" action)))))
+                    (else (add-err-msg! (format #f "Unknown menu action: ~a" action)))))
                 ((and (pair? action) (eq? (car action) 'set-model))
                   (let ((m (cdr action)))
                     (set! cur-model m)
                     (badb-config-set-model-name! cfg m)
                     (refresh-client!)
                     (try-save-config!)
-                    (add-sys-msg!
-                      (format #f "Model switched to: ~a (saved to config)" m))))
+                    (add-sys-msg! (format #f "Model switched to: ~a (saved to config)" m))))
                 ((and (pair? action) (eq? (car action) 'switch-provider))
                   (switch-provider-preset! (cdr action)))
                 ((and (pair? action) (eq? (car action) 'set-theme))
-                  (let* ((name (cdr action))
-                         (th (lookup-theme name)))
+                  (let*
+                      ((name (cdr action)) (th (lookup-theme name)))
                     (badb-config-set-ui-theme! cfg name)
                     ;; Colors resolve through ui-theme on every draw, so
                     ;; switching the theme restyles the interface live.
                     (when th (set! ui-theme th))
                     (try-save-config!)
-                    (add-sys-msg!
-                      (format #f "UI theme set to '~a' and saved." name))))
+                    (add-sys-msg! (format #f "UI theme set to '~a' and saved." name))))
                 ((and (pair? action) (eq? (car action) 'set-guardrail))
                   (handle-guardrail-cmd! (symbol->string (cdr action))))
                 (else (add-err-msg! "Unsupported menu action.")))))
@@ -3082,6 +3153,24 @@ any open menu first; submenu actions open the next menu in its place."
                           "COMPACTION REQUIRED"
                           "NORMAL")))))
     ;; Handle slash commands
+    (define (handle-dump-cmd! arg)
+            (let*
+                ((trimmed (string-trim-both arg))
+                 (path
+                   (if (string-null? trimmed)
+                     (string-append ".badb/conversation-"
+                                    (date->string (current-date 0) "~Y~m~dT~H~M~SZ")
+                                    ".txt")
+                     trimmed)))
+              (catch #t
+                (lambda ()
+                  (ensure-directory! (dirname path))
+                  (call-with-output-file path
+                                         (lambda (port)
+                                           (display (format-conversation-transcript messages) port)))
+                  (add-sys-msg! (format #f "Conversation dumped to ~a" path)))
+                (lambda (key . args)
+                  (add-err-msg! (format #f "Dump failed (~a): ~s" key args))))))
     (define (handle-command! cmd-pair)
             (let ((cmd (car cmd-pair)) (arg (cdr cmd-pair)))
               (cond
@@ -3108,6 +3197,7 @@ any open menu first; submenu actions open the next menu in its place."
                                    "  /test             Run the bootstrap test suite\n"
                                    "  /clear            Clear chat history\n"
                                    "  /quit, /exit      Exit TUI\n"
+                                   "  /dump [PATH]      Export the conversation to a text file\n"
                                    "  !<command>        Execute shell command\n"
                                    "  ,<expr> or (..)   Evaluate Scheme code\n"
                                    "  ctrl+p / ctrl+n   Select a message block\n"
@@ -3206,12 +3296,11 @@ any open menu first; submenu actions open the next menu in its place."
                     (if (string-null? text)
                       (add-sys-msg!
                         "Usage: /steer <message> (queued for the running or next agent run)")
-                      (begin
-                        (steering-push! steering-queue text)
-                        (add-msg! "steer"
-                                  (if (agent-run-active? status-text)
-                                    (format #f "Steering queued for the running agent: ~a" text)
-                                    (format #f "Steering queued for the next agent run: ~a" text)))))))
+                      (begin (steering-push! steering-queue text)
+                             (add-msg! "steer"
+                                       (if (agent-run-active? status-text)
+                                         (format #f "Steering queued for the running agent: ~a" text)
+                                         (format #f "Steering queued for the next agent run: ~a" text)))))))
                 ((string=? cmd "interrupt")
                   (steering-push! steering-queue 'interrupt)
                   (set! interrupt-requested? #t)
@@ -3223,6 +3312,7 @@ any open menu first; submenu actions open the next menu in its place."
                                         (set! llm-history (list (make-system-turn)))
                                         (set! scroll-offset 0)
                                         (set! msgsel-index #f))
+                ((string=? cmd "dump") (handle-dump-cmd! arg))
                 ((or (string=? cmd "quit") (string=? cmd "exit")) 'exit)
                 (else
                   (add-err-msg! (format #f "Unknown command: /~a (type /help for commands)" cmd))))))
@@ -3286,23 +3376,16 @@ any open menu first; submenu actions open the next menu in its place."
               ;; open, except Ctrl+C / Ctrl+D which still exit below.
               ((and active-menu (not (or (eqv? ch 3) (eqv? ch 4))))
                 (cond
-                  ((eqv? ch KEY_UP)
-                    (set! active-menu (menu-move active-menu -1)))
-                  ((eqv? ch KEY_DOWN)
-                    (set! active-menu (menu-move active-menu 1)))
+                  ((eqv? ch KEY_UP) (set! active-menu (menu-move active-menu -1)))
+                  ((eqv? ch KEY_DOWN) (set! active-menu (menu-move active-menu 1)))
                   ((eqv? ch 27) (set! active-menu #f))
-                  ((or (eqv? ch KEY_ENTER)
-                       (eqv? ch 10)
-                       (eqv? ch 13))
+                  ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
                     (let ((item (menu-selected-item active-menu)))
-                      (when item
-                        (apply-menu-selection! item))))
+                      (when item (apply-menu-selection! item))))
                   (else #f))
                 (loop))
               ;; Enter key: process buffer, execute modal command, or complete selector
-              ((or (eqv? ch KEY_ENTER)
-                   (eqv? ch 10)
-                   (eqv? ch 13))
+              ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
                 (if (selector-active? input-buffer)
                   (let
                       ((matches (matching-slash-commands input-buffer)))
@@ -3314,9 +3397,12 @@ any open menu first; submenu actions open the next menu in its place."
                         (if (string-null? trimmed)
                           (loop)
                           (let ((action (classify-input trimmed)))
-                            (when (and action (eq? (car action) 'slash))
-                              (handle-command! (cons (cadr action) (caddr action))))
-                            (loop))))
+                            (let
+                                ((res
+                                   (if (and action (eq? (car action) 'slash))
+                                     (handle-command! (cons (cadr action) (caddr action)))
+                                     #f)))
+                              (unless (eq? res 'exit) (loop))))))
                       (let ((chosen (selected-command-name matches)))
                         (cond
                           ;; Commands that still need a typed argument get
@@ -3337,14 +3423,16 @@ any open menu first; submenu actions open the next menu in its place."
                     (set! selector-index 0)
                     (cond
                       ((string-null? trimmed) (loop))
-                      ((eq? prompt-mode 'shell) (record-history! trimmed 'shell)
-                                                (add-cmd-msg! trimmed)
-                                                (execute-shell! trimmed)
-                                                (loop))
-                      ((eq? prompt-mode 'scheme) (record-history! trimmed 'scheme)
-                                                 (add-scm-msg! trimmed)
-                                                 (execute-scheme! trimmed)
-                                                 (loop))
+                      ((eq? prompt-mode 'shell)
+                        (record-history! trimmed 'shell)
+                        (add-cmd-msg! trimmed)
+                        (execute-shell! trimmed)
+                        (loop))
+                      ((eq? prompt-mode 'scheme)
+                        (record-history! trimmed 'scheme)
+                        (add-scm-msg! trimmed)
+                        (execute-scheme! trimmed)
+                        (loop))
                       (else
                         (let ((action (classify-input trimmed)))
                           (case (car action)
@@ -3385,7 +3473,8 @@ any open menu first; submenu actions open the next menu in its place."
                        (chosen (selected-command-name matches)))
                     (when chosen
                       (if
-                          (member chosen '("model" "endpoint" "provider" "mcp" "config" "sh" "eval" "steer"))
+                          (member chosen
+                                  '("model" "endpoint" "provider" "mcp" "config" "sh" "eval" "steer"))
                         (set! input-buffer (string-append "/" chosen " "))
                         (set! input-buffer (string-append "/" chosen)))
                       (set! cursor-pos (string-length input-buffer))
@@ -3395,8 +3484,14 @@ any open menu first; submenu actions open the next menu in its place."
               ;; mode, or clear the message selection on an empty buffer
               ((eqv? ch 27)
                 (cond
-                  ((selector-active? input-buffer) (set! input-buffer "") (set! cursor-pos 0) (set! selector-index 0))
-                  ((not (eq? prompt-mode 'chat)) (set! prompt-mode 'chat) (set! input-buffer "") (set! cursor-pos 0))
+                  ((selector-active? input-buffer)
+                    (set! input-buffer "")
+                    (set! cursor-pos 0)
+                    (set! selector-index 0))
+                  ((not (eq? prompt-mode 'chat))
+                    (set! prompt-mode 'chat)
+                    (set! input-buffer "")
+                    (set! cursor-pos 0))
                   ((and msgsel-index (string-null? input-buffer)) (set! msgsel-index #f)))
                 (loop))
               ;; Up Arrow: navigate selector up, or recall older history
@@ -3425,23 +3520,22 @@ any open menu first; submenu actions open the next menu in its place."
                       ((matches (matching-slash-commands input-buffer)))
                     (unless (null? matches)
                       (set! selector-index (remainder (+ selector-index 1) (length matches)))))
-                  (let* ((was-recalling? (history-recall-position input-history))
-                         (entry (history-recall input-history 1)))
+                  (let*
+                      ((was-recalling? (history-recall-position input-history))
+                       (entry (history-recall input-history 1)))
                     (if entry
-                      (begin (set! input-buffer entry)
-                             (set! cursor-pos (string-length entry)))
+                      (begin (set! input-buffer entry) (set! cursor-pos (string-length entry)))
                       (when was-recalling?
                         (set! input-buffer history-draft)
                         (set! cursor-pos history-draft-pos)))))
                 (loop))
               ;; Backspace: delete character or return to normal mode if prompt is empty
-              ((or (eqv? ch KEY_BACKSPACE)
-                   (eqv? ch 127)
-                   (eqv? ch 8))
+              ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 127) (eqv? ch 8))
                 (cond
                   ((> (string-length input-buffer) 0)
                     (call-with-values
-                      (lambda () (backspace-at input-buffer cursor-pos))
+                      (lambda ()
+                        (backspace-at input-buffer cursor-pos))
                       (lambda (new-buffer new-pos)
                         (set! input-buffer new-buffer)
                         (set! cursor-pos new-pos)))
@@ -3465,8 +3559,7 @@ any open menu first; submenu actions open the next menu in its place."
               ;; message selection to the next card (no-op without selection)
               ((eqv? ch 14)
                 (when (and msgsel-index (pair? messages))
-                  (set! msgsel-index
-                        (min (- (length messages) 1) (+ msgsel-index 1))))
+                  (set! msgsel-index (min (- (length messages) 1) (+ msgsel-index 1))))
                 (loop))
               ;; Left Arrow: move editing cursor left
               ((eqv? ch KEY_LEFT)
@@ -3477,27 +3570,23 @@ any open menu first; submenu actions open the next menu in its place."
                 (set! cursor-pos (clamp-cursor (+ cursor-pos 1) input-buffer))
                 (loop))
               ;; Home or Ctrl+A: move editing cursor to start of input
-              ((or (eqv? ch KEY_HOME) (eqv? ch 1))
-                (set! cursor-pos 0)
-                (loop))
+              ((or (eqv? ch KEY_HOME) (eqv? ch 1)) (set! cursor-pos 0) (loop))
               ;; End: move editing cursor to end of input
-              ((eqv? ch KEY_END)
-                (set! cursor-pos (string-length input-buffer))
-                (loop))
+              ((eqv? ch KEY_END) (set! cursor-pos (string-length input-buffer)) (loop))
               ;; Ctrl+E (control char 5): toggle collapse of the selected
               ;; message card, or move editing cursor to end of input when
               ;; no message is selected (pre-existing binding)
               ((eqv? ch 5)
-                (if (and msgsel-index
-                         (pair? messages)
-                         (< msgsel-index (length messages)))
+                (if
+                    (and msgsel-index (pair? messages) (< msgsel-index (length messages)))
                   (toggle-selected-collapse!)
                   (set! cursor-pos (string-length input-buffer)))
                 (loop))
               ;; Delete: delete character at editing cursor
               ((eqv? ch KEY_DC)
                 (call-with-values
-                  (lambda () (delete-at input-buffer cursor-pos))
+                  (lambda ()
+                    (delete-at input-buffer cursor-pos))
                   (lambda (new-buffer new-pos)
                     (set! input-buffer new-buffer)
                     (set! cursor-pos new-pos)))
@@ -3520,7 +3609,8 @@ any open menu first; submenu actions open the next menu in its place."
                               (loop))))
                     (else
                       (call-with-values
-                        (lambda () (insert-at input-buffer cursor-pos (string c)))
+                        (lambda ()
+                          (insert-at input-buffer cursor-pos (string c)))
                         (lambda (new-buffer new-pos)
                           (set! input-buffer new-buffer)
                           (set! cursor-pos new-pos)))

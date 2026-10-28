@@ -1539,4 +1539,37 @@
   (test-assert "chars and their codes are NOT eqv? in Guile"
                (not (eqv? #\esc 27))))
 
+(test-group "tui-conversation-transcript"
+            (let
+                ((msgs
+                   '(((role . "user") (content . "hello"))
+                     ((role . "assistant") (thoughts . "hmm") (content . "hi there"))
+                     ((role . "error") (content . "boom")))))
+              (let
+                  ((txt (format-conversation-transcript msgs)))
+                (test-assert "transcript has header"
+                             (string-prefix? ";; badb conversation transcript" txt))
+                (test-assert "user block present" (string-contains txt "=== USER ==="))
+                (test-assert "assistant block present"
+                             (string-contains txt "=== ASSISTANT ==="))
+                (test-assert "thinking section present" (string-contains txt "[thinking]"))
+                (test-assert "thinking content recorded" (string-contains txt "hmm"))
+                (test-assert "content recorded" (string-contains txt "hi there"))
+                (test-assert "error block present" (string-contains txt "=== ERROR ==="))
+                (test-assert "error content recorded" (string-contains txt "boom"))))
+            (test-assert
+              "empty transcript is just the header"
+              (string=? ";; badb conversation transcript\n"
+                        (format-conversation-transcript '())))
+            (test-assert "non-string content is stringified"
+                         (string-contains
+                           (format-conversation-transcript '(((role . "system") (content . 42))))
+                           "42"))
+            (test-assert "symbol roles become string headers"
+                         (string-contains
+                           (format-conversation-transcript '(((role . user) (content . "x"))))
+                           "=== USER ==="))
+            (test-assert "slash commands list contains dump" (assoc "dump" %slash-commands))
+            (test-assert "slash commands list contains exit" (assoc "exit" %slash-commands)))
+
 (test-end "badb-tui")
