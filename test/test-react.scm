@@ -21,42 +21,64 @@
 ;;;
 ;;; 1. Tool Schema Conversion
 ;;;
-
 (test-group "react-tool-schemas"
-  (let* ((reg (make-registry))
-         (_ (registry-attach! reg "calc.add"
-                              (lambda (a b) (+ a b))
-                              '((description . "Add two numbers")
-                                (parameters . ((type . "object")
-                                               (properties . ((a . ((type . "number")))
-                                                              (b . ((type . "number")))))
-                                               (required . #("a" "b")))))))
-         (features (registry-list reg))
-         (feat-spec (registry-feature->tool-spec (car features))))
-
-    (test-equal "tool spec type is function" "function" (assoc-ref feat-spec 'type))
-
-    (let ((fn (assoc-ref feat-spec 'function)))
-      (test-equal "normalized name replaces dots" "calc_add" (assoc-ref fn 'name))
-      (test-equal "description preserved" "Add two numbers" (assoc-ref fn 'description))
-      (test-assert "parameters schema present" (assoc-ref fn 'parameters))))
-
-  ;; MCP Tool Conversion
-  (let* ((mcp-raw-tool '((name . "read_file")
-                         (description . "Read file from disk")
-                         (server . "fs")
-                         (inputSchema . ((type . "object")
-                                         (properties . ((path . ((type . "string")))))))))
-         (mcp-spec (mcp-tool->tool-spec mcp-raw-tool)))
-    (test-equal "mcp tool spec type is function" "function" (assoc-ref mcp-spec 'type))
-    (let ((fn (assoc-ref mcp-spec 'function)))
-      (test-equal "mcp tool name preserved" "read_file" (assoc-ref fn 'name))
-      (test-equal "mcp tool description preserved" "Read file from disk" (assoc-ref fn 'description)))))
+            (let*
+                ((reg (make-registry))
+                 (_
+                   (registry-attach! reg
+                                     "calc.add"
+                                     (lambda (a b)
+                                       (+ a b))
+                                     '((description . "Add two numbers")
+                                       (parameters .
+                                        ((type . "object")
+                                         (properties . ((a . ((type . "number"))) (b . ((type . "number")))))
+                                         (required . #("a" "b")))))))
+                 (features (registry-list reg))
+                 (feat-spec (registry-feature->tool-spec (car features))))
+              (test-equal "tool spec type is function" "function" (assoc-ref feat-spec 'type))
+              (let ((fn (assoc-ref feat-spec 'function)))
+                (test-equal "normalized name replaces dots" "calc_add" (assoc-ref fn 'name))
+                (test-equal "description preserved"
+                            "Add two numbers"
+                            (assoc-ref fn 'description))
+                (test-assert "parameters schema present" (assoc-ref fn 'parameters))))
+            ;; MCP Tool Conversion
+            (let*
+                ((mcp-raw-tool
+                   '((name . "read_file")
+                     (description . "Read file from disk")
+                     (server . "fs")
+                     (inputSchema .
+                      ((type . "object") (properties . ((path . ((type . "string")))))))))
+                 (mcp-spec (mcp-tool->tool-spec mcp-raw-tool)))
+              (test-equal "mcp tool spec type is function"
+                          "function"
+                          (assoc-ref mcp-spec 'type))
+              (let ((fn (assoc-ref mcp-spec 'function)))
+                (test-equal "mcp tool name preserved" "read_file" (assoc-ref fn 'name))
+                (test-equal "mcp tool description preserved"
+                            "Read file from disk"
+                            (assoc-ref fn 'description))))
+            (let*
+                ((zero-arg-tool
+                   '((name . "no_arg_tool")
+                     (description . "Zero args tool")
+                     (server . "test")
+                     (inputSchema . ((type . "object") (additionalProperties . #f)))))
+                 (spec (mcp-tool->tool-spec zero-arg-tool))
+                 (fn (assoc-ref spec 'function))
+                 (params (assoc-ref fn 'parameters)))
+              (test-equal "mcp zero-arg tool gets object type"
+                          "object"
+                          (or (assoc-ref params "type") (assoc-ref params 'type)))
+              (test-assert
+                "mcp zero-arg tool injects empty properties"
+                (or (assoc-ref params "properties") (assoc-ref params 'properties)))))
 
 ;;;
 ;;; 2. Tool Call Parsing (Native & XML)
 ;;;
-
 (test-group "react-tool-parsing"
   ;; Native OpenAI format
   (let* ((native-raw
@@ -89,7 +111,6 @@
 ;;;
 ;;; 3. Guardrail Enforcement & Execution
 ;;;
-
 (test-group "react-guardrails"
   (let* ((reg (make-registry))
          (_ (registry-attach! reg "danger.delete"
@@ -123,7 +144,6 @@
 ;;;
 ;;; 4. Tool Execution with Provenance Logging
 ;;;
-
 (test-group "react-tool-dispatch-and-journal"
   (let* ((reg (make-registry))
          (jrn-path "/tmp/badb-test-react-jrn.jsonl")
@@ -152,7 +172,6 @@
 ;;;
 ;;; 5. Multi-turn Autonomous ReAct Loop
 ;;;
-
 (test-group "react-autonomous-loop"
   (let* ((reg (make-registry))
          (_ (registry-attach! reg "get.weather"
@@ -211,7 +230,6 @@
 ;;;
 ;;; 6. Reasoning-only model completion fallback
 ;;;
-
 (test-group "react-reasoning-only-completion"
   (let* ((client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "reasoning-llm"))
          (mock-poster
@@ -234,7 +252,6 @@
 ;;;
 ;;; 6. Safety Bound: Max Iterations Reached
 ;;;
-
 (test-group "react-max-iterations"
   (let* ((client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "looping-llm"))
          (mock-poster
@@ -291,7 +308,6 @@
 ;;;
 ;;; 7. Flexible Keyword Session Construction
 ;;;
-
 (test-group "react-session-keyword-construction"
   (let* ((client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "mock-llm"))
          (reg (make-registry))

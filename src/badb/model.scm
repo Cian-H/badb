@@ -563,65 +563,95 @@ append /chat/completions."
                      #:query (uri-query uri)
                      #:fragment (uri-fragment uri))))))
 
-(define* (model-complete client messages
-                        #:key
-                        (temperature 0.7)
-                        (max-tokens #f)
-                        (tools #f)
-                        (tool-choice #f)
-                        (raw? #f)
-                        (http-poster #f)
-                        (max-retries #f)
-                        (retry-delay-sec #f))
+(define*
+  (model-complete client
+                  messages
+                  #:key
+                  (temperature 0.7)
+                  (max-tokens #f)
+                  (tools #f)
+                  (tool-choice #f)
+                  (raw? #f)
+                  (http-poster #f)
+                  (max-retries #f)
+                  (retry-delay-sec #f))
   "Perform a non-streaming chat completion request.
 Returns the response content text string, or parsed JSON alist if raw? is #t."
-  (let* ((endpoint (model-client-endpoint client))
-         (api-key  (model-client-api-key client))
-         (model    (model-client-model client))
-         (uri      (resolve-endpoint-uri endpoint))
-         (payload  (format-chat-request messages
-                                        #:model model
-                                        #:temperature temperature
-                                        #:max-tokens max-tokens
-                                        #:stream #f
-                                        #:tools tools
-                                        #:tool-choice tool-choice))
-         (headers  (build-headers api-key #f))
-         (poster   (or http-poster (current-http-post))))
-    (let loop ((retries (or max-retries (if http-poster 0 2)))
-               (delay-sec (or retry-delay-sec 2)))
+  (let*
+      ((endpoint (model-client-endpoint client))
+       (api-key (model-client-api-key client))
+       (model (model-client-model client))
+       (uri (resolve-endpoint-uri endpoint))
+       (payload
+         (format-chat-request messages
+                              #:model
+                              model
+                              #:temperature
+                              temperature
+                              #:max-tokens
+                              max-tokens
+                              #:stream
+                              #f
+                              #:tools
+                              tools
+                              #:tool-choice
+                              tool-choice))
+       (headers (build-headers api-key #f))
+       (poster (or http-poster (current-http-post))))
+    (let loop
+      ((retries
+         (or max-retries
+             (if http-poster
+               0
+               2)))
+       (delay-sec (or retry-delay-sec 2)))
       (call-with-values
-          (lambda ()
-            (poster uri #:body payload #:headers headers #:streaming? #f))
+        (lambda ()
+          (poster uri #:body payload #:headers headers #:streaming? #f))
         (lambda (response body)
           (let ((code (response-code response)))
             (cond
-             ((and (or (= code 402) (= code 429) (= code 503)) (> retries 0))
-              (when (> delay-sec 0) (sleep delay-sec))
-              (loop (- retries 1) (* delay-sec 2)))
-             ((not (<= 200 code 299))
-              (let* ((parsed-err (catch #t
-                                   (lambda ()
-                                     (let ((obj (if (string? body) (json-string->scm body) body)))
-                                       (and (pair? obj) (json-ref obj "error"))))
-                                   (lambda _ #f)))
-                     (err-msg (cond
-                               ((and (pair? parsed-err) (json-ref parsed-err "message"))
-                                (json-ref parsed-err "message"))
-                               ((string? body) body)
-                               (else (format #f "HTTP ~a error" code)))))
-                (error "model-complete HTTP request failed" code err-msg)))
-             (else
-              (let* ((text (cond
-                            ((bytevector? body) (utf8->string body))
-                            ((string? body) body)
-                            (else body)))
-                     (parsed (if (string? text)
-                                 (catch #t
-                                   (lambda () (json-string->scm text))
-                                   (lambda _ text))
-                                 text)))
-                (if raw?
+              ((and (or (= code 402) (= code 429) (= code 503)) (> retries 0))
+                (when (> delay-sec 0) (sleep delay-sec))
+                (loop (- retries 1) (* delay-sec 2)))
+              ((not (<= 200 code 299))
+                (let*
+                    ((body-str
+                       (cond
+                         ((bytevector? body) (utf8->string body))
+                         ((string? body) body)
+                         (else "")))
+                     (parsed-err
+                       (catch #t
+                         (lambda ()
+                           (let ((obj (json-string->scm body-str)))
+                             (and (pair? obj) (json-ref obj "error"))))
+                         (lambda _
+                           #f)))
+                     (err-msg
+                       (cond
+                         ((string? parsed-err) parsed-err)
+                         ((and (pair? parsed-err) (json-ref parsed-err "message"))
+                           (json-ref parsed-err "message"))
+                         ((not (string-null? body-str)) body-str)
+                         (else (format #f "HTTP ~a error" code)))))
+                  (error "model-complete HTTP request failed" code err-msg)))
+              (else
+                (let*
+                    ((text
+                       (cond
+                         ((bytevector? body) (utf8->string body))
+                         ((string? body) body)
+                         (else body)))
+                     (parsed
+                       (if (string? text)
+                         (catch #t
+                           (lambda ()
+                             (json-string->scm text))
+                           (lambda _
+                             text))
+                         text)))
+                  (if raw?
                     parsed
                     (or (extract-chat-content parsed) parsed)))))))))))
 

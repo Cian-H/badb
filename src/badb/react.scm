@@ -52,6 +52,7 @@
                                    collect-available-tools
                                    registry-feature->tool-spec
                                    mcp-tool->tool-spec
+                                   sanitize-tool-parameters
                                    parse-tool-calls
                                    parse-xml-tool-calls
                                    execute-tool-call
@@ -96,38 +97,67 @@
     (properties . ())
     (required . #())))
 
+(define (sanitize-tool-parameters params)
+        "Ensure PARAMS conforms to strict JSON Schema object specification.
+If 'properties' is missing from an object schema, inject an empty properties alist."
+        (let*
+            ((p
+               (if (and (list? params) (pair? params))
+                 params
+                 %empty-tool-parameters))
+             (has-type? (or (assoc-ref p "type") (assoc-ref p 'type)))
+             (with-type
+               (if has-type?
+                 p
+                 (cons '(type . "object") p)))
+             (has-props?
+               (or (assoc-ref with-type "properties") (assoc-ref with-type 'properties))))
+          (if has-props?
+            with-type
+            (cons '(properties . ()) with-type))))
+
 (define (registry-feature->tool-spec feature)
-  "Convert a kernel registry feature entry into an OpenAI-compatible tool spec."
-  (let* ((id (assoc-ref feature 'id))
-         (id-str (ensure-string id))
-         (meta (or (assoc-ref feature 'metadata) '()))
-         (desc (or (assoc-ref meta 'description)
+        "Convert a kernel registry feature entry into an OpenAI-compatible tool spec."
+        (let*
+            ((id (assoc-ref feature 'id))
+             (id-str (ensure-string id))
+             (meta (or (assoc-ref feature 'metadata) '()))
+             (desc
+               (or (assoc-ref meta 'description)
                    (assoc-ref meta "description")
                    (format #f "Kernel feature: ~a" id-str)))
-         (params (or (assoc-ref meta 'parameters)
+             (params
+               (sanitize-tool-parameters
+                 (or (assoc-ref meta 'parameters)
                      (assoc-ref meta "parameters")
-                     %empty-tool-parameters)))
-    `((type . "function")
-      (function . ((name . ,(normalize-tool-name id-str))
-                   (description . ,desc)
-                   (parameters . ,params)
-                   (_badb_source . "registry")
-                   (_badb_original_id . ,id-str))))))
+                     %empty-tool-parameters))))
+          `((type . "function")
+            (function .
+                      ((name . ,(normalize-tool-name id-str))
+                       (description . ,desc)
+                       (parameters . ,params)
+                       (_badb_source . "registry")
+                       (_badb_original_id . ,id-str))))))
 
 (define (mcp-tool->tool-spec tool)
-  "Convert an MCP discovered tool entry into an OpenAI-compatible tool spec."
-  (let* ((name (or (assoc-ref tool "name") (assoc-ref tool 'name)))
-         (server (or (assoc-ref tool 'server) (assoc-ref tool "server") "unknown"))
-         (desc (or (assoc-ref tool "description") (assoc-ref tool 'description) ""))
-         (schema (or (assoc-ref tool "inputSchema") (assoc-ref tool 'inputSchema)
-                     %empty-tool-parameters)))
-    `((type . "function")
-      (function . ((name . ,(normalize-tool-name name))
-                   (description . ,desc)
-                   (parameters . ,schema)
-                   (_badb_source . "mcp")
-                   (_badb_server . ,server)
-                   (_badb_original_id . ,name))))))
+        "Convert an MCP discovered tool entry into an OpenAI-compatible tool spec."
+        (let*
+            ((name (or (assoc-ref tool "name") (assoc-ref tool 'name)))
+             (server (or (assoc-ref tool 'server) (assoc-ref tool "server") "unknown"))
+             (desc (or (assoc-ref tool "description") (assoc-ref tool 'description) ""))
+             (schema
+               (sanitize-tool-parameters
+                 (or (assoc-ref tool "inputSchema")
+                     (assoc-ref tool 'inputSchema)
+                     %empty-tool-parameters))))
+          `((type . "function")
+            (function .
+                      ((name . ,(normalize-tool-name name))
+                       (description . ,desc)
+                       (parameters . ,schema)
+                       (_badb_source . "mcp")
+                       (_badb_server . ,server)
+                       (_badb_original_id . ,name))))))
 
 (define* (collect-available-tools reg mcp-mgr #:optional (extra-tools '()))
   "Collect all tools from REG and MCP-MGR, plus any EXTRA-TOOLS."

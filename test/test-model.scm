@@ -3,14 +3,22 @@
 ;;; Comprehensive SRFI-64 tests covering client records, payload formatting,
 ;;; SSE line and event parsing, delta extraction, and model-complete / model-stream.
 
-(define-module (test test-model)
-  #:use-module (srfi srfi-64)
-  #:use-module (json)
-  #:use-module (web uri)
-  #:use-module (web response)
-  #:use-module (ice-9 rdelim)
-  #:use-module (ice-9 optargs)
-  #:use-module (badb model))
+(define-module (test test-model) #:use-module
+               (srfi srfi-64)
+               #:use-module
+               (json)
+               #:use-module
+               (web uri)
+               #:use-module
+               (web response)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 optargs)
+               #:use-module
+               (rnrs bytevectors)
+               #:use-module
+               (badb model))
 
 (test-begin "badb-model")
 
@@ -417,6 +425,20 @@
               (test-equal
                 "model-complete extracts clean JSON error message"
                 "Reasoning required on assistant turns"
+                (catch #t
+                  (lambda ()
+                    (model-complete client "test" #:http-poster err-poster)
+                    "no-error")
+                  (lambda (key . args)
+                    (let ((sub-args (and (pair? args) (caddr args))))
+                      (and (list? sub-args) (cadr sub-args)))))))
+            (let*
+                ((client (make-model-client #:endpoint "http://test-server/v1"))
+                 (err-bv (string->utf8 "{\"error\":\"request exceeds available context size\"}"))
+                 (err-poster (make-mock-poster 400 err-bv)))
+              (test-equal
+                "model-complete extracts error from bytevector response"
+                "request exceeds available context size"
                 (catch #t
                   (lambda ()
                     (model-complete client "test" #:http-poster err-poster)
