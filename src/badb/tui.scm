@@ -2148,9 +2148,8 @@ and append it to the persistent history journal file."
                         (call-with-values
                           (lambda ()
                             (input-visible-window input-buffer cursor-pos avail-width))
-                          (lambda (visible-input cursor-x)
-                            (safe-addstr stdscr (- maxy 2) 2 visible-input avail-width)
-                            (move stdscr (- maxy 2) (+ 2 cursor-x)))))))
+                          (lambda (visible-input _cursor-x)
+                            (safe-addstr stdscr (- maxy 2) 2 visible-input avail-width))))))
                   ;; 4. Bottom keymap hint line in dim, per active mode
                   (let ((hint
                           (format-keymap-line
@@ -2230,6 +2229,17 @@ and append it to the persistent history journal file."
                                   2
                                   offset
                                   (- m-count offset vis-count)))))))))
+                  ;; Position the terminal cursor at the editing position
+                  ;; LAST: row draws below the input line (keymap hint,
+                  ;; pop-ups) displace the cursor, so reposition right
+                  ;; before refreshing or the hardware cursor visibly
+                  ;; rests after the last drawn row.
+                  (call-with-values
+                    (lambda ()
+                      (input-visible-window input-buffer cursor-pos
+                                             (max 1 (- maxx 3))))
+                    (lambda (_visible cursor-x)
+                      (move stdscr (- maxy 2) (+ 2 cursor-x))))
                   (refresh stdscr)))
               (lambda (key . args)
                 ;; Never swallow render failures silently: surface each new
