@@ -161,4 +161,50 @@
       (test-assert "compacted messages token count within ceiling"
         (<= (estimate-conversation-tokens compacted) 80)))))
 
+(test-group "compaction-retains-user-query"
+  ;; Regression: a tool-heavy conversation whose newest turns are all
+  ;; assistant/tool messages used to evict the single user query from the
+  ;; sliding window, producing transcripts with no user message that the
+  ;; endpoint rejects ("No user query found in messages").
+  (let* ((user-msg '((role . "user") (content . "please inspect the whole repository carefully")))
+         (tool-chatter
+          (append
+            (list '((role . "system") (content . "You are the badb kernel agent."))
+                  user-msg)
+            (append-map
+              (lambda (i)
+                (list
+                  `((role . "assistant")
+                    (tool_calls . #(((id . ,(format #f "c~a" i))
+                                     (type . "function")
+                                     (function . ((name . "inspect")
+                                                  (arguments . "{}")))))))
+                  `((role . "tool") (tool_call_id . ,(format #f "c~a" i))
+                    (name . "inspect")
+                    (content . ,(format #f "inspection result number ~a with a verbose summary of the repository state" i)))))
+              (iota 30))))
+         (compactor (make-context-compactor #:max-tokens 120 #:reserve-tokens 20))
+         (compacted (compact-messages compactor tool-chatter)))
+    (test-assert "compaction triggered"
+      (< (length compacted) (length tool-chatter)))
+    (test-assert "a user message survives compaction"
+      (latest-user-message compacted))
+    (test-assert "the retained user message is the original query"
+      (equal? (assoc-ref (latest-user-message compacted) 'content)
+              (assoc-ref user-msg 'content)))
+    (test-assert "system prompt stays pinned at position 0"
+      (equal? (assoc-ref (car compacted) 'role) "system"))
+    (test-equal "latest-user-message finds newest of several"
+      "second question"
+      (assoc-ref (latest-user-message
+                   (list '((role . "user") (content . "first question"))
+                         '((role . "assistant") (content . "answer"))
+                         '((role . "user") (content . "second question"))
+                         '((role . "assistant") (content . "answer 2"))))
+                 'content))
+    (test-assert "latest-user-message returns #f without user turns"
+      (not (latest-user-message
+             (list '((role . "assistant") (content . "hi"))
+                   '((role . "tool") (content . "result"))))))))
+
 (test-end "badb-context")

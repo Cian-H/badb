@@ -47,6 +47,7 @@
                                     strategy-pipeline
                                     strategy-cascading
                                     strategy-cascading-pipeline
+                                    latest-user-message
                                     compaction-needed?
                                     compact-messages))
 
@@ -211,9 +212,21 @@ KEEP-RECENT-TURNS while preserving model reasoning and tool call status."
                   (+ idx 1)
                   (cons processed acc))))))))
 
+(define (latest-user-message msgs)
+  "Return the newest message with role 'user' in MSGS, or #f when none
+exists. MSGS is in chronological order."
+  (let loop ((rest (reverse msgs)))
+    (cond
+      ((null? rest) #f)
+      ((string=? (message-role (car rest)) "user") (car rest))
+      (else (loop (cdr rest))))))
+
 (define* (strategy-sliding-window #:key (keep-system-prompt #t))
   "Compaction strategy that keeps the newest turns fitting within target tokens,
-optionally pinning the system prompt at position 0."
+optionally pinning the system prompt at position 0. The newest user message
+always survives compaction even when it falls outside the token budget:
+tool-heavy turns otherwise evict every user query and endpoints reject the
+resulting transcript."
   (lambda (messages target-tokens estimator)
     (if (null? messages)
       '()
@@ -229,12 +242,26 @@ optionally pinning the system prompt at position 0."
         (let loop
           ((rest (reverse pool)) (acc '()) (cur-tokens 0))
           (if (null? rest)
-            (attach-system sys-msg acc)
+            (attach-system
+              sys-msg
+              (if (any (lambda (m) (string=? (message-role m) "user")) acc)
+                acc
+                (let ((newest-user (latest-user-message pool)))
+                  (if newest-user
+                    (cons newest-user acc)
+                    acc))))
             (let*
                 ((msg (car rest)) (cost (estimate-message-tokens msg estimator)))
               (if
                   (and (> cur-tokens 0) (> (+ cur-tokens cost) avail-tokens))
-                (attach-system sys-msg acc)
+                (attach-system
+                  sys-msg
+                  (if (any (lambda (m) (string=? (message-role m) "user")) acc)
+                    acc
+                    (let ((newest-user (latest-user-message pool)))
+                      (if newest-user
+                        (cons newest-user acc)
+                        acc))))
                 (loop (cdr rest)
                       (cons msg acc)
                       (+ cur-tokens cost))))))))))
