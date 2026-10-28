@@ -691,27 +691,45 @@
         (test-assert "empty model list yields error string" (string? err))))))
 
 ;;;
-;;; Request timeout (call-with-request-timeout)
+;;; Request Timeout (curl transport bounding)
 ;;;
 (test-group "model-request-timeout"
-  (test-equal "thunk result passes through when timeout disabled"
-    'ok (parameterize ((%request-timeout-seconds 0))
-          (call-with-request-timeout (lambda () 'ok))))
-  (test-equal "short work completes under a generous timeout"
-    'ok (parameterize ((%request-timeout-seconds 30))
-          (call-with-request-timeout (lambda () 'ok))))
-  (test-assert "stalled request is interrupted with request-timeout"
-    (parameterize ((%request-timeout-seconds 2))
-      (catch 'request-timeout
-        (lambda ()
-          (call-with-request-timeout
-            (lambda ()
-              (sleep 30)
-              'not-reached)))
-        (lambda (secs)
-          (and (number? secs) (>= secs 1))))))
-  (test-assert "SIGALRM handler and timer restored afterwards"
-    (pair? (sigaction SIGALRM))))
+  (test-equal "default timeout is 600 seconds"
+    600 (%request-timeout-seconds))
+  (test-equal "parameterize overrides the timeout"
+    42 (parameterize ((%request-timeout-seconds 42))
+          (%request-timeout-seconds)))
+  (test-assert "timeout disabled means unbounded web-client transport"
+    (parameterize ((%request-timeout-seconds 0))
+      (not (> (%request-timeout-seconds) 0))))
+  ;; End-to-end: a request against a listening-but-silent socket hangs;
+  ;; curl --max-time cuts it and model-complete surfaces an HTTP error
+  ;; within the bound instead of freezing forever.
+  (test-assert "hung endpoint surfaces as an error within the timeout"
+    (let* ((server (socket AF_INET SOCK_STREAM 0))
+           (_ (setsockopt server SOL_SOCKET SO_REUSEADDR 1))
+           (_ (bind server AF_INET INADDR_LOOPBACK 0))
+           (_ (listen server 1))
+           (port (sockaddr:port (getsockname server)))
+           (client (make-model-client
+                     #:endpoint (format #f "http://127.0.0.1:~a/v1" port)
+                     #:model "m"))
+           (start (get-internal-run-time))
+           (outcome
+             (parameterize ((%request-timeout-seconds 2))
+               (catch #t
+                 (lambda ()
+                   (model-complete client
+                                   '(((role . "user") (content . "hi")))
+                                   #:max-tokens 10
+                                   #:raw? #t)
+                   'no-error)
+                 (lambda args args)))))
+      (close-port server)
+      (format (current-error-port) "hung outcome: ~s~%" outcome)
+      (and (pair? outcome)
+           (< (- (get-internal-run-time) start)
+              (* 10 internal-time-units-per-second))))))
 
 ;;;
 ;;; 9. Streamed Tool-Call Fragments
