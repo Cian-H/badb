@@ -21,8 +21,8 @@ power that was lost if the contract was broken. That is how this
 harness is meant to work: the harness can morph into the shape you
 require, and grants powerful capabilities through unbreakable contracts.
 
-**Status:** pre-alpha. The harness currently consists of a placeholder
-CLI (`OK`).
+**Status:** alpha — the harness has evolved past its initial placeholder phase
+and now ships with a functional TUI CLI.
 
 ## Quickstart
 
@@ -42,7 +42,7 @@ guix time-machine -C channels.scm -- shell -m manifest.scm
 Run the CLI:
 
 ```sh
-./scripts/devenv -- ./scripts/badb            # prints OK
+./scripts/devenv -- ./scripts/badb            # starts the TUI
 ./scripts/devenv -- ./scripts/badb --help
 ./scripts/devenv -- ./scripts/badb --version
 ```
