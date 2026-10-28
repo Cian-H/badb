@@ -109,6 +109,10 @@
                         input-visible-window
                         input-wrapped-rows
                         %max-input-rows
+                        make-row-cache
+                        row-cache?
+                        row-cache-rows
+                        row-cache-prune!
                         make-history
                         input-history?
                         %history-max-entries
@@ -1187,6 +1191,49 @@ reports the number of hidden block rows and the ctrl+e expand hint."
             (list (list "spacer" ""))))))))
 
 ;;;
+;;; Formatted-Row Cache (incremental rendering)
+;;;
+(define-record-type <row-cache>
+                    (%make-row-cache table width)
+                    row-cache?
+                    (table row-cache-table set-row-cache-table!)
+                    (width row-cache-width set-row-cache-width!))
+
+(define (make-row-cache)
+  "Create an empty formatted-row cache for the message renderer."
+  (%make-row-cache (make-hash-table 63) #f))
+
+(define (row-cache-rows cache msg content-width)
+  "Return the formatted block rows of MSG at CONTENT-WIDTH, memoized in
+CACHE per message object (identity-keyed): rendering an unchanged
+transcript costs O(new messages) instead of re-wrapping the whole
+history every frame. Streaming updates and collapse toggles replace
+message objects, so they naturally miss and re-format; a CONTENT-WIDTH
+change (terminal resize) clears the cache wholesale. Evicted messages
+are dropped with ROW-CACHE-PRUNE!."
+  (unless (eq? (row-cache-width cache) content-width)
+    (set-row-cache-width! cache content-width)
+    (hash-clear! (row-cache-table cache)))
+  (or (hashq-ref (row-cache-table cache) msg)
+      (let ((rows (format-message-entry msg content-width)))
+        (hashq-set! (row-cache-table cache) msg rows)
+        rows)))
+
+(define (row-cache-prune! cache messages)
+  "Drop cache entries whose message objects are no longer in MESSAGES.
+The react streaming placeholder is replaced with a fresh object every
+delta, so without pruning a long streaming run grows the cache
+without bound; pruning keeps it proportional to the live transcript."
+  (let ((live (make-hash-table 31)))
+    (for-each (lambda (m) (hashq-set! live m #t)) messages)
+    (let ((kept (make-hash-table 63)))
+      (hash-for-each (lambda (k v)
+                       (when (hashq-ref live k)
+                         (hashq-set! kept k v)))
+                     (row-cache-table cache))
+      (set-row-cache-table! cache kept))))
+
+;;;
 ;;; Interactive Menu Model
 ;;;
 ;; Pure data model for the interactive menu pop-ups (the /config, /model and
@@ -1732,6 +1779,9 @@ header, an optional thinking section, and the content. Pure - no I/O."
     (define react-stream-content "")
     (define react-stream-thoughts "")
     (define react-stream-last-render 0)
+    ;; Incremental rendering: formatted block rows are memoized per
+    ;; message object so each frame only formats new messages.
+    (define row-cache (make-row-cache))
     ;; Agent steering state: the queue is shared with every react session
     ;; and persists across runs (and /clear, which only resets the
     ;; transcript) so /steer and /interrupt can pre-queue entries between
@@ -2211,7 +2261,10 @@ and append it to the persistent history journal file."
                   ;; 2. Flat message history blocks
                   ;; Rows are tagged with their owning message index so the
                   ;; selection marker and auto-scroll can address messages,
-                  ;; not screen lines.
+                  ;; not screen lines. Formatted rows come from the
+                  ;; per-message cache: unchanged messages are never
+                  ;; re-wrapped, so frames are O(new messages).
+                  (row-cache-prune! row-cache messages)
                   (let*
                       ((msg-count (length messages))
                        (sel-idx (and msgsel-index (< msgsel-index msg-count) msgsel-index))
@@ -2221,7 +2274,7 @@ and append it to the persistent history journal file."
                              (map
                                (lambda (entry)
                                  (cons idx entry))
-                               (format-message-entry msg content-width)))
+                               (row-cache-rows row-cache msg content-width)))
                            (iota msg-count)
                            messages))
                        (formatted-lines (apply append indexed-rows))

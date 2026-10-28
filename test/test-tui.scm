@@ -1610,4 +1610,48 @@
       (test-equal "cursor row stays visible" 0 row)
       (test-equal "cursor col at start" 0 col))))
 
+;;;
+;;; Formatted-Row Cache (incremental rendering)
+;;;
+(test-group "tui-row-cache"
+  (let* ((c (make-row-cache))
+         (m1 '((role . "user") (content . "hello world")))
+         (m2 '((role . "assistant") (thoughts . "hmm") (content . "hi")))
+         (rows1 (row-cache-rows c m1 40))
+         (rows1-again (row-cache-rows c m1 40)))
+    (test-assert "cache object predicate" (row-cache? c))
+    (test-assert "identical object returns identical (eq?) rows"
+                 (eq? rows1 rows1-again))
+    (test-assert "rows equal a fresh format"
+                 (equal? rows1 (format-message-entry m1 40)))
+    (let ((rows2 (row-cache-rows c m2 40)))
+      (test-assert "different message formats separately"
+                   (not (eq? rows1 rows2)))
+      ;; streaming update: a REPLACED object must miss the cache
+      (let* ((m2-toggled (message-toggle-collapsed m2))
+             (rows-toggled (row-cache-rows c m2-toggled 40)))
+        (test-assert "collapse toggle (new object) misses the cache"
+                     (not (eq? rows2 rows-toggled)))
+        (test-assert "toggled rows reflect the collapsed state"
+                     (message-collapsed? m2-toggled)))
+      ;; width change invalidates wholesale
+      (let ((rows-wide (row-cache-rows c m1 80)))
+        (test-assert "width change forces re-format"
+                     (not (eq? rows1 rows-wide)))
+        (test-equal "re-formatted wide rows match a fresh wide format"
+                    (format-message-entry m1 80) rows-wide))
+      ;; pruning evicts messages that left the transcript
+      (let ((rows3 (row-cache-rows c m2 40)))
+        (row-cache-prune! c (list m1))
+        (let ((rows3-after (row-cache-rows c m2 40)))
+          (test-assert "pruned message is re-formatted on next access"
+                       (not (eq? rows3 rows3-after)))
+          (test-assert "kept message still cached"
+                       (eq? (row-cache-rows c m1 40)
+                            (row-cache-rows c m1 40))))
+        (let ((before-prune (row-cache-rows c m1 40)))
+          (row-cache-prune! c '())
+          (test-assert "prune with empty transcript evicts everything"
+                       (not (eq? before-prune (row-cache-rows c m1 40)))))))))
+
 (test-end "badb-tui")
