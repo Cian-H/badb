@@ -107,6 +107,8 @@
                         backspace-at
                         delete-at
                         input-visible-window
+                        input-wrapped-rows
+                        %max-input-rows
                         make-history
                         input-history?
                         %history-max-entries
@@ -754,6 +756,35 @@ prefers to keep at least one column of right context in view."
       (let ((start (- pos (- w 2))))
         (values (substring buffer start (min len (+ start w)))
                 (- pos start)))))))
+
+;; Maximum rows the wrapped input may occupy before it scrolls.
+(define %max-input-rows 4)
+
+(define* (input-wrapped-rows buffer cursor-pos avail-width max-rows)
+  "Lay out BUFFER for multi-line wrapped display AVAIL-WIDTH columns wide,
+keeping at most MAX-ROWS lines and scrolling so the line holding the
+editing cursor stays visible. Return (values visible-lines cursor-row
+cursor-col): VISIBLE-LINES is the list of rendered lines, CURSOR-ROW the
+0-based index of the cursor's line within VISIBLE-LINES, CURSOR-COL the
+column of the cursor within that line."
+  (let* ((w (max 1 avail-width))
+         (mr (max 1 max-rows))
+         (lines (wrap-text buffer w))
+         (prefix (substring buffer 0 (clamp-cursor cursor-pos buffer)))
+         (prefix-lines (wrap-text prefix w))
+         (cur-row (max 0 (- (length prefix-lines) 1)))
+         (cur-col (string-length (car (last-pair prefix-lines))))
+         (total (length lines))
+         (scrolled (if (<= total mr)
+                     0
+                     (max 0
+                          (min (max 0 (- cur-row (- mr 1)))
+                               (- total mr)))))
+         (visible (take (drop lines scrolled)
+                        (min mr (- total scrolled)))))
+    (values visible
+            (max 0 (- cur-row scrolled))
+            (min cur-col w))))
 
 ;;;
 ;;; Input History Recall & Session Persistence
@@ -2060,6 +2091,13 @@ and append it to the persistent history journal file."
                               (max 0 (- box-w (string-length bot-tag) 1))
                               #\─)
                             "╯")))
+        ;; Blank the rectangle behind the pop-up first: without this,
+        ;; underlying message text shows through between the drawn
+        ;; fragments (a clear rendering error on busy screens).
+        (let blank-rows ((by start-y) (bi 0))
+          (when (< bi (+ vis-count 2))
+            (safe-addstr stdscr by start-x (make-string box-w #\space) box-w)
+            (blank-rows (+ by 1) (+ bi 1))))
         (draw-role! 'accent #t)
         (safe-addstr stdscr start-y start-x top-str box-w)
         (draw-role! 'accent #f)
@@ -2119,8 +2157,20 @@ and append it to the persistent history journal file."
               (lambda ()
                 (let*
                     ((maxy (getmaxy stdscr)) (maxx (getmaxx stdscr))
+                     (avail-width (max 1 (- maxx 3)))
+                     (input-layout
+                       (call-with-values
+                         (lambda ()
+                           (input-wrapped-rows input-buffer cursor-pos
+                                               avail-width %max-input-rows))
+                         list))
+                     (input-lines (car input-layout))
+                     (input-cur-row (cadr input-layout))
+                     (input-cur-col (caddr input-layout))
+                     (input-rows (length input-lines))
+                     (prompt-top (- maxy 2 (- input-rows 1)))
                      (view-top 2)
-                     (view-bottom (- maxy 3))
+                     (view-bottom (- maxy 3 (- input-rows 1)))
                      (view-height (max 1 (- view-bottom view-top)))
                      (content-width (max 10 (- maxx 3))))
                   (erase stdscr)
@@ -2217,25 +2267,28 @@ and append it to the persistent history journal file."
                                                 interrupt-requested?)))
                     (when pending
                       (draw-role! 'dim #t)
-                      (safe-addstr stdscr (- maxy 3) 0 pending maxx)
+                      (safe-addstr stdscr view-bottom 0 pending maxx)
                       (draw-role! 'dim #f)))
-                  ;; 3. Prompt Input Line: themed indicator glyph only,
-                  ;;    no borders or divider above it
+                  ;; 3. Prompt Input Block: themed indicator glyph leading
+                  ;;    the first row of the wrapped input, continuation
+                  ;;    rows below. Long inputs wrap instead of scrolling
+                  ;;    off the right edge.
                   (call-with-values
                     (lambda ()
                       (get-prompt-indicator input-buffer status-text prompt-mode))
                     (lambda (glyph theme-role bold?)
-                      (let ((avail-width (max 1 (- maxx 3))))
-                        (draw-role! theme-role #t)
-                        (when bold? (attr-on! stdscr A_BOLD))
-                        (safe-addstr stdscr (- maxy 2) 0 glyph 1)
-                        (when bold? (attr-off! stdscr A_BOLD))
-                        (draw-role! theme-role #f)
-                        (call-with-values
-                          (lambda ()
-                            (input-visible-window input-buffer cursor-pos avail-width))
-                          (lambda (visible-input _cursor-x)
-                            (safe-addstr stdscr (- maxy 2) 2 visible-input avail-width))))))
+                      (draw-role! theme-role #t)
+                      (when bold? (attr-on! stdscr A_BOLD))
+                      (safe-addstr stdscr prompt-top 0 glyph 1)
+                      (when bold? (attr-off! stdscr A_BOLD))
+                      (draw-role! theme-role #f)
+                      (draw-role! 'default #t)
+                      (let draw-lines
+                        ((lines input-lines) (y prompt-top))
+                        (unless (null? lines)
+                          (safe-addstr stdscr y 2 (car lines) avail-width)
+                          (draw-lines (cdr lines) (+ y 1))))
+                      (draw-role! 'default #f)))
                   ;; 4. Bottom keymap hint line in dim, per active mode
                   (let
                       ((hint
@@ -2257,7 +2310,7 @@ and append it to the persistent history journal file."
                       (when (> vis-count 0)
                         (let*
                             ((box-h (+ vis-count 2))
-                             (start-y (- maxy 3 box-h))
+                             (start-y (- prompt-top 1 box-h))
                              (rows
                                (map
                                  (lambda (item)
@@ -2291,7 +2344,7 @@ and append it to the persistent history journal file."
                                      vis-items))
                                  (box-w (min (max 24 (+ 8 label-w desc-w)) (max 20 (- maxx 4))))
                                  (box-h (+ vis-count 2))
-                                 (start-y (- maxy 3 box-h))
+                                 (start-y (- prompt-top 1 box-h))
                                  (rows
                                    (map
                                      (lambda (it)
@@ -2311,11 +2364,9 @@ and append it to the persistent history journal file."
                   ;; pop-ups) displace the cursor, so reposition right
                   ;; before refreshing or the hardware cursor visibly
                   ;; rests after the last drawn row.
-                  (call-with-values
-                    (lambda ()
-                      (input-visible-window input-buffer cursor-pos (max 1 (- maxx 3))))
-                    (lambda (_visible cursor-x)
-                      (move stdscr (- maxy 2) (+ 2 cursor-x))))
+                  (move stdscr
+                        (+ prompt-top input-cur-row)
+                        (+ 2 input-cur-col))
                   (refresh stdscr)))
               (lambda (key . args)
                 ;; Never swallow render failures silently: surface each new
@@ -2393,12 +2444,9 @@ and append it to the persistent history journal file."
                                                                       (string-append (substring res-str 0 140) "...")
                                                                       res-str)))
                                                                (add-msg! "tool-result"
-                                                                         (format #f
-                                                                                 (if err?
-                                                                                   "Tool ~a failed: ~a"
-                                                                                   "Tool ~a returned: ~a")
-                                                                                 t-name
-                                                                                 preview))
+                                                                         (if err?
+                                                                             (format #f "Tool ~a failed: ~a" t-name preview)
+                                                                             (format #f "Tool ~a returned: ~a" t-name preview)))
                                                                (poll-steering-input!)
                                                                (render!))))))))
                           (call-with-values

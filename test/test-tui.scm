@@ -1572,4 +1572,42 @@
             (test-assert "slash commands list contains dump" (assoc "dump" %slash-commands))
             (test-assert "slash commands list contains exit" (assoc "exit" %slash-commands)))
 
+;;;
+;;; Wrapped input layout (input-wrapped-rows)
+;;;
+(test-group "tui-wrapped-input"
+  (call-with-values
+    (lambda () (input-wrapped-rows "hello world" 11 5 4))
+    (lambda (lines row col)
+      (test-equal "wraps to two lines" '("hello" "world") lines)
+      (test-equal "cursor row at end" 1 row)
+      (test-equal "cursor col at end" 5 col)))
+  (call-with-values
+    (lambda () (input-wrapped-rows "hello world" 5 5 4))
+    (lambda (lines row col)
+      (test-equal "same layout" '("hello" "world") lines)
+      (test-equal "cursor on first line" 0 row)
+      (test-equal "cursor col on first line" 5 col)))
+  (call-with-values
+    (lambda () (input-wrapped-rows "" 0 20 4))
+    (lambda (lines row col)
+      (test-equal "empty buffer is one empty line" '("") lines)
+      (test-equal "empty buffer cursor row 0" 0 row)
+      (test-equal "empty buffer cursor col 0" 0 col)))
+  (call-with-values
+    (lambda () (input-wrapped-rows (make-string 95 #\a) 95 10 3))
+    (lambda (lines row col)
+      (test-equal "long input scrolled to last rows" 3 (length lines))
+      (test-equal "scrolled window shows the tail"
+        "aaaaa" (list-ref lines 2))
+      (test-equal "cursor row within window" 2 row)
+      (test-equal "cursor col at tail end" 5 col)))
+  (call-with-values
+    (lambda () (input-wrapped-rows (make-string 95 #\a) 0 10 3))
+    (lambda (lines row col)
+      (test-equal "cursor at start keeps the first rows"
+        "aaaaaaaaaa" (car lines))
+      (test-equal "cursor row stays visible" 0 row)
+      (test-equal "cursor col at start" 0 col))))
+
 (test-end "badb-tui")
