@@ -109,6 +109,7 @@
             message-role->theme-role
             system-message-label
             color-symbol->ncurses-constant
+            key->code
             format-message-entry))
 
 ;;;
@@ -688,6 +689,18 @@ A no-op when POS is at the end. Return (values new-buffer new-pos)."
         (values (string-append (substring buffer 0 p)
                                (substring buffer (+ p 1)))
                 p))))
+
+(define (key->code ch)
+  "Normalize a keypress CH from guile-ncurses getch to an integer code:
+chars become their codepoint, integers pass through unchanged, anything
+else (e.g. #f from a failed/non-blocking read) stays as-is. guile-ncurses
+returns control keys as chars (e.g. #\\esc) while function keys arrive as
+integer curses constants, and Guile's eqv? never equates chars with
+integers — so all key dispatch must compare against the normalized code."
+  (cond
+   ((not ch) ch)
+   ((char? ch) (char->integer ch))
+   (else ch)))
 
 (define (input-visible-window buffer cursor-pos avail-width)
   "Compute the horizontally scrolled slice of BUFFER that fits a window
@@ -1617,6 +1630,9 @@ its description, plus the trailing 'Set model...' manual entry item."
     (define prompt-mode 'chat)
     (define stdscr #f)
     (define colors-enabled? #f)
+    ;; Signature of the most recent surfaced render error, so repeat
+    ;; failures are reported once instead of flooding the transcript.
+    (define last-render-error-sig #f)
     ;; Agent steering state: the queue is shared with every react session
     ;; and persists across runs (and /clear, which only resets the
     ;; transcript) so /steer and /interrupt can pre-queue entries between
@@ -1847,7 +1863,7 @@ and append it to the persistent history journal file."
                     (unless
                         (or (null? segs) (>= cur-x (+ start-x inner-w)))
                       (let*
-                          ((seg (car segs)) (str (car segs))
+                          ((seg (car segs)) (str (car seg))
                            (seg-role (cadr seg))
                            (bold? (caddr seg))
                            (dim? (cadddr seg))
@@ -2216,6 +2232,13 @@ and append it to the persistent history journal file."
                                   (- m-count offset vis-count)))))))))
                   (refresh stdscr)))
               (lambda (key . args)
+                ;; Never swallow render failures silently: surface each new
+                ;; error once in the transcript so a broken draw path is
+                ;; visible instead of freezing the UI with no diagnostics.
+                (let ((sig (format #f "~s ~s" key args)))
+                  (unless (equal? sig last-render-error-sig)
+                    (set! last-render-error-sig sig)
+                    (add-err-msg! (format #f "render error: ~a ~s" key args))))
                 #f)))
     ;; Execute streaming query against LLM with separated thoughts
     (define (execute-chat-stream! user-prompt)
@@ -3243,7 +3266,7 @@ any open menu first; submenu actions open the next menu in its place."
         (let loop
           ()
           (render!)
-          (let ((ch (getch stdscr)))
+          (let ((ch (key->code (getch stdscr))))
             (unless (or (eqv? ch KEY_UP) (eqv? ch KEY_DOWN))
               (history-reset-nav input-history))
             (cond
@@ -3259,8 +3282,6 @@ any open menu first; submenu actions open the next menu in its place."
                     (set! active-menu (menu-move active-menu 1)))
                   ((eqv? ch 27) (set! active-menu #f))
                   ((or (eqv? ch KEY_ENTER)
-                       (eqv? ch #\newline)
-                       (eqv? ch #\return)
                        (eqv? ch 10)
                        (eqv? ch 13))
                     (let ((item (menu-selected-item active-menu)))
@@ -3270,8 +3291,6 @@ any open menu first; submenu actions open the next menu in its place."
                 (loop))
               ;; Enter key: process buffer, execute modal command, or complete selector
               ((or (eqv? ch KEY_ENTER)
-                   (eqv? ch #\newline)
-                   (eqv? ch #\return)
                    (eqv? ch 10)
                    (eqv? ch 13))
                 (if (selector-active? input-buffer)
@@ -3349,7 +3368,7 @@ any open menu first; submenu actions open the next menu in its place."
                                     (render!)))
                                 (loop))))))))))
               ;; Tab key: autocomplete selected slash command
-              ((or (eqv? ch #\tab) (eqv? ch 9))
+              ((eqv? ch 9)
                 (when (selector-active? input-buffer)
                   (let*
                       ((matches (matching-slash-commands input-buffer))
@@ -3407,8 +3426,6 @@ any open menu first; submenu actions open the next menu in its place."
                 (loop))
               ;; Backspace: delete character or return to normal mode if prompt is empty
               ((or (eqv? ch KEY_BACKSPACE)
-                   (eqv? ch #\backspace)
-                   (eqv? ch (integer->char 127))
                    (eqv? ch 127)
                    (eqv? ch 8))
                 (cond
@@ -3478,24 +3495,27 @@ any open menu first; submenu actions open the next menu in its place."
                 (loop))
               ;; Ctrl+C or Ctrl+D: exit
               ((or (eqv? ch 3) (eqv? ch 4)) 'done)
-              ;; Printable character input
-              ((char? ch)
-                (cond
-                  ((and (string-null? input-buffer) (eq? prompt-mode 'chat))
-                    (cond
-                      ((eqv? ch #\!) (set! prompt-mode 'shell) (loop))
-                      ((or (eqv? ch #\() (eqv? ch #\,)) (set! prompt-mode 'scheme) (loop))
-                      (else (set! input-buffer (string ch))
-                            (set! cursor-pos (string-length input-buffer))
-                            (loop))))
-                  (else
-                    (call-with-values
-                      (lambda () (insert-at input-buffer cursor-pos (string ch)))
-                      (lambda (new-buffer new-pos)
-                        (set! input-buffer new-buffer)
-                        (set! cursor-pos new-pos)))
-                    (clamp-selector-index!)
-                    (loop))))
+              ;; Printable character input (codepoints >= 32). Unbound
+              ;; control codes fall through to the else branch and are
+              ;; discarded rather than inserted into the buffer.
+              ((and (integer? ch) (>= ch 32))
+                (let ((c (integer->char ch)))
+                  (cond
+                    ((and (string-null? input-buffer) (eq? prompt-mode 'chat))
+                      (cond
+                        ((eqv? c #\!) (set! prompt-mode 'shell) (loop))
+                        ((or (eqv? c #\() (eqv? c #\,)) (set! prompt-mode 'scheme) (loop))
+                        (else (set! input-buffer (string c))
+                              (set! cursor-pos (string-length input-buffer))
+                              (loop))))
+                    (else
+                      (call-with-values
+                        (lambda () (insert-at input-buffer cursor-pos (string c)))
+                        (lambda (new-buffer new-pos)
+                          (set! input-buffer new-buffer)
+                          (set! cursor-pos new-pos)))
+                      (clamp-selector-index!)
+                      (loop)))))
               (else (loop))))))
       (lambda ()
         (shutdown!)))))

@@ -1518,4 +1518,25 @@
   (test-assert "slash commands list contains interrupt"
                (assoc "interrupt" %slash-commands)))
 
+;;;
+;;; Key normalization (key->code)
+;;;
+(test-group "tui-key-normalization"
+  ;; guile-ncurses getch returns chars for ordinary/control keys and
+  ;; integers for function-key constants; dispatch must normalize.
+  (test-equal "escape char becomes 27" 27 (key->code #\esc))
+  (test-equal "ctrl-e char becomes 5" 5 (key->code #\x05))
+  (test-equal "ctrl-p char becomes 16" 16 (key->code #\x10))
+  (test-equal "letter char becomes codepoint" 97 (key->code #\a))
+  (test-equal "newline char becomes 10" 10 (key->code #\newline))
+  (test-equal "return char becomes 13" 13 (key->code #\return))
+  (test-equal "tab char becomes 9" 9 (key->code #\tab))
+  (test-equal "delete char becomes 127" 127 (key->code #\del))
+  (test-equal "integer key constants pass through" 259 (key->code 259))
+  (test-equal "KEY_ENTER integer passes through" 343 (key->code 343))
+  (test-eq "small integers pass through unchanged" 13 (key->code 13))
+  (test-assert "#f stays #f (non-blocking read miss)" (not (key->code #f)))
+  (test-assert "chars and their codes are NOT eqv? in Guile"
+               (not (eqv? #\esc 27))))
+
 (test-end "badb-tui")
