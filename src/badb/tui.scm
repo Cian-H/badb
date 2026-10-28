@@ -45,7 +45,12 @@
             get-prompt-indicator
             format-header-line
             format-prompt-divider
-            segment-line))
+            segment-line
+            clamp-cursor
+            insert-at
+            backspace-at
+            delete-at
+            input-visible-window))
 
 ;;;
 ;;; Text Formatting & Word Wrapping Helpers
@@ -459,6 +464,68 @@ and core badb modules for interactive evaluation."
                         (find-next (+ end 1))))))))))))
 
 ;;;
+;;; Input Buffer Cursor Editing Helpers
+;;;
+(define (clamp-cursor pos buffer)
+  "Clamp cursor position POS into the valid range 0..(string-length BUFFER)."
+  (max 0 (min pos (string-length buffer))))
+
+(define (insert-at buffer pos str)
+  "Insert STR into BUFFER at cursor position POS.
+Return (values new-buffer new-pos) with the cursor advanced past STR."
+  (let* ((p (clamp-cursor pos buffer))
+         (new-buffer (string-append (substring buffer 0 p)
+                                    str
+                                    (substring buffer p))))
+    (values new-buffer (+ p (string-length str)))))
+
+(define (backspace-at buffer pos)
+  "Delete the character before cursor position POS in BUFFER.
+A no-op when POS is 0. Return (values new-buffer new-pos)."
+  (let ((p (clamp-cursor pos buffer)))
+    (if (<= p 0)
+        (values buffer 0)
+        (values (string-append (substring buffer 0 (- p 1))
+                               (substring buffer p))
+                (- p 1)))))
+
+(define (delete-at buffer pos)
+  "Delete the character at cursor position POS in BUFFER (KEY_DC semantics).
+A no-op when POS is at the end. Return (values new-buffer new-pos)."
+  (let* ((p (clamp-cursor pos buffer))
+         (len (string-length buffer)))
+    (if (>= p len)
+        (values buffer p)
+        (values (string-append (substring buffer 0 p)
+                               (substring buffer (+ p 1)))
+                p))))
+
+(define (input-visible-window buffer cursor-pos avail-width)
+  "Compute the horizontally scrolled slice of BUFFER that fits a window
+AVAIL-WIDTH columns wide such that CURSOR-POS is always visible.
+Return (values visible-substring cursor-x-in-window). When the buffer fits
+entirely no scrolling occurs; otherwise the window follows the cursor and
+prefers to keep at least one column of right context in view."
+  (let* ((len (string-length buffer))
+         (pos (clamp-cursor cursor-pos buffer))
+         (w (max 1 avail-width)))
+    (cond
+     ((<= len w)
+      (values buffer pos))
+     ((= w 1)
+      (let ((start (min pos len)))
+        (values (substring buffer start (min len (+ start 1))) 0)))
+     ((<= pos (- w 2))
+      (values (substring buffer 0 w) pos))
+     ((>= pos len)
+      (let ((start (- len w)))
+        (values (substring buffer start len) w)))
+     (else
+      (let ((start (- pos (- w 2))))
+        (values (substring buffer start (min len (+ start w)))
+                (- pos start)))))))
+
+;;;
 ;;; Main TUI Controller
 ;;;
 (define*
@@ -521,7 +588,12 @@ and core badb modules for interactive evaluation."
        (KEY_UP (nref 'KEY_UP))
        (KEY_DOWN (nref 'KEY_DOWN))
        (KEY_PPAGE (nref 'KEY_PPAGE))
-       (KEY_NPAGE (nref 'KEY_NPAGE)))
+       (KEY_NPAGE (nref 'KEY_NPAGE))
+       (KEY_LEFT (nref 'KEY_LEFT))
+       (KEY_RIGHT (nref 'KEY_RIGHT))
+       (KEY_HOME (nref 'KEY_HOME))
+       (KEY_END (nref 'KEY_END))
+       (KEY_DC (nref 'KEY_DC)))
     ;; Initialize Configuration & Kernel State
     (define cfg (or config (load-config)))
     (define cur-endpoint
@@ -790,6 +862,7 @@ and core badb modules for interactive evaluation."
                                 "• Type / to open command selector palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context).")))))
     (define llm-history (list (make-system-turn)))
     (define input-buffer "")
+    (define cursor-pos 0)
     (define scroll-offset 0)
     (define status-text "READY")
     (define selector-index 0)
@@ -1126,19 +1199,18 @@ and core badb modules for interactive evaluation."
                     (lambda ()
                       (get-prompt-indicator input-buffer status-text prompt-mode))
                     (lambda (glyph pair-id bold?)
-                      (let*
-                          ((avail-width (max 1 (- maxx 6)))
-                           (visible-input
-                             (if (> (string-length input-buffer) avail-width)
-                               (substring input-buffer (- (string-length input-buffer) avail-width))
-                               input-buffer)))
+                      (let ((avail-width (max 1 (- maxx 6))))
                         (set-color-attr! pair-id #t)
                         (when bold? (attr-on! stdscr A_BOLD))
                         (safe-addstr stdscr (- maxy 2) 2 glyph 1)
                         (when bold? (attr-off! stdscr A_BOLD))
                         (set-color-attr! pair-id #f)
-                        (safe-addstr stdscr (- maxy 2) 4 visible-input avail-width)
-                        (move stdscr (- maxy 2) (+ 4 (string-length visible-input))))))
+                        (call-with-values
+                          (lambda ()
+                            (input-visible-window input-buffer cursor-pos avail-width))
+                          (lambda (visible-input cursor-x)
+                            (safe-addstr stdscr (- maxy 2) 4 visible-input avail-width)
+                            (move stdscr (- maxy 2) (+ 4 cursor-x)))))))
                   ;; 6. Bottom container border
                   (set-color-attr! 1 #t)
                   (safe-addstr stdscr
@@ -1954,6 +2026,7 @@ and core badb modules for interactive evaluation."
                     (if (null? matches)
                       (let ((trimmed (string-trim-both input-buffer)))
                         (set! input-buffer "")
+                        (set! cursor-pos 0)
                         (set! selector-index 0)
                         (if (string-null? trimmed)
                           (loop)
@@ -1965,13 +2038,16 @@ and core badb modules for interactive evaluation."
                         (cond
                           ((member chosen '("model" "endpoint" "provider" "sh" "eval"))
                             (set! input-buffer (string-append "/" chosen " "))
+                            (set! cursor-pos (string-length input-buffer))
                             (set! selector-index 0)
                             (loop))
                           (else (set! input-buffer "")
+                                (set! cursor-pos 0)
                                 (set! selector-index 0)
                                 (let ((res (handle-command! (cons chosen "")))) (unless (eq? res 'exit) (loop))))))))
                   (let ((trimmed (string-trim-both input-buffer)))
                     (set! input-buffer "")
+                    (set! cursor-pos 0)
                     (set! selector-index 0)
                     (cond
                       ((string-null? trimmed) (loop))
@@ -2021,13 +2097,14 @@ and core badb modules for interactive evaluation."
                           (member chosen '("model" "endpoint" "provider" "mcp" "config" "sh" "eval"))
                         (set! input-buffer (string-append "/" chosen " "))
                         (set! input-buffer (string-append "/" chosen)))
+                      (set! cursor-pos (string-length input-buffer))
                       (set! selector-index 0))))
                 (loop))
               ;; Escape key: close selector palette or return to normal chat mode
               ((eqv? ch 27)
                 (cond
-                  ((selector-active? input-buffer) (set! input-buffer "") (set! selector-index 0))
-                  ((not (eq? prompt-mode 'chat)) (set! prompt-mode 'chat) (set! input-buffer "")))
+                  ((selector-active? input-buffer) (set! input-buffer "") (set! cursor-pos 0) (set! selector-index 0))
+                  ((not (eq? prompt-mode 'chat)) (set! prompt-mode 'chat) (set! input-buffer "") (set! cursor-pos 0)))
                 (loop))
               ;; Up Arrow: navigate selector up or scroll
               ((eqv? ch KEY_UP)
@@ -2058,8 +2135,11 @@ and core badb modules for interactive evaluation."
                    (eqv? ch 8))
                 (cond
                   ((> (string-length input-buffer) 0)
-                    (set! input-buffer
-                          (substring input-buffer 0 (- (string-length input-buffer) 1)))
+                    (call-with-values
+                      (lambda () (backspace-at input-buffer cursor-pos))
+                      (lambda (new-buffer new-pos)
+                        (set! input-buffer new-buffer)
+                        (set! cursor-pos new-pos)))
                     (clamp-selector-index!))
                   ((not (eq? prompt-mode 'chat)) (set! prompt-mode 'chat)))
                 (loop))
@@ -2067,6 +2147,31 @@ and core badb modules for interactive evaluation."
               ((eqv? ch KEY_PPAGE) (set! scroll-offset (+ scroll-offset 5)) (loop))
               ;; Page Down / Scroll Down
               ((eqv? ch KEY_NPAGE) (set! scroll-offset (max 0 (- scroll-offset 5))) (loop))
+              ;; Left Arrow: move editing cursor left
+              ((eqv? ch KEY_LEFT)
+                (set! cursor-pos (clamp-cursor (- cursor-pos 1) input-buffer))
+                (loop))
+              ;; Right Arrow: move editing cursor right
+              ((eqv? ch KEY_RIGHT)
+                (set! cursor-pos (clamp-cursor (+ cursor-pos 1) input-buffer))
+                (loop))
+              ;; Home or Ctrl+A: move editing cursor to start of input
+              ((or (eqv? ch KEY_HOME) (eqv? ch 1))
+                (set! cursor-pos 0)
+                (loop))
+              ;; End or Ctrl+E: move editing cursor to end of input
+              ((or (eqv? ch KEY_END) (eqv? ch 5))
+                (set! cursor-pos (string-length input-buffer))
+                (loop))
+              ;; Delete: delete character at editing cursor
+              ((eqv? ch KEY_DC)
+                (call-with-values
+                  (lambda () (delete-at input-buffer cursor-pos))
+                  (lambda (new-buffer new-pos)
+                    (set! input-buffer new-buffer)
+                    (set! cursor-pos new-pos)))
+                (clamp-selector-index!)
+                (loop))
               ;; Ctrl+C or Ctrl+D: exit
               ((or (eqv? ch 3) (eqv? ch 4)) 'done)
               ;; Printable character input
@@ -2076,9 +2181,15 @@ and core badb modules for interactive evaluation."
                     (cond
                       ((eqv? ch #\!) (set! prompt-mode 'shell) (loop))
                       ((or (eqv? ch #\() (eqv? ch #\,)) (set! prompt-mode 'scheme) (loop))
-                      (else (set! input-buffer (string ch)) (loop))))
+                      (else (set! input-buffer (string ch))
+                            (set! cursor-pos (string-length input-buffer))
+                            (loop))))
                   (else
-                    (set! input-buffer (string-append input-buffer (string ch)))
+                    (call-with-values
+                      (lambda () (insert-at input-buffer cursor-pos (string ch)))
+                      (lambda (new-buffer new-pos)
+                        (set! input-buffer new-buffer)
+                        (set! cursor-pos new-pos)))
                     (clamp-selector-index!)
                     (loop))))
               (else (loop))))))

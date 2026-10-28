@@ -522,4 +522,124 @@
       "https://openrouter.ai/api/v1" (car (cadr segs-url)))
     (test-equal "url has white pair 3" 3 (cadr (cadr segs-url)))))
 
+;;;
+;;; 13. Input Buffer Cursor Editing Helpers
+;;;
+(test-group "tui-input-cursor"
+  ;; insert-at: start / middle / end
+  (call-with-values (lambda () (insert-at "world" 0 "hello "))
+    (lambda (buf pos)
+      (test-equal "insert at start" "hello world" buf)
+      (test-equal "insert at start moves cursor past str" 6 pos)))
+
+  (call-with-values (lambda () (insert-at "ad" 1 "bc"))
+    (lambda (buf pos)
+      (test-equal "insert in middle" "abcd" buf)
+      (test-equal "insert in middle moves cursor past str" 3 pos)))
+
+  (call-with-values (lambda () (insert-at "hello" 5 " world"))
+    (lambda (buf pos)
+      (test-equal "insert at end" "hello world" buf)
+      (test-equal "insert at end moves cursor past str" 11 pos)))
+
+  (call-with-values (lambda () (insert-at "abc" 99 "X"))
+    (lambda (buf pos)
+      (test-equal "insert beyond end clamps to end" "abcX" buf)
+      (test-equal "insert beyond end cursor at new end" 4 pos)))
+
+  (call-with-values (lambda () (insert-at "abc" -3 "X"))
+    (lambda (buf pos)
+      (test-equal "insert before start clamps to 0" "Xabc" buf)
+      (test-equal "insert before start cursor after str" 1 pos)))
+
+  ;; backspace-at: no-op at 0, delete before cursor
+  (call-with-values (lambda () (backspace-at "hello" 0))
+    (lambda (buf pos)
+      (test-equal "backspace at 0 is a no-op" "hello" buf)
+      (test-equal "backspace at 0 keeps cursor at 0" 0 pos)))
+
+  (call-with-values (lambda () (backspace-at "hello" 2))
+    (lambda (buf pos)
+      (test-equal "backspace mid-buffer deletes char before cursor" "hllo" buf)
+      (test-equal "backspace mid-buffer moves cursor left" 1 pos)))
+
+  (call-with-values (lambda () (backspace-at "hello" 5))
+    (lambda (buf pos)
+      (test-equal "backspace at end deletes last char" "hell" buf)
+      (test-equal "backspace at end moves cursor left" 4 pos)))
+
+  ;; delete-at: KEY_DC semantics, no-op at end
+  (call-with-values (lambda () (delete-at "hello" 5))
+    (lambda (buf pos)
+      (test-equal "delete at end is a no-op" "hello" buf)
+      (test-equal "delete at end keeps cursor" 5 pos)))
+
+  (call-with-values (lambda () (delete-at "hello" 1))
+    (lambda (buf pos)
+      (test-equal "delete mid-buffer removes char at cursor" "hllo" buf)
+      (test-equal "delete mid-buffer keeps cursor" 1 pos)))
+
+  (call-with-values (lambda () (delete-at "hello" 0))
+    (lambda (buf pos)
+      (test-equal "delete at start removes first char" "ello" buf)
+      (test-equal "delete at start keeps cursor at 0" 0 pos)))
+
+  ;; clamp-cursor
+  (test-equal "clamp negative pos to 0" 0 (clamp-cursor -5 "abc"))
+  (test-equal "clamp pos beyond end to length" 3 (clamp-cursor 99 "abc"))
+  (test-equal "clamp keeps valid position" 2 (clamp-cursor 2 "abc"))
+  (test-equal "clamp on empty buffer is 0" 0 (clamp-cursor 3 ""))
+
+  ;; input-visible-window: buffer fits entirely
+  (call-with-values (lambda () (input-visible-window "abc" 2 10))
+    (lambda (vis cx)
+      (test-equal "short buffer shown whole" "abc" vis)
+      (test-equal "short buffer cursor keeps absolute offset" 2 cx)))
+
+  ;; cursor at start of long buffer: no scroll, cursor at x 0
+  (call-with-values (lambda () (input-visible-window "0123456789" 0 5))
+    (lambda (vis cx)
+      (test-equal "cursor at start shows window head" "01234" vis)
+      (test-equal "cursor at start x is 0" 0 cx)))
+
+  ;; cursor past right edge: window scrolls to keep cursor visible with right context
+  (call-with-values (lambda () (input-visible-window "0123456789" 7 5))
+    (lambda (vis cx)
+      (test-equal "cursor past right edge scrolls window" "45678" vis)
+      (test-equal "cursor past right edge keeps cursor in window" 3 cx)
+      (test-assert "cursor past right edge shows right context"
+        (and (>= cx 0) (< cx 4)))))
+
+  ;; cursor at very end of long buffer: tail window, cursor after last char
+  (call-with-values (lambda () (input-visible-window "0123456789" 10 5))
+    (lambda (vis cx)
+      (test-equal "cursor at end shows tail window" "56789" vis)
+      (test-equal "cursor at end x equals window width" 5 cx)))
+
+  ;; tiny avail-width: single column window
+  (call-with-values (lambda () (input-visible-window "abcdef" 2 1))
+    (lambda (vis cx)
+      (test-equal "tiny width shows char at cursor" "c" vis)
+      (test-equal "tiny width cursor x is 0" 0 cx)))
+
+  (call-with-values (lambda () (input-visible-window "abcdef" 6 1))
+    (lambda (vis cx)
+      (test-equal "tiny width at end shows empty window" "" vis)
+      (test-equal "tiny width at end cursor x is 0" 0 cx)))
+
+  ;; cursor position is always inside the window
+  (test-assert "cursor always visible in window for sweep of positions"
+    (let loop ((pos 0) (ok? #t))
+      (if (> pos 12)
+          ok?
+          (call-with-values
+            (lambda () (input-visible-window "0123456789AB" pos 5))
+            (lambda (vis cx)
+              (loop (+ pos 1)
+                    (and ok?
+                         (<= 0 cx 5)
+                         (or (= cx 5)
+                             (string-prefix? (substring vis cx (min (string-length vis) (+ cx 1)))
+                                             (substring "0123456789AB" pos)))))))))))
+
 (test-end "badb-tui")
