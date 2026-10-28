@@ -10,7 +10,10 @@
 ;;; rounded pop-ups. All colors resolve through the (badb theme) module, so
 ;;; the six built-in themes restyle the whole interface. Message blocks are
 ;;; collapsible: reasoning collapses to a single summary line by default;
-;;; Ctrl+P/Ctrl+N select a block and Ctrl+E toggles collapse.
+;;; Ctrl+P/Ctrl+N select a block and Ctrl+E toggles collapse. While the
+;;; autonomous ReAct loop runs, the terminal is polled non-blocking so the
+;;; user can type steering messages (Enter sends, Ctrl+I interrupts) that
+;;; the running agent sees at the next iteration boundary.
 
 (define-module (badb tui)
   #:use-module (badb model)
@@ -69,6 +72,9 @@
             format-header-segments
             format-rule-line
             format-keymap-line
+            steering-key-handle
+            steering-pending-line
+            agent-run-active?
             segment-line
             clamp-cursor
             insert-at
@@ -167,6 +173,8 @@ breaking on whitespace when possible."
           ("test" . "Run bootstrap verification test suite")
           ("sh" . "Execute shell command (!<cmd>)")
           ("eval" . "Evaluate Scheme code in REPL (,<expr>)")
+          ("steer" . "Queue steering text for the running agent")
+          ("interrupt" . "Halt the running agent at its next boundary")
           ("clear" . "Clear chat viewport history")
           ("quit" . "Exit badb microharness")))
 
@@ -368,13 +376,86 @@ sides would collide; the model name truncates last."
 
 (define (format-keymap-line mode)
   "Return the dim bottom keymap hint line describing the keys active in
-MODE (a symbol: chat, shell, scheme, selector or menu)."
+MODE (a symbol: chat, shell, scheme, selector, menu or steering)."
   (case mode
     ((shell) "enter:run backspace:back to chat")
     ((scheme) "enter:eval backspace:back to chat")
     ((selector) "up/down:choose tab:complete enter:run esc:dismiss")
     ((menu) "up/down:move enter:apply esc:close")
+    ((steering) "type:steer enter:send ^i:interrupt bs:edit esc:clear")
     (else "!:shell ,:scheme /:cmds ^p/^n:select ^e:collapse pgup/pgdn:scroll")))
+
+;;;
+;;; Agent Steering Helpers
+;;;
+;; Pure keyboard-to-intent mapping and presentation formatters for mid-run
+;; steering: while the autonomous ReAct loop executes, keypresses polled
+;; from the terminal accumulate in a steering buffer and are pushed onto
+;; the session's steering queue (injected as user messages at the next
+;; iteration boundary, or halting the loop with 'interrupt). Keeping these
+;; helpers pure makes the curses wiring trivial and testable headless.
+(define (steering-key-handle buffer ch)
+  "Map a keypress CH to a steering action and the resulting buffer.
+Return (values new-buffer action) with actions:
+  'append     printable character appended to BUFFER
+  'backspace  last character deleted (Ctrl+H / backspace / DEL)
+  'queue      BUFFER submitted to the steering queue (Enter); a queue
+              action is only produced for non-blank content
+  'interrupt  interrupt requested (Ctrl+I / Tab); the buffer is discarded
+  'clear      buffer discarded (Escape)
+  'none       key ignored (other control chars, curses key codes)
+CH is either a character (printable input) or an integer control code or
+curses key constant, matching what getch delivers under keypad mode."
+  (cond
+   ;; Enter (newline, carriage return, or their integer codes)
+   ((or (eqv? ch #\newline) (eqv? ch #\return) (eqv? ch 10) (eqv? ch 13))
+    (if (string-null? (string-trim-both buffer))
+        (values buffer 'none)
+        (values "" 'queue)))
+   ;; Ctrl+I (Tab): request an interrupt, discarding the pending buffer
+   ((or (eqv? ch #\tab) (eqv? ch 9))
+    (values "" 'interrupt))
+   ;; Escape: discard the pending buffer
+   ((eqv? ch 27)
+    (values "" 'clear))
+   ;; Backspace / Ctrl+H / DEL: delete the last character
+   ((or (eqv? ch #\backspace) (eqv? ch 8) (eqv? ch 127))
+    (if (string-null? buffer)
+        (values buffer 'none)
+        (values (substring buffer 0 (- (string-length buffer) 1)) 'backspace)))
+   ;; Printable characters append
+   ((and (char? ch) (>= (char->integer ch) 32))
+    (values (string-append buffer (string ch)) 'append))
+   ;; Integer codes in the printable range (some terminals deliver these)
+   ((and (integer? ch) (>= ch 32) (<= ch 126))
+    (values (string-append buffer (string (integer->char ch))) 'append))
+   ;; Everything else (control chars, arrow and function key codes)
+   (else (values buffer 'none))))
+
+(define* (steering-pending-line buffer queued-count
+                                #:optional (interrupt-queued? #f))
+  "Compose the dim pending-steering display line near the prompt: the
+in-progress BUFFER being typed mid-run, the QUEUED-COUNT of steering
+entries queued but not yet consumed by the loop, and the INTERRUPT-QUEUED?
+pill shown while an interrupt is pending. Return #f when nothing is
+pending and no line should be drawn."
+  (cond
+   (interrupt-queued? "steering: interrupt requested")
+   ((and (not (string-null? buffer)) (> queued-count 0))
+    (format #f "steering: ~a (+~a queued)" buffer queued-count))
+   ((not (string-null? buffer))
+    (format #f "steering: ~a" buffer))
+   ((> queued-count 0)
+    (format #f "steering: ~a queued" queued-count))
+   (else #f)))
+
+(define (agent-run-active? status-text)
+  "Return #t when STATUS-TEXT indicates the autonomous ReAct loop is
+currently executing (a REACT iteration or TOOL status)."
+  (and (string? status-text)
+       (or (string-prefix? "REACT" status-text)
+           (string-prefix? "TOOL:" status-text))
+       #t))
 
 ;;;
 ;;; Shell & REPL Execution Helpers
@@ -876,6 +957,7 @@ HIDDEN-LINES row count it hides, and the ctrl+e expand hint."
    ((string=? role "tool-result") "tool result")
    ((string=? role "error") "error")
    ((string=? role "notice") "notice")
+   ((string=? role "steer") "steering")
    (else "system")))
 
 (define (message-role->theme-role role)
@@ -891,6 +973,7 @@ HIDDEN-LINES row count it hides, and the ctrl+e expand hint."
    ((or (string=? role "scheme-in") (string=? role "scheme-out")) 'scheme)
    ((or (string=? role "tool-call") (string=? role "tool")) 'tool-call)
    ((string=? role "tool-result") 'tool-result)
+   ((string=? role "steer") 'accent)
    (else 'system)))
 
 ;; Content-derived label for system messages, replacing the old emoji badges.
@@ -1503,6 +1586,7 @@ its description, plus the trailing 'Set model...' manual entry item."
                              ,(string-append
                                 "Welcome to badb microharness TUI!\n"
                                 "• Type a message to chat with the model (autonomous ReAct loop active)\n"
+                                "• While the agent runs you can steer it: type a course correction, enter sends it, ctrl+i interrupts (applied at the next iteration)\n"
                                 "• ! switches to shell mode, ( or , to Scheme REPL; backspace on an empty prompt returns to chat\n"
                                 "• / opens the command palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context)\n"
                                 "• ctrl+p / ctrl+n select a message block, ctrl+e collapse or expand it\n"
@@ -1533,6 +1617,24 @@ its description, plus the trailing 'Set model...' manual entry item."
     (define prompt-mode 'chat)
     (define stdscr #f)
     (define colors-enabled? #f)
+    ;; Agent steering state: the queue is shared with every react session
+    ;; and persists across runs (and /clear, which only resets the
+    ;; transcript) so /steer and /interrupt can pre-queue entries between
+    ;; runs — react-run! drains before its first LLM call too. The buffer
+    ;; holds text typed mid-run; interrupt-requested? drives the pending
+    ;; pill until a run consumes the queued 'interrupt.
+    (define steering-queue (make-steering-queue))
+    (define steering-buffer "")
+    (define interrupt-requested? #f)
+    ;; Non-blocking input support: guile-ncurses 3.x exports nodelay!
+    ;; (some builds name it nodelay). When neither resolves, mid-run
+    ;; polling is disabled and steering stays available between runs
+    ;; through /steer and /interrupt.
+    (define nodelay-proc
+            (or (catch #t (lambda () (nref 'nodelay!)) (lambda _ #f))
+                (catch #t (lambda () (nref 'nodelay)) (lambda _ #f))))
+    (define steering-err-val
+            (catch #t (lambda () (nref 'ERR)) (lambda _ -1)))
     ;; Message appending helpers
     (define (add-msg! role content)
             (set! messages (append messages (list `((role . ,role) (content . ,content))))))
@@ -1541,6 +1643,41 @@ its description, plus the trailing 'Set model...' manual entry item."
     (define (add-cmd-msg! content) (add-msg! "shell-cmd" content))
     (define (add-scm-msg! content) (add-msg! "scheme-in" content))
     (define (add-user-msg! content) (add-msg! "user" content))
+    ;; Poll the terminal without blocking while the react loop runs: drain
+    ;; every pending keypress into the steering buffer / queue. Called from
+    ;; the react hooks (on-step, on-tool-call, on-tool-result) so input
+    ;; typed mid-run is captured at iteration boundaries. Requires nodelay
+    ;; support; without it this is a no-op and /steer between runs is the
+    ;; fallback. Escape sequences from arrow keys may bleed in as stray
+    ;; characters when only partially arrived — accepted for simplicity.
+    (define (poll-steering-input!)
+            (when (and nodelay-proc stdscr)
+              (let poll-loop ()
+                (let ((ch (catch #t (lambda () (getch stdscr)) (lambda _ #f))))
+                  (when (and ch
+                             (not (and (integer? ch)
+                                       (or (= ch -1) (eqv? ch steering-err-val)))))
+                    (let ((norm-ch (cond ((eqv? ch KEY_ENTER) 10)
+                                          ((eqv? ch KEY_BACKSPACE) 127)
+                                          (else ch))))
+                      (call-with-values
+                        (lambda () (steering-key-handle steering-buffer norm-ch))
+                        (lambda (new-buffer action)
+                          (let ((prev-buffer steering-buffer))
+                            (set! steering-buffer new-buffer)
+                            (case action
+                              ((queue)
+                                (let ((text (string-trim-both prev-buffer)))
+                                  (steering-push! steering-queue text)
+                                  (add-msg! "steer"
+                                            (format #f "Steering queued: ~a" text))))
+                              ((interrupt)
+                                (steering-push! steering-queue 'interrupt)
+                                (set! interrupt-requested? #t)
+                                (add-msg! "steer"
+                                          "Interrupt requested — halting at the next iteration boundary."))
+                              (else #f)))
+                          (poll-loop)))))))))
     ;; Toggle collapse of the currently selected message card. Selection may
     ;; point at any message, but only collapsible ones (with content or
     ;; thoughts) change state; the toggle itself is a pure alist update.
@@ -1970,6 +2107,16 @@ and append it to the persistent history journal file."
                                              content-width
                                              (and sel-idx (= (car tagged) sel-idx))))
                           (loop (cdr lines) (+ y 1))))))
+                  ;; Pending steering line: dim feedback above the prompt
+                  ;; for text being typed mid-run, queued steering
+                  ;; entries, and pending interrupt requests
+                  (let ((pending (steering-pending-line steering-buffer
+                                                         (steering-count steering-queue)
+                                                         interrupt-requested?)))
+                    (when pending
+                      (draw-role! 'dim #t)
+                      (safe-addstr stdscr (- maxy 3) 0 pending maxx)
+                      (draw-role! 'dim #f)))
                   ;; 3. Prompt Input Line: themed indicator glyph only,
                   ;;    no borders or divider above it
                   (call-with-values
@@ -1994,6 +2141,7 @@ and append it to the persistent history journal file."
                             (cond
                               (active-menu 'menu)
                               ((selector-active? input-buffer) 'selector)
+                              ((and (agent-run-active? status-text) nodelay-proc) 'steering)
                               (else prompt-mode)))))
                     (draw-role! 'dim #t)
                     (safe-addstr stdscr (- maxy 1) 0 hint maxx)
@@ -2101,6 +2249,8 @@ and append it to the persistent history journal file."
                                                    mgr
                                                    #:max-iterations
                                                    max-react-iters
+                                                   #:steering-queue
+                                                   steering-queue
                                                    #:max-tokens
                                                    (or (badb-config-model-max-tokens cfg) 4096)
                                                    #:guardrail
@@ -2111,6 +2261,7 @@ and append it to the persistent history journal file."
                                                      (cons 'on-step
                                                            (lambda (iter phase)
                                                              (set! status-text (format #f "REACT [~a/~a]" iter max-react-iters))
+                                                             (poll-steering-input!)
                                                              (render!)))
                                                      (cons 'on-tool-call
                                                            (lambda (tc)
@@ -2118,6 +2269,7 @@ and append it to the persistent history journal file."
                                                                  ((t-name (prop-ref tc 'name)) (t-args (prop-ref tc 'arguments)))
                                                                (set! status-text (format #f "TOOL: ~a..." t-name))
                                                                (add-msg! "tool-call" (format #f "Invoking tool: ~a (~s)" t-name t-args))
+                                                               (poll-steering-input!)
                                                                (render!))))
                                                      (cons 'on-tool-result
                                                            (lambda (tc res err?)
@@ -2132,10 +2284,26 @@ and append it to the persistent history journal file."
                                                                       (string-append (substring res-str 0 140) "...")
                                                                       res-str)))
                                                                (add-msg! "tool-result" (format #f "Tool ~a returned: ~a" t-name preview))
+                                                               (poll-steering-input!)
                                                                (render!))))))))
                           (call-with-values
                             (lambda ()
-                              (react-run! session))
+                              ;; Non-blocking key capture spans the whole
+                              ;; run: nodelay on while the loop executes so
+                              ;; the hooks can poll getch, restored after
+                              (dynamic-wind
+                                (lambda ()
+                                  (when nodelay-proc
+                                    (catch #t
+                                      (lambda () (nodelay-proc stdscr #t))
+                                      (lambda _ #f))))
+                                (lambda ()
+                                  (react-run! session))
+                                (lambda ()
+                                  (when nodelay-proc
+                                    (catch #t
+                                      (lambda () (nodelay-proc stdscr #f))
+                                      (lambda _ #f))))))
                             (lambda (verdict final-content sess)
                               (set! llm-history (react-session-messages sess))
                               (cond
@@ -2156,6 +2324,9 @@ and append it to the persistent history journal file."
                                     (format #f
                                             "ReAct iteration ceiling reached (~a iterations). Type 'Continue' or follow up to proceed."
                                             max-react-iters)))
+                                ((eq? verdict 'interrupted)
+                                  (add-sys-msg!
+                                    "Agent run interrupted — the loop halted at the current iteration boundary. Type a message to continue."))
                                 ((eq? verdict 'error)
                                   (add-err-msg! (format #f "ReAct error: ~a" final-content))))))))
                       (lambda (key . args)
@@ -2213,6 +2384,10 @@ and append it to the persistent history journal file."
                                (add-err-msg! (format #f "Stream error (~a): ~s" key args))))))))
               (lambda (key . args)
                 (add-err-msg! (format #f "Execution error (~a): ~s" key args))))
+            ;; Mid-run steering state resets with the run; queued entries
+            ;; in steering-queue persist for the next run by design
+            (set! steering-buffer "")
+            (set! interrupt-requested? #f)
             (set! status-text "READY")
             (render!))
     (define (execute-shell! cmd)
@@ -2893,6 +3068,8 @@ any open menu first; submenu actions open the next menu in its place."
                                    "  /rollback [ID]    Revert to latest or specified checkpoint\n"
                                    "  /rules            View discovered project rules & workspace tree\n"
                                    "  /context          View conversation token metrics\n"
+                                   "  /steer [TEXT]     Queue steering text for the running or next agent run\n"
+                                   "  /interrupt        Halt the agent at its next iteration boundary\n"
                                    "  /features         List active registry features\n"
                                    "  /journal          View recent checkpoint provenance\n"
                                    "  /test             Run the bootstrap test suite\n"
@@ -2902,6 +3079,7 @@ any open menu first; submenu actions open the next menu in its place."
                                    "  ,<expr> or (..)   Evaluate Scheme code\n"
                                    "  ctrl+p / ctrl+n   Select a message block\n"
                                    "  ctrl+e            Collapse or expand the selected message\n"
+                                   "  while agent runs  type to steer it: enter sends, ctrl+i interrupts\n"
                                    "  menus             up/down move, enter apply, esc close (/config, /model, /endpoint)\n"
                                    "  /sh <cmd>         Alias for shell command\n"
                                    "  /eval <expr>      Alias for Scheme eval")))
@@ -2990,6 +3168,24 @@ any open menu first; submenu actions open the next menu in its place."
                     (lambda (k . a)
                       (add-err-msg! (format #f "Test error: ~a ~s" k a))))
                   (set! status-text "READY"))
+                ((string=? cmd "steer")
+                  (let ((text (string-trim-both arg)))
+                    (if (string-null? text)
+                      (add-sys-msg!
+                        "Usage: /steer <message> (queued for the running or next agent run)")
+                      (begin
+                        (steering-push! steering-queue text)
+                        (add-msg! "steer"
+                                  (if (agent-run-active? status-text)
+                                    (format #f "Steering queued for the running agent: ~a" text)
+                                    (format #f "Steering queued for the next agent run: ~a" text)))))))
+                ((string=? cmd "interrupt")
+                  (steering-push! steering-queue 'interrupt)
+                  (set! interrupt-requested? #t)
+                  (add-msg! "steer"
+                            (if (agent-run-active? status-text)
+                              "Interrupt requested — the agent halts at the next iteration boundary."
+                              "Interrupt queued — the next agent run halts before its first LLM call.")))
                 ((string=? cmd "clear") (set! messages '())
                                         (set! llm-history (list (make-system-turn)))
                                         (set! scroll-offset 0)
@@ -3097,7 +3293,7 @@ any open menu first; submenu actions open the next menu in its place."
                           ;; Commands that still need a typed argument get
                           ;; prefilled; model/endpoint/config now open their
                           ;; interactive menus via the no-argument flow.
-                          ((member chosen '("provider" "sh" "eval"))
+                          ((member chosen '("provider" "sh" "eval" "steer"))
                             (set! input-buffer (string-append "/" chosen " "))
                             (set! cursor-pos (string-length input-buffer))
                             (set! selector-index 0)
@@ -3160,7 +3356,7 @@ any open menu first; submenu actions open the next menu in its place."
                        (chosen (selected-command-name matches)))
                     (when chosen
                       (if
-                          (member chosen '("model" "endpoint" "provider" "mcp" "config" "sh" "eval"))
+                          (member chosen '("model" "endpoint" "provider" "mcp" "config" "sh" "eval" "steer"))
                         (set! input-buffer (string-append "/" chosen " "))
                         (set! input-buffer (string-append "/" chosen)))
                       (set! cursor-pos (string-length input-buffer))

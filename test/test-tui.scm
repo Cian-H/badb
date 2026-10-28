@@ -1380,4 +1380,142 @@
                 "qwen3-1.7b"
                 (menu-item-label (menu-selected-item m)))))
 
+;;;
+;;; Agent Steering: Pure Keyboard & Presentation Helpers
+;;;
+(test-group "tui-agent-steering"
+  ;; steering-key-handle: printable characters append
+  (call-with-values (lambda () (steering-key-handle "go nor" #\t))
+    (lambda (new-buffer action)
+      (test-equal "printable character appends" "go nort" new-buffer)
+      (test-equal "append action reported" 'append action)))
+
+  (call-with-values (lambda () (steering-key-handle "" #\a))
+    (lambda (new-buffer action)
+      (test-equal "append works on empty buffer" "a" new-buffer)
+      (test-equal "append action reported" 'append action)))
+
+  ;; Integer codes in the printable range also append
+  (call-with-values (lambda () (steering-key-handle "x" 98))
+    (lambda (new-buffer action)
+      (test-equal "integer printable code appends" "xb" new-buffer)
+      (test-equal "append action reported" 'append action)))
+
+  ;; Backspace / Ctrl+H / DEL delete the last character
+  (call-with-values (lambda () (steering-key-handle "abc" 127))
+    (lambda (new-buffer action)
+      (test-equal "DEL deletes the last character" "ab" new-buffer)
+      (test-equal "backspace action reported" 'backspace action)))
+
+  (call-with-values (lambda () (steering-key-handle "abc" 8))
+    (lambda (new-buffer action)
+      (test-equal "Ctrl+H deletes the last character" "ab" new-buffer)
+      (test-equal "backspace action reported" 'backspace action)))
+
+  (call-with-values (lambda () (steering-key-handle "" 127))
+    (lambda (new-buffer action)
+      (test-equal "backspace on empty buffer is a no-op" "" new-buffer)
+      (test-equal "empty backspace reports none" 'none action)))
+
+  ;; Enter queues non-blank buffers and clears them
+  (call-with-values (lambda () (steering-key-handle "go north" #\newline))
+    (lambda (new-buffer action)
+      (test-equal "enter clears the buffer" "" new-buffer)
+      (test-equal "enter on non-empty buffer queues" 'queue action)))
+
+  (call-with-values (lambda () (steering-key-handle "go north" 10))
+    (lambda (new-buffer action)
+      (test-equal "integer newline code queues" 'queue action)))
+
+  (call-with-values (lambda () (steering-key-handle "ok" 13))
+    (lambda (new-buffer action)
+      (test-equal "carriage return code queues" 'queue action)))
+
+  (call-with-values (lambda () (steering-key-handle "   " #\newline))
+    (lambda (new-buffer action)
+      (test-equal "blank buffer survives a blank submit" "   " new-buffer)
+      (test-equal "enter on blank buffer reports none" 'none action)))
+
+  ;; Ctrl+I (Tab) requests an interrupt and discards the buffer
+  (call-with-values (lambda () (steering-key-handle "partial" 9))
+    (lambda (new-buffer action)
+      (test-equal "ctrl+i discards the pending buffer" "" new-buffer)
+      (test-equal "ctrl+i reports interrupt" 'interrupt action)))
+
+  (call-with-values (lambda () (steering-key-handle "" #\tab))
+    (lambda (new-buffer action)
+      (test-equal "tab character also reports interrupt" 'interrupt action)))
+
+  ;; Escape clears the buffer
+  (call-with-values (lambda () (steering-key-handle "abc" 27))
+    (lambda (new-buffer action)
+      (test-equal "escape clears the buffer" "" new-buffer)
+      (test-equal "escape reports clear" 'clear action)))
+
+  ;; Other control chars and curses key codes are ignored
+  (call-with-values (lambda () (steering-key-handle "abc" 3))
+    (lambda (new-buffer action)
+      (test-equal "unmapped control char leaves the buffer" "abc" new-buffer)
+      (test-equal "unmapped control char reports none" 'none action)))
+
+  (call-with-values (lambda () (steering-key-handle "abc" 259))
+    (lambda (new-buffer action)
+      (test-equal "curses key code leaves the buffer" "abc" new-buffer)
+      (test-equal "curses key code reports none" 'none action)))
+
+  ;; steering-pending-line: nothing pending yields #f
+  (test-equal "no buffer and no queue yields #f"
+              #f
+              (steering-pending-line "" 0))
+
+  ;; In-progress buffer display
+  (test-equal "buffer alone renders the steering line"
+              "steering: slow down"
+              (steering-pending-line "slow down" 0))
+
+  ;; Queued-but-unconsumed count display
+  (test-equal "queue count alone renders the queued line"
+              "steering: 2 queued"
+              (steering-pending-line "" 2))
+
+  ;; Buffer plus queued entries
+  (test-equal "buffer and queue render combined"
+              "steering: hi (+1 queued)"
+              (steering-pending-line "hi" 1))
+
+  ;; Interrupt pill takes precedence
+  (test-equal "interrupt request renders the pill"
+              "steering: interrupt requested"
+              (steering-pending-line "" 0 #t))
+
+  (test-equal "interrupt request beats a typed buffer"
+              "steering: interrupt requested"
+              (steering-pending-line "typing" 1 #t))
+
+  ;; agent-run-active?: status text classification
+  (test-assert "REACT status marks an active run"
+               (agent-run-active? "REACT [3/15]"))
+  (test-assert "TOOL status marks an active run"
+               (agent-run-active? "TOOL: read_file..."))
+  (test-assert "READY is not an active run"
+               (not (agent-run-active? "READY")))
+  (test-assert "STREAMING is not an agent run"
+               (not (agent-run-active? "STREAMING...")))
+  (test-assert "non-string status is not an active run"
+               (not (agent-run-active? #f)))
+
+  ;; Steering keymap hint shown while the agent runs
+  (test-assert "steering keymap documents the send key"
+               (string-contains (format-keymap-line 'steering) "enter:send"))
+  (test-assert "steering keymap documents the interrupt key"
+               (string-contains (format-keymap-line 'steering) "^i:interrupt"))
+  (test-assert "steering keymap documents the escape key"
+               (string-contains (format-keymap-line 'steering) "esc:clear"))
+
+  ;; /steer and /interrupt are registered in the slash command palette
+  (test-assert "slash commands list contains steer"
+               (assoc "steer" %slash-commands))
+  (test-assert "slash commands list contains interrupt"
+               (assoc "interrupt" %slash-commands)))
+
 (test-end "badb-tui")
