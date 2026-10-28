@@ -642,4 +642,191 @@
                              (string-prefix? (substring vis cx (min (string-length vis) (+ cx 1)))
                                              (substring "0123456789AB" pos)))))))))))
 
+;;;
+;;; 14. Input History Recall & Session Persistence
+;;;
+(test-group "tui-input-history"
+  ;; Construction & accessors
+  (let ((h (make-history)))
+    (test-assert "fresh history object" (input-history? h))
+    (test-equal "fresh history is empty" '() (history-entries h))
+    (test-equal "fresh history length is 0" 0 (history-length h)))
+
+  (let ((h (make-history '("alpha" "beta"))))
+    (test-equal "seeded entries are oldest first"
+                '("alpha" "beta")
+                (history-entries h))
+    (test-equal "seeded history length is 2" 2 (history-length h)))
+
+  ;; history-add: appending, trimming, and dedupe
+  (let ((h (make-history)))
+    (test-equal "history-add returns #t on append" #t (history-add h "first"))
+    (test-equal "history-add returns #t on second append" #t (history-add h "second"))
+    (test-equal "history-add appends in order"
+                '("first" "second")
+                (history-entries h))
+    (test-equal "history-add skips identical most recent entry"
+                #f
+                (history-add h "second"))
+    (test-equal "dedupe keeps length unchanged" 2 (history-length h))
+    (test-equal "history-add trims surrounding whitespace"
+                #t
+                (history-add h "  padded  "))
+    (test-equal "trimmed entry compared against most recent"
+                #f
+                (history-add h "padded"))
+    (test-equal "history-add skips empty input" #f (history-add h ""))
+    (test-equal "history-add skips whitespace-only input" #f (history-add h "   "))
+    (test-equal "skips leave length unchanged" 3 (history-length h))
+    (test-equal "re-adding an older value is allowed"
+                #t
+                (history-add h "first")))
+
+  ;; Cap behavior: oldest entries dropped beyond the 500 cap
+  (let ((h (make-history)))
+    (let loop ((i 0))
+      (when (< i (+ %history-max-entries 5))
+        (history-add h (format #f "cmd-~a" i))
+        (loop (+ i 1))))
+    (test-equal "history is capped at the maximum"
+                %history-max-entries
+                (history-length h))
+    (test-equal "oldest entries are dropped on cap"
+                "cmd-5"
+                (car (history-entries h)))
+    (test-equal "newest entry is preserved on cap"
+                (format #f "cmd-~a" (+ %history-max-entries 4))
+                (last (history-entries h))))
+
+  ;; Recall ordering: Up walks older, Down walks newer
+  (let ((h (make-history '("one" "two" "three"))))
+    (test-equal "first Up recalls the newest entry" "three" (history-recall h -1))
+    (test-equal "recall position is the newest index" 2 (history-recall-position h))
+    (test-equal "second Up recalls the older entry" "two" (history-recall h -1))
+    (test-equal "third Up recalls the oldest entry" "one" (history-recall h -1))
+    (test-equal "Up at the oldest entry stays at the oldest"
+                "one"
+                (history-recall h -1))
+    (test-equal "Down recalls the newer entry" "two" (history-recall h 1))
+    (test-equal "Down again recalls the newest entry" "three" (history-recall h 1))
+    (test-equal "Down past the newest returns #f (restore draft)"
+                #f
+                (history-recall h 1))
+    (test-equal "Down at the draft boundary still returns #f"
+                #f
+                (history-recall h 1))
+    (test-equal "recall position resets to draft at newest boundary"
+                #f
+                (history-recall-position h))
+    (test-equal "Up from draft again recalls the newest"
+                "three"
+                (history-recall h -1)))
+
+  ;; Empty history never recalls
+  (let ((h (make-history)))
+    (test-equal "Up on an empty history returns #f" #f (history-recall h -1))
+    (test-equal "Down on an empty history returns #f" #f (history-recall h 1)))
+
+  ;; Reset-on-edit semantics
+  (let ((h (make-history '("one" "two" "three"))))
+    (history-recall h -1)
+    (history-recall h -1)
+    (test-equal "recall position is mid-history before reset"
+                1
+                (history-recall-position h))
+    (history-reset-nav h)
+    (test-equal "history-reset-nav returns to the draft boundary"
+                #f
+                (history-recall-position h))
+    (test-equal "Up after reset starts from the newest entry"
+                "three"
+                (history-recall h -1))
+    (history-reset-nav h)
+    (test-equal "Down after reset stays at draft (no stale restore)"
+                #f
+                (history-recall h 1))))
+
+;;;
+;;; 15. Input History JSONL Persistence
+;;;
+(test-group "tui-input-history-jsonl"
+  ;; Serialize / parse round-trip
+  (let* ((line (history-entry->jsonl-line "ls -la" "shell" 1700000000))
+         (entry (jsonl-line->history-entry line)))
+    (test-assert "serialized line is a string" (string? line))
+    (test-equal "round-trip preserves input" "ls -la" (assoc-ref entry "input"))
+    (test-equal "round-trip preserves mode" "shell" (assoc-ref entry "mode"))
+    (test-equal "round-trip preserves timestamp" 1700000000 (assoc-ref entry "ts")))
+
+  ;; Special characters survive the round-trip on a single line
+  (let* ((tricky "say \"hi\"\nnewline & <tag>")
+         (line (history-entry->jsonl-line tricky "chat" 1))
+         (entry (jsonl-line->history-entry line)))
+    (test-equal "serialized line contains no raw newline"
+                 #f
+                 (string-index line #\newline))
+    (test-equal "round-trip preserves escaped special characters"
+                tricky
+                (assoc-ref entry "input")))
+
+  ;; Defensive parsing
+  (test-equal "parse blank line returns #f" #f (jsonl-line->history-entry ""))
+  (test-equal "parse whitespace line returns #f" #f (jsonl-line->history-entry "   "))
+  (test-equal "parse garbage returns #f" #f (jsonl-line->history-entry "not json {"))
+  (test-equal "parse entry without input returns #f"
+              #f
+              (jsonl-line->history-entry "{\"mode\":\"chat\"}"))
+  (let ((minimal (jsonl-line->history-entry "{\"input\":\"hi\"}")))
+    (test-equal "entry missing mode defaults to chat" "chat" (assoc-ref minimal "mode"))
+    (test-equal "entry missing ts defaults to 0" 0 (assoc-ref minimal "ts")))
+  (test-equal "serialize symbol mode as string"
+              "scheme"
+              (assoc-ref (jsonl-line->history-entry
+                          (history-entry->jsonl-line "(+ 1 2)" 'scheme 42))
+                         "mode"))
+  (test-equal "serialize non-string input defensively"
+              "42"
+              (assoc-ref (jsonl-line->history-entry
+                          (history-entry->jsonl-line 42 "chat" 0))
+                         "input")))
+
+;;;
+;;; 16. Input History File Load & Append
+;;;
+(test-group "tui-input-history-persistence"
+  (let ((path "/tmp/badb-test-tui-history.jsonl"))
+    (catch #t (lambda () (delete-file path)) (lambda _ #f))
+    (test-equal "append writes and returns #t"
+                #t
+                (append-history-file-entry! path "alpha" "chat"))
+    (test-equal "append is idempotent on success"
+                #t
+                (append-history-file-entry! path "beta" "shell"))
+    (test-equal "load returns inputs oldest first"
+                '("alpha" "beta")
+                (load-history-file path))
+    (test-equal "load missing file yields empty history"
+                '()
+                (load-history-file "/tmp/badb-test-tui-no-such-history.jsonl"))
+    (catch #t (lambda () (delete-file path)) (lambda _ #f)))
+
+  ;; Load respects the 500-entry cap
+  (let ((path "/tmp/badb-test-tui-history-cap.jsonl"))
+    (catch #t (lambda () (delete-file path)) (lambda _ #f))
+    (call-with-output-file path
+      (lambda (port)
+        (let loop ((i 0))
+          (when (< i (+ %history-max-entries 2))
+            (display (history-entry->jsonl-line (format #f "cmd-~a" i) "chat" i) port)
+            (newline port)
+            (loop (+ i 1))))))
+    (let ((loaded (load-history-file path)))
+      (test-equal "load respects the entry cap"
+                  %history-max-entries
+                  (length loaded))
+      (test-equal "load drops the oldest entries beyond the cap"
+                  "cmd-2"
+                  (car loaded)))
+    (catch #t (lambda () (delete-file path)) (lambda _ #f))))
+
 (test-end "badb-tui")

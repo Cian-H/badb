@@ -50,7 +50,22 @@
             insert-at
             backspace-at
             delete-at
-            input-visible-window))
+            input-visible-window
+            make-history
+            input-history?
+            %history-max-entries
+            history-cap-entries
+            history-entries
+            history-length
+            history-add
+            history-recall
+            history-recall-position
+            history-reset-nav
+            history-entry->jsonl-line
+            jsonl-line->history-entry
+            default-history-file-path
+            load-history-file
+            append-history-file-entry!))
 
 ;;;
 ;;; Text Formatting & Word Wrapping Helpers
@@ -526,6 +541,159 @@ prefers to keep at least one column of right context in view."
                 (- pos start)))))))
 
 ;;;
+;;; Input History Recall & Session Persistence
+;;;
+(define %history-max-entries 500)
+
+(define-record-type <input-history>
+  (%make-input-history entries nav-index)
+  input-history?
+  (entries history-entries set-history-entries!)
+  (nav-index history-recall-position set-history-recall-position!))
+
+(define (history-cap-entries entries)
+  "Return ENTRIES truncated to the newest %history-max-entries items,
+dropping the oldest entries when over the cap."
+  (let ((len (length entries)))
+    (if (> len %history-max-entries)
+        (take-right entries %history-max-entries)
+        entries)))
+
+(define* (make-history #:optional (initial-entries '()))
+  "Create a fresh input history seeded with INITIAL-ENTRIES (oldest first),
+capped at %history-max-entries, with the recall position at the newest
+boundary (draft state)."
+  (%make-input-history (history-cap-entries initial-entries) #f))
+
+(define (history-length hist)
+  "Return the number of recorded entries in HIST."
+  (length (history-entries hist)))
+
+(define (history-add hist entry)
+  "Append ENTRY (trimmed) to HIST, skipping empty input and entries
+identical to the most recent one. Cap the list at %history-max-entries
+(oldest dropped) and reset the recall position to the newest boundary.
+Return #t when the entry was added, #f when it was skipped."
+  (let* ((raw (if (string? entry) entry ""))
+         (trimmed (string-trim-both raw))
+         (entries (history-entries hist)))
+    (cond
+     ((string-null? trimmed)
+      (set-history-recall-position! hist #f)
+      #f)
+     ((and (pair? entries) (string=? (last entries) trimmed))
+      (set-history-recall-position! hist #f)
+      #f)
+     (else
+      (set-history-entries! hist
+                            (history-cap-entries (append entries (list trimmed))))
+      (set-history-recall-position! hist #f)
+      #t))))
+
+(define (history-recall hist delta)
+  "Advance the recall position of HIST by DELTA entries (-1 = older,
++1 = newer) and return the entry at the new position. Return #f when the
+position moves past the newest entry, meaning the caller should restore
+the in-progress draft input. The position clamps at the oldest entry."
+  (let* ((entries (history-entries hist))
+         (len (length entries)))
+    (if (= len 0)
+        #f
+        (let ((target (+ (or (history-recall-position hist) len) delta)))
+          (cond
+           ((>= target len)
+            (set-history-recall-position! hist #f)
+            #f)
+           ((< target 0)
+            (set-history-recall-position! hist 0)
+            (car entries))
+           (else
+            (set-history-recall-position! hist target)
+            (list-ref entries target)))))))
+
+(define (history-reset-nav hist)
+  "Reset the recall position of HIST to the newest boundary (draft state)."
+  (set-history-recall-position! hist #f))
+
+(define (history-entry->jsonl-line input mode ts)
+  "Serialize a history record (INPUT string, MODE tag, TS unix seconds)
+into a single JSON object line for the persistent history journal."
+  (scm->json-string
+   `(("input" . ,(if (string? input) input (format #f "~a" (or input ""))))
+     ("mode" . ,(cond
+                 ((string? mode) mode)
+                 ((symbol? mode) (symbol->string mode))
+                 (else "chat")))
+     ("ts" . ,(if (number? ts) ts 0)))))
+
+(define (jsonl-line->history-entry line)
+  "Parse a single JSONL LINE into a history entry alist of the form
+((\"input\" . STRING) (\"mode\" . STRING) (\"ts\" . NUMBER)). Return #f for
+blank or malformed lines and for entries without a string input."
+  (let ((parsed (catch #t
+                  (lambda ()
+                    (and (string? line)
+                         (not (string-null? (string-trim-both line)))
+                         (json-string->scm (string-trim-both line))))
+                  (lambda _ #f))))
+    (if (and (list? parsed) (string? (assoc-ref parsed "input")))
+        `(("input" . ,(assoc-ref parsed "input"))
+          ("mode" . ,(let ((m (assoc-ref parsed "mode")))
+                       (cond
+                        ((string? m) m)
+                        ((symbol? m) (symbol->string m))
+                        (else "chat"))))
+          ("ts" . ,(let ((t (assoc-ref parsed "ts")))
+                     (if (number? t) t 0))))
+        #f)))
+
+(define (default-history-file-path)
+  "Return the default persistent input history path (.badb/history.jsonl
+under the current workspace directory)."
+  ".badb/history.jsonl")
+
+(define (load-history-file path)
+  "Load persisted input history from the JSONL file at PATH, returning the
+list of input strings oldest-first, capped at %history-max-entries with
+consecutive duplicates collapsed. An absent or unreadable file yields an
+empty history."
+  (catch #t
+    (lambda ()
+      (if (and (string? path) (file-exists? path))
+          (let* ((raw (catch #t
+                        (lambda () (call-with-input-file path read-string))
+                        (lambda _ "")))
+                 (entries (filter-map jsonl-line->history-entry
+                                      (string-split raw #\newline))))
+            (history-cap-entries
+             (let loop ((rest (map (lambda (e) (assoc-ref e "input")) entries))
+                        (acc '()))
+               (cond
+                ((null? rest) (reverse acc))
+                ((and (pair? acc) (string=? (car acc) (car rest)))
+                 (loop (cdr rest) acc))
+                (else
+                 (loop (cdr rest) (cons (car rest) acc)))))))
+          '()))
+    (lambda _ '())))
+
+(define (append-history-file-entry! path input mode)
+  "Append a single history record for INPUT and MODE to the JSONL file at
+PATH, creating the enclosing directory when missing. Return #t on success
+and #f on any filesystem failure."
+  (catch #t
+    (lambda ()
+      (ensure-parent-directory! path)
+      (let ((port (open-file path "a")))
+        (display (history-entry->jsonl-line input mode
+                                            (time-second (current-time)))
+                 port)
+        (newline port)
+        (close-port port)
+        #t))
+    (lambda _ #f)))
+
+;;;
 ;;; Main TUI Controller
 ;;;
 (define*
@@ -863,6 +1031,10 @@ prefers to keep at least one column of right context in view."
     (define llm-history (list (make-system-turn)))
     (define input-buffer "")
     (define cursor-pos 0)
+    (define input-history
+            (make-history (load-history-file (default-history-file-path))))
+    (define history-draft "")
+    (define history-draft-pos 0)
     (define scroll-offset 0)
     (define status-text "READY")
     (define selector-index 0)
@@ -877,6 +1049,14 @@ prefers to keep at least one column of right context in view."
     (define (add-cmd-msg! content) (add-msg! "shell-cmd" content))
     (define (add-scm-msg! content) (add-msg! "scheme-in" content))
     (define (add-user-msg! content) (add-msg! "user" content))
+    (define (record-history! input mode)
+            "Record a submitted INPUT under MODE in the shared input history
+and append it to the persistent history journal file."
+            (let ((trimmed (string-trim-both (if (string? input) input ""))))
+              (when (history-add input-history trimmed)
+                (append-history-file-entry! (default-history-file-path)
+                                            trimmed
+                                            mode))))
     (define (try-save-config!)
             (catch #t
               (lambda ()
@@ -2013,6 +2193,8 @@ prefers to keep at least one column of right context in view."
           ()
           (render!)
           (let ((ch (getch stdscr)))
+            (unless (or (eqv? ch KEY_UP) (eqv? ch KEY_DOWN))
+              (history-reset-nav input-history))
             (cond
               ;; Enter key: process buffer, execute modal command, or complete selector
               ((or (eqv? ch KEY_ENTER)
@@ -2051,10 +2233,12 @@ prefers to keep at least one column of right context in view."
                     (set! selector-index 0)
                     (cond
                       ((string-null? trimmed) (loop))
-                      ((eq? prompt-mode 'shell) (add-cmd-msg! trimmed)
+                      ((eq? prompt-mode 'shell) (record-history! trimmed 'shell)
+                                                (add-cmd-msg! trimmed)
                                                 (execute-shell! trimmed)
                                                 (loop))
-                      ((eq? prompt-mode 'scheme) (add-scm-msg! trimmed)
+                      ((eq? prompt-mode 'scheme) (record-history! trimmed 'scheme)
+                                                 (add-scm-msg! trimmed)
                                                  (execute-scheme! trimmed)
                                                  (loop))
                       (else
@@ -2067,16 +2251,19 @@ prefers to keep at least one column of right context in view."
                                 (unless (eq? res 'exit) (loop))))
                             ((shell)
                               (let ((shell-cmd (cdr action)))
+                                (record-history! shell-cmd 'shell)
                                 (add-cmd-msg! shell-cmd)
                                 (execute-shell! shell-cmd)
                                 (loop)))
                             ((scheme)
                               (let ((code-str (cdr action)))
+                                (record-history! code-str 'scheme)
                                 (add-scm-msg! code-str)
                                 (execute-scheme! code-str)
                                 (loop)))
                             ((chat)
                               (let ((user-text (cdr action)))
+                                (record-history! user-text 'chat)
                                 (add-user-msg! user-text)
                                 (catch #t
                                   (lambda ()
@@ -2106,7 +2293,7 @@ prefers to keep at least one column of right context in view."
                   ((selector-active? input-buffer) (set! input-buffer "") (set! cursor-pos 0) (set! selector-index 0))
                   ((not (eq? prompt-mode 'chat)) (set! prompt-mode 'chat) (set! input-buffer "") (set! cursor-pos 0)))
                 (loop))
-              ;; Up Arrow: navigate selector up or scroll
+              ;; Up Arrow: navigate selector up, or recall older history
               ((eqv? ch KEY_UP)
                 (if (selector-active? input-buffer)
                   (let
@@ -2116,16 +2303,30 @@ prefers to keep at least one column of right context in view."
                             (if (<= selector-index 0)
                               (- (length matches) 1)
                               (- selector-index 1)))))
-                  (set! scroll-offset (+ scroll-offset 1)))
+                  (begin
+                    (unless (history-recall-position input-history)
+                      (set! history-draft input-buffer)
+                      (set! history-draft-pos cursor-pos))
+                    (let ((entry (history-recall input-history -1)))
+                      (when entry
+                        (set! input-buffer entry)
+                        (set! cursor-pos (string-length entry))))))
                 (loop))
-              ;; Down Arrow: navigate selector down or scroll
+              ;; Down Arrow: navigate selector down, or recall newer history
               ((eqv? ch KEY_DOWN)
                 (if (selector-active? input-buffer)
                   (let
                       ((matches (matching-slash-commands input-buffer)))
                     (unless (null? matches)
                       (set! selector-index (remainder (+ selector-index 1) (length matches)))))
-                  (set! scroll-offset (max 0 (- scroll-offset 1))))
+                  (let* ((was-recalling? (history-recall-position input-history))
+                         (entry (history-recall input-history 1)))
+                    (if entry
+                      (begin (set! input-buffer entry)
+                             (set! cursor-pos (string-length entry)))
+                      (when was-recalling?
+                        (set! input-buffer history-draft)
+                        (set! cursor-pos history-draft-pos)))))
                 (loop))
               ;; Backspace: delete character or return to normal mode if prompt is empty
               ((or (eqv? ch KEY_BACKSPACE)
