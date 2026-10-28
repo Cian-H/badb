@@ -343,19 +343,20 @@ Returns the string delta, or #f if no content is found."
    (else (format #f "~a" val))))
 
 (define (extract-openai-content obj)
-  "Extract content from OpenAI-format choices array."
-  (let ((choices (json-ref obj "choices")))
-    (and (vector? choices)
-         (> (vector-length choices) 0)
-         (let* ((c0 (vector-ref choices 0))
-                (msg (json-ref c0 "message")))
-           (or (and (pair? msg)
-                    (let ((c (json-ref msg "content")))
-                      (if (or (not c) (eq? c 'null) (null? c))
-                          (or (json-ref msg "reasoning_content")
-                              (json-ref msg "reasoning"))
-                          c)))
-               (json-ref c0 "text"))))))
+        "Extract content from OpenAI-format choices array."
+        (let ((choices (json-ref obj "choices")))
+          (and (vector? choices)
+               (> (vector-length choices) 0)
+               (let*
+                   ((c0 (vector-ref choices 0)) (msg (json-ref c0 "message")))
+                 (or
+                   (and (pair? msg)
+                        (let ((c (json-ref msg "content")))
+                          (if
+                              (or (not c) (eq? c 'null) (null? c) (and (string? c) (string-null? c)))
+                            (or (json-ref msg "reasoning_content") (json-ref msg "reasoning") c)
+                            c)))
+                   (json-ref c0 "text"))))))
 
 (define (extract-anthropic-content obj)
   "Extract content from Anthropic-format response payload."
