@@ -1281,4 +1281,103 @@
         (test-equal "cap beyond count returns all items" 20 (length vis))
         (test-equal "offset is 0 when everything fits" 0 offset)))))
 
+(test-group "tui-model-detection-decision"
+  ;; A specific current model always skips detection
+  (call-with-values
+      (lambda () (detect-model-decision "gpt-4o-mini" #f #f))
+    (lambda (new-model kind)
+      (test-equal "specific model is kept" "gpt-4o-mini" new-model)
+      (test-equal "specific model skips detection" 'skipped kind)))
+  (call-with-values
+      (lambda () (detect-model-decision "gpt-4o-mini" "qwen3-1.7b" #f))
+    (lambda (new-model kind)
+      (test-equal "specific model ignores a detected model" "gpt-4o-mini" new-model)
+      (test-equal "specific model skips even on success" 'skipped kind)))
+  (call-with-values
+      (lambda () (detect-model-decision "gpt-4o-mini" #f "endpoint down"))
+    (lambda (new-model kind)
+      (test-equal "specific model never reports failure" 'skipped kind)))
+
+  ;; Generic current model adopts the detected one
+  (call-with-values
+      (lambda () (detect-model-decision #f "qwen3-1.7b" #f))
+    (lambda (new-model kind)
+      (test-equal "generic #f model adopts the detected model" "qwen3-1.7b" new-model)
+      (test-equal "adoption is reported" 'adopted kind)))
+  (call-with-values
+      (lambda () (detect-model-decision "" "qwen3-1.7b" #f))
+    (lambda (new-model kind)
+      (test-equal "empty model adopts the detected model" "qwen3-1.7b" new-model)
+      (test-equal "empty model adoption is reported" 'adopted kind)))
+  (call-with-values
+      (lambda () (detect-model-decision "default" "qwen3-1.7b" #f))
+    (lambda (new-model kind)
+      (test-equal "'default' model adopts the detected model" "qwen3-1.7b" new-model)
+      (test-equal "'default' model adoption is reported" 'adopted kind)))
+
+  ;; Generic current model with a detection failure
+  (call-with-values
+      (lambda () (detect-model-decision "default" #f "connect failed"))
+    (lambda (new-model kind)
+      (test-equal "failed detection yields no model" #f new-model)
+      (test-equal "failure is reported" 'failed kind)))
+
+  ;; Generic current model, no error, nothing detected
+  (call-with-values
+      (lambda () (detect-model-decision #f #f #f))
+    (lambda (new-model kind)
+      (test-equal "no detected model yields #f" #f new-model)
+      (test-equal "unavailable outcome is reported" 'unavailable kind))))
+
+(test-group "tui-model-menu-items"
+  (let* ((ids '("qwen3-1.7b" "llama-3.2-3b-instruct" "gpt-4o-mini"))
+         (items (build-model-menu-items ids "llama-3.2-3b-instruct")))
+    (test-equal "one item per id plus the manual entry" 4 (length items))
+    (test-equal "ids keep their order"
+                ids
+                (map menu-item-label (take items 3)))
+    (test-equal "every id item carries a set-model action"
+                (map (lambda (id) (cons 'set-model id)) ids)
+                (map menu-item-action (take items 3)))
+    (test-equal "active model is marked in its description"
+                "active"
+                (menu-item-description (cadr items)))
+    (test-equal "other models describe availability"
+                "available"
+                (menu-item-description (car items)))
+    (test-equal "trailing item is the manual entry"
+                "Set model..."
+                (menu-item-label (car (take-right items 1))))
+    (test-equal "manual entry carries the prefill action"
+                'prefill-model
+                (menu-item-action (car (take-right items 1)))))
+
+  ;; Active model absent from the list: nothing is marked active
+  (let ((items (build-model-menu-items '("qwen3-1.7b" "gpt-4o-mini")
+                                       "claude-4-opus")))
+    (test-assert "no item is marked active when the model is absent"
+      (not (member "active" (map menu-item-description items)))))
+
+  ;; Generic active model marks nothing
+  (let ((items (build-model-menu-items '("qwen3-1.7b") "default")))
+    (test-equal "generic active model marks nothing"
+                '("available")
+                (map menu-item-description (take items 1))))
+
+  ;; Empty id list: only the manual entry survives
+  (let ((items (build-model-menu-items '() #f)))
+    (test-equal "empty id list yields a single item" 1 (length items))
+    (test-equal "empty id list leaves only the manual entry"
+                "Set model..."
+                (menu-item-label (car items))))
+
+  ;; The items plug straight into the pure menu model
+  (let ((m (make-menu "Model"
+                      (build-model-menu-items '("qwen3-1.7b" "gpt-4o-mini")
+                                              "gpt-4o-mini"))))
+    (test-equal "items build a valid menu" 3 (menu-count m))
+    (test-equal "menu labels come from the ids"
+                "qwen3-1.7b"
+                (menu-item-label (menu-selected-item m)))))
+
 (test-end "badb-tui")

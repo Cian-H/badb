@@ -49,6 +49,8 @@
             split-thoughts-and-content
             %slash-commands
             matching-slash-commands
+            detect-model-decision
+            build-model-menu-items
             selector-active?
             %menu-max-visible
             make-menu
@@ -149,6 +151,7 @@ breaking on whitespace when possible."
 (define %slash-commands
         '(("help" . "Show help manual & shortcuts")
           ("model" . "Switch or inspect active LLM model")
+          ("models" . "List models available on the endpoint")
           ("endpoint" . "Switch or inspect endpoint URL")
           ("provider" . "Switch or inspect model provider preset (e.g. lmstudio)")
           ("mcp" . "Manage MCP servers (list, start, stop, add, remove, tools)")
@@ -1132,6 +1135,46 @@ other plain data); #f when the item carries none."
     (paranoid . "Deny all state mutations")))
 
 ;;;
+;;; Model Auto-Detection & Live Model Menu Helpers
+;;;
+(define (generic-model-name? model)
+  "Return #t when MODEL is an unset or generic placeholder (#f, empty, or
+the literal \"default\")."
+  (or (not (non-empty-string? model))
+      (string=? (string-trim-both model) "default")))
+
+(define (detect-model-decision cur-model detected-model error)
+  "Pure adopt/detect decision policy for startup model detection.
+Return (values new-model notice-kind):
+  'skipped      CUR-MODEL is a specific model: keep it, skip detection.
+  'adopted      DETECTED-MODEL becomes the new model.
+  'failed       detection errored (ERROR describes the failure).
+  'unavailable  detection succeeded but found no model.
+NEW-MODEL is #f for the failed and unavailable outcomes."
+  (cond
+   ((not (generic-model-name? cur-model)) (values cur-model 'skipped))
+   (error (values #f 'failed))
+   (detected-model (values detected-model 'adopted))
+   (else (values #f 'unavailable))))
+
+(define (build-model-menu-items model-ids active-model)
+  "Pure construction of live model menu items: one item per MODEL-ID in
+order, each carrying a (set-model . id) action, with ACTIVE-MODEL marked in
+its description, plus the trailing 'Set model...' manual entry item."
+  (append
+   (map
+    (lambda (id)
+      (cons (cons id
+                  (if (and (string? active-model)
+                           (string=? id active-model))
+                      "active"
+                      "available"))
+            (cons 'set-model id)))
+    (if (list? model-ids) model-ids '()))
+   (list (cons (cons "Set model..." "Type a model name manually")
+               'prefill-model))))
+
+;;;
 ;;; Main TUI Controller
 ;;;
 (define*
@@ -1530,6 +1573,44 @@ and append it to the persistent history journal file."
                                      #:model
                                      cur-model))
             (module-define! repl-mod 'client client))
+    ;; Startup model auto-detection: when the active model is a generic
+    ;; placeholder (#f, empty or "default"), ask the endpoint's /models
+    ;; listing to pick one and adopt it. The request is wrapped in catch so
+    ;; a dead endpoint never blocks startup, and a specific configured model
+    ;; skips detection entirely.
+    (let ((config-model-was-generic?
+            (generic-model-name? (badb-config-model-name cfg))))
+      (call-with-values
+        (lambda ()
+          (if (generic-model-name? cur-model)
+            (catch #t
+              (lambda ()
+                (auto-detect-model client))
+              (lambda (key . args)
+                (values #f
+                        (format #f "Detection error (~a): ~s" key args))))
+            (values #f #f)))
+        (lambda (detected-model detection-error)
+          (call-with-values
+            (lambda ()
+              (detect-model-decision cur-model detected-model detection-error))
+            (lambda (new-model kind)
+              (case kind
+                ((adopted)
+                  (set! cur-model new-model)
+                  (badb-config-set-model-name! cfg new-model)
+                  (refresh-client!)
+                  (when config-model-was-generic? (try-save-config!))
+                  (add-msg! "notice"
+                            (format #f "model auto-detected: ~a" new-model)))
+                ((failed)
+                  (add-msg! "notice"
+                            (format #f "model detection failed: ~a"
+                                    detection-error)))
+                ((unavailable)
+                  (add-msg! "notice"
+                            "model detection found no models on the endpoint"))
+                (else #f)))))))
     ;; Theme-driven color engine: each unique (fg bg) spec of the active UI
     ;; theme is memoized to one ncurses color pair on first use, so all draw
     ;; sites resolve colors through theme roles instead of hardcoded pairs.
@@ -2541,23 +2622,66 @@ models of every provider preset, deduplicated in declaration order."
                       (else '()))))
                 (badb-config-providers cfg))
               equal?))
+    (define (fetch-live-models)
+            "Query the active endpoint's /models listing. Returns (values
+ids error): IDS is the non-empty list of available model id strings or #f,
+ERROR the failure description or #f. Never throws."
+            (catch #t
+              (lambda ()
+                (call-with-values
+                  (lambda () (list-models client))
+                  (lambda (ids err)
+                    (if (or err (null? ids))
+                      (values #f (or err "no models listed on endpoint"))
+                      (values ids #f)))))
+              (lambda (key . args)
+                (values #f
+                        (format #f "model list request failed (~a): ~s"
+                                key args)))))
     (define (model-menu-items)
-            "Build the model menu items: known models first (the active
-model plus models recorded in provider presets), then a manual entry item.
-The list is computed live so a future dynamic model listing drops in here."
-            (let ((known (delete-duplicates (cons cur-model (config-recorded-models))
-                                            equal?)))
-              (append
-                (map
-                  (lambda (m)
-                    (cons (cons m
-                                (if (string=? m cur-model)
-                                  "current model"
-                                  "recorded in config"))
-                          (cons 'set-model m)))
-                  known)
-                (list (cons (cons "Set model..." "Type a model name manually")
-                            'prefill-model)))))
+            "Build the model menu items: the models actually available on
+the active endpoint when its listing can be fetched, otherwise the active
+model plus the models recorded in provider presets; the manual entry item
+always trails the list."
+            (call-with-values
+              (lambda () (fetch-live-models))
+              (lambda (live-ids live-err)
+                (if live-ids
+                  (build-model-menu-items live-ids cur-model)
+                  (let ((known (delete-duplicates
+                                 (cons cur-model (config-recorded-models))
+                                 equal?)))
+                    (append
+                      (map
+                        (lambda (m)
+                          (cons (cons m
+                                      (if (string=? m cur-model)
+                                        "current model"
+                                        "recorded in config"))
+                                (cons 'set-model m)))
+                        known)
+                      (list (cons (cons "Set model..." "Type a model name manually")
+                                  'prefill-model))))))))
+    (define (handle-models-cmd!)
+            "Show the models available on the active endpoint as a system
+message, or a clear error notice when the listing fails."
+            (call-with-values
+              (lambda () (fetch-live-models))
+              (lambda (ids err)
+                (if ids
+                  (add-sys-msg!
+                    (string-append
+                      "Models available on endpoint:\n"
+                      (string-join
+                        (map
+                          (lambda (id)
+                            (if (and (string? cur-model)
+                                     (string=? id cur-model))
+                              (format #f "• ~a (active)" id)
+                              (format #f "• ~a" id)))
+                          ids)
+                        "\n")))
+                  (add-err-msg! (format #f "Failed to list models: ~a" err))))))
     (define (endpoint-menu-items)
             "Build the endpoint menu items: configured provider presets plus
 a manual entry item."
@@ -2758,6 +2882,7 @@ any open menu first; submenu actions open the next menu in its place."
                     (string-append "Available Commands:\n"
                                    "  /help             Display this help message\n"
                                    "  /model [NAME]     Switch LLM model; no argument opens a menu\n"
+                                   "  /models           List models available on the endpoint\n"
                                    "  /endpoint [URL]   Switch endpoint URL; no argument opens a menu\n"
                                    "  /provider [NAME]  Switch or inspect provider preset\n"
                                    "  /mcp [CMD]        Manage MCP servers (list, start, stop, add, remove, tools)\n"
@@ -2786,6 +2911,7 @@ any open menu first; submenu actions open the next menu in its place."
                 ((string=? cmd "rollback") (handle-rollback-cmd! arg))
                 ((string=? cmd "rules") (handle-rules-cmd! arg))
                 ((string=? cmd "context") (handle-context-cmd! arg))
+                ((string=? cmd "models") (handle-models-cmd!))
                 ((string=? cmd "model")
                   (if (string-null? arg)
                     (set! active-menu (make-menu "Model" (model-menu-items)))
