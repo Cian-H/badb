@@ -35,6 +35,9 @@
             current-http-get
             %request-timeout-seconds
             call-with-request-timeout
+            extract-tool-call-deltas
+            merge-tool-call-fragment
+            finalize-tool-call-fragments
             parse-models-response
             choose-model
             list-models
@@ -229,7 +232,9 @@ Returns:
 (define (read-sse-events port callback)
   "Read lines from PORT, parse SSE 'data: ' events, and invoke
 (CALLBACK data-json-or-string) for each event until EOF or '[DONE]'.
-Returns 'done when [DONE] is encountered, or 'eof upon reaching EOF."
+Returns 'done when [DONE] is encountered, 'eof upon reaching EOF, or the
+parsed alist when the body is a non-SSE complete JSON response (an
+endpoint that ignored stream:true)."
   (let loop ()
     (let ((line (read-line port)))
       (cond
@@ -258,6 +263,17 @@ Returns 'done when [DONE] is encountered, or 'eof upon reaching EOF."
                               (let ((err-inner (assoc-ref err-obj "error")))
                                 (and (pair? err-inner) (assoc-ref err-inner "message"))))
                          cleaned))))
+           ;; Non-SSE complete JSON response: some endpoints ignore
+           ;; stream:true and answer with a normal completion body.
+           ;; Return the parsed object to the caller and stop.
+           ((and (string-prefix? "{" cleaned)
+                 (catch #t
+                   (lambda () (json-string->scm cleaned))
+                   (lambda _ #f)))
+            => (lambda (obj)
+                 (if (and (pair? obj) (json-ref obj "choices"))
+                   obj
+                   (loop))))
            (else
             (loop)))))))))
 
@@ -413,6 +429,89 @@ Returns the string content, or #f if not found."
              (parsed-args (safe-json-parse raw-args raw-args)))
           `((id . ,id) (name . ,name) (arguments . ,parsed-args))))
 
+;;;
+;;; Streamed Tool-Call Fragments
+;;;
+(define (fragment-index fragment)
+  "Extract the 0-based call index from a streamed tool-call FRAGMENT,
+defaulting to 0 when the endpoint omits it."
+  (let ((idx (or (json-ref fragment "index") (assoc-ref fragment 'index))))
+    (cond
+      ((number? idx) (inexact->exact idx))
+      ((string? idx) (or (string->number idx) 0))
+      (else 0))))
+
+(define (fragment-function-field fragment json-key)
+  "Fetch JSON-KEY from FRAGMENT's function object, or #f."
+  (let ((fn (json-ref fragment "function")))
+    (and (pair? fn) (json-ref fn json-key))))
+
+(define (extract-tool-call-deltas chunk)
+  "Extract the list of raw streamed tool-call FRAGMENTS from an SSE CHUNK
+(parsed JSON alist or JSON string). OpenAI-compatible endpoints stream
+tool calls inside choices[0].delta.tool_calls: each fragment carries the
+call index, the id and function name on its first occurrence, and
+argument string pieces that must be concatenated in arrival order.
+Returns the raw fragment alists, or '() when the chunk has none."
+  (let* ((obj (if (string? chunk) (safe-json-parse chunk #f) chunk))
+         (choices (and (pair? obj) (json-ref obj "choices")))
+         (c0 (and (vector? choices) (> (vector-length choices) 0)
+                  (vector-ref choices 0)))
+         (delta (and (pair? c0) (json-ref c0 "delta")))
+         (raw (and (pair? delta) (json-ref delta "tool_calls"))))
+    (cond
+      ((vector? raw) (vector->list raw))
+      ((list? raw) raw)
+      (else '()))))
+
+(define (merge-tool-call-fragment acc fragment)
+  "Merge a streamed tool-call FRAGMENT into accumulator ACC (an alist
+mapping call index to a (id name args-string) triple, or #f on the first
+fragment). The first fragment for an index contributes id and name;
+argument string pieces concatenate in arrival order. Returns the new
+accumulator."
+  (let* ((idx (fragment-index fragment))
+         (id (json-ref fragment "id"))
+         (name (fragment-function-field fragment "name"))
+         (args-frag (fragment-function-field fragment "arguments"))
+         (args-str (if (string? args-frag) args-frag ""))
+         (prev (and (pair? acc) (assv idx acc)))
+         (prev-val (and (pair? prev) (cdr prev)))
+         (prev-id (and (pair? prev-val) (car prev-val)))
+         (prev-name (and (pair? prev-val) (cadr prev-val)))
+         (prev-args (and (pair? prev-val) (caddr prev-val)))
+         (entry (list (or (and (string? id) (not (string-null? id)) id) (or prev-id "call_0"))
+                      (or (and (string? name) (not (string-null? name)) name) (or prev-name ""))
+                      (string-append (or prev-args "") args-str))))
+    (if (pair? prev)
+        (let rebuild ((rest (or acc '())))
+          (cond
+            ((null? rest) (list (cons idx entry)))
+            ((= (caar rest) idx) (cons (cons idx entry) (cdr rest)))
+            (else (cons (car rest) (rebuild (cdr rest))))))
+        (cons (cons idx entry) (or acc '())))))
+
+(define (finalize-tool-call-fragments acc)
+  "Turn an accumulated fragment ACC into the ordered list of complete
+tool-call alists ((id . ...) (name . ...) (arguments . parsed-args)),
+matching parse-single-tool-call's shape so streamed and non-streamed
+paths are interchangeable. Returns '() when nothing accumulated."
+  (if (pair? acc)
+      (let ((max-idx (fold (lambda (e m) (max m (car e))) 0 acc)))
+        (let build ((i 0) (out '()))
+          (if (> i max-idx)
+              (reverse out)
+              (let ((entry (assv i acc)))
+                (build (+ i 1)
+                       (if (pair? entry)
+                           (let ((triple (cdr entry)))
+                             (cons `((id . ,(car triple))
+                                     (name . ,(cadr triple))
+                                     (arguments . ,(safe-json-parse (caddr triple) (caddr triple))))
+                                   out))
+                           out))))))
+      '()))
+
 (define (extract-chat-tool-calls response-obj)
         "Extract tool calls from a chat completion response (parsed JSON alist or JSON string).
 Returns a list of tool call alists: ((id . \"...\") (name . \"...\") (arguments . ...)), or '() if none found."
@@ -556,7 +655,9 @@ handler and timer are always restored afterwards."
           (lambda ()
             (set! prev (sigaction SIGALRM))
             (sigaction SIGALRM
-                       (lambda ()
+                       ;; Guile invokes signal handlers with the signal
+                       ;; number as an argument.
+                       (lambda _
                          (throw 'request-timeout secs)))
             (alarm secs))
           thunk
@@ -703,9 +804,14 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
                 #:key
                 (temperature 0.7)
                 (max-tokens #f)
+                (tools #f)
+                (tool-choice #f)
                 (http-poster #f))
-  "Initiate a streaming chat request, calling (CHUNK-CALLBACK text-delta)
-as SSE chunks arrive. Returns 'done or 'eof."
+  "Initiate a streaming chat request, calling (CHUNK-CALLBACK payload type)
+as SSE chunks arrive. PAYLOAD is a text delta string with TYPE 'content or
+'thought, or a raw streamed tool-call fragment alist with TYPE 'tool-call
+(assemble fragments with merge-tool-call-fragment / finalize-tool-call-fragments).
+Returns 'done or 'eof."
   (let*
       ((endpoint (model-client-endpoint client))
        (api-key (model-client-api-key client))
@@ -719,6 +825,10 @@ as SSE chunks arrive. Returns 'done or 'eof."
                               temperature
                               #:max-tokens
                               max-tokens
+                              #:tools
+                              tools
+                              #:tool-choice
+                              tool-choice
                               #:stream
                               #t))
        (headers (build-headers api-key #t))
@@ -727,6 +837,11 @@ as SSE chunks arrive. Returns 'done or 'eof."
       (lambda ()
         (poster uri #:body payload #:headers headers #:streaming? #t))
       (lambda (response body-port)
+        ;; Some callers and mock posters deliver the body as a plain
+        ;; string; normalize to a port so SSE reading is uniform.
+        (let ((port (if (port? body-port)
+                        body-port
+                        (open-input-string (if (string? body-port) body-port "")))))
         (dynamic-wind
           (lambda ()
             #t)
@@ -743,20 +858,38 @@ as SSE chunks arrive. Returns 'done or 'eof."
                              "failed to read error body"))
                          body-port)))
                   (error "model-stream HTTP request failed" code err-text)))
-              (read-sse-events body-port
+              (let ((result (read-sse-events port
                                (lambda (chunk)
-                                 (let ((item (extract-chat-delta-item chunk)))
-                                   (when
-                                       (and (pair? item) (string? (cdr item)) (not (string-null? (cdr item))))
-                                     (catch #t
-                                       (lambda ()
-                                         (chunk-callback (cdr item) (car item)))
-                                       (lambda _
-                                         (chunk-callback (cdr item))))))))))
+                                 (let ((fragments (extract-tool-call-deltas chunk)))
+                                   (if (pair? fragments)
+                                       (for-each
+                                         (lambda (frag)
+                                           (catch #t
+                                             (lambda ()
+                                               (chunk-callback frag 'tool-call))
+                                             (lambda _ #f)))
+                                         fragments)
+                                       (let ((item (extract-chat-delta-item chunk)))
+                                         (when
+                                             (and (pair? item) (string? (cdr item)) (not (string-null? (cdr item))))
+                                           (catch #t
+                                             (lambda ()
+                                               (chunk-callback (cdr item) (car item)))
+                                             (lambda _
+                                               (chunk-callback (cdr item))))))))))))
+                (let ((complete-res (and (pair? result)
+                                         (json-ref result "choices")
+                                         result)))
+                  (when complete-res
+                    (catch #t
+                      (lambda ()
+                        (chunk-callback complete-res 'complete-json))
+                      (lambda _ #f)))
+                  (if complete-res 'done result)))))
           (lambda ()
             (when
-                (and (port? body-port) (not (port-closed? body-port)))
-              (close-port body-port))))))))
+                (and (port? port) (not (port-closed? port)))
+              (close-port port)))))))))
 
 ;;;
 ;;; Model Listing & Auto-Detection

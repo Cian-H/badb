@@ -713,4 +713,94 @@
   (test-assert "SIGALRM handler and timer restored afterwards"
     (pair? (sigaction SIGALRM))))
 
+;;;
+;;; 9. Streamed Tool-Call Fragments
+;;;
+(test-group "streamed-tool-call-fragments"
+  (let ((chunk
+          (json-string->scm
+            "{\"choices\": [{\"delta\": {\"tool_calls\": [{\"index\": 0, \"id\": \"call_1\", \"type\": \"function\", \"function\": {\"name\": \"read_file\", \"arguments\": \"{}\"}}]}}]}")))
+    (test-equal "tool-call fragments extracted from chunk"
+      1 (length (extract-tool-call-deltas chunk)))
+    (test-equal "chunks without tool_calls yield nothing"
+      '() (extract-tool-call-deltas
+            (json-string->scm
+              "{\"choices\": [{\"delta\": {\"content\": \"hi\"}}]}")))
+    (test-equal "string chunks are parsed too"
+      1 (length (extract-tool-call-deltas
+                  "{\"choices\": [{\"delta\": {\"tool_calls\": [{\"index\": 0}]}}]}"))))
+
+  (let* ((f1 (json-string->scm
+               "{\"index\": 0, \"id\": \"call_9\", \"function\": {\"name\": \"write_file\", \"arguments\": \"abc\"}}"))
+         (f2 (json-string->scm
+               "{\"index\": 0, \"function\": {\"arguments\": \"def\"}}"))
+         (f3 (json-string->scm
+               "{\"index\": 1, \"id\": \"call_x\", \"function\": {\"name\": \"bash\", \"arguments\": \"{\\\"cmd\\\":\"}}"))
+         (f4 (json-string->scm
+               "{\"index\": 1, \"function\": {\"arguments\": \"1}\"}}"))
+         (acc1 (merge-tool-call-fragment #f f1))
+         (acc2 (merge-tool-call-fragment acc1 f2))
+         (acc3 (merge-tool-call-fragment acc2 f3))
+         (acc4 (merge-tool-call-fragment acc3 f4)))
+    (test-assert "first fragment creates the accumulator" (pair? acc1))
+    (test-equal "argument pieces concatenate in arrival order"
+      "abcdef"
+      (caddr (cdr (assv 0 acc4))))
+    (test-equal "second index accumulates independently"
+      "bash" (cadr (cdr (assv 1 acc4))))
+    (test-equal "missing index defaults to 0"
+      0 (caar (merge-tool-call-fragment #f (json-string->scm "{\"function\": {\"arguments\": \"x\"}}"))))
+    (test-equal "missing id defaults to call_0"
+      "call_0" (car (cdr (assv 0 (merge-tool-call-fragment #f (json-string->scm "{\"index\": 0, \"function\": {\"name\": \"t\"}}"))))))
+    (let ((final (finalize-tool-call-fragments acc4)))
+      (test-equal "two calls finalized in index order" 2 (length final))
+      (test-equal "id preserved" "call_9" (assoc-ref (car final) 'id))
+      (test-equal "name preserved" "write_file" (assoc-ref (car final) 'name))
+      (test-assert "arguments parsed to an alist"
+        (equal? (assoc-ref (cadr final) 'arguments) '(("cmd" . 1))))
+      (test-equal "empty accumulator finalizes to nothing"
+        '() (finalize-tool-call-fragments #f)))))
+
+;;;
+;;; 10. model-stream with tools
+;;;
+(test-group "model-stream-tools"
+  (let* ((client (make-model-client #:endpoint "http://t/v1/chat/completions" #:model "m"))
+         (sse
+           (string-append
+             "data: {\"choices\": [{\"delta\": {\"content\": \"Plan\"}}]}\n\n"
+             "data: {\"choices\": [{\"delta\": {\"tool_calls\": [{\"index\": 0, \"id\": \"c1\", \"function\": {\"name\": \"ping\", \"arguments\": \"{}\"}}]}}]}\n\n"
+             "data: [DONE]\n"))
+         (events '())
+         (captured-req #f)
+         (mock-poster
+           (lambda* (uri #:key body headers (streaming? #f))
+             (set! captured-req (capture-request uri body headers streaming?))
+             (values (build-response #:code 200) (open-input-string sse)))))
+    (parameterize ((current-http-post mock-poster))
+      (let ((status (model-stream client
+                                  "go"
+                                  (lambda (payload type)
+                                    (set! events (cons (list type payload) events)))
+                                  #:tools
+                                  '(((type . "function")
+                                     (function . ((name . "ping")
+                                                  (description . "ping")
+                                                  (parameters . ((type . "object") (properties . ())))))))
+                                  #:tool-choice
+                                  "auto")))
+        (test-equal "stream completes" 'done status)
+        (test-assert "request carried the tools"
+          (string-contains (assq-ref captured-req 'body) "ping"))
+        (test-assert "request carried tool_choice"
+          (string-contains (assq-ref captured-req 'body) "tool_choice"))
+        (test-assert "request asked for streaming"
+          (string-contains (assq-ref captured-req 'body) "\"stream\":true"))
+        (test-equal "content and fragment delivered" 2 (length events))
+        (test-equal "tool-call fragment typed correctly"
+          'tool-call (car (car events)))
+        (test-assert "fragment carries the function name"
+          (string-contains
+            (object->string (cadr (car events))) "ping"))))))
+
 (test-end "badb-model")
