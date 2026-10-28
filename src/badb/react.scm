@@ -42,6 +42,7 @@
                                    react-session-jrn
                                    react-session-mgr
                                    react-session-hooks
+                                   react-session-steering-queue
                                    react-session-max-tokens
                                    react-session-compactor
                                    set-react-session-messages!
@@ -49,6 +50,13 @@
                                    set-react-session-iteration!
                                    set-react-session-max-tokens!
                                    set-react-session-compactor!
+                                   set-react-session-steering-queue!
+                                   make-steering-queue
+                                   steering-queue?
+                                   steering-push!
+                                   steering-drain!
+                                   steering-empty?
+                                   steering-count
                                    collect-available-tools
                                    registry-feature->tool-spec
                                    mcp-tool->tool-spec
@@ -320,6 +328,37 @@ logs execution provenance to JRN, and returns (values result is-error?)."
               (values `((error . ,err-msg)) #t))))))))
 
 ;;;
+;;; Steering Queue
+;;;
+(define-record-type <steering-queue>
+                    (%make-steering-queue entries)
+                    steering-queue?
+                    (entries steering-queue-entries set-steering-queue-entries!))
+
+(define (make-steering-queue)
+        "Create a new empty mutable steering queue."
+        (%make-steering-queue '()))
+
+(define (steering-push! queue entry)
+        "Push ENTRY onto the tail of QUEUE.
+ENTRY is either a steering instruction string or the symbol 'interrupt."
+        (set-steering-queue-entries! queue (cons entry (steering-queue-entries queue))))
+
+(define (steering-drain! queue)
+        "Return all queued entries in FIFO order and empty QUEUE."
+        (let ((entries (reverse (steering-queue-entries queue))))
+          (set-steering-queue-entries! queue '())
+          entries))
+
+(define (steering-empty? queue)
+        "Return #t if QUEUE currently holds no entries."
+        (null? (steering-queue-entries queue)))
+
+(define (steering-count queue)
+        "Return the number of entries currently held in QUEUE."
+        (length (steering-queue-entries queue)))
+
+;;;
 ;;; ReAct Session Record
 ;;;
 (define-record-type <react-session>
@@ -334,7 +373,8 @@ logs execution provenance to JRN, and returns (values result is-error?)."
                                          jrn
                                          mgr
                                          max-tokens
-                                         compactor)
+                                         compactor
+                                         steering-queue)
                     react-session?
                     (messages react-session-messages set-react-session-messages!)
                     (status react-session-status set-react-session-status!)
@@ -347,7 +387,8 @@ logs execution provenance to JRN, and returns (values result is-error?)."
                     (jrn react-session-jrn)
                     (mgr react-session-mgr)
                     (max-tokens react-session-max-tokens set-react-session-max-tokens!)
-                    (compactor react-session-compactor set-react-session-compactor!))
+                    (compactor react-session-compactor set-react-session-compactor!)
+                    (steering-queue react-session-steering-queue set-react-session-steering-queue!))
 
 (define (make-react-session . args)
         "Construct a new <react-session> record.
@@ -397,7 +438,8 @@ and pure keyword style: (make-react-session #:client client #:messages ... #:reg
                (if
                    (and guardrail-fn (not (assoc-ref raw-hooks 'guardrail)))
                  (cons (cons 'guardrail guardrail-fn) raw-hooks)
-                 raw-hooks)))
+                 raw-hooks))
+             (steering-queue (get-kw '(#:steering-queue) #f)))
           (%make-react-session
             (if (list? msgs)
               msgs
@@ -412,7 +454,8 @@ and pure keyword style: (make-react-session #:client client #:messages ... #:reg
             jrn
             mgr
             max-tokens
-            compactor)))
+            compactor
+            steering-queue)))
 
 ;;;
 ;;; Step & Run Cycle
@@ -592,13 +635,55 @@ Returns:
                     (set-react-session-status! session 'error)
                     (values 'error err-msg))))))))
 
+(define (latest-assistant-content session)
+        "Return the content of the most recent assistant message in SESSION, or #f."
+        (let loop
+          ((msgs (reverse (react-session-messages session))))
+          (cond
+            ((null? msgs) #f)
+            ((and (pair? (car msgs))
+                  (equal? (assoc-ref (car msgs) 'role) "assistant")
+                  (string? (assoc-ref (car msgs) 'content)))
+             (assoc-ref (car msgs) 'content))
+            (else (loop (cdr msgs))))))
+
+(define (apply-steering! session)
+        "Drain SESSION's steering queue at an iteration boundary.
+Each drained string is appended to the session messages as a user turn;
+the symbol 'interrupt halts the loop. Returns 'interrupted or #f."
+        (let ((queue (react-session-steering-queue session)))
+          (if (steering-queue? queue)
+            (let loop
+              ((entries (steering-drain! queue)))
+              (cond
+                ((null? entries) #f)
+                ((eq? (car entries) 'interrupt) 'interrupted)
+                ((string? (car entries))
+                  (set-react-session-messages!
+                    session
+                    (append
+                      (react-session-messages session)
+                      (list `((role . "user") (content . ,(car entries))))))
+                  (loop (cdr entries)))
+                (else (loop (cdr entries)))))
+            #f)))
+
 (define* (react-run! session #:key (on-finish #f))
-  "Execute the ReAct session loop until completion, error, or max iterations."
+  "Execute the ReAct session loop until completion, error, interruption, or max iterations.
+The session's steering queue is drained before each LLM call: queued strings are
+injected as user messages, and a queued 'interrupt halts the loop with verdict
+'interrupted."
   (let loop ()
-    (call-with-values (lambda () (react-step! session))
-      (lambda (status payload)
-        (case status
-          ((completed)
+    (if (eq? (apply-steering! session) 'interrupted)
+      (let ((content (latest-assistant-content session)))
+        (set-react-session-status! session 'interrupted)
+        (when (procedure? on-finish)
+          (on-finish 'interrupted content))
+        (values 'interrupted content session))
+      (call-with-values (lambda () (react-step! session))
+        (lambda (status payload)
+          (case status
+            ((completed)
            (when (procedure? on-finish)
              (on-finish 'completed payload))
            (values 'completed payload session))
@@ -611,4 +696,4 @@ Returns:
           ((error)
            (when (procedure? on-finish)
              (on-finish 'error payload))
-           (values 'error payload session)))))))
+           (values 'error payload session))))))))

@@ -328,4 +328,165 @@
     (test-assert "guardrail registered in hooks"
       (procedure? (assoc-ref (react-session-hooks session) 'guardrail)))))
 
+;;;
+;;; 8. Steering Queue Unit Tests
+;;;
+(test-group "react-steering-queue"
+  (let ((q (make-steering-queue)))
+    (test-assert "new queue is a steering-queue" (steering-queue? q))
+    (test-assert "new queue is empty" (steering-empty? q))
+    (test-equal "new queue count is 0" 0 (steering-count q))
+    (steering-push! q "first instruction")
+    (steering-push! q "second instruction")
+    (steering-push! q 'interrupt)
+    (test-equal "count is 3 after pushes" 3 (steering-count q))
+    (test-assert "loaded queue is not empty" (not (steering-empty? q)))
+    (test-equal "drain preserves FIFO order"
+                (list "first instruction" "second instruction" 'interrupt)
+                (steering-drain! q))
+    (test-assert "drain empties the queue" (steering-empty? q))
+    (test-equal "count is 0 after drain" 0 (steering-count q))
+    (test-equal "draining empty queue yields nil" '() (steering-drain! q))
+    ;; Push after drain works again (queue remains usable)
+    (steering-push! q "post-drain instruction")
+    (test-equal "queue reusable after drain" 1 (steering-count q))
+    (test-equal "second drain returns new entry"
+                (list "post-drain instruction")
+                (steering-drain! q))))
+
+;;;
+;;; 9. Steering Mid-Loop: Injected Course Correction
+;;;
+(test-group "react-steering-mid-loop"
+  (let* ((reg (make-registry))
+         (_ (registry-attach! reg "get.weather"
+                              (lambda (city) (format #f "The weather in ~a is sunny and 22C" city))
+                              '((description . "Get current weather"))))
+         (client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "mock-llm"))
+         (queue (make-steering-queue))
+         (request-bodies '())
+         (turn 0)
+         (mock-poster
+          (lambda* (uri #:key body headers streaming?)
+            (set! turn (+ turn 1))
+            (set! request-bodies (cons body request-bodies))
+            (if (= turn 1)
+                ;; Turn 1: tool call
+                (let ((resp-body (scm->json-string
+                                  '((choices . #(((message . ((role . "assistant")
+                                                              (content . "Let me check the weather.")
+                                                              (tool_calls . #(((id . "call_st1")
+                                                                               (type . "function")
+                                                                               (function . ((name . "get_weather")
+                                                                                            (arguments . "{\"city\":\"Dublin\"}")))))))))))))))
+                  (values (build-response #:code 200) resp-body))
+                ;; Turn 2: final answer
+                (let ((resp-body (scm->json-string
+                                  '((choices . #(((message . ((role . "assistant")
+                                                              (content . "Steered final answer."))))))))))
+                  (values (build-response #:code 200) resp-body))))))
+    (parameterize ((current-http-post mock-poster))
+      (let* ((hooks `((on-step . ,(lambda (iter phase)
+                                    (when (eq? phase 'tools-executed)
+                                      (steering-push! queue "Prefer metric units."))))))
+             (session (make-react-session client
+                                          #:initial-messages '(((role . "user") (content . "What's the weather in Dublin?")))
+                                          #:reg reg
+                                          #:max-iterations 5
+                                          #:steering-queue queue
+                                          #:hooks hooks)))
+        (call-with-values (lambda () (react-run! session))
+          (lambda (status final-text sess)
+            (test-equal "steered run still completes" 'completed status)
+            (test-equal "steered final text matches" "Steered final answer." final-text)
+            (test-equal "exactly two LLM calls made" 2 turn)
+            ;; The second LLM call must see the injected steering user message
+            (let* ((second-msgs (vector->list
+                                  (assoc-ref (json-string->scm (car request-bodies)) "messages")))
+                   (steer-msgs (filter (lambda (m)
+                                         (and (equal? (assoc-ref m "role") "user")
+                                              (equal? (assoc-ref m "content") "Prefer metric units.")))
+                                       second-msgs)))
+              (test-assert "steering user message visible to second LLM call"
+                           (pair? steer-msgs)))
+            ;; The steering message is also persisted in the session transcript
+            (test-assert "steering message persisted in session transcript"
+                         (any (lambda (m)
+                                (and (equal? (assoc-ref m 'role) "user")
+                                     (equal? (assoc-ref m 'content) "Prefer metric units.")))
+                              (react-session-messages sess)))
+            (test-assert "steering queue fully drained after run" (steering-empty? queue))))))))
+
+;;;
+;;; 10. Steering Interrupt: Halt the Running Loop
+;;;
+(test-group "react-steering-interrupt"
+  (let* ((reg (make-registry))
+         (_ (registry-attach! reg "get.weather"
+                              (lambda (city) (format #f "The weather in ~a is sunny and 22C" city))
+                              '((description . "Get current weather"))))
+         (client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "mock-llm"))
+         (queue (make-steering-queue))
+         (llm-calls 0)
+         (mock-poster
+          (lambda* (uri #:key body headers streaming?)
+            (set! llm-calls (+ llm-calls 1))
+            ;; Every turn issues a tool call; only the interrupt stops the loop
+            (let ((resp-body (scm->json-string
+                              '((choices . #(((message . ((role . "assistant")
+                                                          (content . "Let me check the weather.")
+                                                          (tool_calls . #(((id . "call_in1")
+                                                                           (type . "function")
+                                                                           (function . ((name . "get_weather")
+                                                                                        (arguments . "{\"city\":\"Dublin\"}")))))))))))))))
+              (values (build-response #:code 200) resp-body)))))
+    (parameterize ((current-http-post mock-poster))
+      (let* ((hooks `((on-step . ,(lambda (iter phase)
+                                    (when (eq? phase 'tools-executed)
+                                      (steering-push! queue 'interrupt))))))
+             (session (make-react-session client
+                                          #:initial-messages '(((role . "user") (content . "What's the weather in Dublin?")))
+                                          #:reg reg
+                                          #:max-iterations 5
+                                          #:steering-queue queue
+                                          #:hooks hooks)))
+        (call-with-values (lambda () (react-run! session))
+          (lambda (status final-text sess)
+            (test-equal "interrupt returns interrupted verdict" 'interrupted status)
+            (test-equal "no LLM call after interrupt" 1 llm-calls)
+            (test-equal "session status is interrupted" 'interrupted (react-session-status sess))
+            (test-equal "final content is last assistant content"
+                        "Let me check the weather."
+                        final-text)
+            (test-equal "loop stopped after first iteration" 1 (react-session-iteration sess))
+            (test-assert "queue drained on interrupt" (steering-empty? queue)))))
+
+      ;; Interrupt queued before the run starts halts before the first LLM call
+      (let* ((pre-queue (make-steering-queue))
+             (_ (steering-push! pre-queue 'interrupt))
+             (pre-session (make-react-session client
+                                              #:initial-messages '(((role . "user") (content . "What's the weather in Dublin?")))
+                                              #:reg reg
+                                              #:max-iterations 5
+                                              #:steering-queue pre-queue)))
+        (call-with-values (lambda () (react-run! pre-session))
+          (lambda (status final-text sess)
+            (test-equal "pre-queued interrupt verdict is interrupted" 'interrupted status)
+            (test-equal "still no additional LLM call" 1 llm-calls)
+            (test-equal "no content accumulated before first call" #f final-text)
+            (test-equal "iteration untouched by pre-run interrupt" 0 (react-session-iteration sess))))))))
+
+;;;
+;;; 11. Backward Compatibility: No Steering Queue
+;;;
+(test-group "react-no-steering-queue"
+  (let* ((client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "mock-llm"))
+         (session (make-react-session client
+                                      #:initial-messages '(((role . "user") (content . "hello")))
+                                      #:max-iterations 2)))
+    (test-equal "session without steering queue has #f queue"
+                #f
+                (react-session-steering-queue session))
+    (test-equal "iteration starts at 0" 0 (react-session-iteration session))))
+
 (test-end "badb-react")
