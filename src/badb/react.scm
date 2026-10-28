@@ -533,15 +533,25 @@ Returns (values content reasoning)."
                       guardrail-fn
                       on-tool-call-fn
                       on-tool-result-fn)
-  "Execute TOOL-CALLS sequentially, invoking callbacks and returning pairs of (tool-call . tool-msg)."
+  "Execute TOOL-CALLS sequentially, invoking callbacks and returning pairs of (tool-call . tool-msg).
+Hook exceptions are isolated: a failing on-tool-call or on-tool-result
+callback is reported on stderr and skipped, never aborting the loop."
   (map
     (lambda (tc)
-      (when (procedure? on-tool-call-fn) (on-tool-call-fn tc))
+      (catch #t
+        (lambda () (when (procedure? on-tool-call-fn) (on-tool-call-fn tc)))
+        (lambda (key . args)
+          (format (current-error-port)
+                  "warning: on-tool-call hook failed (~a): ~s~%" key args)))
       (call-with-values
         (lambda ()
           (execute-tool-call tc reg mcp-mgr #:jrn jrn #:mgr mgr #:guardrail guardrail-fn))
         (lambda (res err?)
-          (when (procedure? on-tool-result-fn) (on-tool-result-fn tc res err?))
+          (catch #t
+            (lambda () (when (procedure? on-tool-result-fn) (on-tool-result-fn tc res err?)))
+            (lambda (key . args)
+              (format (current-error-port)
+                      "warning: on-tool-result hook failed (~a): ~s~%" key args)))
           (let*
               ((content-str (safe-json-string res))
                (tc-id (or (prop-ref tc 'id) "call_0"))

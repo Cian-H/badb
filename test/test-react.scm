@@ -489,4 +489,69 @@
                 (react-session-steering-queue session))
     (test-equal "iteration starts at 0" 0 (react-session-iteration session))))
 
+(test-group "react-hook-failure-isolation"
+            ;; A crashing on-tool-call / on-tool-result hook must never abort the
+            ;; ReAct loop: the failure is reported and the tool observation is still
+            ;; fed back to the next model call.
+            (let*
+                ((client
+                   (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "hook-test"))
+                 (call-count 0)
+                 (turn1
+                   (scm->json-string
+                     '((choices .
+                        #(((message .
+                            ((role . "assistant") (content . "Calling.")
+                             (tool_calls .
+                              #(((id . "call_h1") (type . "function")
+                                 (function . ((name . "ping") (arguments . "{}"))))))))))))))
+                 (turn2
+                   (scm->json-string
+                     '((choices . #(((message . ((role . "assistant") (content . "Recovered.")))))))))
+                 (mock-poster
+                   (lambda* (uri #:key body headers streaming?)
+                            (set! call-count (1+ call-count))
+                            (values (build-response #:code 200)
+                                    (if (= call-count 1)
+                                      turn1
+                                      turn2))))
+                 (reg (make-registry)))
+              (registry-attach! reg
+                                "ping"
+                                (lambda ()
+                                  "pong")
+                                '((description . "Ping")))
+              (parameterize ((current-http-post mock-poster))
+                            (let*
+                                ((session
+                                   (make-react-session client
+                                                       #:initial-messages
+                                                       '(((role . "user") (content . "call it")))
+                                                       #:reg
+                                                       reg
+                                                       #:max-iterations
+                                                       5
+                                                       #:hooks
+                                                       (list
+                                                         (cons 'on-tool-result
+                                                               (lambda (tc res err?)
+                                                                 (error "hook explosion"))))))
+                                 (verdict-result
+                                   (call-with-values
+                                     (lambda ()
+                                       (react-run! session))
+                                     (lambda (verdict content sess)
+                                       (list verdict content sess)))))
+                              (test-equal "loop completes despite failing hook"
+                                          'completed
+                                          (car verdict-result))
+                              (test-equal "final answer produced" "Recovered." (cadr verdict-result))
+                              (test-equal "both LLM calls happened" 2 call-count)
+                              (test-assert "tool observation still recorded"
+                                           (any
+                                             (lambda (m)
+                                               (and (equal? (assoc-ref m 'role) "tool")
+                                                    (string-contains (assoc-ref m 'content) "pong")))
+                                             (react-session-messages (caddr verdict-result))))))))
+
 (test-end "badb-react")
