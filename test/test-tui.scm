@@ -323,128 +323,178 @@
 (test-group "tui-prompt-indicator"
   ;; Idle prompt: single-character ❯
   (call-with-values (lambda () (get-prompt-indicator "" "READY"))
-    (lambda (glyph pair bold?)
+    (lambda (glyph role bold?)
       (test-equal "idle prompt is single char ❯" "❯" glyph)
-      (test-equal "idle prompt color is green pair 2" 2 pair)
+      (test-equal "idle prompt uses the accent role" 'accent role)
       (test-assert "idle prompt is bold" bold?)))
 
   ;; Shell mode: single-character $
   (call-with-values (lambda () (get-prompt-indicator "!git status" "READY"))
-    (lambda (glyph pair bold?)
+    (lambda (glyph role bold?)
       (test-equal "shell prompt is single char $" "$" glyph)
-      (test-equal "shell prompt color is magenta pair 6" 6 pair)
+      (test-equal "shell prompt uses the shell role" 'shell role)
       (test-assert "shell prompt is bold" bold?)))
 
   ;; Scheme mode: single-character λ
   (call-with-values (lambda () (get-prompt-indicator ",(+ 1 2)" "READY"))
-    (lambda (glyph pair bold?)
+    (lambda (glyph role bold?)
       (test-equal "scheme prompt is single char λ" "λ" glyph)
-      (test-equal "scheme prompt color is cyan pair 1" 1 pair)
+      (test-equal "scheme prompt uses the scheme role" 'scheme role)
       (test-assert "scheme prompt is bold" bold?)))
 
   (call-with-values (lambda () (get-prompt-indicator "(define x 42)" "READY"))
-    (lambda (glyph pair bold?)
+    (lambda (glyph role bold?)
       (test-equal "s-expr prompt is single char λ" "λ" glyph)
-      (test-equal "s-expr prompt color is cyan pair 1" 1 pair)))
+      (test-equal "s-expr prompt uses the scheme role" 'scheme role)))
 
   ;; Slash command mode: single-character /
   (call-with-values (lambda () (get-prompt-indicator "/model" "READY"))
-    (lambda (glyph pair bold?)
+    (lambda (glyph role bold?)
       (test-equal "slash prompt is single char /" "/" glyph)
-      (test-equal "slash prompt color is yellow pair 4" 4 pair)))
+      (test-equal "slash prompt uses the accent role" 'accent role)))
 
   ;; Task-based morphing indicators
   (call-with-values (lambda () (get-prompt-indicator "" "STREAMING..."))
-    (lambda (glyph pair bold?)
+    (lambda (glyph role bold?)
       (test-equal "streaming prompt is single char ⟳" "⟳" glyph)
-      (test-equal "streaming prompt color is cyan pair 1" 1 pair)))
+      (test-equal "streaming prompt uses the status role" 'status role)))
 
   (call-with-values (lambda () (get-prompt-indicator "" "EXEC..."))
-    (lambda (glyph pair bold?)
-      (test-equal "executing prompt is single char ⚙" "⚙" glyph)
-      (test-equal "executing prompt color is magenta pair 6" 6 pair)))
+    (lambda (glyph role bold?)
+      (test-equal "executing prompt is single char ◆" "◆" glyph)
+      (test-equal "executing prompt uses the shell role" 'shell role)))
 
   (call-with-values (lambda () (get-prompt-indicator "" "TOOL: read_file..."))
-    (lambda (glyph pair bold?)
-      (test-equal "tool prompt is single char ⚙" "⚙" glyph)
-      (test-equal "tool prompt color is magenta pair 6" 6 pair)))
+    (lambda (glyph role bold?)
+      (test-equal "tool prompt is single char ◆" "◆" glyph)
+      (test-equal "tool prompt uses the tool-call role" 'tool-call role)))
 
   (call-with-values (lambda () (get-prompt-indicator "" "REACT [1/8]"))
-    (lambda (glyph pair bold?)
-      (test-equal "react prompt is single char ⚙" "⚙" glyph)
-      (test-equal "react prompt color is yellow pair 4" 4 pair)))
+    (lambda (glyph role bold?)
+      (test-equal "react prompt is single char ◆" "◆" glyph)
+      (test-equal "react prompt uses the tool-call role" 'tool-call role)))
 
   (call-with-values (lambda () (get-prompt-indicator "" "EVAL..."))
-    (lambda (glyph pair bold?)
+    (lambda (glyph role bold?)
       (test-equal "evaluating prompt is single char λ" "λ" glyph)
-      (test-equal "evaluating prompt color is cyan pair 1" 1 pair)))
+      (test-equal "evaluating prompt uses the scheme role" 'scheme role)))
 
   (call-with-values (lambda () (get-prompt-indicator "" "TESTING..."))
-    (lambda (glyph pair bold?)
-      (test-equal "testing prompt is single char ⚙" "⚙" glyph)
-      (test-equal "testing prompt color is yellow pair 4" 4 pair))))
+    (lambda (glyph role bold?)
+      (test-equal "testing prompt is single char ◆" "◆" glyph)
+      (test-equal "testing prompt uses the warning role" 'warning role))))
 
 ;;;
-;;; 9. Modern 2020s Container Frame Formatters
+;;; 9. Slim Header, Rule & Keymap Layout Formatters
 ;;;
-(test-group "tui-modern-frame-formatters"
-  ;; Header Line
-  (let ((header (format-header-line 80 "READY" "minicpm5-1b:gguf:q8" 3 5)))
-    (test-assert "header starts with top-left rounded corner" (string-prefix? "╭─ badb ─" header))
-    (test-assert "header ends with top-right rounded corner" (string-suffix? "╮" header))
-    (test-assert "header contains status pill" (string-contains header "❲● READY❳"))
-    (test-assert "header contains model pill" (string-contains header "❲minicpm5-1b:gguf:q8❳"))
-    (test-assert "header contains features pill" (string-contains header "❲3 feats❳"))
-    (test-assert "header contains journal pill" (string-contains header "❲5 chkpts❳"))
-    (test-equal "header length matches terminal width"
-      80 (string-length header)))
+(test-group "tui-header-and-rule-formatters"
+  ;; Header segments
+  (let ((segs (format-header-segments 80 "READY" "minicpm5-1b:gguf:q8" 3 5)))
+    (test-equal "header starts with the accent wordmark at column 0"
+                '(0 "badb" accent #t)
+                (car segs))
+    (test-assert "header carries the model name in dim after the wordmark"
+                 (find (lambda (s) (equal? s (list 5 "minicpm5-1b:gguf:q8" 'dim #f)))
+                       segs))
+    (test-assert "header carries the status word in the status role"
+                 (find (lambda (s)
+                         (and (string=? (cadr s) "READY") (eq? (caddr s) 'status)))
+                       segs))
+    (test-assert "header carries the feature count when nonzero"
+                 (find (lambda (s) (string-contains (cadr s) "3 feats")) segs))
+    (test-assert "header carries the checkpoint count when nonzero"
+                 (find (lambda (s) (string-contains (cadr s) "5 chkpts")) segs))
+    (test-assert "rightmost header segment fits the terminal width"
+                 (let ((last-seg (car (reverse segs))))
+                   (<= (+ (car last-seg) (string-length (cadr last-seg))) 80))))
 
-  (let ((header-mcp (format-header-line 100 "READY" "minicpm5-1b:gguf:q8" 3 5 "1/2")))
-    (test-assert "header contains mcp status pill when provided" (string-contains header-mcp "❲mcp: 1/2❳"))
-    (test-equal "header with mcp matches terminal width"
-      100 (string-length header-mcp)))
+  (let ((segs (format-header-segments 100 "READY" "minicpm5-1b:gguf:q8" 3 5 "1/2")))
+    (test-assert "header carries the mcp count when provided"
+                 (find (lambda (s) (string-contains (cadr s) "mcp 1/2")) segs))
+    (test-assert "wide header still fits the terminal width"
+                 (let ((last-seg (car (reverse segs))))
+                   (<= (+ (car last-seg) (string-length (cadr last-seg))) 100))))
 
-  ;; Prompt Divider
-  (let ((divider (format-prompt-divider 80)))
-    (test-assert "divider starts with left tee branch" (string-prefix? "├─ prompt ──" divider))
-    (test-assert "divider ends with right tee branch" (string-suffix? "┤" divider))
-    (test-assert "divider contains shortcut hint" (string-contains divider "[Tab: complete"))
-    (test-equal "divider length matches terminal width"
-      80 (string-length divider))))
+  ;; Zero counts drop out entirely
+  (let ((segs (format-header-segments 80 "READY" "minicpm" 0 0)))
+    (test-assert "zero counts are omitted from the header"
+                 (not (find (lambda (s)
+                              (or (string-contains (cadr s) "feats")
+                                  (string-contains (cadr s) "chkpts")))
+                            segs))))
+
+  ;; Narrow terminals drop the least important right items first
+  (let ((segs (format-header-segments 28 "READY" "minicpm5-1b:gguf:q8" 3 5 "1/2")))
+    (test-equal "narrow header keeps the wordmark segment"
+                "badb"
+                (cadr (car segs)))
+    (test-assert "narrow header keeps the status segment"
+                 (find (lambda (s) (string=? (cadr s) "READY")) segs))
+    (test-assert "narrow header drops the mcp count"
+                 (not (find (lambda (s) (string-contains (cadr s) "mcp")) segs))))
+
+  ;; Thin horizontal rule under the header
+  (let ((rule (format-rule-line 80)))
+    (test-equal "rule line fills the terminal width" 80 (string-length rule))
+    (test-equal "rule line ends with the rule char" #\─ (string-ref rule 79))
+    (test-equal "rule line consists of rule chars only"
+                (make-string 80 #\─)
+                rule)))
+
+(test-group "tui-keymap-hints"
+  (test-assert "chat keymap lists the modal prompt keys"
+               (string-contains (format-keymap-line 'chat) "!:shell"))
+  (test-assert "chat keymap lists the message selection keys"
+               (string-contains (format-keymap-line 'chat) "^p/^n:select"))
+  (test-assert "chat keymap lists the collapse key"
+               (string-contains (format-keymap-line 'chat) "^e:collapse"))
+  (test-assert "shell keymap documents the run key"
+               (string-contains (format-keymap-line 'shell) "enter:run"))
+  (test-assert "shell keymap documents the return key"
+               (string-contains (format-keymap-line 'shell) "backspace:back to chat"))
+  (test-assert "scheme keymap documents the eval key"
+               (string-contains (format-keymap-line 'scheme) "enter:eval"))
+  (test-assert "selector keymap documents the palette keys"
+               (string-contains (format-keymap-line 'selector) "up/down:choose"))
+  (test-assert "menu keymap documents the menu keys"
+               (string-contains (format-keymap-line 'menu) "enter:apply"))
+  (test-assert "unknown modes fall back to the chat keymap"
+               (string=? (format-keymap-line 'anything-else)
+                         (format-keymap-line 'chat))))
 
 ;;;
-;;; 10. Modal Prompt Switching & Dynamic Hints
+;;; 10. Modal Prompt Switching & Mode Hints
 ;;;
 (test-group "tui-modal-prompt-switching"
   ;; Mode-based indicators
   (call-with-values (lambda () (get-prompt-indicator "" "READY" 'shell))
-    (lambda (glyph pair bold?)
+    (lambda (glyph role bold?)
       (test-equal "shell mode indicator is $" "$" glyph)
-      (test-equal "shell mode color is magenta pair 6" 6 pair)
+      (test-equal "shell mode uses the shell role" 'shell role)
       (test-assert "shell mode indicator is bold" bold?)))
 
   (call-with-values (lambda () (get-prompt-indicator "" "READY" 'scheme))
-    (lambda (glyph pair bold?)
+    (lambda (glyph role bold?)
       (test-equal "scheme mode indicator is λ" "λ" glyph)
-      (test-equal "scheme mode color is cyan pair 1" 1 pair)
+      (test-equal "scheme mode uses the scheme role" 'scheme role)
       (test-assert "scheme mode indicator is bold" bold?)))
 
   (call-with-values (lambda () (get-prompt-indicator "" "READY" 'chat))
-    (lambda (glyph pair bold?)
+    (lambda (glyph role bold?)
       (test-equal "chat mode indicator is ❯" "❯" glyph)
-      (test-equal "chat mode color is green pair 2" 2 pair)
+      (test-equal "chat mode uses the accent role" 'accent role)
       (test-assert "chat mode indicator is bold" bold?)))
 
-  ;; Mode-based divider hints
-  (let ((shell-div (format-prompt-divider 80 'shell)))
-    (test-assert "shell divider contains shell prompt tag" (string-contains shell-div "shell prompt"))
-    (test-assert "shell divider contains backspace hint"
-      (string-contains shell-div "Backspace: return to chat")))
+  ;; Mode-based keymap hints
+  (test-assert "shell keymap names the shell mode"
+               (string-contains (format-keymap-line 'shell) "enter:run"))
+  (test-assert "shell keymap documents the backspace return"
+               (string-contains (format-keymap-line 'shell) "backspace:back to chat"))
 
-  (let ((scheme-div (format-prompt-divider 80 'scheme)))
-    (test-assert "scheme divider contains scheme prompt tag" (string-contains scheme-div "scheme prompt"))
-    (test-assert "scheme divider contains backspace hint"
-      (string-contains scheme-div "Backspace: return to chat"))))
+  (test-assert "scheme keymap names the scheme mode"
+               (string-contains (format-keymap-line 'scheme) "enter:eval"))
+  (test-assert "scheme keymap documents the backspace return"
+               (string-contains (format-keymap-line 'scheme) "backspace:back to chat")))
 
 ;;;
 ;;; 11. Scheme Expression Normalization (normalize-scheme-expr)
@@ -470,37 +520,37 @@
   ;; Plain text without special tokens
   (let ((segs (segment-line "Simple text with no tokens")))
     (test-equal "plain text is single chunk" 1 (length segs))
-    (test-equal "plain text chunk has white pair 3" 3 (cadr (car segs)))
+    (test-equal "plain text chunk uses the default role" 'default (cadr (car segs)))
     (test-assert "plain text chunk is not bold" (not (caddr (car segs)))))
 
   ;; Status tags
   (let ((segs-running (segment-line "[RUNNING]")))
     (test-equal "running status text" "[RUNNING]" (caar segs-running))
-    (test-equal "running status has green pair 2" 2 (cadar segs-running))
+    (test-equal "running status uses the success role" 'success (cadar segs-running))
     (test-assert "running status is bold" (caddar segs-running)))
 
   (let ((segs-stopped (segment-line "[STOPPED]")))
     (test-equal "stopped status text" "[STOPPED]" (caar segs-stopped))
-    (test-equal "stopped status has yellow pair 4" 4 (cadar segs-stopped))
+    (test-equal "stopped status uses the warning role" 'warning (cadar segs-stopped))
     (test-assert "stopped status is bold" (caddar segs-stopped)))
 
   (let ((segs-deny (segment-line "[DENY]")))
     (test-equal "deny status text" "[DENY]" (caar segs-deny))
-    (test-equal "deny status has red pair 5" 5 (cadar segs-deny))
+    (test-equal "deny status uses the error role" 'error (cadar segs-deny))
     (test-assert "deny status is bold" (caddar segs-deny)))
 
   ;; Bullets
   (let ((segs-bullet (segment-line "• list item")))
     (test-equal "bullet glyph text" "• " (caar segs-bullet))
-    (test-equal "bullet glyph has cyan pair 1" 1 (cadar segs-bullet))
+    (test-equal "bullet glyph uses the accent role" 'accent (cadar segs-bullet))
     (test-assert "bullet glyph is bold" (caddar segs-bullet))
-    (test-equal "bullet content has white pair 3" 3 (cadr (cadr segs-bullet))))
+    (test-equal "bullet content uses the default role" 'default (cadr (cadr segs-bullet))))
 
   ;; Property keys
   (let ((segs-key (segment-line "Model: moonshotai/kimi-k2.6")))
     (test-equal "property key text" "Model: " (caar segs-key))
-    (test-equal "property key has cyan pair 1" 1 (cadar segs-key))
-    (test-equal "property value has white pair 3" 3 (cadr (cadr segs-key))))
+    (test-equal "property key uses the accent role" 'accent (cadar segs-key))
+    (test-equal "property value uses the default role" 'default (cadr (cadr segs-key))))
 
   ;; Composite MCP line: "  • filesystem: [RUNNING] (14 tools)"
   (let ((segs-mcp (segment-line "  • filesystem: [RUNNING] (14 tools)")))
@@ -508,19 +558,19 @@
     ;; Verify presence of green [RUNNING] segment
     (let ((running-seg (find (lambda (s) (string=? (car s) "[RUNNING]")) segs-mcp)))
       (test-assert "running tag found in segments" running-seg)
-      (test-equal "running tag has green pair 2" 2 (cadr running-seg))
+      (test-equal "running tag uses the success role" 'success (cadr running-seg))
       (test-assert "running tag is bold" (caddr running-seg)))
     ;; Verify presence of cyan filesystem: key
     (let ((key-seg (find (lambda (s) (string=? (car s) "filesystem: ")) segs-mcp)))
       (test-assert "filesystem key found in segments" key-seg)
-      (test-equal "filesystem key has cyan pair 1" 1 (cadr key-seg))))
+      (test-equal "filesystem key uses the accent role" 'accent (cadr key-seg))))
 
   ;; URL preservation (not broken by key label regex)
   (let ((segs-url (segment-line "Endpoint: https://openrouter.ai/api/v1")))
     (test-equal "endpoint key is matched" "Endpoint: " (caar segs-url))
-    (test-equal "url is preserved intact as white pair 3"
+    (test-equal "url is preserved intact as default role"
       "https://openrouter.ai/api/v1" (car (cadr segs-url)))
-    (test-equal "url has white pair 3" 3 (cadr (cadr segs-url)))))
+    (test-equal "url uses the default role" 'default (cadr (cadr segs-url)))))
 
 ;;;
 ;;; 13. Input Buffer Cursor Editing Helpers
@@ -907,23 +957,22 @@
                          `((role . "assistant") (thoughts . "hmm") (content . "c")
                            (collapsed? . #f))))))
 
-  ;; Summary suffixes
-  (let ((s (collapsed-summary-suffix
-             `((role . "assistant")
-               (thoughts . "I need to think about this problem")
-               (content . "x"))
-             5)))
-    (test-assert "thought suffix previews the reasoning text"
-                 (string-contains s "I need to think"))
-    (test-assert "thought suffix mentions the toggle key"
+  ;; Collapsed summary lines
+  (let ((s (format-collapsed-summary-line "thinking" 12)))
+    (test-assert "summary line carries the block label"
+                 (string-contains s "thinking"))
+    (test-assert "summary line mentions the toggle key"
                  (string-contains s "ctrl+e"))
-    (test-assert "thought suffix mentions the hidden line count"
-                 (string-contains s "5")))
-  (let ((s (collapsed-summary-suffix `((role . "user") (content . "hi")) 3)))
-    (test-assert "generic suffix uses the collapse hint"
-                 (string-contains s "(collapsed - ctrl+e to expand)"))
-    (test-assert "generic suffix mentions the hidden line count"
-                 (string-contains s "3 lines hidden")))
+    (test-assert "summary line mentions the hidden line count"
+                 (string-contains s "12")))
+  (test-equal "single hidden line reads singular"
+              "you (1 line) — ctrl+e to expand"
+              (format-collapsed-summary-line "you" 1))
+  (test-equal "multiple hidden lines read plural"
+              "you (3 lines) — ctrl+e to expand"
+              (format-collapsed-summary-line "you" 3))
+
+  ;; Thought previews
 
   ;; Thought previews
   (test-equal "preview keeps short thoughts intact"
@@ -937,7 +986,7 @@
               (thoughts-preview "first line\nsecond line")))
 
 ;;;
-;;; 18. Collapse-Aware Card Rendering (format-message-entry)
+;;; 18. Collapse-Aware Block Rendering (format-message-entry)
 ;;;
 (test-group "tui-collapse-rendering"
   ;; Collapsed non-assistant message: exactly one content row
@@ -948,71 +997,83 @@
     (test-equal "collapsed message renders exactly one content row"
                 1
                 (length content-rows))
-    (test-equal "collapsed row is a card-summary row"
-                "card-summary"
+    (test-equal "collapsed row is a block-summary row"
+                "block-summary"
                 (car (car content-rows)))
-    (test-equal "collapsed row keeps the expanded badge"
-                "👤 USER"
+    (test-equal "collapsed summary row carries the user theme role"
+                'user
                 (cadr (car content-rows)))
-    (test-assert "collapsed suffix documents the expand key"
-                 (string-contains (cadddr (car content-rows)) "ctrl+e")))
+    (test-assert "collapsed summary line documents the expand key"
+                 (string-contains (caddr (car content-rows)) "ctrl+e"))
+    (test-assert "collapsed summary line carries the role label"
+                 (string-contains (caddr (car content-rows)) "you")))
 
-  ;; Expanded message renders the full card
+  ;; Expanded message renders the full flat block
   (let* ((msg `((role . "user") (content . "hello from the user")))
-         (rows (format-message-entry msg 40)))
-    (test-assert "expanded message renders a card-top row"
-                 (any (lambda (e) (string=? (car e) "card-top")) rows))
-    (test-assert "expanded message renders a card-body row"
-                 (any (lambda (e) (string=? (car e) "card-body")) rows))
-    (test-assert "expanded message renders a card-bot row"
-                 (any (lambda (e) (string=? (car e) "card-bot")) rows))
-    (test-equal "expanded message ends with a spacer row"
+         (rows (format-message-entry msg 40))
+         (label-row (find (lambda (e) (string=? (car e) "block-label")) rows)))
+    (test-assert "expanded message renders a block-label row"
+                 label-row)
+    (test-assert "expanded message renders a block-body row"
+                 (any (lambda (e) (string=? (car e) "block-body")) rows))
+    (test-equal "label row carries the lowercase role label"
+                "you"
+                (cadr label-row))
+    (test-equal "label row carries the user theme role"
+                'user
+                (caddr label-row))
+    (test-equal "expanded message ends with a single spacer row"
                 "spacer"
                 (car (last rows))))
 
-  ;; Collapsed assistant reasoning: one summary row, content card visible
+  ;; Collapsed assistant reasoning: one summary line, content block visible
   (let* ((msg `((role . "assistant")
                 (thoughts . "internal reasoning about the task")
                 (content . "final answer")))
          (rows (format-message-entry (make-collapsed-message msg) 60))
-         (summaries (filter (lambda (e) (string=? (car e) "card-summary")) rows))
-         (bodies (filter (lambda (e) (string=? (car e) "card-body")) rows)))
+         (summaries (filter (lambda (e) (string=? (car e) "block-summary")) rows))
+         (bodies (filter (lambda (e) (string=? (car e) "block-body")) rows)))
     (test-equal "collapsed thoughts render one summary row"
                 1
                 (length summaries))
-    (test-equal "summary row carries the thought badge"
-                "💭 THOUGHT PROCESS"
-                (cadr (car summaries)))
-    (test-assert "summary row previews the reasoning text"
-                 (string-contains (cadddr (car summaries)) "internal reasoning"))
+    (test-assert "summary row reports the thinking label"
+                 (string-contains (caddr (car summaries)) "thinking"))
+    (test-assert "summary row documents the expand key"
+                 (string-contains (caddr (car summaries)) "ctrl+e"))
     (test-equal "assistant content body stays visible"
                 "final answer"
-                (caddr (car bodies)))
+                (caddr (find (lambda (e)
+                               (and (string=? (car e) "block-body")
+                                    (eq? (cadr e) 'assistant)))
+                             bodies)))
     (test-assert "no thought body rows while collapsed"
                  (not (any (lambda (e)
-                             (and (string=? (car e) "card-body")
-                                  (string=? (cadr e) "thought")))
+                             (and (string=? (car e) "block-body")
+                                  (eq? (cadr e) 'thought)))
                            rows))))
 
-  ;; Expanded assistant reasoning: full thought card plus content card
+  ;; Expanded assistant reasoning: thought block plus content block
   (let* ((msg `((role . "assistant") (thoughts . "internal reasoning") (content . "answer")))
          (rows (format-message-entry msg 60)))
     (test-assert "expanded thoughts render thought body rows"
                  (any (lambda (e)
-                        (and (string=? (car e) "card-body")
-                             (string=? (cadr e) "thought")))
+                        (and (string=? (car e) "block-body")
+                             (eq? (cadr e) 'thought)))
                       rows))
     (test-assert "expanded assistant renders content body rows"
                  (any (lambda (e)
-                        (and (string=? (car e) "card-body")
-                             (string=? (cadr e) "assistant")))
+                        (and (string=? (car e) "block-body")
+                             (eq? (cadr e) 'assistant)))
                       rows))
     (test-assert "expanded reasoning renders no summary rows"
-                 (not (any (lambda (e) (string=? (car e) "card-summary")) rows))))
+                 (not (any (lambda (e) (string=? (car e) "block-summary")) rows)))
+    (test-equal "assistant message ends with exactly one spacer row"
+                1
+                (length (filter (lambda (e) (string=? (car e) "spacer")) rows))))
 
   ;; Collapsing shrinks the rendered row count
   (let* ((msg `((role . "user")
-                (content . "line one of a fairly long message that will wrap around the narrow column limit")))
+               (content . "line one of a fairly long message that will wrap around the narrow column limit")))
          (expanded-count (length (format-message-entry msg 40)))
          (collapsed-count (length (format-message-entry (make-collapsed-message msg) 40))))
     (test-assert "collapsed renders fewer rows than expanded"
@@ -1021,10 +1082,88 @@
   ;; Non-collapsible message ignores the collapse flag
   (let ((rows (format-message-entry `((role . "user") (content . "") (collapsed? . #t)) 40)))
     (test-assert "empty message ignores the collapse flag"
-                 (any (lambda (e) (string=? (car e) "card-top")) rows))))
+                 (any (lambda (e) (string=? (car e) "block-label")) rows))))
 
 ;;;
-;;; 19. Interactive Menu Model (make-menu & friends)
+;;; 19. Role Labels, Theme Mapping & Color Constants
+;;;
+(test-group "tui-role-labels-and-theme-mapping"
+  ;; Role label text
+  (test-equal "user role label" "you" (message-role-label "user"))
+  (test-equal "assistant role label" "assistant" (message-role-label "assistant"))
+  (test-equal "thought role label" "thinking" (message-role-label "thought"))
+  (test-equal "shell-cmd role label" "shell" (message-role-label "shell-cmd"))
+  (test-equal "shell-out role label" "shell output" (message-role-label "shell-out"))
+  (test-equal "scheme-in role label" "scheme" (message-role-label "scheme-in"))
+  (test-equal "scheme-out role label" "scheme output" (message-role-label "scheme-out"))
+  (test-equal "tool-call role label" "tool" (message-role-label "tool-call"))
+  (test-equal "tool role label" "tool" (message-role-label "tool"))
+  (test-equal "tool-result role label" "tool result" (message-role-label "tool-result"))
+  (test-equal "error role label" "error" (message-role-label "error"))
+  (test-equal "notice role label" "notice" (message-role-label "notice"))
+  (test-equal "unknown roles fall back to system"
+              "system"
+              (message-role-label "mystery"))
+
+  ;; Theme role mapping
+  (test-equal "user maps to the user theme role" 'user (message-role->theme-role "user"))
+  (test-equal "assistant maps to the assistant theme role"
+              'assistant
+              (message-role->theme-role "assistant"))
+  (test-equal "thought maps to the thought theme role" 'thought (message-role->theme-role "thought"))
+  (test-equal "shell roles map to the shell theme role"
+              'shell
+              (message-role->theme-role "shell-out"))
+  (test-equal "scheme roles map to the scheme theme role"
+              'scheme
+              (message-role->theme-role "scheme-in"))
+  (test-equal "tool calls map to the tool-call theme role"
+              'tool-call
+              (message-role->theme-role "tool"))
+  (test-equal "tool results map to the tool-result theme role"
+              'tool-result
+              (message-role->theme-role "tool-result"))
+  (test-equal "notice maps to the notice theme role" 'notice (message-role->theme-role "notice"))
+  (test-equal "unknown roles map to the system theme role"
+              'system
+              (message-role->theme-role "mystery"))
+
+  ;; System message labels derive from content
+  (test-equal "mcp listing content"
+              "mcp servers"
+              (system-message-label "Configured MCP Servers:\n- filesystem"))
+  (test-equal "configuration content"
+              "configuration"
+              (system-message-label "badb Configuration:\nModel: x"))
+  (test-equal "guardrail content"
+              "guardrails"
+              (system-message-label "Guardrail Policy Level: cautious"))
+  (test-equal "help content"
+              "help"
+              (system-message-label "Help & Commands"))
+  (test-equal "checkpoint content"
+              "journal"
+              (system-message-label "Created checkpoint 'abc' (desc)."))
+  (test-equal "generic system content"
+              "system"
+              (system-message-label "something unmatched"))
+
+  ;; Color symbol -> ncurses constant mapping
+  (test-equal "cyan maps to COLOR_CYAN" 'COLOR_CYAN (color-symbol->ncurses-constant 'cyan))
+  (test-equal "black maps to COLOR_BLACK" 'COLOR_BLACK (color-symbol->ncurses-constant 'black))
+  (test-equal "white maps to COLOR_WHITE" 'COLOR_WHITE (color-symbol->ncurses-constant 'white))
+  (test-equal "magenta maps to COLOR_MAGENTA"
+              'COLOR_MAGENTA
+              (color-symbol->ncurses-constant 'magenta))
+  (test-equal "default maps to COLOR_WHITE"
+              'COLOR_WHITE
+              (color-symbol->ncurses-constant 'default))
+  (test-equal "invalid colors map to COLOR_WHITE"
+              'COLOR_WHITE
+              (color-symbol->ncurses-constant 'sparkly)))
+
+;;;
+;;; 20. Interactive Menu Model (make-menu & friends)
 ;;;
 (test-group "tui-menu-model"
   ;; Construction & accessors

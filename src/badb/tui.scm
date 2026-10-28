@@ -1,13 +1,16 @@
 ;;; badb — Terminal User Interface (TUI)
 ;;;
 ;;; Interactive full-screen terminal interface for badb powered by guile-ncurses.
-;;; Provides live streaming LLM chat with separated thought reasoning cards,
+;;; Provides live streaming LLM chat with separated thought reasoning blocks,
 ;;; modal prompt switching (! for shell, ( or , for Scheme, backspace to return),
 ;;; interactive slash-command selector palette, menu-driven configuration
-;;; flows (/config, /model, /endpoint open interactive menus), and modern
-;;; 2020s container styling. Message cards are collapsible: reasoning
-;;; collapses to a single summary line by default; Ctrl+Up/Ctrl+Down select a
-;;; card and Ctrl+E toggles collapse.
+;;; flows (/config, /model, /endpoint open interactive menus), and a quiet
+;;; modern agent-CLI layout: flat borderless message blocks with role labels
+;;; and accent gutters, a slim header line over a thin rule, and floating
+;;; rounded pop-ups. All colors resolve through the (badb theme) module, so
+;;; the six built-in themes restyle the whole interface. Message blocks are
+;;; collapsible: reasoning collapses to a single summary line by default;
+;;; Ctrl+P/Ctrl+N select a block and Ctrl+E toggles collapse.
 
 (define-module (badb tui)
   #:use-module (badb model)
@@ -61,8 +64,9 @@
             menu-item-description
             menu-item-action
             get-prompt-indicator
-            format-header-line
-            format-prompt-divider
+            format-header-segments
+            format-rule-line
+            format-keymap-line
             segment-line
             clamp-cursor
             insert-at
@@ -92,7 +96,11 @@
             message-collapsible?
             default-collapse-message
             thoughts-preview
-            collapsed-summary-suffix
+            format-collapsed-summary-line
+            message-role-label
+            message-role->theme-role
+            system-message-label
+            color-symbol->ncurses-constant
             format-message-entry))
 
 ;;;
@@ -242,76 +250,128 @@ Returns (values thoughts content)."
                     final-content))))))
 
 ;;;
+;;; Theme Color Mapping
+;;;
+(define (color-symbol->ncurses-constant color)
+  "Map a theme COLOR symbol to the name of the matching ncurses color
+constant symbol (resolved against the (ncurses curses) module at runtime
+by the renderer). The neutral 'default maps to white."
+  (case color
+    ((black) 'COLOR_BLACK)
+    ((red) 'COLOR_RED)
+    ((green) 'COLOR_GREEN)
+    ((yellow) 'COLOR_YELLOW)
+    ((blue) 'COLOR_BLUE)
+    ((magenta) 'COLOR_MAGENTA)
+    ((cyan) 'COLOR_CYAN)
+    ((white) 'COLOR_WHITE)
+    (else 'COLOR_WHITE)))
+
+;;;
 ;;; Morphing Prompt Indicator
 ;;;
 (define* (get-prompt-indicator input-buffer status-text #:optional (prompt-mode 'chat))
-  "Return (values glyph-char color-pair bold?) for the prompt indicator
+  "Return (values glyph-char theme-role bold?) for the prompt indicator
 based on current input mode, execution status, and active prompt mode."
   (cond
    ((string=? status-text "STREAMING...")
-    (values "⟳" 1 #t))     ; Cyan bold spinning
+    (values "⟳" 'status #t))     ; Status-role bold spinner
    ((string=? status-text "EXEC...")
-    (values "⚙" 6 #t))     ; Magenta bold gear
+    (values "◆" 'shell #t))      ; Shell-role bold diamond
    ((string-prefix? "TOOL:" status-text)
-    (values "⚙" 6 #t))     ; Magenta bold gear
+    (values "◆" 'tool-call #t))  ; Tool-role bold diamond
    ((string-prefix? "REACT" status-text)
-    (values "⚙" 4 #t))     ; Yellow bold gear
+    (values "◆" 'tool-call #t))  ; Tool-role bold diamond
    ((string=? status-text "EVAL...")
-    (values "λ" 1 #t))     ; Cyan bold lambda
+    (values "λ" 'scheme #t))     ; Scheme-role bold lambda
    ((string=? status-text "TESTING...")
-    (values "⚙" 4 #t))     ; Yellow bold gear
+    (values "◆" 'warning #t))   ; Warning-role bold diamond
    ((eq? prompt-mode 'shell)
-    (values "$" 6 #t))     ; Magenta bold shell mode
+    (values "$" 'shell #t))     ; Shell-role bold shell mode
    ((eq? prompt-mode 'scheme)
-    (values "λ" 1 #t))     ; Cyan bold scheme mode
+    (values "λ" 'scheme #t))    ; Scheme-role bold scheme mode
    ((string-prefix? "!" input-buffer)
-    (values "$" 6 #t))     ; Magenta bold shell prefix
+    (values "$" 'shell #t))     ; Shell-role bold shell prefix
    ((or (string-prefix? "," input-buffer) (string-prefix? "(" input-buffer))
-    (values "λ" 1 #t))     ; Cyan bold lambda prefix
+    (values "λ" 'scheme #t))    ; Scheme-role bold lambda prefix
    ((string-prefix? "/" input-buffer)
-    (values "/" 4 #t))     ; Yellow bold slash prefix
+    (values "/" 'accent #t))    ; Accent-role bold slash prefix
    (else
-    (values "❯" 2 #t))))   ; Green bold chat
+    (values "❯" 'accent #t))))   ; Accent-role bold chat
 
 ;;;
-;;; Modern 2020s Container Layout Formatters
+;;; Slim Header, Rule & Keymap Layout Formatters
 ;;;
-(define* (format-header-line maxx status-text model-name feat-count jrn-count
-                             #:optional (mcp-info #f))
-  "Format a modern rounded container header bar with status pills."
-  (let* ((mcp-part (if mcp-info (format #f "─ ❲mcp: ~a❳ " mcp-info) ""))
-         (prefix (format #f "╭─ badb ─ ❲● ~a❳ ─ ❲~a❳ ─ ❲~a feats❳ ~a─ ❲~a chkpts❳ "
-                         status-text model-name feat-count mcp-part jrn-count))
-         (plen (string-length prefix)))
-    (if (< plen (- maxx 1))
-        (string-append prefix (make-string (- maxx 1 plen) #\─) "╮")
-        (let* ((short-prefix (format #f "╭─ badb ─ ❲● ~a❳ ─ ❲~a❳ " status-text model-name))
-               (splen (string-length short-prefix)))
-          (if (< splen (- maxx 1))
-              (string-append short-prefix (make-string (- maxx 1 splen) #\─) "╮")
-              (substring (string-append short-prefix (make-string (max 0 (- maxx splen)) #\─) "╮") 0 maxx))))))
+(define (format-rule-line maxx)
+  "Return a thin horizontal rule line filling MAXX columns for the header
+underline."
+  (make-string (max 0 maxx) #\─))
 
-(define* (format-prompt-divider maxx #:optional (prompt-mode 'chat))
-  "Format the divider bar separating message history from the input prompt."
-  (let* ((prefix
-          (case prompt-mode
-            ((shell)
-             "├─ shell prompt ── [Enter: run │ Backspace: return to chat] ")
-            ((scheme)
-             "├─ scheme prompt ── [Enter: eval │ Backspace: return to chat] ")
-            (else
-             "├─ prompt ── [Tab: complete │ !: shell │ ,: scheme │ /: commands] ")))
-         (plen (string-length prefix)))
-    (if (< plen (- maxx 1))
-        (string-append prefix (make-string (- maxx 1 plen) #\─) "┤")
-        (let* ((short-p (case prompt-mode
-                          ((shell) "├─ shell [Bksp: chat] ")
-                          ((scheme) "├─ scheme [Bksp: chat] ")
-                          (else "├─ prompt [Tab / ! ,] ")))
-               (splen (string-length short-p)))
-          (if (< splen (- maxx 1))
-              (string-append short-p (make-string (- maxx 1 splen) #\─) "┤")
-              (substring (string-append "├─ prompt " (make-string (max 0 (- maxx 10)) #\─) "┤") 0 maxx))))))
+(define* (format-header-segments maxx status-text model-name feat-count jrn-count
+                                 #:optional (mcp-info #f))
+  "Build the slim header line as positioned segments of the form
+((x text role bold?) ...) for a terminal MAXX columns wide: the badb
+wordmark leads in the accent role with the model name dim behind it, and
+the status word plus nonzero feature / checkpoint / mcp counts sit flush
+right. Right-side items drop out, least important first, whenever the two
+sides would collide; the model name truncates last."
+  (let* ((wordmark "badb")
+         (model (cond
+                 ((and (string? model-name) (not (string-null? model-name))) model-name)
+                 (else "")))
+         (right-items
+           (filter-map
+             (lambda (item) (and (pair? item) item))
+             (list (and (string? status-text) (not (string-null? status-text))
+                        (cons 'status status-text))
+                   (and (> feat-count 0) (cons 'dim (format #f "~a feats" feat-count)))
+                   (and (> jrn-count 0) (cons 'dim (format #f "~a chkpts" jrn-count)))
+                   (and (string? mcp-info) (not (string-null? mcp-info))
+                        (cons 'dim (format #f "mcp ~a" mcp-info))))))
+         (right-width
+           (lambda (items)
+             (if (null? items)
+                 0
+                 (+ (- (length items) 1)
+                    (fold (lambda (i acc) (+ acc (string-length (cdr i)))) 0 items)))))
+         (build
+           (lambda (model-fit items)
+             (let* ((left-segs
+                      (if (string-null? model-fit)
+                        (list (list 0 wordmark 'accent #t))
+                        (list (list 0 wordmark 'accent #t)
+                              (list 5 model-fit 'dim #f))))
+                    (rw (right-width items))
+                    (right-start (max 0 (- maxx rw))))
+               (append
+                left-segs
+                (let rloop ((rest items) (x right-start))
+                  (if (null? rest)
+                      '()
+                      (cons (list x (cdar rest) (caar rest) #f)
+                            (rloop (cdr rest) (+ x (string-length (cdar rest)) 1))))))))))
+    (let fit ((items right-items))
+      (let* ((rw (right-width items))
+             (fits-full?
+               (<= (+ 4 1 (string-length model) 2 rw) (- maxx 1)))
+             (model-room (max 0 (- maxx 1 2 rw 4 1))))
+        (cond
+          (fits-full? (build model items))
+          ;; The model name truncates to keep the current right items
+          ((>= model-room 1) (build (substring model 0 model-room) items))
+          ;; No room for a model: drop the least important right item
+          ((pair? items) (fit (drop-right items 1)))
+          (else (build "" '())))))))
+
+(define (format-keymap-line mode)
+  "Return the dim bottom keymap hint line describing the keys active in
+MODE (a symbol: chat, shell, scheme, selector or menu)."
+  (case mode
+    ((shell) "enter:run backspace:back to chat")
+    ((scheme) "enter:eval backspace:back to chat")
+    ((selector) "up/down:choose tab:complete enter:run esc:dismiss")
+    ((menu) "up/down:move enter:apply esc:close")
+    (else "!:shell ,:scheme /:cmds ^p/^n:select ^e:collapse pgup/pgdn:scroll")))
 
 ;;;
 ;;; Shell & REPL Execution Helpers
@@ -440,33 +500,35 @@ and core badb modules for interactive evaluation."
 ;;;
 ;;; Visual Hierarchy & Token Highlight Engine
 ;;;
-;; Canonical status pills with (tag pair-id bold? dim?)
+;; Canonical status pills with (tag theme-role bold? dim?)
 (define %status-tags
-  (list (list "[RUNNING]" 2 #t #f)
-        (list "[OK]" 2 #t #f)
-        (list "[ALLOW]" 2 #t #f)
-        (list "[ACTIVE]" 2 #t #f)
-        (list "[PASSED]" 2 #t #f)
-        (list "[READY]" 2 #t #f)
-        (list "[STOPPED]" 4 #t #f)
-        (list "[WARN]" 4 #t #f)
-        (list "[WARNING]" 4 #t #f)
-        (list "[ASK]" 4 #t #f)
-        (list "[PENDING]" 4 #t #f)
-        (list "[CAUTIOUS]" 4 #t #f)
-        (list "[STRICT]" 4 #t #f)
-        (list "[ERROR]" 5 #t #f)
-        (list "[DENY]" 5 #t #f)
-        (list "[FAILED]" 5 #t #f)
-        (list "[PARANOID]" 5 #t #f)
-        (list "[PERMISSIVE]" 1 #t #f)
-        (list "[DISABLED]" 1 #t #f)))
+  (list (list "[RUNNING]" 'success #t #f)
+        (list "[OK]" 'success #t #f)
+        (list "[ALLOW]" 'success #t #f)
+        (list "[ACTIVE]" 'success #t #f)
+        (list "[PASSED]" 'success #t #f)
+        (list "[READY]" 'success #t #f)
+        (list "[STOPPED]" 'warning #t #f)
+        (list "[WARN]" 'warning #t #f)
+        (list "[WARNING]" 'warning #t #f)
+        (list "[ASK]" 'warning #t #f)
+        (list "[PENDING]" 'warning #t #f)
+        (list "[CAUTIOUS]" 'warning #t #f)
+        (list "[STRICT]" 'warning #t #f)
+        (list "[ERROR]" 'error #t #f)
+        (list "[DENY]" 'error #t #f)
+        (list "[FAILED]" 'error #t #f)
+        (list "[PARANOID]" 'error #t #f)
+        (list "[PERMISSIVE]" 'notice #t #f)
+        (list "[DISABLED]" 'dim #t #f)))
 
 ;; Regex for key label at the start of a clause: e.g. "Model: ", "System Guardrail: "
 (define %key-label-rx (make-regexp "^[ \t]*([A-Za-z0-9_-]+( [A-Za-z0-9_-]+){0,2}):[ \t]+"))
 
 (define (segment-line line)
-  "Segment LINE into styled chunks of the form ((chunk-str pair-id bold? dim?) ...)."
+  "Segment LINE into styled chunks of the form ((chunk-str theme-role bold? dim?) ...),
+mapping status pills, list bullets and key labels to their semantic theme
+roles and plain text to the neutral 'default role."
   (let loop ((pos 0) (acc '()))
     (if (>= pos (string-length line))
         (reverse acc)
@@ -478,32 +540,32 @@ and core badb modules for interactive evaluation."
           (cond
            (tag-match
             (let* ((tag-str (car tag-match))
-                   (pair-id (cadr tag-match))
+                   (theme-role (cadr tag-match))
                    (bold? (caddr tag-match))
                    (dim? (cadddr tag-match)))
               (loop (+ pos (string-length tag-str))
-                    (cons (list tag-str pair-id bold? dim?) acc))))
+                    (cons (list tag-str theme-role bold? dim?) acc))))
            ((or (string-prefix? "• " rem) (string-prefix? "❯ " rem))
             (let ((bullet-str (substring rem 0 2)))
               (loop (+ pos 2)
-                    (cons (list bullet-str 1 #t #f) acc))))
+                    (cons (list bullet-str 'accent #t #f) acc))))
            ((regexp-exec %key-label-rx rem)
             => (lambda (m)
                  (let* ((full-match (match:substring m 0))
                         (match-len (string-length full-match)))
                    (loop (+ pos match-len)
-                         (cons (list full-match 1 #f #f) acc)))))
+                         (cons (list full-match 'accent #f #f) acc)))))
            (else
             (let find-next ((end (+ pos 1)))
               (if (>= end (string-length line))
-                  (reverse (cons (list (substring line pos) 3 #f #f) acc))
+                  (reverse (cons (list (substring line pos) 'default #f #f) acc))
                   (let ((sub-rem (substring line end)))
                     (if (or (any (lambda (t) (string-prefix? (car t) sub-rem)) %status-tags)
                             (string-prefix? "• " sub-rem)
                             (string-prefix? "❯ " sub-rem)
                             (regexp-exec %key-label-rx sub-rem))
                         (loop end
-                              (cons (list (substring line pos end) 3 #f #f) acc))
+                              (cons (list (substring line pos end) 'default #f #f) acc))
                         (find-next (+ end 1))))))))))))
 
 ;;;
@@ -722,7 +784,7 @@ and #f on any filesystem failure."
     (lambda _ #f)))
 
 ;;;
-;;; Message Collapse State & Card Formatting
+;;; Message Collapse State & Block Formatting
 ;;;
 ;; Message alists are immutable data: collapsing a message produces a new
 ;; alist carrying a 'collapsed? flag, it never mutates the original.
@@ -790,57 +852,90 @@ is always preserved."
         (substring clean 0 %collapsed-preview-chars)
         clean)))
 
-(define (collapsed-summary-suffix msg hidden-lines)
-  "Build the dim suffix text shown on the summary row of a collapsed MSG,
-mentioning the toggle key and the HIDDEN-LINES row count it hides. Thought
-blocks additionally preview the beginning of the reasoning text."
-  (let ((thoughts (assoc-ref msg 'thoughts)))
-    (if (non-empty-string? thoughts)
-        (format #f "~a… [+~a lines, ctrl+e to expand]"
-                (thoughts-preview thoughts)
-                hidden-lines)
-        (format #f "(collapsed - ctrl+e to expand) [~a lines hidden]" hidden-lines))))
+(define (format-collapsed-summary-line label hidden-lines)
+  "Compose the dim summary text for a collapsed block: the role LABEL, the
+HIDDEN-LINES row count it hides, and the ctrl+e expand hint."
+  (format #f "~a (~a line~a) — ctrl+e to expand"
+          label hidden-lines (if (= hidden-lines 1) "" "s")))
 
-;; Determine system badge text and color pair from content
-(define (system-badge-and-pair content)
-  "Pick the badge text and color pair for a system message from CONTENT."
+;; Role label text shown on the header line of each flat message block.
+(define (message-role-label role)
+  "Return the lowercase role label text for a message ROLE string."
+  (cond
+   ((string=? role "user") "you")
+   ((string=? role "assistant") "assistant")
+   ((string=? role "thought") "thinking")
+   ((string=? role "shell-cmd") "shell")
+   ((string=? role "shell-out") "shell output")
+   ((string=? role "scheme-in") "scheme")
+   ((string=? role "scheme-out") "scheme output")
+   ((or (string=? role "tool-call") (string=? role "tool")) "tool")
+   ((string=? role "tool-result") "tool result")
+   ((string=? role "error") "error")
+   ((string=? role "notice") "notice")
+   (else "system")))
+
+(define (message-role->theme-role role)
+  "Map a message ROLE string to its semantic theme color role symbol."
+  (cond
+   ((string=? role "user") 'user)
+   ((string=? role "assistant") 'assistant)
+   ((string=? role "thought") 'thought)
+   ((string=? role "system") 'system)
+   ((string=? role "notice") 'notice)
+   ((string=? role "error") 'error)
+   ((or (string=? role "shell-cmd") (string=? role "shell-out")) 'shell)
+   ((or (string=? role "scheme-in") (string=? role "scheme-out")) 'scheme)
+   ((or (string=? role "tool-call") (string=? role "tool")) 'tool-call)
+   ((string=? role "tool-result") 'tool-result)
+   (else 'system)))
+
+;; Content-derived label for system messages, replacing the old emoji badges.
+(define (system-message-label content)
+  "Pick the lowercase label text for a system message from CONTENT."
   (cond
    ((or (string-contains content "MCP Server")
         (string-prefix? "Active Model:" content))
-    (cons "ℹ MCP SERVERS" 1))
-   ((string-contains content "Configuration") (cons "⚙ CONFIGURATION" 1))
-   ((string-contains content "Guardrail") (cons "🛡 GUARDRAILS" 4))
-   ((string-contains content "Context Statistics") (cons "📊 CONTEXT" 1))
-   ((string-contains content "Features & Architecture") (cons "⚡ FEATURES" 1))
-   ((string-contains content "Help & Commands") (cons "📖 HELP" 1))
-   ((string-contains content "Test Suite") (cons "🧪 TESTS" 1))
-   ((string-contains content "ReAct") (cons "🔄 REACT" 4))
-   ((or (string-contains content "Journal") (string-contains content "Checkpoint"))
-    (cons "📓 JOURNAL" 1))
-   (else (cons "ℹ SYSTEM" 1))))
+    "mcp servers")
+   ((string-contains content "Configuration") "configuration")
+   ((string-contains content "Guardrail") "guardrails")
+   ((string-contains content "Context Statistics") "context")
+   ((string-contains content "Features & Architecture") "features")
+   ((string-contains content "Help & Commands") "help")
+   ((string-contains content "Test Suite") "tests")
+   ((string-contains content "ReAct") "react")
+   ((or (string-contains content "Journal")
+        (string-contains content "Checkpoint")
+        (string-contains content "checkpoint"))
+    "journal")
+   (else "system")))
 
-;; Helper to wrap lines into a framed card descriptor
-(define (make-card-entry badge badge-pair-id role lines card-w inner-w)
-  "Turn wrapped LINES into card rows: a card-top header carrying BADGE, one
-card-body row per line, a card-bot border, and a trailing spacer row."
+;; Helper to wrap lines into a flat block descriptor
+(define (make-block-entry label theme-role lines)
+  "Turn wrapped LINES into flat block rows: one block-label header row
+carrying LABEL and THEME-ROLE, then one block-body row per line. Callers
+append the single blank spacer row between messages."
   (if (null? lines)
       '()
-      (append
-       (list (list "card-top" badge badge-pair-id card-w))
-       (map
-        (lambda (l)
-          (list "card-body" role l inner-w))
-        lines)
-       (list (list "card-bot" card-w))
-       (list (list "spacer" "")))))
+      (cons (list "block-label" label theme-role)
+            (map (lambda (l) (list "block-body" theme-role l)) lines))))
 
-;; Format a single message entry into card structure rows
+(define (message-block-label role content)
+  "Return the label text for the block header of a message with ROLE and
+CONTENT: system messages derive their label from the content, every other
+role from the role itself."
+  (if (string=? role "system")
+      (system-message-label content)
+      (message-role-label role)))
+
+;; Format a single message entry into flat block structure rows
 (define (format-message-entry msg content-width)
-  "Format MSG into card structure rows for a viewport CONTENT-WIDTH wide.
-Collapsed messages (truthy 'collapsed? flag and collapsible content) render
-a single card-summary row instead of the full card, except assistant
-messages whose thoughts collapse to a summary row while their content card
-stays visible."
+  "Format MSG into flat block rows for a viewport CONTENT-WIDTH wide: a
+role label line, body lines, and one trailing blank spacer row. Collapsed
+messages (truthy 'collapsed? flag and collapsible content) render a single
+block-summary line instead of the full block, except assistant messages
+whose thoughts collapse to a summary line while their content block stays
+visible."
   (let*
       ((role-val (assoc-ref msg 'role))
        (role
@@ -858,109 +953,80 @@ stays visible."
          (and raw-thoughts
               (if (string? raw-thoughts)
                 raw-thoughts
-                (format #f "~a" raw-thoughts))))
-       (card-w content-width)
-       (inner-w (max 10 (- card-w 4))))
+                (format #f "~a" raw-thoughts)))))
     (cond
       ((and (message-collapsed? msg) (message-collapsible? msg))
-        (format-collapsed-message-rows msg role content thoughts card-w inner-w))
+        (format-collapsed-message-rows msg role content thoughts content-width))
       ((string=? role "assistant")
         (let*
-            ((th-lines
+            ((th-block
                (if (non-empty-string? thoughts)
-                 (make-card-entry "💭 THOUGHT PROCESS"
-                                  1
-                                  "thought"
-                                  (wrap-text (string-trim-both thoughts) inner-w)
-                                  card-w
-                                  inner-w)
+                 (make-block-entry "thinking"
+                                   'thought
+                                   (wrap-text (string-trim-both thoughts) content-width))
                  '()))
-             (ct-lines
+             (ct-block
                (if (non-empty-string? content)
-                 (make-card-entry "🤖 ASSISTANT"
-                                  3
-                                  "assistant"
-                                  (wrap-text content inner-w)
-                                  card-w
-                                  inner-w)
+                 (make-block-entry "assistant"
+                                   'assistant
+                                   (wrap-text content content-width))
                  '())))
-          (if (and (null? th-lines) (null? ct-lines))
-            (make-card-entry "🤖 ASSISTANT"
-                             3
-                             "assistant"
-                             (wrap-text
-                               (if (string-null? content)
-                                 "(empty response)"
-                                 content)
-                               inner-w)
-                             card-w
-                             inner-w)
-            (append th-lines ct-lines))))
+          (append
+            (if (and (null? th-block) (null? ct-block))
+              (make-block-entry "assistant"
+                                'assistant
+                                (wrap-text
+                                  (if (string-null? content)
+                                    "(empty response)"
+                                    content)
+                                  content-width))
+              (append th-block ct-block))
+            (list (list "spacer" "")))))
       (else
-        (let-values
-          (((badge pair-id role-tag text)
-            (cond
-              ((string=? role "user") (values "👤 USER" 2 "user" (string-trim-both content)))
-              ((string=? role "system")
-                (let ((bp (system-badge-and-pair content)))
-                  (values (car bp) (cdr bp) "system" content)))
-              ((string=? role "error") (values "✗ ERROR" 5 "error" content))
-              ((string=? role "shell-cmd") (values "🐚 SHELL COMMAND" 6 "shell-cmd" content))
-              ((string=? role "shell-out") (values "🐚 SHELL OUTPUT" 6 "shell-out" content))
-              ((string=? role "scheme-in") (values "λ SCHEME INPUT" 1 "scheme-in" content))
-              ((string=? role "scheme-out")
-                (values "λ SCHEME EVALUATION" 1 "scheme-out" content))
-              ((or (string=? role "tool-call") (string=? role "tool"))
-                (values "⚙ TOOL CALL" 4 "tool" content))
-              ((string=? role "tool-result") (values "✓ TOOL RESULT" 2 "tool" content))
-              (else (values "ℹ NOTICE" 1 "system" content)))))
-          (make-card-entry badge pair-id role-tag (wrap-text text inner-w) card-w inner-w))))))
+        (let*
+            ((theme-role (message-role->theme-role role))
+             (label (message-block-label role content))
+             (text (if (string=? role "user") (string-trim-both content) content)))
+          (append
+            (make-block-entry label theme-role (wrap-text text content-width))
+            (list (list "spacer" ""))))))))
 
-;; Rows for a collapsed message: one card-summary row (plus the visible
-;; assistant content card when only the reasoning collapses).
-(define (format-collapsed-message-rows msg role content thoughts card-w inner-w)
-  "Return the card rows for collapsed MSG with pre-normalized ROLE, CONTENT
-and THOUGHTS fields. CARD-W and INNER-W follow make-card-entry geometry."
+;; Rows for a collapsed message: one block-summary line (plus the visible
+;; assistant content block when only the reasoning collapses).
+(define (format-collapsed-message-rows msg role content thoughts content-width)
+  "Return the block rows for collapsed MSG with pre-normalized ROLE, CONTENT
+and THOUGHTS fields, followed by the trailing spacer row. The summary
+reports the number of hidden block rows and the ctrl+e expand hint."
   (cond
     ((and (string=? role "assistant") (non-empty-string? thoughts))
       (let*
-          ((th-rows
-             (make-card-entry "💭 THOUGHT PROCESS"
-                              1
-                              "thought"
-                              (wrap-text (string-trim-both thoughts) inner-w)
-                              card-w
-                              inner-w))
-           (hidden (max 0 (- (length th-rows) 2)))
+          ((th-block
+             (make-block-entry "thinking"
+                               'thought
+                               (wrap-text (string-trim-both thoughts) content-width)))
+           (hidden (max 0 (- (length th-block) 1)))
            (summary-row
-             (list "card-summary" "💭 THOUGHT PROCESS" 1
-                   (collapsed-summary-suffix msg hidden) card-w))
-           (ct-rows
+             (list "block-summary" 'thought
+                   (format-collapsed-summary-line "thinking" hidden)))
+           (ct-block
              (if (non-empty-string? content)
-               (make-card-entry "🤖 ASSISTANT"
-                                3
-                                "assistant"
-                                (wrap-text content inner-w)
-                                card-w
-                                inner-w)
+               (make-block-entry "assistant"
+                                 'assistant
+                                 (wrap-text content content-width))
                '())))
-        (append (list summary-row)
-                ct-rows
-                (if (null? ct-rows)
-                  (list (list "spacer" ""))
-                  '()))))
+        (append (list summary-row) ct-block (list (list "spacer" "")))))
     (else
       (let*
-          ((expanded (format-message-entry
-                       `((role . ,role) (content . ,content))
-                       card-w))
-           (top (find (lambda (e) (string=? (car e) "card-top")) expanded))
-           (hidden (max 0 (- (length expanded) 2))))
-        (if (not top)
+          ((theme-role (message-role->theme-role role))
+           (label (message-block-label role content))
+           (block (make-block-entry label theme-role (wrap-text content content-width)))
+           (hidden (length block)))
+        (if (null? block)
           (list (list "spacer" ""))
-          (list (list "card-summary" (cadr top) (caddr top)
-                      (collapsed-summary-suffix msg hidden) card-w)
-                (list "spacer" "")))))))
+          (append
+            (list (list "block-summary" theme-role
+                        (format-collapsed-summary-line label hidden)))
+            (list (list "spacer" ""))))))))
 
 ;;;
 ;;; Interactive Menu Model
@@ -1115,14 +1181,6 @@ other plain data); #f when the item carries none."
        (A_BOLD (nref 'A_BOLD))
        (A_REVERSE (nref 'A_REVERSE))
        (A_DIM (nref 'A_DIM))
-       (COLOR_BLACK (nref 'COLOR_BLACK))
-       (COLOR_GREEN (nref 'COLOR_GREEN))
-       (COLOR_CYAN (nref 'COLOR_CYAN))
-       (COLOR_WHITE (nref 'COLOR_WHITE))
-       (COLOR_YELLOW (nref 'COLOR_YELLOW))
-       (COLOR_RED (nref 'COLOR_RED))
-       (COLOR_BLUE (nref 'COLOR_BLUE))
-       (COLOR_MAGENTA (nref 'COLOR_MAGENTA))
        (KEY_ENTER (nref 'KEY_ENTER))
        (KEY_BACKSPACE (nref 'KEY_BACKSPACE))
        (KEY_UP (nref 'KEY_UP))
@@ -1136,6 +1194,12 @@ other plain data); #f when the item carries none."
        (KEY_DC (nref 'KEY_DC)))
     ;; Initialize Configuration & Kernel State
     (define cfg (or config (load-config)))
+    ;; Resolve the active UI theme from the configuration, falling back to
+    ;; the default theme; every draw site resolves colors through its roles.
+    (define ui-theme
+            (let ((configured (badb-config-ui-theme cfg)))
+              (or (and (string? configured) (lookup-theme configured))
+                  (default-theme))))
     (define cur-endpoint
             (or endpoint (getenv "BADB_MODEL_ENDPOINT") (badb-config-model-endpoint cfg)))
     (define cur-model
@@ -1396,12 +1460,11 @@ other plain data); #f when the item carries none."
                              ,(string-append
                                 "Welcome to badb microharness TUI!\n"
                                 "• Type a message to chat with the model (autonomous ReAct loop active)\n"
-                                "• Type ! to switch to shell mode ($)\n"
-                                "• Type ( or , to switch to Scheme REPL mode (λ)\n"
-                                "• Type Backspace at empty prompt to return to chat mode (❯)\n"
-                                "• Press Ctrl+Up / Ctrl+Down to select a message, Ctrl+E to collapse or expand it\n"
-                                "• Type / to open command selector palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context)\n"
-                                "• Type /config, /model or /endpoint alone to browse interactive menus (Up/Down move, Enter apply, Esc close).")))))
+                                "• ! switches to shell mode, ( or , to Scheme REPL; backspace on an empty prompt returns to chat\n"
+                                "• / opens the command palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context)\n"
+                                "• ctrl+p / ctrl+n select a message block, ctrl+e collapse or expand it\n"
+                                "• /config, /model or /endpoint alone open interactive menus (up/down move, enter apply, esc close)\n"
+                                "• The bottom line lists the keys active in the current mode.")))))
     (define llm-history (list (make-system-turn)))
     (define input-buffer "")
     (define cursor-pos 0)
@@ -1467,12 +1530,66 @@ and append it to the persistent history journal file."
                                      #:model
                                      cur-model))
             (module-define! repl-mod 'client client))
-    (define (set-color-attr! pair-id on?)
-            (when (and colors-enabled? (> pair-id 0))
-              (let ((cp (color-pair pair-id)))
-                (if on?
-                  (attr-on! stdscr cp)
-                  (attr-off! stdscr cp)))))
+    ;; Theme-driven color engine: each unique (fg bg) spec of the active UI
+    ;; theme is memoized to one ncurses color pair on first use, so all draw
+    ;; sites resolve colors through theme roles instead of hardcoded pairs.
+    ;; Theme attribute specs (bold / dim / reverse) apply even on terminals
+    ;; without color support, keeping the monochrome fallback meaningful.
+    (define role-pair-cache '())
+    (define next-pair-id 1)
+    (define %max-color-pairs 64)
+    (define (theme-attr-constant attr)
+            (case attr
+              ((bold) A_BOLD)
+              ((dim) A_DIM)
+              ((reverse) A_REVERSE)
+              (else #f)))
+    (define (role-attrs role)
+            (let ((a (caddr (theme-ref ui-theme role))))
+              (cond
+                ((memq a '(bold dim reverse)) (list a))
+                ((list? a) a)
+                (else '()))))
+    (define (ensure-color-pair! fg bg)
+            (let ((key (cons fg bg)))
+              (or (assoc-ref role-pair-cache key)
+                  (and (< next-pair-id %max-color-pairs)
+                       (let ((id next-pair-id))
+                         (catch #t
+                           (lambda ()
+                             (init-pair!
+                               id
+                               (nref (color-symbol->ncurses-constant fg))
+                               (nref (color-symbol->ncurses-constant bg))))
+                           (lambda _ #f))
+                         (set! role-pair-cache (acons key id role-pair-cache))
+                         (set! next-pair-id (+ next-pair-id 1))
+                         id))
+                  0)))
+    (define (draw-role! role on?)
+            (let ((spec (theme-ref ui-theme role))
+                  (attrs (role-attrs role)))
+              (define (pair-off?)
+                      (and colors-enabled?
+                           (not (and (eq? (car spec) 'default)
+                                     (eq? (cadr spec) 'default)))))
+              (if on?
+                (begin
+                  (when (pair-off?)
+                    (attr-on! stdscr
+                              (color-pair (ensure-color-pair! (car spec) (cadr spec)))))
+                  (for-each (lambda (a)
+                              (let ((c (theme-attr-constant a)))
+                                (when c (attr-on! stdscr c))))
+                            attrs))
+                (begin
+                  (for-each (lambda (a)
+                              (let ((c (theme-attr-constant a)))
+                                (when c (attr-off! stdscr c))))
+                            attrs)
+                  (when (pair-off?)
+                    (attr-off! stdscr
+                               (color-pair (ensure-color-pair! (car spec) (cadr spec)))))))))
     (define (safe-addstr win y x str max-len)
             (when (and (>= y 0) (>= x 0) (> max-len 0))
               (let
@@ -1486,191 +1603,205 @@ and append it to the persistent history journal file."
                     (addstr win safe-str))
                   (lambda _
                     #f)))))
-    ;; Render interior text of a card body row with semantic token highlights
-    (define
-      (draw-styled-interior y start-x text inner-w role)
-      (let*
-          ((text-len (string-length text))
-           (pad-len (max 0 (- inner-w text-len)))
-           (padded
-             (if (> pad-len 0)
-               (string-append text (make-string pad-len #\space))
-               (if (> text-len inner-w)
-                 (substring text 0 inner-w)
-                 text))))
-        (define (draw-simple pair-id bold? dim?)
-                (set-color-attr! pair-id #t)
-                (when bold? (attr-on! stdscr A_BOLD))
-                (when dim? (attr-on! stdscr A_DIM))
-                (safe-addstr stdscr y start-x padded inner-w)
-                (when dim? (attr-off! stdscr A_DIM))
-                (when bold? (attr-off! stdscr A_BOLD))
-                (set-color-attr! pair-id #f))
-        (cond
-          ((string=? role "error") (draw-simple 5 #t #f))
-          ((string=? role "user") (draw-simple 2 #t #f))
-          ((string=? role "shell-cmd") (draw-simple 6 #t #f))
-          ((string=? role "scheme-in") (draw-simple 1 #t #f))
-          ((string=? role "thought") (draw-simple 1 #f #t))
-          (else
-            (let ((segments (segment-line padded)))
-              (let loop
-                ((segs segments) (cur-x start-x))
-                (unless
-                    (or (null? segs) (>= cur-x (+ start-x inner-w)))
-                  (let*
-                      ((seg (car segs)) (str (car seg))
-                       (pair-id (cadr seg))
-                       (bold? (caddr seg))
-                       (dim? (cadddr seg))
-                       (len (min (string-length str) (max 0 (- (+ start-x inner-w) cur-x)))))
-                    (when (> len 0)
-                      (set-color-attr! pair-id #t)
-                      (when bold? (attr-on! stdscr A_BOLD))
-                      (when dim? (attr-on! stdscr A_DIM))
-                      (safe-addstr stdscr y cur-x str len)
-                      (when dim? (attr-off! stdscr A_DIM))
-                      (when bold? (attr-off! stdscr A_BOLD))
-                      (set-color-attr! pair-id #f))
-                    (loop (cdr segs) (+ cur-x len))))))))))
-    ;; Draw a single card row (top, body, bot, summary, or spacer). SELECTED?
-    ;; paints an accent marker glyph into the top border of the selected card.
-    (define (draw-card-line y entry content-width selected?)
+    ;; Render a block body text with semantic token highlights: role-tinted
+    ;; rows (error / user / thought) draw as a single chunk, every other role
+    ;; runs the segment engine so status pills, bullets and key labels pick
+    ;; up their theme accents inside plain text.
+    (define (draw-styled-interior y start-x text inner-w theme-role)
+            (let*
+                ((text-len (string-length text))
+                 (pad-len (max 0 (- inner-w text-len)))
+                 (padded
+                   (if (> pad-len 0)
+                     (string-append text (make-string pad-len #\space))
+                     (if (> text-len inner-w)
+                       (substring text 0 inner-w)
+                       text))))
+              (define (draw-simple)
+                      (draw-role! theme-role #t)
+                      (safe-addstr stdscr y start-x padded inner-w)
+                      (draw-role! theme-role #f))
+              (cond
+                ((memq theme-role '(error user thought)) (draw-simple))
+                (else
+                  (let loop
+                    ((segs (segment-line padded)) (cur-x start-x))
+                    (unless
+                        (or (null? segs) (>= cur-x (+ start-x inner-w)))
+                      (let*
+                          ((seg (car segs)) (str (car segs))
+                           (seg-role (cadr seg))
+                           (bold? (caddr seg))
+                           (dim? (cadddr seg))
+                           (len (min (string-length str)
+                                     (max 0 (- (+ start-x inner-w) cur-x)))))
+                        (when (> len 0)
+                          (draw-role! seg-role #t)
+                          (when bold? (attr-on! stdscr A_BOLD))
+                          (when dim? (attr-on! stdscr A_DIM))
+                          (safe-addstr stdscr y cur-x str len)
+                          (when dim? (attr-off! stdscr A_DIM))
+                          (when bold? (attr-off! stdscr A_BOLD))
+                          (draw-role! seg-role #f))
+                        (loop (cdr segs) (+ cur-x len)))))))))
+    ;; Left accent gutter shared by every row of a message block: a thin
+    ;; role-tinted bar, upgraded to a strong 2-char bar when SELECTED?.
+    (define (draw-gutter! y theme-role selected?)
+            (draw-role! theme-role #t)
+            (when selected? (attr-on! stdscr A_BOLD))
+            (safe-addstr stdscr y 0 (if selected? "██" "▏ ") 2)
+            (when selected? (attr-off! stdscr A_BOLD))
+            (draw-role! theme-role #f))
+    ;; Draw a single flat block row (label, body, summary, or spacer).
+    (define (draw-block-line y entry content-width selected?)
             (let ((kind (car entry)))
               (cond
                 ((string=? kind "spacer") #t)
-                ((string=? kind "card-top")
+                ((string=? kind "block-label")
                   (let*
-                      ((badge (cadr entry)) (badge-pair (caddr entry))
-                       (card-w (cadddr entry))
-                       (right-col (+ 2 (- card-w 1))))
-                    (if selected?
+                      ((label (cadr entry)) (theme-role (caddr entry)))
+                    (draw-gutter! y theme-role selected?)
+                    (draw-role! theme-role #t)
+                    (let*
+                        ((label-str
+                           (if (> (string-length label) content-width)
+                             (substring label 0 content-width)
+                             label))
+                         (pad-len (max 0 (- content-width (string-length label-str))))
+                         (padded (string-append label-str (make-string pad-len #\space))))
+                      (safe-addstr stdscr y 2 padded content-width))
+                    (draw-role! theme-role #f)))
+                ((string=? kind "block-body")
+                  (let*
+                      ((theme-role (cadr entry)) (text (caddr entry)))
+                    (draw-gutter! y theme-role selected?)
+                    (draw-styled-interior y 2 text content-width theme-role)))
+                ;; Collapsed-message summary row: role-tinted chevron
+                ;; followed by a single dim line (label, count, expand hint)
+                ((string=? kind "block-summary")
+                  (let*
+                      ((theme-role (cadr entry)) (text (caddr entry)))
+                    (draw-gutter! y theme-role selected?)
+                    (draw-role! theme-role #t)
+                    (safe-addstr stdscr y 2 "› " 2)
+                    (draw-role! theme-role #f)
+                    (draw-role! 'dim #t)
+                    (let*
+                        ((text-len (string-length text))
+                         (avail (max 0 (- content-width 2)))
+                         (text-str
+                           (if (> text-len avail)
+                             (substring text 0 avail)
+                             text))
+                         (pad-len (max 0 (- avail (string-length text-str))))
+                         (padded (string-append text-str (make-string pad-len #\space))))
+                      (safe-addstr stdscr y 4 padded avail))
+                    (draw-role! 'dim #f))))))
+    ;; Draw a floating rounded pop-up (slash selector palette, menus): an
+    ;; accent-colored border, dim descriptions, and a bold selected row
+    ;; (reversed on terminals without colors). ROWS is a list of
+    ;; (label . description); SEL-POS is the selected index within ROWS or a
+    ;; position outside them for no highlight; ABOVE-COUNT and BELOW-COUNT
+    ;; drive the scroll indicators in the borders.
+    (define (draw-popup! title rows sel-pos box-w start-y start-x
+                         above-count below-count)
+            (let*
+                ((inner-w (- box-w 4))
+                 (vis-count (length rows))
+                 (label-w
+                   (fold
+                     (lambda (r acc) (max acc (string-length (car r))))
+                     0 rows))
+                 (top-tag
+                   (string-append
+                     "╭─ " title
+                     (if (> above-count 0) (format #f " ↑~a " above-count) " ")))
+                 (top-str
+                   (string-append
+                     top-tag
+                     (make-string (max 0 (- box-w (string-length top-tag) 1)) #\─)
+                     "╮"))
+                 (bot-tag
+                   (if (> below-count 0)
+                     (format #f "╰─ ↓ ~a more " below-count)
+                     "╰"))
+                 (bot-str
+                   (string-append
+                     bot-tag
+                     (make-string (max 0 (- box-w (string-length bot-tag) 1)) #\─)
+                     "╯")))
+              (draw-role! 'accent #t)
+              (safe-addstr stdscr start-y start-x top-str box-w)
+              (draw-role! 'accent #f)
+              (let loop
+                ((items rows) (idx 0))
+                (unless (null? items)
+                  (let*
+                      ((label (caar items)) (desc (cdar items))
+                       (is-sel? (= idx sel-pos))
+                       (row-y (+ start-y 1 idx))
+                       (cursor (if is-sel? "❯ " "  "))
+                       (label-pad
+                         (make-string (max 1 (- label-w (string-length label))) #\space))
+                       (content (string-append cursor label label-pad " " desc))
+                       (clipped
+                         (if (> (string-length content) inner-w)
+                           (substring content 0 inner-w)
+                           content))
+                       (pad
+                         (make-string (max 0 (- inner-w (string-length clipped))) #\space))
+                       (row-text (string-append "│ " clipped pad " │")))
+                    (if is-sel?
                       (begin
-                        (set-color-attr! 4 #t)
+                        (draw-role! 'selection #t)
                         (attr-on! stdscr A_BOLD)
-                        (safe-addstr stdscr y 2 "╭❯ " 3)
+                        (unless colors-enabled? (attr-on! stdscr A_REVERSE))
+                        (safe-addstr stdscr row-y start-x row-text box-w)
+                        (unless colors-enabled? (attr-off! stdscr A_REVERSE))
                         (attr-off! stdscr A_BOLD)
-                        (set-color-attr! 4 #f))
+                        (draw-role! 'selection #f))
                       (begin
-                        (set-color-attr! 7 #t)
-                        (safe-addstr stdscr y 2 "╭─ " 3)
-                        (set-color-attr! 7 #f)))
-                    (set-color-attr! badge-pair #t)
-                    (attr-on! stdscr A_BOLD)
-                    (when (string=? badge "💭 THOUGHT PROCESS") (attr-on! stdscr A_DIM))
-                    (let*
-                        ((avail-badge (max 1 (- card-w 8)))
-                         (badge-str
-                           (if (> (string-length badge) avail-badge)
-                             (substring badge 0 avail-badge)
-                             badge))
-                         (badge-padded (string-append badge-str " ")))
-                      (safe-addstr stdscr y 5 badge-padded (string-length badge-padded)))
-                    (when (string=? badge "💭 THOUGHT PROCESS") (attr-off! stdscr A_DIM))
-                    (attr-off! stdscr A_BOLD)
-                    (set-color-attr! badge-pair #f)
-                    (let*
-                        ((cur-x (+ 5 (string-length badge) 1)) (dash-count (max 0 (- right-col cur-x))))
-                      (set-color-attr! 7 #t)
-                      (when (> dash-count 0)
+                        (draw-role! 'accent #t)
+                        (safe-addstr stdscr row-y start-x "│ " 2)
+                        (draw-role! 'accent #f)
+                        (draw-role! 'default #t)
                         (safe-addstr stdscr
-                                     y
-                                     cur-x
-                                     (make-string dash-count #\─)
-                                     dash-count))
-                      (safe-addstr stdscr y right-col "╮" 1)
-                      (set-color-attr! 7 #f))))
-                ;; Collapsed-message summary row: card-top border with the
-                ;; badge followed by a dim suffix (preview / expand hint)
-                ((string=? kind "card-summary")
-                  (let*
-                      ((badge (cadr entry)) (badge-pair (caddr entry))
-                       (suffix (cadddr entry))
-                       (card-w (car (cddddr entry)))
-                       (right-col (+ 2 (- card-w 1))))
-                    (if selected?
-                      (begin
-                        (set-color-attr! 4 #t)
-                        (attr-on! stdscr A_BOLD)
-                        (safe-addstr stdscr y 2 "╭❯ " 3)
-                        (attr-off! stdscr A_BOLD)
-                        (set-color-attr! 4 #f))
-                      (begin
-                        (set-color-attr! 7 #t)
-                        (safe-addstr stdscr y 2 "╭─ " 3)
-                        (set-color-attr! 7 #f)))
-                    (set-color-attr! badge-pair #t)
-                    (attr-on! stdscr A_BOLD)
-                    (when (string=? badge "💭 THOUGHT PROCESS") (attr-on! stdscr A_DIM))
-                    (let*
-                        ((avail-badge (max 1 (- card-w 8)))
-                         (badge-str
-                           (if (> (string-length badge) avail-badge)
-                             (substring badge 0 avail-badge)
-                             badge))
-                         (badge-padded (string-append badge-str " ")))
-                      (safe-addstr stdscr y 5 badge-padded (string-length badge-padded)))
-                    (when (string=? badge "💭 THOUGHT PROCESS") (attr-off! stdscr A_DIM))
-                    (attr-off! stdscr A_BOLD)
-                    (set-color-attr! badge-pair #f)
-                    (let*
-                        ((cur-x (+ 5 (string-length badge) 1))
-                         (suffix-len (min (string-length suffix)
-                                          (max 0 (- right-col cur-x))))
-                         (dash-count (max 0 (- right-col (+ cur-x suffix-len)))))
-                      (when (> suffix-len 0)
-                        (attr-on! stdscr A_DIM)
-                        (safe-addstr stdscr y cur-x suffix suffix-len)
-                        (attr-off! stdscr A_DIM))
-                      (set-color-attr! 7 #t)
-                      (when (> dash-count 0)
-                        (safe-addstr stdscr
-                                     y
-                                     (+ cur-x suffix-len)
-                                     (make-string dash-count #\─)
-                                     dash-count))
-                      (safe-addstr stdscr y right-col "╮" 1)
-                      (set-color-attr! 7 #f))))
-                ((string=? kind "card-body")
-                  (let*
-                      ((role (cadr entry)) (line-text (caddr entry))
-                       (inner-w (cadddr entry))
-                       (card-w (+ inner-w 4))
-                       (right-col (+ 2 (- card-w 1))))
-                    (set-color-attr! 7 #t)
-                    (safe-addstr stdscr y 2 "│ " 2)
-                    (set-color-attr! 7 #f)
-                    (draw-styled-interior y 4 line-text inner-w role)
-                    (set-color-attr! 7 #t)
-                    (safe-addstr stdscr y (- right-col 1) " │" 2)
-                    (set-color-attr! 7 #f)))
-                ((string=? kind "card-bot")
-                  (let*
-                      ((card-w (cadr entry))
-                       (right-col (+ 2 (- card-w 1)))
-                       (dash-count (max 0 (- card-w 2))))
-                    (set-color-attr! 7 #t)
-                    (safe-addstr stdscr y 2 "╰" 1)
-                    (when (> dash-count 0)
-                      (safe-addstr stdscr
-                                   y
-                                   3
-                                   (make-string dash-count #\─)
-                                   dash-count))
-                    (safe-addstr stdscr y right-col "╯" 1)
-                    (set-color-attr! 7 #f))))))
+                                     row-y
+                                     (+ start-x 2)
+                                     (string-append cursor label label-pad)
+                                     (+ 2 (string-length cursor)
+                                        (string-length label)
+                                        (string-length label-pad)))
+                        (draw-role! 'default #f)
+                        (draw-role! 'dim #t)
+                        (let*
+                            ((desc-x (+ start-x 2 (string-length cursor)
+                                        label-w 1))
+                             (desc-len (min (string-length desc)
+                                            (max 0 (- (+ start-x box-w -2) desc-x)))))
+                          (when (> desc-len 0)
+                            (safe-addstr stdscr row-y desc-x desc desc-len))
+                          (draw-role! 'dim #f))
+                        (draw-role! 'accent #t)
+                        (safe-addstr stdscr row-y (+ start-x box-w -2) " │" 2)
+                        (draw-role! 'accent #f)))
+                    (loop (cdr items) (+ idx 1)))))
+              (draw-role! 'accent #t)
+              (safe-addstr stdscr (+ start-y 1 vis-count) start-x bot-str box-w)
+              (draw-role! 'accent #f)))
     ;; Render entire screen
     (define (render!)
             (catch #t
               (lambda ()
                 (let*
                     ((maxy (getmaxy stdscr)) (maxx (getmaxx stdscr))
-                     (view-top 1)
+                     (view-top 2)
                      (view-bottom (- maxy 3))
                      (view-height (max 1 (- view-bottom view-top)))
-                     (content-width (max 10 (- maxx 4))))
+                     (content-width (max 10 (- maxx 3))))
                   (erase stdscr)
-                  ;; 1. Header Bar with Rounded Frame & Status Pills
+                  ;; 1. Slim header line (wordmark, model, status, counts)
+                  ;;    over a thin horizontal rule
                   (let*
                       ((active-count
                          (length
@@ -1679,29 +1810,30 @@ and append it to the persistent history journal file."
                                (assoc-ref s 'running?))
                              (mcp-manager-list-servers mcp-mgr))))
                        (total-count (length (badb-config-mcp-servers cfg)))
-                       (mcp-info (format #f "~a/~a" active-count total-count)))
-                    (set-color-attr! 1 #t)
-                    (safe-addstr stdscr
-                                 0
-                                 0
-                                 (format-header-line maxx
-                                                     status-text
-                                                     cur-model
-                                                     (length (registry-list reg))
-                                                     (journal-count jrn)
-                                                     mcp-info)
-                                 maxx)
-                    (set-color-attr! 1 #f))
-                  ;; 2. Side borders for viewport rows
-                  (set-color-attr! 7 #t)
-                  (let loop-borders
-                    ((y view-top))
-                    (when (< y view-bottom)
-                      (safe-addstr stdscr y 0 "│" 1)
-                      (safe-addstr stdscr y (- maxx 1) "│" 1)
-                      (loop-borders (+ y 1))))
-                  (set-color-attr! 7 #f)
-                  ;; 3. Formatted Message History Cards
+                       (mcp-info
+                         (and (> total-count 0)
+                              (format #f "~a/~a" active-count total-count))))
+                    (for-each
+                      (lambda (seg)
+                        (let ((x (car seg))
+                              (text (cadr seg))
+                              (role (caddr seg))
+                              (bold? (cadddr seg)))
+                          (draw-role! role #t)
+                          (when bold? (attr-on! stdscr A_BOLD))
+                          (safe-addstr stdscr 0 x text (max 0 (- maxx x)))
+                          (when bold? (attr-off! stdscr A_BOLD))
+                          (draw-role! role #f)))
+                      (format-header-segments maxx
+                                               status-text
+                                               cur-model
+                                               (length (registry-list reg))
+                                               (journal-count jrn)
+                                               mcp-info))
+                    (draw-role! 'frame #t)
+                    (safe-addstr stdscr 1 0 (format-rule-line maxx) maxx)
+                    (draw-role! 'frame #f))
+                  ;; 2. Flat message history blocks
                   ;; Rows are tagged with their owning message index so the
                   ;; selection marker and auto-scroll can address messages,
                   ;; not screen lines.
@@ -1752,47 +1884,40 @@ and append it to the persistent history journal file."
                         ((lines visible-lines) (y view-top))
                         (unless (or (null? lines) (>= y view-bottom))
                           (let ((tagged (car lines)))
-                            (draw-card-line y
-                                            (cdr tagged)
-                                            content-width
-                                            (and sel-idx (= (car tagged) sel-idx))))
+                            (draw-block-line y
+                                             (cdr tagged)
+                                             content-width
+                                             (and sel-idx (= (car tagged) sel-idx))))
                           (loop (cdr lines) (+ y 1))))))
-                  ;; 4. Prompt divider line with dynamic mode hint
-                  (set-color-attr! 1 #t)
-                  (safe-addstr stdscr (- maxy 3) 0 (format-prompt-divider maxx prompt-mode) maxx)
-                  (set-color-attr! 1 #f)
-                  ;; 5. Prompt Input Line
-                  (set-color-attr! 7 #t)
-                  (safe-addstr stdscr (- maxy 2) 0 "│" 1)
-                  (safe-addstr stdscr (- maxy 2) (- maxx 1) "│" 1)
-                  (set-color-attr! 7 #f)
+                  ;; 3. Prompt Input Line: themed indicator glyph only,
+                  ;;    no borders or divider above it
                   (call-with-values
                     (lambda ()
                       (get-prompt-indicator input-buffer status-text prompt-mode))
-                    (lambda (glyph pair-id bold?)
-                      (let ((avail-width (max 1 (- maxx 6))))
-                        (set-color-attr! pair-id #t)
+                    (lambda (glyph theme-role bold?)
+                      (let ((avail-width (max 1 (- maxx 3))))
+                        (draw-role! theme-role #t)
                         (when bold? (attr-on! stdscr A_BOLD))
-                        (safe-addstr stdscr (- maxy 2) 2 glyph 1)
+                        (safe-addstr stdscr (- maxy 2) 0 glyph 1)
                         (when bold? (attr-off! stdscr A_BOLD))
-                        (set-color-attr! pair-id #f)
+                        (draw-role! theme-role #f)
                         (call-with-values
                           (lambda ()
                             (input-visible-window input-buffer cursor-pos avail-width))
                           (lambda (visible-input cursor-x)
-                            (safe-addstr stdscr (- maxy 2) 4 visible-input avail-width)
-                            (move stdscr (- maxy 2) (+ 4 cursor-x)))))))
-                  ;; 6. Bottom container border
-                  (set-color-attr! 1 #t)
-                  (safe-addstr stdscr
-                               (- maxy 1)
-                               0
-                               (string-append "╰"
-                                              (make-string (max 0 (- maxx 2)) #\─)
-                                              "╯")
-                               maxx)
-                  (set-color-attr! 1 #f)
-                  ;; 7. Floating Slash Command Selector Popup Overlay
+                            (safe-addstr stdscr (- maxy 2) 2 visible-input avail-width)
+                            (move stdscr (- maxy 2) (+ 2 cursor-x)))))))
+                  ;; 4. Bottom keymap hint line in dim, per active mode
+                  (let ((hint
+                          (format-keymap-line
+                            (cond
+                              (active-menu 'menu)
+                              ((selector-active? input-buffer) 'selector)
+                              (else prompt-mode)))))
+                    (draw-role! 'dim #t)
+                    (safe-addstr stdscr (- maxy 1) 0 hint maxx)
+                    (draw-role! 'dim #f))
+                  ;; 5. Floating Slash Command Selector Popup Overlay
                   (when (selector-active? input-buffer)
                     (let*
                         ((matches (matching-slash-commands input-buffer))
@@ -1800,60 +1925,25 @@ and append it to the persistent history journal file."
                          (vis-count (min (length matches) 7)))
                       (when (> vis-count 0)
                         (let*
-                            ((box-h (+ vis-count 2)) (start-y (- maxy 3 box-h)) (start-x 2))
-                          (let*
-                              ((top-tag "╭─ Commands ")
-                               (top-fill
-                                 (make-string
-                                   (max 0 (- box-w (string-length top-tag) 1))
-                                   #\─))
-                               (top-str (string-append top-tag top-fill "╮")))
-                            (set-color-attr! 4 #t)
-                            (safe-addstr stdscr start-y start-x top-str box-w)
-                            (set-color-attr! 4 #f))
-                          (let loop
-                            ((items matches) (idx 0))
-                            (when (and (not (null? items)) (< idx vis-count))
-                              (let*
-                                  ((item (car items)) (cmd (car item))
-                                   (desc (cdr item))
-                                   (is-sel? (= idx selector-index))
-                                   (row-y (+ start-y 1 idx))
-                                   (inner-w (- box-w 4))
-                                   (cursor
-                                     (if is-sel?
-                                       "❯ "
-                                       "  "))
-                                   (cmd-text (format #f "/~a" cmd))
-                                   (pad-cmd (make-string (max 1 (- 12 (string-length cmd-text))) #\space))
-                                   (content (string-append cursor cmd-text pad-cmd desc))
-                                   (clipped
-                                     (if (> (string-length content) inner-w)
-                                       (substring content 0 inner-w)
-                                       content))
-                                   (pad (make-string (max 0 (- inner-w (string-length clipped))) #\space))
-                                   (row-text (string-append "│ " clipped pad " │")))
-                                (if is-sel?
-                                  (begin (set-color-attr! 1 #t)
-                                         (attr-on! stdscr A_BOLD)
-                                         (attr-on! stdscr A_REVERSE)
-                                         (safe-addstr stdscr row-y start-x row-text box-w)
-                                         (attr-off! stdscr A_REVERSE)
-                                         (attr-off! stdscr A_BOLD)
-                                         (set-color-attr! 1 #f))
-                                  (safe-addstr stdscr row-y start-x row-text box-w))
-                                (loop (cdr items) (+ idx 1)))))
-                          (let
-                              ((bot-str
-                                 (string-append "╰"
-                                                (make-string (- box-w 2) #\─)
-                                                "╯")))
-                            (set-color-attr! 4 #t)
-                            (safe-addstr stdscr (+ start-y 1 vis-count) start-x bot-str box-w)
-                            (set-color-attr! 4 #f))))))
-                  ;; 8. Floating Menu Popup Overlay (same visual language as
-                  ;; the slash selector: rounded box, ❯ cursor, reversed
-                  ;; selected row, capped visible rows with scroll indicators)
+                            ((box-h (+ vis-count 2))
+                             (start-y (- maxy 3 box-h))
+                             (rows
+                               (map
+                                 (lambda (item)
+                                   (cons (format #f "/~a" (car item)) (cdr item)))
+                                 (take matches vis-count))))
+                          (when (>= start-y 2)
+                            (draw-popup! "commands"
+                                         rows
+                                         selector-index
+                                         box-w
+                                         start-y
+                                         2
+                                         0
+                                         0))))))
+                  ;; 6. Floating Menu Popup Overlay (same visual language as
+                  ;; the slash selector: accent rounded box, bold selected
+                  ;; row, capped visible rows with scroll indicators)
                   (when active-menu
                     (let ((m-count (menu-count active-menu)))
                       (when (> m-count 0)
@@ -1865,7 +1955,6 @@ and append it to the persistent history journal file."
                           (lambda (vis-items offset)
                             (let*
                                 ((vis-count (length vis-items))
-                                 (sel-idx (menu-selected-index active-menu))
                                  (label-w
                                    (fold
                                      (lambda (it acc)
@@ -1880,89 +1969,22 @@ and append it to the persistent history journal file."
                                              (max 20 (- maxx 4))))
                                  (box-h (+ vis-count 2))
                                  (start-y (- maxy 3 box-h))
-                                 (start-x 2)
-                                 (inner-w (- box-w 4))
-                                 (top-tag
-                                   (string-append
-                                     "╭─ "
-                                     (menu-title active-menu)
-                                     (if (> offset 0)
-                                       (format #f " ↑~a " offset)
-                                       " ")))
-                                 (top-str
-                                   (string-append
-                                     top-tag
-                                     (make-string
-                                       (max 0 (- box-w (string-length top-tag) 1))
-                                       #\─)
-                                     "╮")))
-                              (when (>= start-y 1)
-                                (set-color-attr! 4 #t)
-                                (safe-addstr stdscr start-y start-x top-str box-w)
-                                (set-color-attr! 4 #f)
-                                (let loop
-                                  ((items vis-items) (idx offset))
-                                  (unless (null? items)
-                                    (let*
-                                        ((item (car items))
-                                         (is-sel? (= idx sel-idx))
-                                         (cursor
-                                           (if is-sel?
-                                             "❯ "
-                                             "  "))
-                                         (label (menu-item-label item))
-                                         (desc (menu-item-description item))
-                                         (label-pad
-                                           (make-string
-                                             (max 1 (- label-w (string-length label)))
-                                             #\space))
-                                         (content
-                                           (string-append cursor label label-pad " " desc))
-                                         (clipped
-                                           (if (> (string-length content) inner-w)
-                                             (substring content 0 inner-w)
-                                             content))
-                                         (pad
-                                           (make-string
-                                             (max 0 (- inner-w (string-length clipped)))
-                                             #\space))
-                                         (row-text
-                                           (string-append "│ " clipped pad " │"))
-                                         (row-y (+ start-y 1 (- idx offset))))
-                                      (if is-sel?
-                                        (begin (set-color-attr! 1 #t)
-                                               (attr-on! stdscr A_BOLD)
-                                               (attr-on! stdscr A_REVERSE)
-                                               (safe-addstr stdscr
-                                                            row-y
-                                                            start-x
-                                                            row-text
-                                                            box-w)
-                                               (attr-off! stdscr A_REVERSE)
-                                               (attr-off! stdscr A_BOLD)
-                                               (set-color-attr! 1 #f))
-                                        (safe-addstr stdscr row-y start-x row-text box-w))
-                                      (loop (cdr items) (+ idx 1)))))
-                                (let*
-                                    ((below (- m-count (+ offset vis-count)))
-                                     (bot-tag
-                                       (if (> below 0)
-                                         (format #f "╰─ ↓ ~a more " below)
-                                         "╰"))
-                                     (bot-str
-                                       (string-append
-                                         bot-tag
-                                         (make-string
-                                           (max 0 (- box-w (string-length bot-tag) 1))
-                                           #\─)
-                                         "╯")))
-                                  (set-color-attr! 4 #t)
-                                  (safe-addstr stdscr
-                                               (+ start-y 1 vis-count)
-                                               start-x
-                                               bot-str
-                                               box-w)
-                                  (set-color-attr! 4 #f)))))))))
+                                 (rows
+                                   (map
+                                     (lambda (it)
+                                       (cons (menu-item-label it)
+                                             (menu-item-description it)))
+                                     vis-items)))
+                              (when (>= start-y 2)
+                                (draw-popup!
+                                  (menu-title active-menu)
+                                  rows
+                                  (- (menu-selected-index active-menu) offset)
+                                  box-w
+                                  start-y
+                                  2
+                                  offset
+                                  (- m-count offset vis-count)))))))))
                   (refresh stdscr)))
               (lambda (key . args)
                 #f)))
@@ -2014,7 +2036,7 @@ and append it to the persistent history journal file."
                                                              (let
                                                                  ((t-name (prop-ref tc 'name)) (t-args (prop-ref tc 'arguments)))
                                                                (set! status-text (format #f "TOOL: ~a..." t-name))
-                                                               (add-msg! "tool-call" (format #f "⚙ Invoking tool: ~a (~s)" t-name t-args))
+                                                               (add-msg! "tool-call" (format #f "Invoking tool: ~a (~s)" t-name t-args))
                                                                (render!))))
                                                      (cons 'on-tool-result
                                                            (lambda (tc res err?)
@@ -2028,7 +2050,7 @@ and append it to the persistent history journal file."
                                                                     (if (> (string-length res-str) 140)
                                                                       (string-append (substring res-str 0 140) "...")
                                                                       res-str)))
-                                                               (add-msg! "tool-result" (format #f "✓ Tool ~a returned: ~a" t-name preview))
+                                                               (add-msg! "tool-result" (format #f "Tool ~a returned: ~a" t-name preview))
                                                                (render!))))))))
                           (call-with-values
                             (lambda ()
@@ -2629,13 +2651,15 @@ any open menu first; submenu actions open the next menu in its place."
                 ((and (pair? action) (eq? (car action) 'switch-provider))
                   (switch-provider-preset! (cdr action)))
                 ((and (pair? action) (eq? (car action) 'set-theme))
-                  (let ((name (cdr action)))
+                  (let* ((name (cdr action))
+                         (th (lookup-theme name)))
                     (badb-config-set-ui-theme! cfg name)
+                    ;; Colors resolve through ui-theme on every draw, so
+                    ;; switching the theme restyles the interface live.
+                    (when th (set! ui-theme th))
                     (try-save-config!)
                     (add-sys-msg!
-                      (format #f
-                              "UI theme set to '~a' and saved. Restart the TUI to apply it."
-                              name))))
+                      (format #f "UI theme set to '~a' and saved." name))))
                 ((and (pair? action) (eq? (car action) 'set-guardrail))
                   (handle-guardrail-cmd! (symbol->string (cdr action))))
                 (else (add-err-msg! "Unsupported menu action.")))))
@@ -2735,6 +2759,7 @@ any open menu first; submenu actions open the next menu in its place."
                                    "  /help             Display this help message\n"
                                    "  /model [NAME]     Switch LLM model; no argument opens a menu\n"
                                    "  /endpoint [URL]   Switch endpoint URL; no argument opens a menu\n"
+                                   "  /provider [NAME]  Switch or inspect provider preset\n"
                                    "  /mcp [CMD]        Manage MCP servers (list, start, stop, add, remove, tools)\n"
                                    "  /config [CMD]     Inspect, reload, save, set configuration; no argument opens a menu\n"
                                    "  /guardrail [LVL]  Set policy level (disabled, permissive, cautious, strict, paranoid)\n"
@@ -2748,11 +2773,11 @@ any open menu first; submenu actions open the next menu in its place."
                                    "  /test             Run the bootstrap test suite\n"
                                    "  /clear            Clear chat history\n"
                                    "  /quit, /exit      Exit TUI\n"
-                                   "  !<command>        Execute shell command (or press ! at empty prompt)\n"
-                                   "  ,<expr> or (..)   Evaluate Scheme code (or press ( at empty prompt)\n"
-                                   "  Ctrl+Up/Down      Select a message card in the viewport\n"
-                                   "  Ctrl+E            Expand or collapse the selected message\n"
-                                   "  Menu keys         Up/Down move, Enter apply, Esc close (menus: /config, /model, /endpoint)\n"
+                                   "  !<command>        Execute shell command\n"
+                                   "  ,<expr> or (..)   Evaluate Scheme code\n"
+                                   "  ctrl+p / ctrl+n   Select a message block\n"
+                                   "  ctrl+e            Collapse or expand the selected message\n"
+                                   "  menus             up/down move, enter apply, esc close (/config, /model, /endpoint)\n"
                                    "  /sh <cmd>         Alias for shell command\n"
                                    "  /eval <expr>      Alias for Scheme eval")))
                 ((string=? cmd "guardrail") (handle-guardrail-cmd! arg))
@@ -2872,22 +2897,9 @@ any open menu first; submenu actions open the next menu in its place."
     (keypad! stdscr #t)
     (safe-curs-set! 1)
     (set! colors-enabled? (has-colors?))
-    (when colors-enabled?
-      (start-color!)
-      (init-pair! 1 COLOR_CYAN COLOR_BLACK)
-      ; Header / Info / Scheme / Thoughts
-      (init-pair! 2 COLOR_GREEN COLOR_BLACK)
-      ; User prompt / Messages
-      (init-pair! 3 COLOR_WHITE COLOR_BLACK)
-      ; Assistant text
-      (init-pair! 4 COLOR_YELLOW COLOR_BLACK)
-      ; System notice / Selector border
-      (init-pair! 5 COLOR_RED COLOR_BLACK)
-      ; Error
-      (init-pair! 6 COLOR_MAGENTA COLOR_BLACK)
-      ; Shell prompt / Exec badge
-      (init-pair! 7 COLOR_BLUE COLOR_BLACK))
-    ; Container frame & borders
+    (when colors-enabled? (start-color!))
+    ;; Color pairs are allocated lazily from the active theme by
+    ;; draw-role!, memoized per unique (fg bg) spec.
     ;; Main input loop wrapped in dynamic-wind for crash-proof terminal restoration
     (dynamic-wind
       (lambda ()
