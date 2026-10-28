@@ -229,4 +229,65 @@
                 "switch to unknown provider returns #f"
                 (not (badb-config-switch-provider! cfg "unknown")))))
 
+;;;
+;;; 6. UI Theme Configuration
+;;;
+(test-group "config-ui-theme"
+  (let ((cfg (make-badb-config)))
+    (test-assert "default ui-theme is #f" (not (badb-config-ui-theme cfg)))
+    (badb-config-set-ui-theme! cfg "nord")
+    (test-equal "ui-theme setter stores name" "nord" (badb-config-ui-theme cfg))
+    (set-badb-config-ui-theme! cfg "paper")
+    (test-equal "record setter alias works" "paper" (badb-config-ui-theme cfg))))
+
+(test-group "config-ui-theme-parsing"
+  (let ((cfg (parse-config-sexp '(badb-config
+                                   (model (name "llama-3-8b"))
+                                   (ui (theme "midnight"))))))
+    (test-equal "parsed ui theme" "midnight" (badb-config-ui-theme cfg))
+    (test-equal "parsed model name alongside ui"
+      "llama-3-8b" (badb-config-model-name cfg)))
+
+  (let ((cfg (parse-config-sexp '(badb-config
+                                   (model (name "llama-3-8b"))
+                                   (journal (path "/var/log/badb.jsonl"))))))
+    (test-assert "config without ui section still loads"
+      (badb-config? cfg))
+    (test-assert "missing ui section yields #f theme"
+      (not (badb-config-ui-theme cfg))))
+
+  (let ((cfg (parse-config-sexp '(badb-config (ui (theme nord))))))
+    (test-equal "ui theme symbol coerced to string" "nord" (badb-config-ui-theme cfg))))
+
+(test-group "config-ui-theme-roundtrip"
+  (let* ((cfg (make-badb-config #:model-name "themed-model" #:ui-theme "solarized-dark"))
+         (serialized (config->sexp cfg)))
+    (test-assert "ui section emitted when theme set"
+      (member '(ui (theme "solarized-dark")) (cdr serialized)))
+    (let ((re-parsed (parse-config-sexp serialized)))
+      (test-equal "roundtripped ui theme preserved"
+        "solarized-dark" (badb-config-ui-theme re-parsed))
+      (test-equal "roundtripped model name preserved"
+        "themed-model" (badb-config-model-name re-parsed))))
+
+  (let* ((cfg (make-badb-config))
+         (serialized (config->sexp cfg)))
+    (test-assert "no ui section when theme unset"
+      (not (member 'ui (map car (cdr serialized))))))
+
+  ;; Overlay onto a base config preserves the base ui theme
+  (let* ((base (make-badb-config #:ui-theme "nord"))
+         (cfg (parse-config-sexp '(badb-config (journal (path "/tmp/j.jsonl"))) base)))
+    (test-equal "parse overlay preserves base ui theme"
+      "nord" (badb-config-ui-theme cfg)))
+
+  ;; Merging: overlay wins, base preserved when overlay unset
+  (let ((base (make-badb-config #:ui-theme "badb-dark"))
+        (overlay (make-badb-config #:ui-theme "paper"))
+        (empty (make-badb-config)))
+    (test-equal "overlay ui theme wins in merge"
+      "paper" (badb-config-ui-theme (merge-configs base overlay)))
+    (test-equal "base ui theme kept when overlay unset"
+      "badb-dark" (badb-config-ui-theme (merge-configs base empty)))))
+
 (test-end "badb-config")

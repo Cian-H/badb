@@ -3,7 +3,8 @@
 ;;; Hierarchical configuration discovery and management in GNU Guile Scheme.
 ;;; Discovers and merges global (~/.config/badb/config.scm) and local project
 ;;; (.badb/config.scm) configurations. Supports model settings, MCP server
-;;; declarations, checkpoint journal paths, and custom options.
+;;; declarations, checkpoint journal paths, UI theme selection, and custom
+;;; options.
 
 (define-module (badb config) #:use-module
                (badb util)
@@ -23,6 +24,7 @@
                                  badb-config-model-temperature
                                  badb-config-model-max-tokens
                                  badb-config-journal-path
+                                 badb-config-ui-theme
                                  badb-config-mcp-servers
                                  badb-config-options
                                  badb-config-source-path
@@ -32,6 +34,7 @@
                                  set-badb-config-model-temperature!
                                  set-badb-config-model-max-tokens!
                                  set-badb-config-journal-path!
+                                 set-badb-config-ui-theme!
                                  set-badb-config-mcp-servers!
                                  set-badb-config-options!
                                  set-badb-config-source-path!
@@ -41,6 +44,7 @@
                                  badb-config-set-model-temperature!
                                  badb-config-set-model-max-tokens!
                                  badb-config-set-journal-path!
+                                 badb-config-set-ui-theme!
                                  badb-config-set-mcp-servers!
                                  badb-config-set-options!
                                  badb-config-set-source-path!
@@ -73,6 +77,7 @@
                      model-temperature
                      model-max-tokens
                      journal-path
+                     ui-theme
                      mcp-servers
                      options
                      source-path)
@@ -83,6 +88,7 @@
   (model-temperature badb-config-model-temperature set-badb-config-model-temperature!)
   (model-max-tokens badb-config-model-max-tokens set-badb-config-model-max-tokens!)
   (journal-path badb-config-journal-path set-badb-config-journal-path!)
+  (ui-theme badb-config-ui-theme set-badb-config-ui-theme!)
   (mcp-servers badb-config-mcp-servers set-badb-config-mcp-servers!)
   (options badb-config-options set-badb-config-options!)
   (source-path badb-config-source-path set-badb-config-source-path!))
@@ -96,6 +102,7 @@
                     (model-temperature 0.7)
                     (model-max-tokens (or (and=> (getenv "BADB_MAX_TOKENS") string->number) 4096))
                     (journal-path ".badb/journal.jsonl")
+                    (ui-theme #f)
                     (mcp-servers '())
                     (options '())
                     (source-path #f))
@@ -106,6 +113,7 @@
                      model-temperature
                      model-max-tokens
                      journal-path
+                     ui-theme
                      mcp-servers
                      options
                      source-path))
@@ -116,6 +124,7 @@
 (define badb-config-set-model-temperature! set-badb-config-model-temperature!)
 (define badb-config-set-model-max-tokens! set-badb-config-model-max-tokens!)
 (define badb-config-set-journal-path! set-badb-config-journal-path!)
+(define badb-config-set-ui-theme! set-badb-config-ui-theme!)
 (define badb-config-set-mcp-servers! set-badb-config-mcp-servers!)
 (define badb-config-set-options! set-badb-config-options!)
 (define badb-config-set-source-path! set-badb-config-source-path!)
@@ -283,6 +292,14 @@ Returns #t on success, or #f if provider NAME was not found."
          (p (get-prop body 'path (badb-config-journal-path cfg))))
     (when p (set-badb-config-journal-path! cfg p))))
 
+(define (apply-ui-config-form! cfg form-body)
+  "Apply a (ui ...) body form to <badb-config> CFG."
+  (let* ((body (if (and (pair? form-body) (eq? (car form-body) 'ui))
+                   (cdr form-body)
+                   form-body))
+         (t (get-prop body 'theme (badb-config-ui-theme cfg))))
+    (when t (set-badb-config-ui-theme! cfg (ensure-string t)))))
+
 (define (apply-mcp-config-form! cfg form-body)
   "Apply an (mcp ...) body form to <badb-config> CFG."
   (let* ((body (if (and (pair? form-body) (eq? (car form-body) 'mcp))
@@ -301,6 +318,7 @@ Returns #t on success, or #f if provider NAME was not found."
                                    #:model-api-key (badb-config-model-api-key base-config)
                                    #:model-temperature (badb-config-model-temperature base-config)
                                    #:journal-path (badb-config-journal-path base-config)
+                                   #:ui-theme (badb-config-ui-theme base-config)
                                    #:mcp-servers (badb-config-mcp-servers base-config)
                                    #:options (badb-config-options base-config)
                                    #:source-path (badb-config-source-path base-config))
@@ -316,10 +334,11 @@ Returns #t on success, or #f if provider NAME was not found."
             (case head
               ((model)      (apply-model-config-form! cfg body))
               ((journal)    (apply-journal-config-form! cfg body))
+              ((ui)         (apply-ui-config-form! cfg body))
               ((mcp)        (apply-mcp-config-form! cfg body))
               ((mcp-server) (let ((parsed (parse-mcp-server-spec form)))
                               (when parsed (badb-config-add-mcp-server! cfg (car parsed) (cdr parsed)))))
-              ((options ui) (set-badb-config-options! cfg (append (badb-config-options cfg) body)))))))
+              ((options)    (set-badb-config-options! cfg (append (badb-config-options cfg) body)))))))
       forms)
     cfg))
 
@@ -337,6 +356,10 @@ Returns #t on success, or #f if provider NAME was not found."
 
     (journal
       (path ,(badb-config-journal-path config)))
+
+    ,@(if (badb-config-ui-theme config)
+          `((ui (theme ,(badb-config-ui-theme config))))
+          '())
 
     (mcp
       ,@(map (lambda (entry)
@@ -430,6 +453,8 @@ unique base servers are retained."
                                  (or (badb-config-model-max-tokens overlay) (badb-config-model-max-tokens base))
                                  #:journal-path
                                  (or (badb-config-journal-path overlay) (badb-config-journal-path base))
+                                 #:ui-theme
+                                 (or (badb-config-ui-theme overlay) (badb-config-ui-theme base))
                                  #:options
                                  (append (badb-config-options base) (badb-config-options overlay))
                                  #:source-path
