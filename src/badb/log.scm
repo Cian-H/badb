@@ -13,6 +13,8 @@
 ;;; failed write returns #f and leaves the caller untouched.
 
 (define-module (badb log) #:use-module
+               (badb util)
+               #:use-module
                (ice-9 format)
                #:use-module
                (srfi srfi-19)
@@ -27,11 +29,7 @@
   "Create DIR and any missing parent directories. Never throws."
   (catch #t
     (lambda ()
-      (unless (or (string-null? dir) (file-exists? dir))
-        (let ((parent (dirname dir)))
-          (unless (or (string=? parent dir) (string=? parent ".") (string=? parent "/"))
-            (ensure-directory! parent)))
-        (mkdir dir)))
+      (mkdir-p dir))
     (lambda _
       #f)))
 

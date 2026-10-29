@@ -69,9 +69,24 @@
     (let ((dec (evaluate-guardrail policy "write_file" '(("path" . "out.txt")))))
       (test-assert "write_file requires ask in cautious mode" (guardrail-ask? dec)))
 
-    ;; Dangerous: denied
-    (let ((dec (evaluate-guardrail policy "shell_run" '(("cmd" . "rm -rf .")))))
-      (test-assert "destructive shell command denied in cautious mode" (guardrail-deny? dec))))
+    ;; Built-in bash / sh tools are classified as mutating in cautious and paranoid modes
+    (let ((dec-bash (evaluate-guardrail policy "bash" '(("command" . "touch foo.txt"))))
+          (dec-sh (evaluate-guardrail policy "sh" '(("command" . "echo hi > bar.txt")))))
+      (test-assert "bash requires ask in cautious mode" (guardrail-ask? dec-bash))
+      (test-assert "sh requires ask in cautious mode" (guardrail-ask? dec-sh)))
+
+    ;; Dangerous: denied (including case-insensitive and rm -fr variants)
+    (let ((dec (evaluate-guardrail policy "shell_run" '(("cmd" . "rm -rf ."))))
+          (dec-fr (evaluate-guardrail policy "bash" '(("cmd" . "rm -fr /tmp/foo"))))
+          (dec-sql (evaluate-guardrail policy "bash" '(("cmd" . "DROP TABLE users;")))))
+      (test-assert "destructive shell command denied in cautious mode" (guardrail-deny? dec))
+      (test-assert "rm -fr denied in cautious mode" (guardrail-deny? dec-fr))
+      (test-assert "uppercase DROP TABLE denied in cautious mode" (guardrail-deny? dec-sql))))
+
+  ;; Paranoid mode denies bash / sh mutations
+  (let* ((policy (make-guardrail-policy #:level 'paranoid))
+         (dec (evaluate-guardrail policy "bash" '(("command" . "ls")))))
+    (test-assert "paranoid level denies bash tool" (guardrail-deny? dec)))
 
   ;; Disabled mode allows all
   (let* ((policy (make-guardrail-policy #:level 'disabled))

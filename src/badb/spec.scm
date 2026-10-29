@@ -155,9 +155,9 @@ the first spec-end)."
 ;;; "Seed: " lines are extracted.
 
 (define (%read-datum text)
-  (let ((port (open-input-string text)))
-    (let ((value (read port)))
-      value)))
+  (let* ((port (open-input-string text))
+         (value (read port)))
+    value))
 
 (define (spec-parse-falsified-output text)
   "Parse quickcheck falsification output TEXT into
@@ -227,18 +227,18 @@ capture, stashing the quickcheck seed and counterexample inputs on
 the current srfi-64 test result when the property falsifies.  Returns
 the quickcheck boolean."
   (test-result-set! (test-runner-get) 'spec-kind "property")
-  (let ((port (open-output-string)))
-    (let ((result (parameterize ((current-output-port port)) (thunk))))
-      (if result
-          result
-          (let* ((parsed (spec-parse-falsified-output
-                          (get-output-string port)))
-                 (seed (or (assoc-ref parsed 'seed) ""))
-                 (inputs (assoc-ref parsed 'inputs)))
-            (unless (string-null? seed)
-              (test-result-set! (test-runner-get) 'spec-seed seed))
-            (test-result-set! (test-runner-get) 'spec-inputs inputs)
-            #f)))))
+  (let* ((port (open-output-string))
+         (result (parameterize ((current-output-port port)) (thunk))))
+    (if result
+        result
+        (let* ((parsed (spec-parse-falsified-output
+                        (get-output-string port)))
+               (seed (or (assoc-ref parsed 'seed) ""))
+               (inputs (assoc-ref parsed 'inputs)))
+          (unless (string-null? seed)
+            (test-result-set! (test-runner-get) 'spec-seed seed))
+          (test-result-set! (test-runner-get) 'spec-inputs inputs)
+          #f))))
 
 ;;;
 ;;; Export-boundary reflection check
@@ -290,18 +290,18 @@ satisfies the declared MIN-ARITY and optional MAX-ARITY."
        ((not (procedure? value))
         (format #f "export ~s is not a procedure: ~s" name value))
        (else
-        (let ((parts (%min-arity-parts value)))
-          (let ((required (car parts))
-                (optional (cadr parts))
-                (variadic? (caddr parts)))
-            (cond
-             ((> min-arity required)
-              (format #f "wrong arity for ~s: requires at least ~a, declared minimum ~a"
-                      name required min-arity))
-             ((and max-arity (not variadic?) (< max-arity (+ required optional)))
-              (format #f "wrong arity for ~s: accepts at most ~a, declared maximum ~a"
-                      name (+ required optional) max-arity))
-             (else #f))))))))))
+        (let* ((parts (%min-arity-parts value))
+               (required (car parts))
+               (optional (cadr parts))
+               (variadic? (caddr parts)))
+          (cond
+           ((> min-arity required)
+            (format #f "wrong arity for ~s: requires at least ~a, declared minimum ~a"
+                    name required min-arity))
+           ((and max-arity (not variadic?) (< max-arity (+ required optional)))
+            (format #f "wrong arity for ~s: accepts at most ~a, declared maximum ~a"
+                    name (+ required optional) max-arity))
+           (else #f)))))))))
 
 (define (spec-check-module-exports module-name raw-decls)
   "Run the export-boundary reflection check for MODULE-NAME against

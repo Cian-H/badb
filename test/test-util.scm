@@ -37,6 +37,8 @@
     (test-equal "prop-ref with string key on symbol alist" "badb" (prop-ref al "name"))
     (test-equal "prop-ref with symbol key on string alist" "gpt-4" (prop-ref al 'model))
     (test-equal "prop-ref with string key on string alist" "gpt-4" (prop-ref al "model"))
+    (test-equal "json-ref alias works with string key" "gpt-4" (json-ref al "model"))
+    (test-equal "json-ref alias works with symbol key" "badb" (json-ref al 'name))
     (test-equal "prop-ref missing key returns default" "default-val" (prop-ref al 'missing "default-val"))
 
     (test-equal "get-prop pair syntax" "badb" (get-prop al 'name "none"))
@@ -112,6 +114,12 @@
   (test-equal "format-exception misc-error formatted"
     "value is 42" (format-exception 'misc-error (list #f "value is ~a" (list 42))))
   (test-equal "sanitize-for-json nested symbols"
-    '(("cmd" . "run") ("flag" . "true")) (sanitize-for-json '((cmd . "run") (flag . "true")))))
+    '(("cmd" . "run") ("flag" . "true")) (sanitize-for-json '((cmd . "run") (flag . "true"))))
+  (test-equal "truncate-string keeps short strings intact"
+    "short" (truncate-string "short" 10))
+  (test-equal "truncate-string truncates and appends ellipsis"
+    "hello..." (truncate-string "hello world" 8))
+  (test-equal "truncate-display is an alias for truncate-string"
+    "hello..." (truncate-display "hello world" 8)))
 
 (test-end "badb-util")

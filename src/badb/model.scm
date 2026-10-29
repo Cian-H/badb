@@ -40,6 +40,8 @@
             merge-tool-call-fragment
             finalize-tool-call-fragments
             parse-models-response
+            generic-model?
+            generic-model-name?
             choose-model
             list-models
             model-available?
@@ -281,10 +283,6 @@ endpoint that ignored stream:true)."
 ;;;
 ;;; Content and Delta Extractors
 ;;;
-(define (json-ref obj key)
-  "Lookup KEY in OBJ where KEY may be a string or symbol, and OBJ is an alist."
-  (prop-ref obj key))
-
 (define (extract-openai-delta-item obj)
   "Extract delta item from OpenAI-format choice payload."
   (let ((choices (json-ref obj "choices")))
@@ -931,6 +929,8 @@ alist. Returns '() when the payload is malformed or contains no models."
 (#f, empty, or the literal \"default\")."
   (or (not (non-empty-string? model))
       (string=? (string-trim-both model) "default")))
+
+(define generic-model-name? generic-model?)
 
 (define (choose-model current-model ids)
   "Pure selection policy for automatic model detection.

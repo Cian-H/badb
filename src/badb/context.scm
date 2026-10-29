@@ -46,7 +46,6 @@
                                     strategy-journal-offload
                                     strategy-pipeline
                                     strategy-cascading
-                                    strategy-cascading-pipeline
                                     latest-user-message
                                     compaction-needed?
                                     compact-messages))
@@ -72,11 +71,11 @@
    ((vector? tc-val)
     (catch #t
       (lambda () (scm->json-string tc-val))
-      (lambda _ (object->string tc-val))))
+      (lambda (_k . _a) (object->string tc-val))))
    ((pair? tc-val)
     (catch #t
       (lambda () (scm->json-string (list->vector tc-val)))
-      (lambda _ (object->string tc-val))))
+      (lambda (_k . _a) (object->string tc-val))))
    ((string? tc-val) tc-val)
    (else "")))
 
@@ -345,8 +344,6 @@ Executes each configured strategy in order until the token ceiling is satisfied.
                         (strategy-journal-offload journal #:keep-recent-turns keep-recent-turns))
                    (strategy-sliding-window #:keep-system-prompt keep-system-prompt)))))
     (apply strategy-pipeline stages)))
-
-(define strategy-cascading-pipeline strategy-cascading)
 
 ;;;
 ;;; Context Compactor Record

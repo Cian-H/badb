@@ -290,4 +290,32 @@
     (test-equal "base ui theme kept when overlay unset"
       "badb-dark" (badb-config-ui-theme (merge-configs base empty)))))
 
+(test-group "load-config-hierarchical-files"
+  (let ((gpath "/tmp/badb-test-global-cfg.scm")
+        (lpath "/tmp/badb-test-local-cfg.scm"))
+    (call-with-output-file gpath
+      (lambda (p)
+        (write '(badb-config
+                 (model (name "global-default")
+                        (endpoint "http://global-host:9000")
+                        (temperature 0.25))
+                 (journal (path "/var/log/global-jrn.jsonl")))
+               p)))
+    ;; Local config only overrides model name; global endpoint, temperature, and journal must survive
+    (call-with-output-file lpath
+      (lambda (p)
+        (write '(badb-config
+                 (model (name "local-override")))
+               p)))
+    (let ((loaded (load-config #:global-path gpath #:local-path lpath)))
+      (test-equal "local model name wins" "local-override" (badb-config-model-name loaded))
+      (test-equal "global endpoint preserved when omitted in local file"
+        "http://global-host:9000" (badb-config-model-endpoint loaded))
+      (test-equal "global temperature preserved when omitted in local file"
+        0.25 (badb-config-model-temperature loaded))
+      (test-equal "global journal path preserved when omitted in local file"
+        "/var/log/global-jrn.jsonl" (badb-config-journal-path loaded)))
+    (when (file-exists? gpath) (delete-file gpath))
+    (when (file-exists? lpath) (delete-file lpath))))
+
 (test-end "badb-config")

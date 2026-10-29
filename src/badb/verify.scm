@@ -123,11 +123,22 @@ Returns '((passed? . #t/#f) (exit-code . code) (output . output-string))."
   "Run active verification checks against candidate CODE or FILE."
   (let ((failures '()))
     ;; 1. Syntax check
-    (when (and (verifier-check-syntax? verifier) (or code file))
-      (let* ((target (or code file))
-             (res (verify-scheme-syntax target)))
-        (unless (assoc-ref res 'passed?)
-          (set! failures (cons (assoc-ref res 'error) failures)))))
+    (when (verifier-check-syntax? verifier)
+      (cond
+       ((or code file)
+        (let* ((target (or code file))
+               (res (verify-scheme-syntax target)))
+          (unless (assoc-ref res 'passed?)
+            (set! failures (cons (assoc-ref res 'error) failures)))))
+       ((and workspace-dir (file-exists? workspace-dir))
+        (for-each
+         (lambda (rel-path)
+           (when (string-suffix? ".scm" rel-path)
+             (let* ((full-path (string-append workspace-dir "/" rel-path))
+                    (res (verify-scheme-syntax full-path)))
+               (unless (assoc-ref res 'passed?)
+                 (set! failures (cons (assoc-ref res 'error) failures))))))
+         (scan-text-files workspace-dir)))))
 
     ;; 2. Test suite check
     (when (verifier-run-tests? verifier)

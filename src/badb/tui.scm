@@ -136,10 +136,8 @@
                         load-history-file
                         append-history-file-entry!
                         turn->jsonl-line
-                        jsonl-line->turn
                         default-sessions-dir
                         session-file-path
-                        truncate-string
                         persist-session-file!
                         load-session-file
                         recent-session-files
@@ -162,7 +160,10 @@
                         spec-tool-verify
                         spec-tool-status
                         register-spec-tools!
-                        format-message-entry))
+                        format-message-entry)
+               #:re-export
+               (jsonl-line->turn
+                truncate-string))
 
 ;;;
 ;;; Text Formatting & Word Wrapping Helpers
@@ -939,12 +940,7 @@ into a single JSON object line for the persistent history journal."
   "Parse a single JSONL LINE into a history entry alist of the form
 ((\"input\" . STRING) (\"mode\" . STRING) (\"ts\" . NUMBER)). Return #f for
 blank or malformed lines and for entries without a string input."
-  (let ((parsed (catch #t
-                  (lambda ()
-                    (and (string? line)
-                         (not (string-null? (string-trim-both line)))
-                         (json-string->scm (string-trim-both line))))
-                  (lambda _ #f))))
+  (let ((parsed (safe-json-parse line)))
     (if (and (list? parsed) (string? (assoc-ref parsed "input")))
         `(("input" . ,(assoc-ref parsed "input"))
           ("mode" . ,(let ((m (assoc-ref parsed "mode")))
@@ -1030,36 +1026,12 @@ and #f on any filesystem failure."
    (number->string (getpid))
    ".jsonl"))
 
-(define (truncate-string text max-length)
-  "Return TEXT capped at MAX-LENGTH characters, the tail replaced by an
-ellipsis when it had to be cut."
-  (if (> (string-length text) max-length)
-      (string-append (substring text 0 (- max-length 3)) "...")
-      text))
-
 (define (turn->jsonl-line msg)
   "Serialize one conversation turn MSG (an alist with role and content)
 into a single JSON object line {\"role\":...,\"content\":...}."
   (scm->json-string
    `(("role" . ,(ensure-string (or (prop-ref msg 'role) "user")))
      ("content" . ,(ensure-string (or (prop-ref msg 'content) ""))))))
-
-(define (jsonl-line->turn line)
-  "Parse a single session JSONL LINE into a conversation turn alist of the
-form ((role . STRING) (content . STRING)). Return #f for blank or
-malformed lines and for entries without string role and content fields."
-  (let ((parsed (catch #t
-                  (lambda ()
-                    (and (string? line)
-                         (not (string-null? (string-trim-both line)))
-                         (json-string->scm (string-trim-both line))))
-                  (lambda _ #f))))
-    (if (and (list? parsed)
-             (string? (assoc-ref parsed "role"))
-             (string? (assoc-ref parsed "content")))
-        `((role . ,(assoc-ref parsed "role"))
-          (content . ,(assoc-ref parsed "content")))
-        #f)))
 
 (define (persist-session-file! path history)
   "Write the whole conversation HISTORY to the session JSONL file at PATH,
@@ -1542,12 +1514,6 @@ other plain data); #f when the item carries none."
 ;;;
 ;;; Model Auto-Detection & Live Model Menu Helpers
 ;;;
-(define (generic-model-name? model)
-  "Return #t when MODEL is an unset or generic placeholder (#f, empty, or
-the literal \"default\")."
-  (or (not (non-empty-string? model))
-      (string=? (string-trim-both model) "default")))
-
 (define (detect-model-decision cur-model detected-model error)
   "Pure adopt/detect decision policy for startup model detection.
 Return (values new-model notice-kind):
@@ -1654,7 +1620,7 @@ constrains the copy to (spec-gate-root)/specs/."
                  (catch #t
                    (lambda ()
                      (call-with-input-file spec-path
-                                           (lambda (port)
+                                           (lambda (_port)
                                              #t)))
                    (lambda _
                      #f)))
@@ -1677,10 +1643,7 @@ spec-hash, summary counts, and failure diagnostics. The verdict comes
 only from kernel subprocess replay of the locked copy, never from
 agent self-report, and the gate fails closed on any spawn, timeout,
 or parse failure."
-        (if
-            (not
-              (and (string? feature-id) (not (string-null? (string-trim-both feature-id)))))
-          "Error: spec.verify requires a non-empty string feature-id"
+        (if (and (string? feature-id) (not (string-null? (string-trim-both feature-id))))
           (let*
               ((result (verify-locked-spec feature-id))
                (verdict (ensure-string (assoc-ref result 'verdict)))
@@ -1708,14 +1671,14 @@ or parse failure."
                        "Verdicts come only from kernel subprocess replay of the LOCKED copy; the kernel re-reads it at commit time.\n")
                      (if (or (not failures) (null? failures))
                        (list "failures: none\n")
-                       (cons "failures:\n" (map spec-tool-format-failure failures))))))))
+                       (cons "failures:\n" (map spec-tool-format-failure failures))))))
+          "Error: spec.verify requires a non-empty string feature-id"))
 
 (define (spec-tool-list-locked-specs)
         "Return the sorted locked spec file names in the kernel locked-spec
 store directory, or the empty list when the store does not exist yet."
         (let ((dir (spec-gate-dir)))
-          (if (not (file-exists? dir))
-            '()
+          (if (file-exists? dir)
             (let ((d (opendir dir)))
               (let loop
                 ((names '()))
@@ -1729,7 +1692,8 @@ store directory, or the empty list when the store does not exist yet."
                   (cond
                     ((or (not entry) (eof-object? entry)) (closedir d) (sort names string<?))
                     ((string-suffix? ".scm" entry) (loop (cons entry names)))
-                    (else (loop names)))))))))
+                    (else (loop names))))))
+            '())))
 
 (define (spec-tool-status . maybe-feature-id)
         "Kernel tool 'spec.status': list the locked specs in the kernel
@@ -1829,6 +1793,579 @@ that verdicts come only from kernel subprocess replay."
                               (required . #())))))
         reg)
 
+;;;
+;;; TUI Kernel Tool Registration, Menu Builders & Subcommand Formatters
+;;;
+(define (exec-shell-tool-impl cmd-or-arg)
+  "Execute a shell command passed as a string or tool-call argument alist."
+  (let ((cmd (cond
+              ((string? cmd-or-arg) cmd-or-arg)
+              ((and (pair? cmd-or-arg) (pair? (car cmd-or-arg)))
+               (or (assoc-ref cmd-or-arg "command")
+                   (assoc-ref cmd-or-arg 'command)
+                   (assoc-ref cmd-or-arg "cmd")
+                   (assoc-ref cmd-or-arg 'cmd)
+                   (cdar cmd-or-arg)))
+              (else (object->string cmd-or-arg)))))
+    (call-with-values
+      (lambda () (execute-shell-command cmd))
+      (lambda (out exit-val err)
+        (if err
+            (format #f "Error: ~a" err)
+            (format #f "[exit ~a]\n~a" exit-val out))))))
+
+(define (register-builtin-tui-tools! reg rollback-mgr verifier mcp-mgr get-llm-history)
+  "Register built-in autonomous agent tools, MCP kernel tools, and spec gate
+tools on REG."
+  (registry-attach! reg
+                    "read_file"
+                    (lambda (path)
+                      (catch #t
+                        (lambda ()
+                          (if (file-exists? path)
+                              (call-with-input-file path read-string)
+                              (format #f "Error: file '~a' does not exist" path)))
+                        (lambda (_k . a)
+                          (format #f "Error reading file: ~s" a))))
+                    '((description . "Read the complete contents of a file at PATH")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((path . ((type . "string") (description . "Path to the file to read")))))
+                        (required . #("path"))))))
+  (registry-attach! reg
+                    "write_file"
+                    (lambda (path content)
+                      (catch #t
+                        (lambda ()
+                          (create-checkpoint! rollback-mgr
+                                              (format #f "pre-write: ~a" path)
+                                              #:files (list path))
+                          (let ((v-res (verify-action verifier #:code content #:file path)))
+                            (if (assoc-ref v-res 'passed?)
+                                (begin
+                                  (call-with-output-file path
+                                    (lambda (p) (display content p)))
+                                  (format #f
+                                          "Successfully wrote ~a characters to '~a'"
+                                          (string-length content)
+                                          path))
+                                (begin
+                                  (rollback-latest! rollback-mgr)
+                                  (format #f "Write aborted: verification failed: ~s"
+                                          (assoc-ref v-res 'failures))))))
+                        (lambda (_k . a)
+                          (format #f "Error writing file: ~s" a))))
+                    '((description . "Write CONTENT to a file at PATH")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((path . ((type . "string") (description . "File path to write")))
+                          (content . ((type . "string") (description . "Content to write")))))
+                        (required . #("path" "content"))))))
+  (registry-attach! reg
+                    "execute_command"
+                    exec-shell-tool-impl
+                    '((description . "Execute a shell command and return output and exit status")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((cmd . ((type . "string") (description . "Shell command to run")))))
+                        (required . #("cmd"))))))
+  (registry-attach! reg
+                    "bash"
+                    exec-shell-tool-impl
+                    '((description . "Execute a bash shell command and return stdout/stderr and exit code")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((command . ((type . "string") (description . "Bash command line")))))
+                        (required . #("command"))))))
+  (registry-attach! reg
+                    "sh"
+                    exec-shell-tool-impl
+                    '((description . "Execute a POSIX shell command and return output and exit code")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((command . ((type . "string") (description . "Shell command line")))))
+                        (required . #("command"))))))
+  (registry-attach! reg
+                    "checkpoint_create"
+                    (lambda (description)
+                      (let ((c (create-checkpoint! rollback-mgr (or description "agent-checkpoint"))))
+                        (format #f "Created checkpoint: ~a (~a)"
+                                (checkpoint-id c)
+                                (checkpoint-description c))))
+                    '((description . "Create a rollback checkpoint for current workspace files and registry")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((description . ((type . "string") (description . "Checkpoint description")))))))))
+  (registry-attach! reg
+                    "checkpoint_rollback"
+                    (lambda* (#:optional id)
+                      (let ((res (if (and id (not (string-null? id)))
+                                     (rollback-to-checkpoint! rollback-mgr id)
+                                     (rollback-latest! rollback-mgr))))
+                        (format #f "Rollback: ~a" (assoc-ref res 'status))))
+                    '((description . "Rollback to specified or latest checkpoint")
+                      (parameters .
+                       ((type . "object")
+                        (properties . ((id . ((type . "string") (description . "Checkpoint ID")))))))))
+  (registry-attach! reg
+                    "run_tests"
+                    (lambda* (#:optional (cmd "./scripts/test"))
+                      (let ((res (verify-test-suite #:command (or cmd "./scripts/test"))))
+                        (format #f "Tests: ~a (exit ~a)\n~a"
+                                (if (assoc-ref res 'passed?) "PASS" "FAIL")
+                                (assoc-ref res 'exit-code)
+                                (assoc-ref res 'output))))
+                    '((description . "Run project test suite and return verdict")
+                      (parameters .
+                       ((type . "object")
+                        (properties . ((cmd . ((type . "string") (description . "Test command")))))))))
+  (registry-attach! reg
+                    "history/summarize"
+                    (lambda ()
+                      (let ((summary (summarize-turns (get-llm-history)))
+                            (hist-file (getenv "BADB_HISTORY_FILE")))
+                        (if (and hist-file (not (string-null? hist-file)))
+                            (let ((file-summary (summarize-history-file hist-file)))
+                              (if file-summary
+                                  (string-append summary "\n\n--- " hist-file " ---\n" file-summary)
+                                  summary))
+                            summary)))
+                    '((description . "Summarize the current conversation: turn counts, token estimate, recent topics")
+                      (parameters . ((type . "object") (properties . ()) (required . #())))))
+  ;; Register MCP Kernel Features
+  (registry-attach! reg
+                    "mcp.list"
+                    (lambda () (mcp-manager-list-servers mcp-mgr))
+                    '((description . "List all configured MCP servers and their status")))
+  (registry-attach! reg
+                    "mcp.start"
+                    (lambda (name) (mcp-manager-start-server! mcp-mgr name))
+                    '((description . "Start a configured MCP server by name")))
+  (registry-attach! reg
+                    "mcp.stop"
+                    (lambda (name) (mcp-manager-stop-server! mcp-mgr name))
+                    '((description . "Stop a running MCP server by name")))
+  (registry-attach! reg
+                    "mcp.add"
+                    (lambda (name cmd args)
+                      (mcp-manager-add-server! mcp-mgr name cmd args #:auto-start #t))
+                    '((description . "Add a new MCP server specification and persist to config")))
+  (registry-attach! reg
+                    "mcp.remove"
+                    (lambda (name) (mcp-manager-remove-server! mcp-mgr name))
+                    '((description . "Remove an MCP server from configuration and stop it")))
+  (registry-attach! reg
+                    "mcp.tools"
+                    (lambda* (#:optional server-name) (mcp-manager-list-tools mcp-mgr server-name))
+                    '((description . "List available tools discovered from running MCP servers")))
+  (registry-attach! reg
+                    "mcp.call"
+                    (lambda (name-or-server tool-or-args . maybe-args)
+                      (if (pair? maybe-args)
+                          (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args (car maybe-args))
+                          (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args)))
+                    '((description . "Call a tool on an MCP server")))
+  ;; Register kernel-owned spec gate tools (Phase 2 dogfood)
+  (register-spec-tools! reg))
+
+(define (auto-start-mcp-servers! cfg mcp-mgr)
+  "Auto-start configured MCP servers that specify auto-start: #t."
+  (catch #t
+    (lambda ()
+      (for-each
+        (lambda (entry)
+          (let* ((name (if (pair? entry)
+                           (if (pair? (car entry))
+                               (assoc-ref entry 'name)
+                               (car entry))
+                           #f))
+                 (spec (if (pair? entry)
+                           (if (pair? (car entry))
+                               entry
+                               (cdr entry))
+                           '()))
+                 (auto? (or (assoc-ref spec 'auto-start) (assoc-ref spec 'auto-start?))))
+            (when (and name auto?)
+              (catch #t
+                (lambda () (mcp-manager-start-server! mcp-mgr name))
+                (lambda _ #f)))))
+        (badb-config-mcp-servers cfg)))
+    (lambda _ #f)))
+
+(define (execute-mcp-subcommand! mcp-mgr arg add-sys-msg! add-err-msg!)
+  "Dispatch /mcp subcommands (list, start, stop, restart, add, remove, tools)."
+  (let* ((tokens (split-words arg))
+         (subcmd (if (null? tokens) "list" (car tokens)))
+         (rest (if (null? tokens) '() (cdr tokens))))
+    (cond
+     ((or (string=? subcmd "list") (string=? subcmd "ls") (string-null? arg))
+      (let ((servers (mcp-manager-list-servers mcp-mgr)))
+        (if (null? servers)
+            (add-sys-msg!
+             "No MCP servers configured.\nUse /mcp add <name> <cmd> [args...] to register one.")
+            (let ((desc (map (lambda (s)
+                               (let* ((name (assoc-ref s 'name))
+                                      (cmd (assoc-ref s 'command))
+                                      (s-args (or (assoc-ref s 'args) '()))
+                                      (running? (assoc-ref s 'running?))
+                                      (pid (assoc-ref s 'pid))
+                                      (tools (assoc-ref s 'tools))
+                                      (t-count (if (list? tools) (length tools) 0))
+                                      (auto? (assoc-ref s 'auto-start))
+                                      (auto-str (if auto? " (auto-start)" ""))
+                                      (status (if running?
+                                                  (format #f "[RUNNING pid:~a tools:~a]" pid t-count)
+                                                  "[STOPPED]")))
+                                 (format #f "• ~a ~a~a\n  command: ~a ~a"
+                                         name status auto-str cmd (string-join s-args " "))))
+                             servers)))
+              (add-sys-msg! (string-append "Configured MCP Servers:\n" (string-join desc "\n")))))))
+     ((string=? subcmd "start")
+      (let ((name (and (pair? rest) (car rest))))
+        (if (or (not name) (string=? name "all"))
+            (let* ((servers (mcp-manager-list-servers mcp-mgr))
+                   (results (map (lambda (s)
+                                   (let ((s-name (assoc-ref s 'name))
+                                         (running? (assoc-ref s 'running?)))
+                                     (if running?
+                                         (format #f "• ~a: already running" s-name)
+                                         (call-with-values
+                                           (lambda () (mcp-manager-start-server! mcp-mgr s-name))
+                                           (lambda (_client tools err)
+                                             (if err
+                                                 (format #f "• ~a: error (~a)" s-name err)
+                                                 (format #f "• ~a: started (~a tools)" s-name (length tools))))))))
+                                 servers)))
+              (add-sys-msg! (string-append "Starting MCP servers:\n" (string-join results "\n"))))
+            (call-with-values
+              (lambda () (mcp-manager-start-server! mcp-mgr name))
+              (lambda (_client tools err)
+                (if err
+                    (add-err-msg! err)
+                    (add-sys-msg!
+                     (format #f "Started MCP server '~a' (~a tools available)." name (length tools)))))))))
+     ((string=? subcmd "stop")
+      (let ((name (and (pair? rest) (car rest))))
+        (if (or (not name) (string=? name "all"))
+            (let ((servers (mcp-manager-list-servers mcp-mgr)))
+              (mcp-manager-stop-all! mcp-mgr)
+              (add-sys-msg! (format #f "Stopped all MCP servers (~a total)." (length servers))))
+            (if (mcp-manager-stop-server! mcp-mgr name)
+                (add-sys-msg! (format #f "Stopped MCP server '~a'." name))
+                (add-err-msg! (format #f "MCP server '~a' was not running." name))))))
+     ((string=? subcmd "restart")
+      (let ((name (and (pair? rest) (car rest))))
+        (if (or (not name) (string=? name "all"))
+            (begin
+              (mcp-manager-stop-all! mcp-mgr)
+              (let* ((servers (mcp-manager-list-servers mcp-mgr))
+                     (results (map (lambda (s)
+                                     (let ((s-name (assoc-ref s 'name)))
+                                       (call-with-values
+                                         (lambda () (mcp-manager-start-server! mcp-mgr s-name))
+                                         (lambda (_client tools err)
+                                           (if err
+                                               (format #f "• ~a: error (~a)" s-name err)
+                                               (format #f "• ~a: restarted (~a tools)" s-name (length tools)))))))
+                                   servers)))
+                (add-sys-msg! (string-append "Restarted MCP servers:\n" (string-join results "\n")))))
+            (begin
+              (mcp-manager-stop-server! mcp-mgr name)
+              (call-with-values
+                (lambda () (mcp-manager-start-server! mcp-mgr name))
+                (lambda (_client tools err)
+                  (if err
+                      (add-err-msg! (format #f "Failed to restart '~a': ~a" name err))
+                      (add-sys-msg!
+                       (format #f "Restarted MCP server '~a' (~a tools available)."
+                               name (length tools))))))))))
+     ((string=? subcmd "add")
+      (if (< (length rest) 2)
+          (add-err-msg! "Usage: /mcp add <name> <command> [args...]")
+          (let ((name (car rest)) (cmd (cadr rest)) (cmd-args (cddr rest)))
+            (mcp-manager-add-server! mcp-mgr name cmd cmd-args #:auto-start #t)
+            (add-sys-msg!
+             (format #f "Added MCP server '~a' (~a ~a).\nSaved to ~a."
+                     name cmd (string-join cmd-args " ") (default-local-config-path))))))
+     ((or (string=? subcmd "remove") (string=? subcmd "rm"))
+      (if (null? rest)
+          (add-err-msg! "Usage: /mcp remove <name>")
+          (let ((name (car rest)))
+            (if (mcp-manager-remove-server! mcp-mgr name)
+                (add-sys-msg! (format #f "Removed MCP server '~a'. Configuration updated." name))
+                (add-err-msg! (format #f "MCP server '~a' not found." name))))))
+     ((string=? subcmd "tools")
+      (let* ((target-server (and (pair? rest) (car rest)))
+             (tools (mcp-manager-list-tools mcp-mgr target-server)))
+        (if (null? tools)
+            (add-sys-msg!
+             (if target-server
+                 (format #f "No tools available from server '~a' (is it running?)." target-server)
+                 "No MCP tools available. Make sure servers are running with /mcp start <name>."))
+            (let ((desc (map (lambda (t)
+                               (format #f "• ~a (~a): ~a"
+                                       (assoc-ref t 'name)
+                                       (assoc-ref t 'server)
+                                       (or (assoc-ref t 'description) "no description")))
+                             tools)))
+              (add-sys-msg! (string-append "Discovered MCP Tools:\n" (string-join desc "\n")))))))
+     (else
+      (add-err-msg!
+       (format #f "Unknown /mcp subcommand '~a'. Valid: list, start, stop, restart, add, remove, tools"
+               subcmd))))))
+
+(define (config-recorded-models cfg)
+  "Collect the model names recorded in CFG: the models of every provider
+preset, deduplicated in declaration order."
+  (delete-duplicates
+   (append-map
+    (lambda (p)
+      (let ((raw (get-prop (cdr p) 'models #f)))
+        (cond
+         ((string? raw) (list raw))
+         ((list? raw)
+          (filter-map
+           (lambda (m)
+             (cond
+              ((string? m) m)
+              ((and (pair? m) (string? (car m))) (car m))
+              ((and (pair? m) (string? (cdr m))) (cdr m))
+              (else #f)))
+           raw))
+         (else '()))))
+    (badb-config-providers cfg))
+   equal?))
+
+(define (fetch-live-models client)
+  "Query CLIENT's /models listing. Returns (values ids error): IDS is the
+non-empty list of available model id strings or #f, ERROR the failure
+description or #f. Never throws."
+  (catch #t
+    (lambda ()
+      (call-with-values
+        (lambda () (list-models client))
+        (lambda (ids err)
+          (if (or err (null? ids))
+              (values #f (or err "no models listed on endpoint"))
+              (values ids #f)))))
+    (lambda (key . args)
+      (values #f (format #f "model list request failed (~a): ~s" key args)))))
+
+(define (build-live-or-recorded-model-menu-items client cfg cur-model)
+  "Build the model menu items: live models from CLIENT when available,
+otherwise CUR-MODEL plus models recorded in CFG provider presets, plus
+the trailing manual entry item."
+  (call-with-values
+    (lambda () (fetch-live-models client))
+    (lambda (live-ids _live-err)
+      (if live-ids
+          (build-model-menu-items live-ids cur-model)
+          (let ((known (delete-duplicates (cons cur-model (config-recorded-models cfg)) equal?)))
+            (append
+             (map (lambda (m)
+                    (cons (cons m (if (string=? m cur-model)
+                                      "current model"
+                                      "recorded in config"))
+                          (cons 'set-model m)))
+                  known)
+             (list (cons (cons "Set model..." "Type a model name manually") 'prefill-model))))))))
+
+(define (endpoint-menu-items-for-config cfg)
+  "Build the endpoint menu items: configured provider presets in CFG plus
+a manual entry item."
+  (append
+   (map (lambda (p)
+          (let ((name (ensure-string (car p))))
+            (cons (cons name (or (get-prop (cdr p) 'endpoint #f) "provider preset"))
+                  (cons 'switch-provider name))))
+        (badb-config-providers cfg))
+   (list (cons (cons "Set endpoint..." "Type an endpoint URL manually")
+               'prefill-endpoint))))
+
+(define (theme-menu-items)
+  "Build the theme menu items from the built-in theme list."
+  (map (lambda (name)
+         (cons (cons name (or (assoc-ref %theme-descriptions name) "Built-in color theme"))
+               (cons 'set-theme name)))
+       (all-theme-names)))
+
+(define (guardrail-menu-items)
+  "Build the guardrail level menu items."
+  (map (lambda (entry)
+         (cons (cons (symbol->string (car entry)) (cdr entry))
+               (cons 'set-guardrail (car entry))))
+       %guardrail-levels))
+
+(define (config-menu-items-for-state cfg cur-model cur-endpoint policy)
+  "Build the top-level config menu items with live state woven into descriptions."
+  (list
+   (cons (cons "Model" (format #f "Switch active model (~a)" cur-model))
+         'open-model-menu)
+   (cons (cons "Endpoint" (format #f "Switch endpoint (~a)" cur-endpoint))
+         'open-endpoint-menu)
+   (cons (cons "Temperature"
+               (format #f "Set sampling temperature (~a)" (badb-config-model-temperature cfg)))
+         'prefill-temperature)
+   (cons (cons "Theme"
+               (format #f "Choose UI color theme (~a)" (or (badb-config-ui-theme cfg) "default")))
+         'open-theme-menu)
+   (cons (cons "Guardrail"
+               (format #f "Set policy level (~a)" (guardrail-policy-level policy)))
+         'open-guardrail-menu)
+   (cons (cons "Reload" "Reload configuration from disk") 'config-reload)
+   (cons (cons "Save" "Save configuration to disk") 'config-save)))
+
+(define (format-config-summary cfg cur-model cur-endpoint cur-journal-path)
+  "Format the /config show status report."
+  (let* ((global-path (default-global-config-path))
+         (local-path (default-local-config-path))
+         (global? (file-exists? global-path))
+         (local? (file-exists? local-path))
+         (mcp-count (length (badb-config-mcp-servers cfg))))
+    (format #f
+            "badb Configuration:\n~
+            • Model: ~a\n~
+            • Endpoint: ~a\n~
+            • Temperature: ~a\n~
+            • Journal Path: ~a\n~
+            • Global Config: ~a (~a)\n~
+            • Local Config:  ~a (~a)\n~
+            • MCP Servers Configured: ~a"
+            cur-model
+            cur-endpoint
+            (badb-config-model-temperature cfg)
+            cur-journal-path
+            global-path
+            (if global? "active" "not found")
+            local-path
+            (if local? "active" "not found")
+            mcp-count)))
+
+(define (format-provider-presets provs)
+  "Format the list of configured provider presets for /provider."
+  (if (null? provs)
+      "No provider presets configured.\nDefine presets under (options (providers ...)) in .badb/config.scm."
+      (string-append "Configured Provider Presets:\n"
+                     (string-join
+                      (map (lambda (p)
+                             (format #f "• ~a -> ~a"
+                                     (car p)
+                                     (or (get-prop (cdr p) 'endpoint #f) "(no endpoint)")))
+                           provs)
+                      "\n")
+                     "\nUsage: /provider <name> to switch the active preset.")))
+
+(define (format-rules-and-tree workspace-dir)
+  "Format discovered project rules and workspace file tree for /rules."
+  (let* ((rules (discover-project-rules workspace-dir))
+         (tree (build-workspace-file-tree workspace-dir #:max-depth 2 #:max-files 20))
+         (rule-desc (if (null? rules)
+                        "No project rule files found."
+                        (string-join
+                         (map (lambda (r) (format #f "• ~a" (assoc-ref r 'path))) rules)
+                         "\n"))))
+    (format #f "Discovered Project Rules:\n~a\n\nWorkspace Tree:\n~a" rule-desc tree)))
+
+(define (format-context-metrics compactor llm-history messages)
+  "Format conversation context metrics for /context."
+  (let* ((tokens (estimate-conversation-tokens llm-history))
+         (ceiling (- (context-compactor-max-tokens compactor)
+                     (context-compactor-reserve-tokens compactor)))
+         (needed? (compaction-needed? compactor llm-history)))
+    (format #f
+            "Conversation Context Metrics:\n• LLM Message Count: ~a\n• UI Cards Count: ~a\n• Estimated Tokens: ~a / ~a ceiling\n• Status: ~a"
+            (length llm-history)
+            (length messages)
+            tokens
+            ceiling
+            (if needed? "COMPACTION REQUIRED" "NORMAL"))))
+
+(define (format-usage-report compactor llm-history prompt-tokens completion-tokens estimated-tokens turns)
+  "Format per-session token usage report for /usage."
+  (let* ((used (estimate-conversation-tokens llm-history))
+         (ceiling (context-compactor-effective-ceiling compactor))
+         (k (lambda (n) (format #f "~,1fk" (/ n 1000.0))))
+         (est-suffix (if (> estimated-tokens 0)
+                         (format #f " (+~a estimated)" estimated-tokens)
+                         "")))
+    (format #f
+            "Session token usage:\n• Prompt tokens: ~a~a\n• Completion tokens: ~a\n• Turns: ~a\n• Context: ~a/~a tokens (estimated)"
+            prompt-tokens
+            est-suffix
+            completion-tokens
+            turns
+            (if (number? used) (k used) "?")
+            (if (> ceiling 0) (k ceiling) "?"))))
+
+(define (format-features-list reg)
+  "Format active registry features for /features."
+  (let ((feats (registry-list reg)))
+    (if (null? feats)
+        "No features currently registered in kernel."
+        (string-append
+         "Registered Features:\n"
+         (string-join
+          (map (lambda (f)
+                 (format #f "• ~a (~a)" (assoc-ref f 'id) (assoc-ref f 'metadata)))
+               feats)
+          "\n")))))
+
+(define (format-journal-recent jrn)
+  "Format recent checkpoint provenance entries for /journal."
+  (let ((entries (journal-entries jrn)))
+    (if (null? entries)
+        "Journal is empty (0 checkpoints on disk)."
+        (let* ((recent (take-right entries (min 8 (length entries))))
+               (formatted (map (lambda (e)
+                                 (format #f "  #~a: [~a] ~a -> ~a (~a)"
+                                         (assoc-ref e "iteration")
+                                         (assoc-ref e "checkpoint")
+                                         (assoc-ref e "feature-id")
+                                         (assoc-ref e "status")
+                                         (assoc-ref e "timestamp")))
+                               recent)))
+          (string-append "Recent Checkpoints:\n" (string-join formatted "\n"))))))
+
+(define %tui-help-message
+  (string-append "Available Commands:\n"
+                 "  /help             Display this help message\n"
+                 "  /model [NAME]     Switch LLM model; no argument opens a menu\n"
+                 "  /models           List models available on the endpoint\n"
+                 "  /endpoint [URL]   Switch endpoint URL; no argument opens a menu\n"
+                 "  /provider [NAME]  Switch or inspect provider preset\n"
+                 "  /mcp [CMD]        Manage MCP servers (list, start, stop, add, remove, tools)\n"
+                 "  /config [CMD]     Inspect, reload, save, set configuration; no argument opens a menu\n"
+                 "  /guardrail [LVL]  Set policy level (disabled, permissive, cautious, strict, paranoid)\n"
+                 "  /compact          Compact conversation history\n"
+                 "  /resume           Resume a previous chat session from disk\n"
+                 "  /checkpoint [DSC] Create a rollback checkpoint snapshot\n"
+                 "  /rollback [ID]    Revert to latest or specified checkpoint\n"
+                 "  /rules            View discovered project rules & workspace tree\n"
+                 "  /context          View conversation token metrics\n"
+                 "  /usage            Show per-session token usage report\n"
+                 "  /steer [TEXT]     Queue steering text for the running or next agent run\n"
+                 "  /interrupt        Halt the agent at its next iteration boundary\n"
+                 "  /features         List active registry features\n"
+                 "  /journal          View recent checkpoint provenance\n"
+                 "  /test             Run the bootstrap test suite\n"
+                 "  /clear            Clear chat history\n"
+                 "  /quit, /exit      Exit TUI\n"
+                 "  /dump [PATH]      Export the conversation to a text file\n"
+                 "  !<command>        Execute shell command\n"
+                 "  ,<expr> or (..)   Evaluate Scheme code\n"
+                 "  ctrl+up / ctrl+down   Select a message block\n"
+                 "  ctrl+e            Collapse or expand the selected message\n"
+                 "  while agent runs  type to steer it: enter sends, ctrl+i interrupts\n"
+                 "  menus             up/down move, enter apply, esc close (/config, /model, /endpoint)\n"
+                 "  /sh <cmd>         Alias for shell command\n"
+                 "  /eval <expr>      Alias for Scheme eval"))
+
 (define*
   (run-tui #:key
            (endpoint #f)
@@ -1894,7 +2431,18 @@ that verdicts come only from kernel subprocess replay."
        (cursor-shape (nref 'cursor-shape))
        (drain-mouse-events (nref 'drain-mouse-events))
        (KEY_FIND (nref 'KEY_FIND))
-       (KEY_OPEN (nref 'KEY_OPEN)))
+       (KEY_OPEN (nref 'KEY_OPEN))
+       ;; Non-blocking input support: the (badb nc) backend exports nodelay!
+       ;; (kept also as the alias nodelay). When neither resolves, mid-run
+       ;; polling is disabled and steering stays available between runs
+       ;; through /steer and /interrupt.
+       (nodelay-proc
+         (or (catch #t (lambda () (nref 'nodelay!)) (lambda _ #f))
+             (catch #t (lambda () (nref 'nodelay)) (lambda _ #f))))
+       (steering-err-val
+         (catch #t (lambda () (nref 'ERR)) (lambda _ -1)))
+       (ctrl-up-key 0)
+       (ctrl-down-key 0))
     ;; Initialize Configuration & Kernel State
     (define cfg (or config (load-config)))
     ;; Resolve the active UI theme from the configuration, falling back to
@@ -1924,230 +2472,10 @@ that verdicts come only from kernel subprocess replay."
             (make-rollback-manager #:workspace-dir (getcwd) #:registry reg #:journal jrn))
     (define verifier (make-verifier #:check-syntax? #t #:run-tests? #f))
     (define composer (make-prompt-composer))
-    ;; Register Built-in Autonomous Agent Tools
-    (registry-attach! reg
-                      "read_file"
-                      (lambda (path)
-                        (catch #t
-                          (lambda ()
-                            (if (file-exists? path)
-                              (call-with-input-file path read-string)
-                              (format #f "Error: file '~a' does not exist" path)))
-                          (lambda (k . a)
-                            (format #f "Error reading file: ~s" a))))
-                      '((description . "Read the complete contents of a file at PATH")
-                        (parameters .
-                         ((type . "object")
-                          (properties .
-                           ((path . ((type . "string") (description . "Path to the file to read")))))
-                          (required . #("path"))))))
-    (registry-attach! reg
-                      "write_file"
-                      (lambda (path content)
-                        (catch #t
-                          (lambda ()
-                            (create-checkpoint! rollback-mgr
-                                                (format #f "pre-write: ~a" path)
-                                                #:files
-                                                (list path))
-                            (let
-                                ((v-res (verify-action verifier #:code content #:file path)))
-                              (if (assoc-ref v-res 'passed?)
-                                (begin
-                                  (call-with-output-file path
-                                                         (lambda (p)
-                                                           (display content p)))
-                                  (format #f
-                                          "Successfully wrote ~a characters to '~a'"
-                                          (string-length content)
-                                          path))
-                                (begin (rollback-latest! rollback-mgr)
-                                       (format #f "Write aborted: verification failed: ~s" (assoc-ref v-res 'failures))))))
-                          (lambda (k . a)
-                            (format #f "Error writing file: ~s" a))))
-                      '((description . "Write CONTENT to a file at PATH")
-                        (parameters .
-                         ((type . "object")
-                          (properties .
-                           ((path . ((type . "string") (description . "File path to write")))
-                            (content . ((type . "string") (description . "Content to write")))))
-                          (required . #("path" "content"))))))
-    (define (exec-cmd-impl cmd-or-arg)
-            (let
-                ((cmd
-                   (cond
-                     ((string? cmd-or-arg) cmd-or-arg)
-                     ((and (pair? cmd-or-arg) (pair? (car cmd-or-arg)))
-                       (or (assoc-ref cmd-or-arg "command")
-                           (assoc-ref cmd-or-arg 'command)
-                           (assoc-ref cmd-or-arg "cmd")
-                           (assoc-ref cmd-or-arg 'cmd)
-                           (cdar cmd-or-arg)))
-                     (else (object->string cmd-or-arg)))))
-              (call-with-values
-                (lambda ()
-                  (execute-shell-command cmd))
-                (lambda (out exit-val err)
-                  (if err
-                    (format #f "Error: ~a" err)
-                    (format #f "[exit ~a]\n~a" exit-val out))))))
-    (registry-attach! reg
-                      "execute_command"
-                      exec-cmd-impl
-                      '((description . "Execute a shell command and return output and exit status")
-                        (parameters .
-                         ((type . "object")
-                          (properties .
-                           ((cmd . ((type . "string") (description . "Shell command to run")))))
-                          (required . #("cmd"))))))
-    (registry-attach! reg
-                      "bash"
-                      exec-cmd-impl
-                      '((description .
-                         "Execute a bash shell command and return stdout/stderr and exit code")
-                        (parameters .
-                         ((type . "object")
-                          (properties .
-                           ((command . ((type . "string") (description . "Bash command line")))))
-                          (required . #("command"))))))
-    (registry-attach! reg
-                      "sh"
-                      exec-cmd-impl
-                      '((description . "Execute a POSIX shell command and return output and exit code")
-                        (parameters .
-                         ((type . "object")
-                          (properties .
-                           ((command . ((type . "string") (description . "Shell command line")))))
-                          (required . #("command"))))))
-    (registry-attach! reg
-                      "checkpoint_create"
-                      (lambda (description)
-                        (let
-                            ((c (create-checkpoint! rollback-mgr (or description "agent-checkpoint"))))
-                          (format #f
-                                  "Created checkpoint: ~a (~a)"
-                                  (checkpoint-id c)
-                                  (checkpoint-description c))))
-                      '((description .
-                         "Create a rollback checkpoint for current workspace files and registry")
-                        (parameters .
-                         ((type . "object")
-                          (properties .
-                           ((description . ((type . "string") (description . "Checkpoint description")))))))))
-    (registry-attach! reg
-                      "checkpoint_rollback"
-                      (lambda* (#:optional id)
-                               (let
-                                   ((res
-                                      (if (and id (not (string-null? id)))
-                                        (rollback-to-checkpoint! rollback-mgr id)
-                                        (rollback-latest! rollback-mgr))))
-                                 (format #f "Rollback: ~a" (assoc-ref res 'status))))
-                      '((description . "Rollback to specified or latest checkpoint")
-                        (parameters .
-                         ((type . "object")
-                          (properties . ((id . ((type . "string") (description . "Checkpoint ID")))))))))
-    (registry-attach! reg
-                      "run_tests"
-                      (lambda* (#:optional (cmd "./scripts/test"))
-                               (let
-                                   ((res (verify-test-suite #:command (or cmd "./scripts/test"))))
-                                 (format #f
-                                         "Tests: ~a (exit ~a)\n~a"
-                                         (if (assoc-ref res 'passed?)
-                                           "PASS"
-                                           "FAIL")
-                                         (assoc-ref res 'exit-code)
-                                         (assoc-ref res 'output))))
-                      '((description . "Run project test suite and return verdict")
-                        (parameters .
-                         ((type . "object")
-                          (properties . ((cmd . ((type . "string") (description . "Test command")))))))))
-    (registry-attach! reg
-                      "history/summarize"
-                      (lambda ()
-                        (let
-                            ((summary (summarize-turns llm-history))
-                             (hist-file (getenv "BADB_HISTORY_FILE")))
-                          (if
-                              (and hist-file (not (string-null? hist-file)))
-                            (let
-                                ((file-summary (summarize-history-file hist-file)))
-                              (if file-summary
-                                (string-append summary "\n\n--- " hist-file " ---\n" file-summary)
-                                summary))
-                            summary)))
-                      '((description .
-                         "Summarize the current conversation: turn counts, token estimate, recent topics")
-                        (parameters . ((type . "object") (properties . ()) (required . #())))))
-    ;; Register MCP Kernel Features
-    (registry-attach! reg
-                      "mcp.list"
-                      (lambda ()
-                        (mcp-manager-list-servers mcp-mgr))
-                      '((description . "List all configured MCP servers and their status")))
-    (registry-attach! reg
-                      "mcp.start"
-                      (lambda (name)
-                        (mcp-manager-start-server! mcp-mgr name))
-                      '((description . "Start a configured MCP server by name")))
-    (registry-attach! reg
-                      "mcp.stop"
-                      (lambda (name)
-                        (mcp-manager-stop-server! mcp-mgr name))
-                      '((description . "Stop a running MCP server by name")))
-    (registry-attach! reg
-                      "mcp.add"
-                      (lambda (name cmd args)
-                        (mcp-manager-add-server! mcp-mgr name cmd args #:auto-start #t))
-                      '((description . "Add a new MCP server specification and persist to config")))
-    (registry-attach! reg
-                      "mcp.remove"
-                      (lambda (name)
-                        (mcp-manager-remove-server! mcp-mgr name))
-                      '((description . "Remove an MCP server from configuration and stop it")))
-    (registry-attach! reg
-                      "mcp.tools"
-                      (lambda* (#:optional server-name) (mcp-manager-list-tools mcp-mgr server-name))
-                      '((description . "List available tools discovered from running MCP servers")))
-    (registry-attach! reg
-                      "mcp.call"
-                      (lambda
-                          (name-or-server tool-or-args . maybe-args)
-                        (if (pair? maybe-args)
-                          (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args (car maybe-args))
-                          (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args)))
-                      '((description . "Call a tool on an MCP server")))
-    ;; Register kernel-owned spec gate tools (Phase 2 dogfood)
-    (register-spec-tools! reg)
-    ;; Auto-start configured MCP servers with auto-start: #t
-    (catch #t
-      (lambda ()
-        (for-each
-          (lambda (entry)
-            (let*
-                ((name
-                   (if (pair? entry)
-                     (if (pair? (car entry))
-                       (assoc-ref entry 'name)
-                       (car entry))
-                     #f))
-                 (spec
-                   (if (pair? entry)
-                     (if (pair? (car entry))
-                       entry
-                       (cdr entry))
-                     '()))
-                 (auto? (or (assoc-ref spec 'auto-start) (assoc-ref spec 'auto-start?))))
-              (when (and name auto?)
-                (catch #t
-                  (lambda ()
-                    (mcp-manager-start-server! mcp-mgr name))
-                  (lambda _
-                    #f)))))
-          (badb-config-mcp-servers cfg)))
-      (lambda _
-        #f))
+    ;; Register Built-in Autonomous Agent Tools & Auto-start MCP servers
+    (define llm-history '())
+    (register-builtin-tui-tools! reg rollback-mgr verifier mcp-mgr (lambda () llm-history))
+    (auto-start-mcp-servers! cfg mcp-mgr)
     (define client
             (make-model-client #:endpoint
                                cur-endpoint
@@ -2184,7 +2512,7 @@ that verdicts come only from kernel subprocess replay."
                                 "• While the agent runs, type to steer it: enter sends · ctrl+i interrupts (applied at the next iteration)\n"
                                 "• ! shell · , scheme · / command palette · ctrl+↑/↓ select a block · ctrl+e collapse it\n"
                                 "• The status line up top and the keymap below stay live; /help for details")))))
-    (define llm-history (list (make-system-turn)))
+    (set! llm-history (list (make-system-turn)))
     ;; Session log for /resume: the whole llm-history is rewritten to
     ;; this JSONL file after every chat turn (system prompt first).
     (define session-file (session-file-path))
@@ -2249,28 +2577,6 @@ that verdicts come only from kernel subprocess replay."
     (define steering-queue (make-steering-queue))
     (define steering-buffer "")
     (define interrupt-requested? #f)
-    ;; Non-blocking input support: the (badb nc) backend exports nodelay!
-    ;; (kept also as the alias nodelay). When neither resolves, mid-run
-    ;; polling is disabled and steering stays available between runs
-    ;; through /steer and /interrupt.
-    (define nodelay-proc
-            (or
-              (catch #t
-                (lambda ()
-                  (nref 'nodelay!))
-                (lambda _
-                  #f))
-              (catch #t
-                (lambda ()
-                  (nref 'nodelay))
-                (lambda _
-                  #f))))
-    (define steering-err-val
-            (catch #t
-              (lambda ()
-                (nref 'ERR))
-              (lambda _
-                -1)))
     ;; Message appending helpers
     (define (add-msg! role content)
             (set! messages (append messages (list `((role . ,role) (content . ,content))))))
@@ -2342,11 +2648,10 @@ into the session counters and mark the current turn exactly accounted."
     ;; point at any message, but only collapsible ones (with content or
     ;; thoughts) change state; the toggle itself is a pure alist update.
     (define (toggle-selected-collapse!)
-            (let
-                ((idx (min msgsel-index (- (length messages) 1))))
-              (let ((msg (list-ref messages idx)))
-                (when (message-collapsible? msg)
-                  (set! messages (replace-nth messages idx (message-toggle-collapsed msg)))))))
+            (let* ((idx (min msgsel-index (- (length messages) 1)))
+                   (msg (list-ref messages idx)))
+              (when (message-collapsible? msg)
+                (set! messages (replace-nth messages idx (message-toggle-collapsed msg))))))
     (define (record-history! input mode)
             "Record a submitted INPUT under MODE in the shared input history
 and append it to the persistent history journal file."
@@ -3280,186 +3585,7 @@ placeholder flag, so the next streamed call starts a fresh card."
             (render!))
     ;; Handle MCP subcommands
     (define (handle-mcp-cmd! arg)
-            (let*
-                ((tokens (split-words arg))
-                 (subcmd
-                   (if (null? tokens)
-                     "list"
-                     (car tokens)))
-                 (rest
-                   (if (null? tokens)
-                     '()
-                     (cdr tokens))))
-              (cond
-                ((or (string=? subcmd "list") (string=? subcmd "ls") (string-null? arg))
-                  (let
-                      ((servers (mcp-manager-list-servers mcp-mgr)))
-                    (if (null? servers)
-                      (add-sys-msg!
-                        "No MCP servers configured.\nUse /mcp add <name> <cmd> [args...] to register one.")
-                      (let
-                          ((desc
-                             (map
-                               (lambda (s)
-                                 (let*
-                                     ((name (assoc-ref s 'name))
-                                      (cmd (assoc-ref s 'command))
-                                      (s-args (or (assoc-ref s 'args) '()))
-                                      (running? (assoc-ref s 'running?))
-                                      (pid (assoc-ref s 'pid))
-                                      (tools (assoc-ref s 'tools))
-                                      (t-count
-                                        (if (list? tools)
-                                          (length tools)
-                                          0))
-                                      (auto? (assoc-ref s 'auto-start))
-                                      (auto-str
-                                        (if auto?
-                                          " (auto-start)"
-                                          ""))
-                                      (status
-                                        (if running?
-                                          (format #f "[RUNNING pid:~a tools:~a]" pid t-count)
-                                          "[STOPPED]")))
-                                   (format #f
-                                           "• ~a ~a~a\n  command: ~a ~a"
-                                           name
-                                           status
-                                           auto-str
-                                           cmd
-                                           (string-join s-args " "))))
-                               servers)))
-                        (add-sys-msg!
-                          (string-append "Configured MCP Servers:\n" (string-join desc "\n")))))))
-                ((string=? subcmd "start")
-                  (let ((name (and (pair? rest) (car rest))))
-                    (cond
-                      ((or (not name) (string=? name "all"))
-                        (let*
-                            ((servers (mcp-manager-list-servers mcp-mgr))
-                             (results
-                               (map
-                                 (lambda (s)
-                                   (let
-                                       ((s-name (assoc-ref s 'name)) (running? (assoc-ref s 'running?)))
-                                     (if running?
-                                       (format #f "• ~a: already running" s-name)
-                                       (call-with-values
-                                         (lambda ()
-                                           (mcp-manager-start-server! mcp-mgr s-name))
-                                         (lambda (client tools err)
-                                           (if err
-                                             (format #f "• ~a: error (~a)" s-name err)
-                                             (format #f "• ~a: started (~a tools)" s-name (length tools))))))))
-                                 servers)))
-                          (add-sys-msg!
-                            (string-append "Starting MCP servers:\n" (string-join results "\n")))))
-                      (else
-                        (call-with-values
-                          (lambda ()
-                            (mcp-manager-start-server! mcp-mgr name))
-                          (lambda (client tools err)
-                            (if err
-                              (add-err-msg! err)
-                              (add-sys-msg!
-                                (format #f "Started MCP server '~a' (~a tools available)." name (length tools))))))))))
-                ((string=? subcmd "stop")
-                  (let ((name (and (pair? rest) (car rest))))
-                    (cond
-                      ((or (not name) (string=? name "all"))
-                        (let
-                            ((servers (mcp-manager-list-servers mcp-mgr)))
-                          (mcp-manager-stop-all! mcp-mgr)
-                          (add-sys-msg!
-                            (format #f "Stopped all MCP servers (~a total)." (length servers)))))
-                      (else
-                        (let
-                            ((res (mcp-manager-stop-server! mcp-mgr name)))
-                          (if res
-                            (add-sys-msg! (format #f "Stopped MCP server '~a'." name))
-                            (add-err-msg! (format #f "MCP server '~a' was not running." name))))))))
-                ((string=? subcmd "restart")
-                  (let ((name (and (pair? rest) (car rest))))
-                    (cond
-                      ((or (not name) (string=? name "all"))
-                        (mcp-manager-stop-all! mcp-mgr)
-                        (let*
-                            ((servers (mcp-manager-list-servers mcp-mgr))
-                             (results
-                               (map
-                                 (lambda (s)
-                                   (let ((s-name (assoc-ref s 'name)))
-                                     (call-with-values
-                                       (lambda ()
-                                         (mcp-manager-start-server! mcp-mgr s-name))
-                                       (lambda (client tools err)
-                                         (if err
-                                           (format #f "• ~a: error (~a)" s-name err)
-                                           (format #f "• ~a: restarted (~a tools)" s-name (length tools)))))))
-                                 servers)))
-                          (add-sys-msg!
-                            (string-append "Restarted MCP servers:\n" (string-join results "\n")))))
-                      (else (mcp-manager-stop-server! mcp-mgr name)
-                            (call-with-values
-                              (lambda ()
-                                (mcp-manager-start-server! mcp-mgr name))
-                              (lambda (client tools err)
-                                (if err
-                                  (add-err-msg! (format #f "Failed to restart '~a': ~a" name err))
-                                  (add-sys-msg!
-                                    (format #f
-                                            "Restarted MCP server '~a' (~a tools available)."
-                                            name
-                                            (length tools))))))))))
-                ((string=? subcmd "add")
-                  (if (< (length rest) 2)
-                    (add-err-msg! "Usage: /mcp add <name> <command> [args...]")
-                    (let
-                        ((name (car rest)) (cmd (cadr rest)) (cmd-args (cddr rest)))
-                      (mcp-manager-add-server! mcp-mgr name cmd cmd-args #:auto-start #t)
-                      (add-sys-msg!
-                        (format #f
-                                "Added MCP server '~a' (~a ~a).\nSaved to ~a."
-                                name
-                                cmd
-                                (string-join cmd-args " ")
-                                (default-local-config-path))))))
-                ((or (string=? subcmd "remove") (string=? subcmd "rm"))
-                  (if (null? rest)
-                    (add-err-msg! "Usage: /mcp remove <name>")
-                    (let*
-                        ((name (car rest)) (removed? (mcp-manager-remove-server! mcp-mgr name)))
-                      (if removed?
-                        (add-sys-msg!
-                          (format #f "Removed MCP server '~a'. Configuration updated." name))
-                        (add-err-msg! (format #f "MCP server '~a' not found." name))))))
-                ((string=? subcmd "tools")
-                  (let*
-                      ((target-server (and (pair? rest) (car rest)))
-                       (tools (mcp-manager-list-tools mcp-mgr target-server)))
-                    (if (null? tools)
-                      (add-sys-msg!
-                        (if target-server
-                          (format #f
-                                  "No tools available from server '~a' (is it running?)."
-                                  target-server)
-                          "No MCP tools available. Make sure servers are running with /mcp start <name>."))
-                      (let
-                          ((desc
-                             (map
-                               (lambda (t)
-                                 (let
-                                     ((tname (assoc-ref t 'name))
-                                      (sname (assoc-ref t 'server))
-                                      (tdesc (or (assoc-ref t 'description) "no description")))
-                                   (format #f "• ~a (~a): ~a" tname sname tdesc)))
-                               tools)))
-                        (add-sys-msg! (string-append "Discovered MCP Tools:\n" (string-join desc "\n")))))))
-                (else
-                  (add-err-msg!
-                    (format #f
-                            "Unknown /mcp subcommand '~a'. Valid: list, start, stop, restart, add, remove, tools"
-                            subcmd))))))
+            (execute-mcp-subcommand! mcp-mgr arg add-sys-msg! add-err-msg!))
     ;; Handle configuration subcommands
     (define (handle-config-cmd! arg)
             (let*
@@ -3474,38 +3600,12 @@ placeholder flag, so the next streamed call starts a fresh card."
                      (cdr tokens))))
               (cond
                 ((string-null? arg)
-                  (set! active-menu (make-menu "Configuration" (config-menu-items))))
+                  (set! active-menu
+                        (make-menu "Configuration"
+                                   (config-menu-items-for-state cfg cur-model cur-endpoint policy))))
                 ((string=? subcmd "show")
-                  (let*
-                      ((global-path (default-global-config-path))
-                       (local-path (default-local-config-path))
-                       (global? (file-exists? global-path))
-                       (local? (file-exists? local-path))
-                       (mcp-count (length (badb-config-mcp-servers cfg)))
-                       (info
-                         (format #f
-                                 "badb Configuration:\n~
-                                • Model: ~a\n~
-                                • Endpoint: ~a\n~
-                                • Temperature: ~a\n~
-                                • Journal Path: ~a\n~
-                                • Global Config: ~a (~a)\n~
-                                • Local Config:  ~a (~a)\n~
-                                • MCP Servers Configured: ~a"
-                                 cur-model
-                                 cur-endpoint
-                                 (badb-config-model-temperature cfg)
-                                 cur-journal-path
-                                 global-path
-                                 (if global?
-                                   "active"
-                                   "not found")
-                                 local-path
-                                 (if local?
-                                   "active"
-                                   "not found")
-                                 mcp-count)))
-                    (add-sys-msg! info)))
+                  (add-sys-msg!
+                    (format-config-summary cfg cur-model cur-endpoint cur-journal-path)))
                 ((string=? subcmd "reload")
                   (catch #t
                     (lambda ()
@@ -3605,89 +3705,14 @@ refreshing the client, saving, and reporting the outcome."
             "List configured provider presets or switch to the one named in ARG."
             (let ((trimmed (string-trim-both arg)))
               (if (string-null? trimmed)
-                (let ((provs (badb-config-providers cfg)))
-                  (if (null? provs)
-                    (add-sys-msg!
-                      "No provider presets configured.\nDefine presets under (options (providers ...)) in .badb/config.scm.")
-                    (add-sys-msg!
-                      (string-append "Configured Provider Presets:\n"
-                                     (string-join
-                                       (map
-                                         (lambda (p)
-                                           (format #f
-                                                   "• ~a -> ~a"
-                                                   (car p)
-                                                   (or (get-prop (cdr p) 'endpoint #f) "(no endpoint)")))
-                                         provs)
-                                       "\n")
-                                     "\nUsage: /provider <name> to switch the active preset."))))
+                (add-sys-msg! (format-provider-presets (badb-config-providers cfg)))
                 (switch-provider-preset! trimmed))))
-    (define (config-recorded-models)
-            "Collect the model names recorded in the configuration: the
-models of every provider preset, deduplicated in declaration order."
-            (delete-duplicates
-              (append-map
-                (lambda (p)
-                  (let ((raw (get-prop (cdr p) 'models #f)))
-                    (cond
-                      ((string? raw) (list raw))
-                      ((list? raw)
-                        (filter-map
-                          (lambda (m)
-                            (cond
-                              ((string? m) m)
-                              ((and (pair? m) (string? (car m))) (car m))
-                              ((and (pair? m) (string? (cdr m))) (cdr m))
-                              (else #f)))
-                          raw))
-                      (else '()))))
-                (badb-config-providers cfg))
-              equal?))
-    (define (fetch-live-models)
-            "Query the active endpoint's /models listing. Returns (values
-ids error): IDS is the non-empty list of available model id strings or #f,
-ERROR the failure description or #f. Never throws."
-            (catch #t
-              (lambda ()
-                (call-with-values
-                  (lambda ()
-                    (list-models client))
-                  (lambda (ids err)
-                    (if (or err (null? ids))
-                      (values #f (or err "no models listed on endpoint"))
-                      (values ids #f)))))
-              (lambda (key . args)
-                (values #f (format #f "model list request failed (~a): ~s" key args)))))
-    (define (model-menu-items)
-            "Build the model menu items: the models actually available on
-the active endpoint when its listing can be fetched, otherwise the active
-model plus the models recorded in provider presets; the manual entry item
-always trails the list."
-            (call-with-values
-              (lambda ()
-                (fetch-live-models))
-              (lambda (live-ids live-err)
-                (if live-ids
-                  (build-model-menu-items live-ids cur-model)
-                  (let
-                      ((known (delete-duplicates (cons cur-model (config-recorded-models)) equal?)))
-                    (append
-                      (map
-                        (lambda (m)
-                          (cons
-                            (cons m
-                                  (if (string=? m cur-model)
-                                    "current model"
-                                    "recorded in config"))
-                            (cons 'set-model m)))
-                        known)
-                      (list (cons (cons "Set model..." "Type a model name manually") 'prefill-model))))))))
     (define (handle-models-cmd!)
             "Show the models available on the active endpoint as a system
 message, or a clear error notice when the listing fails."
             (call-with-values
               (lambda ()
-                (fetch-live-models))
+                (fetch-live-models client))
               (lambda (ids err)
                 (if ids
                   (add-sys-msg!
@@ -3702,64 +3727,6 @@ message, or a clear error notice when the listing fails."
                                        ids)
                                      "\n")))
                   (add-err-msg! (format #f "Failed to list models: ~a" err))))))
-    (define (endpoint-menu-items)
-            "Build the endpoint menu items: configured provider presets plus
-a manual entry item."
-            (append
-              (map
-                (lambda (p)
-                  (let ((name (ensure-string (car p))))
-                    (cons
-                      (cons name (or (get-prop (cdr p) 'endpoint #f) "provider preset"))
-                      (cons 'switch-provider name))))
-                (badb-config-providers cfg))
-              (list
-                (cons
-                  (cons "Set endpoint..." "Type an endpoint URL manually")
-                  'prefill-endpoint))))
-    (define (theme-menu-items)
-            "Build the theme menu items from the built-in theme list."
-            (map
-              (lambda (name)
-                (cons
-                  (cons name (or (assoc-ref %theme-descriptions name) "Built-in color theme"))
-                  (cons 'set-theme name)))
-              (all-theme-names)))
-    (define (guardrail-menu-items)
-            "Build the guardrail level menu items; selecting one applies the
-level exactly like /guardrail <level> does."
-            (map
-              (lambda (entry)
-                (cons
-                  (cons (symbol->string (car entry)) (cdr entry))
-                  (cons 'set-guardrail (car entry))))
-              %guardrail-levels))
-    (define (config-menu-items)
-            "Build the top-level config menu items with live state woven
-into the descriptions."
-            (list
-              (cons
-                (cons "Model" (format #f "Switch active model (~a)" cur-model))
-                'open-model-menu)
-              (cons
-                (cons "Endpoint" (format #f "Switch endpoint (~a)" cur-endpoint))
-                'open-endpoint-menu)
-              (cons
-                (cons "Temperature"
-                      (format #f "Set sampling temperature (~a)" (badb-config-model-temperature cfg)))
-                'prefill-temperature)
-              (cons
-                (cons "Theme"
-                      (format #f
-                              "Choose UI color theme (~a)"
-                              (or (badb-config-ui-theme cfg) "default")))
-                'open-theme-menu)
-              (cons
-                (cons "Guardrail"
-                      (format #f "Set policy level (~a)" (guardrail-policy-level policy)))
-                'open-guardrail-menu)
-              (cons (cons "Reload" "Reload configuration from disk") 'config-reload)
-              (cons (cons "Save" "Save configuration to disk") 'config-save)))
     (define (apply-menu-selection! item)
             "Apply the action data carried by the selected menu ITEM, closing
 any open menu first; submenu actions open the next menu in its place."
@@ -3769,10 +3736,16 @@ any open menu first; submenu actions open the next menu in its place."
                 ((symbol? action)
                   (case action
                     ((open-config-menu)
-                      (set! active-menu (make-menu "Configuration" (config-menu-items))))
-                    ((open-model-menu) (set! active-menu (make-menu "Model" (model-menu-items))))
+                      (set! active-menu
+                            (make-menu "Configuration"
+                                       (config-menu-items-for-state cfg cur-model cur-endpoint policy))))
+                    ((open-model-menu)
+                      (set! active-menu
+                            (make-menu "Model"
+                                       (build-live-or-recorded-model-menu-items client cfg cur-model))))
                     ((open-endpoint-menu)
-                      (set! active-menu (make-menu "Endpoint" (endpoint-menu-items))))
+                      (set! active-menu
+                            (make-menu "Endpoint" (endpoint-menu-items-for-config cfg))))
                     ((open-theme-menu) (set! active-menu (make-menu "Theme" (theme-menu-items))))
                     ((open-guardrail-menu)
                       (set! active-menu (make-menu "Guardrail" (guardrail-menu-items))))
@@ -3846,7 +3819,7 @@ any open menu first; submenu actions open the next menu in its place."
                             (length (all-theme-names))))))))
     (define (handle-mouse-event! ev)
             (let
-                ((button (car ev)) (y (cadr ev)) (x (caddr ev)))
+                ((button (car ev)) (y (cadr ev)))
               (cond
                 ((= button 4) (set! scroll-offset (+ scroll-offset 3)))
                 ((= button 5) (set! scroll-offset (max 0 (- scroll-offset 3))))
@@ -3865,7 +3838,7 @@ any open menu first; submenu actions open the next menu in its place."
                       ((integer? target) (set! msgsel-index target))
                       (else (set! msgsel-index #f))))))))
     ;; Handle context compaction command
-    (define (handle-compact-cmd! arg)
+    (define (handle-compact-cmd! _arg)
             (let*
                 ((orig-tokens (estimate-conversation-tokens llm-history))
                  (orig-count (length llm-history))
@@ -3914,69 +3887,22 @@ any open menu first; submenu actions open the next menu in its place."
                           (length (assoc-ref res 'removed-files))))
                 (add-err-msg! (format #f "Rollback failed: ~a" (assoc-ref res 'error))))))
     ;; Handle project rules inspection
-    (define (handle-rules-cmd! arg)
-            (let*
-                ((rules (discover-project-rules (getcwd)))
-                 (tree (build-workspace-file-tree (getcwd) #:max-depth 2 #:max-files 20))
-                 (rule-desc
-                   (if (null? rules)
-                     "No project rule files found."
-                     (string-join
-                       (map
-                         (lambda (r)
-                           (format #f "• ~a" (assoc-ref r 'path)))
-                         rules)
-                       "\n"))))
-              (add-sys-msg!
-                (format #f
-                        "Discovered Project Rules:\n~a\n\nWorkspace Tree:\n~a"
-                        rule-desc
-                        tree))))
+    (define (handle-rules-cmd! _arg)
+            (add-sys-msg! (format-rules-and-tree (getcwd))))
     ;; Handle conversation context metrics
-    (define (handle-context-cmd! arg)
-            (let*
-                ((tokens (estimate-conversation-tokens llm-history))
-                 (ceiling
-                   (- (context-compactor-max-tokens compactor)
-                      (context-compactor-reserve-tokens compactor)))
-                 (needed? (compaction-needed? compactor llm-history)))
-              (add-sys-msg!
-                (format #f
-                        "Conversation Context Metrics:\n• LLM Message Count: ~a\n• UI Cards Count: ~a\n• Estimated Tokens: ~a / ~a ceiling\n• Status: ~a"
-                        (length llm-history)
-                        (length messages)
-                        tokens
-                        ceiling
-                        (if needed?
-                          "COMPACTION REQUIRED"
-                          "NORMAL")))))
+    (define (handle-context-cmd! _arg)
+            (add-sys-msg! (format-context-metrics compactor llm-history messages)))
     ;; Handle per-session token usage report
     (define (handle-usage-cmd!)
-            (let*
-                ((used (estimate-conversation-tokens llm-history))
-                 (ceiling (context-compactor-effective-ceiling compactor))
-                 (k
-                   (lambda (n)
-                     (format #f "~,1fk" (/ n 1000.0))))
-                 (est-suffix
-                   (if (> session-estimated-tokens 0)
-                     (format #f " (+~a estimated)" session-estimated-tokens)
-                     "")))
-              (add-sys-msg!
-                (format #f
-                        "Session token usage:\n• Prompt tokens: ~a~a\n• Completion tokens: ~a\n• Turns: ~a\n• Context: ~a/~a tokens (estimated)"
-                        session-prompt-tokens
-                        est-suffix
-                        session-completion-tokens
-                        session-turns
-                        (if (number? used)
-                          (k used)
-                          "?")
-                        (if (> ceiling 0)
-                          (k ceiling)
-                          "?")))))
+            (add-sys-msg!
+              (format-usage-report compactor
+                                   llm-history
+                                   session-prompt-tokens
+                                   session-completion-tokens
+                                   session-estimated-tokens
+                                   session-turns)))
     ;; Handle session resume: interactive picker over recent session logs
-    (define (handle-resume-cmd! arg)
+    (define (handle-resume-cmd! _arg)
             (let
                 ((sessions (recent-session-files (default-sessions-dir))))
               (if (null? sessions)
@@ -4015,39 +3941,7 @@ any open menu first; submenu actions open the next menu in its place."
             (let ((cmd (car cmd-pair)) (arg (cdr cmd-pair)))
               (cond
                 ((or (string=? cmd "help") (string=? cmd "?"))
-                  (add-sys-msg!
-                    (string-append "Available Commands:\n"
-                                   "  /help             Display this help message\n"
-                                   "  /model [NAME]     Switch LLM model; no argument opens a menu\n"
-                                   "  /models           List models available on the endpoint\n"
-                                   "  /endpoint [URL]   Switch endpoint URL; no argument opens a menu\n"
-                                   "  /provider [NAME]  Switch or inspect provider preset\n"
-                                   "  /mcp [CMD]        Manage MCP servers (list, start, stop, add, remove, tools)\n"
-                                   "  /config [CMD]     Inspect, reload, save, set configuration; no argument opens a menu\n"
-                                   "  /guardrail [LVL]  Set policy level (disabled, permissive, cautious, strict, paranoid)\n"
-                                   "  /compact          Compact conversation history\n"
-                                   "  /resume           Resume a previous chat session from disk\n"
-                                   "  /checkpoint [DSC] Create a rollback checkpoint snapshot\n"
-                                   "  /rollback [ID]    Revert to latest or specified checkpoint\n"
-                                   "  /rules            View discovered project rules & workspace tree\n"
-                                   "  /context          View conversation token metrics\n"
-                                   "  /usage            Show per-session token usage report\n"
-                                   "  /steer [TEXT]     Queue steering text for the running or next agent run\n"
-                                   "  /interrupt        Halt the agent at its next iteration boundary\n"
-                                   "  /features         List active registry features\n"
-                                   "  /journal          View recent checkpoint provenance\n"
-                                   "  /test             Run the bootstrap test suite\n"
-                                   "  /clear            Clear chat history\n"
-                                   "  /quit, /exit      Exit TUI\n"
-                                   "  /dump [PATH]      Export the conversation to a text file\n"
-                                   "  !<command>        Execute shell command\n"
-                                   "  ,<expr> or (..)   Evaluate Scheme code\n"
-                                   "  ctrl+up / ctrl+down   Select a message block\n"
-                                   "  ctrl+e            Collapse or expand the selected message\n"
-                                   "  while agent runs  type to steer it: enter sends, ctrl+i interrupts\n"
-                                   "  menus             up/down move, enter apply, esc close (/config, /model, /endpoint)\n"
-                                   "  /sh <cmd>         Alias for shell command\n"
-                                   "  /eval <expr>      Alias for Scheme eval")))
+                  (add-sys-msg! %tui-help-message))
                 ((string=? cmd "guardrail") (handle-guardrail-cmd! arg))
                 ((string=? cmd "compact") (handle-compact-cmd! arg))
                 ((string=? cmd "resume") (handle-resume-cmd! arg))
@@ -4059,7 +3953,9 @@ any open menu first; submenu actions open the next menu in its place."
                 ((string=? cmd "models") (handle-models-cmd!))
                 ((string=? cmd "model")
                   (if (string-null? arg)
-                    (set! active-menu (make-menu "Model" (model-menu-items)))
+                    (set! active-menu
+                          (make-menu "Model"
+                                     (build-live-or-recorded-model-menu-items client cfg cur-model)))
                     (begin (set! cur-model arg)
                            (badb-config-set-model-name! cfg arg)
                            (refresh-client!)
@@ -4067,7 +3963,8 @@ any open menu first; submenu actions open the next menu in its place."
                            (add-sys-msg! (format #f "Model switched to: ~a (saved to config)" cur-model)))))
                 ((string=? cmd "endpoint")
                   (if (string-null? arg)
-                    (set! active-menu (make-menu "Endpoint" (endpoint-menu-items)))
+                    (set! active-menu
+                          (make-menu "Endpoint" (endpoint-menu-items-for-config cfg)))
                     (begin (set! cur-endpoint arg)
                            (badb-config-set-model-endpoint! cfg arg)
                            (refresh-client!)
@@ -4088,51 +3985,28 @@ any open menu first; submenu actions open the next menu in its place."
                       "Usage: /eval <scheme-code> (or ,<scheme-code> or (<scheme-code>))")
                     (begin (add-scm-msg! arg) (execute-scheme! arg))))
                 ((string=? cmd "features")
-                  (let ((feats (registry-list reg)))
-                    (if (null? feats)
-                      (add-sys-msg! "No features currently registered in kernel.")
-                      (let
-                          ((desc-list
-                             (map
-                               (lambda (f)
-                                 (format #f "• ~a (~a)" (assoc-ref f 'id) (assoc-ref f 'metadata)))
-                               feats)))
-                        (add-sys-msg!
-                          (string-append "Registered Features:\n" (string-join desc-list "\n")))))))
+                  (add-sys-msg! (format-features-list reg)))
                 ((string=? cmd "journal")
-                  (let ((entries (journal-entries jrn)))
-                    (if (null? entries)
-                      (add-sys-msg! "Journal is empty (0 checkpoints on disk).")
-                      (let*
-                          ((recent (take-right entries (min 8 (length entries))))
-                           (formatted
-                             (map
-                               (lambda (e)
-                                 (format #f
-                                         "  #~a: [~a] ~a -> ~a (~a)"
-                                         (assoc-ref e "iteration")
-                                         (assoc-ref e "checkpoint")
-                                         (assoc-ref e "feature-id")
-                                         (assoc-ref e "status")
-                                         (assoc-ref e "timestamp")))
-                               recent)))
-                        (add-sys-msg!
-                          (string-append "Recent Checkpoints:\n" (string-join formatted "\n")))))))
+                  (add-sys-msg! (format-journal-recent jrn)))
                 ((string=? cmd "test")
                   (set! status-text "TESTING...")
                   (render!)
                   (catch #t
                     (lambda ()
-                      (let*
-                          ((runner-mod (resolve-module '(test runner)))
-                           (find-fn (module-ref runner-mod 'find-test-files #f))
-                           (test-files
-                             (if find-fn
-                               (find-fn "test")
-                               '()))
-                           (res-msg
-                             (format #f "Bootstrap test files found: ~a. All passing." (length test-files))))
-                        (add-sys-msg! res-msg)))
+                      (let* ((test-cmd (if (string-null? (string-trim-both arg))
+                                           "./scripts/test"
+                                           (string-trim-both arg)))
+                             (res (verify-test-suite #:command test-cmd))
+                             (passed? (assoc-ref res 'passed?))
+                             (exit-code (assoc-ref res 'exit-code))
+                             (out (or (assoc-ref res 'output) "")))
+                        (if passed?
+                            (add-sys-msg!
+                              (format #f "Test suite PASSED (exit ~a).\n~a"
+                                      exit-code (truncate-string (string-trim-both out) 600)))
+                            (add-err-msg!
+                              (format #f "Test suite FAILED (exit ~a):\n~a"
+                                      exit-code (truncate-string (string-trim-both out) 600))))))
                     (lambda (k . a)
                       (add-err-msg! (format #f "Test error: ~a ~s" k a))))
                   (set! status-text "READY"))
@@ -4191,18 +4065,18 @@ any open menu first; submenu actions open the next menu in its place."
     ;; resolution never fails under notcurses; the resolve-modified-key
     ;; dance keeps both the startup logic and any future backend
     ;; honest. 0 means unresolvable; no keypress ever delivers it.
-    (define ctrl-up-key
-            (resolve-modified-key
-              (string #\esc #\[ #\1 #\; #\5 #\A)
-              key-defined
-              define-key
-              KEY_FIND))
-    (define ctrl-down-key
-            (resolve-modified-key
-              (string #\esc #\[ #\1 #\; #\5 #\B)
-              key-defined
-              define-key
-              KEY_OPEN))
+    (set! ctrl-up-key
+          (resolve-modified-key
+            (string #\esc #\[ #\1 #\; #\5 #\A)
+            key-defined
+            define-key
+            KEY_FIND))
+    (set! ctrl-down-key
+          (resolve-modified-key
+            (string #\esc #\[ #\1 #\; #\5 #\B)
+            key-defined
+            define-key
+            KEY_OPEN))
     (safe-curs-set! 1)
     (set! colors-enabled? (has-colors?))
     (when colors-enabled? (start-color!))
@@ -4265,13 +4139,11 @@ any open menu first; submenu actions open the next menu in its place."
                         (set! selector-index 0)
                         (if (string-null? trimmed)
                           (loop)
-                          (let ((action (classify-input trimmed)))
-                            (let
-                                ((res
-                                   (if (and action (eq? (car action) 'slash))
-                                     (handle-command! (cons (cadr action) (caddr action)))
-                                     #f)))
-                              (unless (eq? res 'exit) (loop))))))
+                          (let* ((action (classify-input trimmed))
+                                 (res (if (and action (eq? (car action) 'slash))
+                                          (handle-command! (cons (cadr action) (caddr action)))
+                                          #f)))
+                            (unless (eq? res 'exit) (loop)))))
                       (let ((chosen (selected-command-name matches)))
                         (cond
                           ;; Commands that still need a typed argument get

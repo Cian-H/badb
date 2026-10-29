@@ -152,37 +152,51 @@ as the diff text."
 load path flags -L <dir> for each entry of LOAD-PATHS. The child's
 stdout and stderr are captured on pipes. Returns
 (pid stdout-port stderr-port); the child never returns."
-  (let ((out-pipe (pipe))
-        (err-pipe (pipe)))
-    (let ((pid (primitive-fork)))
-      (if (= pid 0)
-          (begin
-            (close-port (car out-pipe))
-            (close-port (car err-pipe))
-            (dup2 (fileno (cdr out-pipe)) 1)
-            (dup2 (fileno (cdr err-pipe)) 2)
-            (close-port (cdr out-pipe))
-            (close-port (cdr err-pipe))
-            (setenv "GUILE_AUTO_COMPILE" "0")
-            (apply execlp "guile" "guile" "--no-auto-compile"
-                   (append
-                    (apply append
-                           (map (lambda (dir) (list "-L" dir)) load-paths))
-                    (list locked-path)))
-            (primitive-exit 127))
-          (begin
-            (close-port (cdr out-pipe))
-            (close-port (cdr err-pipe))
-            (list pid (car out-pipe) (car err-pipe)))))))
+  (let* ((out-pipe (pipe))
+         (err-pipe (pipe))
+         (pid (primitive-fork)))
+    (if (= pid 0)
+        (begin
+          (close-port (car out-pipe))
+          (close-port (car err-pipe))
+          (dup2 (fileno (cdr out-pipe)) 1)
+          (dup2 (fileno (cdr err-pipe)) 2)
+          (close-port (cdr out-pipe))
+          (close-port (cdr err-pipe))
+          (setenv "GUILE_AUTO_COMPILE" "0")
+          (apply execlp "guile" "guile" "--no-auto-compile"
+                 (append
+                  (apply append
+                         (map (lambda (dir) (list "-L" dir)) load-paths))
+                  (list locked-path)))
+          (primitive-exit 127))
+        (begin
+          (close-port (cdr out-pipe))
+          (close-port (cdr err-pipe))
+          (list pid (car out-pipe) (car err-pipe))))))
 
 (define (%drain-ports-with-timeout! out-port err-port timeout)
   "Read OUT-PORT and ERR-PORT concurrently until both hit EOF or
 TIMEOUT (seconds, inexact) elapses. Returns (OUT-TEXT . ERR-TEXT),
 or the symbol 'timeout when the deadline expired first."
-  (let ((deadline (+ (%now-seconds) timeout)))
-    (let loop ((out "") (err "") (out-done? #f) (err-done? #f))
+  (let ((deadline (+ (%now-seconds) timeout))
+        (out-acc (open-output-string))
+        (err-acc (open-output-string)))
+    (define (drain-available! p target-acc)
+      (let drain-loop ((first? #t))
+        (if (or first? (char-ready? p))
+            (let ((c (catch #t
+                       (lambda () (read-char p))
+                       (lambda _ (eof-object)))))
+              (if (eof-object? c)
+                  #t
+                  (begin
+                    (write-char c target-acc)
+                    (drain-loop #f))))
+            #f)))
+    (let loop ((out-done? #f) (err-done? #f))
       (if (and out-done? err-done?)
-          (cons out err)
+          (cons (get-output-string out-acc) (get-output-string err-acc))
           (let ((remaining (- deadline (%now-seconds))))
             (if (<= remaining 0)
                 'timeout
@@ -196,26 +210,14 @@ or the symbol 'timeout when the deadline expired first."
                   (if (or (not ready) (null? ready))
                       'timeout
                       (let gather ((ports ready)
-                                         (out out) (err err)
-                                         (od out-done?) (ed err-done?))
-                              (if (null? ports)
-                                  (loop out err od ed)
-                                  (let* ((p (car ports))
-                                         (c (catch #t
-                                              (lambda () (read-char p))
-                                              (lambda _ 'eof))))
-                                    (if (eof-object? c)
-                                        (gather (cdr ports) out err
-                                                (if (eq? p out-port) #t od)
-                                                (if (eq? p err-port) #t ed))
-                                        (gather (cdr ports)
-                                                (if (eq? p out-port)
-                                                    (string-append out (string c))
-                                                    out)
-                                                (if (eq? p err-port)
-                                                    (string-append err (string c))
-                                                    err)
-                                                od ed)))))))))))))
+                                   (od out-done?)
+                                   (ed err-done?))
+                        (if (null? ports)
+                            (loop od ed)
+                            (let ((p (car ports)))
+                              (if (eq? p out-port)
+                                  (gather (cdr ports) (drain-available! p out-acc) ed)
+                                  (gather (cdr ports) od (drain-available! p err-acc))))))))))))))
 
 (define (%reap-process pid)
   "Wait for the child PID, returning
@@ -312,14 +314,7 @@ never raises."
   (let* ((locked (locked-spec-path feature-id root)))
     (catch #t
       (lambda ()
-        (if (not (file-exists? locked))
-            `((verdict . "fail")
-              (spec-hash . #f)
-              (reason . ,(format #f "no locked spec for feature ~a at ~s"
-                                 feature-id locked))
-              (exit-status . #f) (signal . #f) (timed-out? . #f)
-              (seed . "") (summary-total . #f) (summary-passed . #f)
-              (summary-failed . #f) (failures . ()))
+        (if (file-exists? locked)
             (let* ((spec-hash (sha256-hex (%read-utf8-file locked)))
                    (spawned (%spawn-spec-process locked load-paths))
                    (pid (list-ref spawned 0))
@@ -378,7 +373,14 @@ never raises."
                 (summary-total . ,(if json (%json-number json "total") #f))
                 (summary-passed . ,(if json (%json-number json "passed") #f))
                 (summary-failed . ,(if json (%json-number json "failed") #f))
-                (failures . ,failures)))))
+                (failures . ,failures)))
+            `((verdict . "fail")
+              (spec-hash . #f)
+              (reason . ,(format #f "no locked spec for feature ~a at ~s"
+                                 feature-id locked))
+              (exit-status . #f) (signal . #f) (timed-out? . #f)
+              (seed . "") (summary-total . #f) (summary-passed . #f)
+              (summary-failed . #f) (failures . ()))))
       (lambda (key . args)
         ;; Spawn or any unexpected failure: fail closed, never raise.
         `((verdict . "fail")
@@ -419,8 +421,7 @@ spec-timeout entry."
          (effective-timeout (if (number? override-timeout)
                                 override-timeout
                                 timeout)))
-    (if (not (file-exists? locked))
-        '((gate . "skipped"))
+    (if (file-exists? locked)
         (let* ((hash (spec-gate-ast-diff-hash forms))
                (result (verify-locked-spec feature-id
                                           #:root root
@@ -444,4 +445,5 @@ spec-timeout entry."
                 (quickcheck-seed . ,seed)
                 (quickcheck-verdict . "fail")
                 (kernel-replay-verdict . "failed")
-                (details . ,details)))))))
+                (details . ,details))))
+        '((gate . "skipped")))))

@@ -133,20 +133,19 @@ command exits non-zero."
                            (let ((entry (readdir dir-stream)))
                              (if (eof-object? entry)
                                (begin (closedir dir-stream) (reverse accum))
-                               (loop (cons entry accum)))))))
-                    (let
-                        ((sorted
-                           (sort
-                             (filter
-                               (lambda (name)
-                                 (and (not (member name '("." "..")))
-                                      (not (member name ignore-patterns))
-                                      (not (string-prefix? "." name))
-                                      (not (string-suffix? ".log" name))))
-                               entries)
-                             string<?)))
-                      (let loop
-                        ((items sorted) (current-acc acc))
+                               (loop (cons entry accum))))))
+                       (sorted
+                         (sort
+                           (filter
+                             (lambda (name)
+                               (and (not (member name '("." "..")))
+                                    (not (member name ignore-patterns))
+                                    (not (string-prefix? "." name))
+                                    (not (string-suffix? ".log" name))))
+                             entries)
+                           string<?)))
+                    (let loop
+                      ((items sorted) (current-acc acc))
                         (if (or (null? items) (>= file-count max-files))
                           current-acc
                           (let*
@@ -165,7 +164,7 @@ command exits non-zero."
                                 (loop (cdr items) sub-acc))
                               (let
                                   ((entry-line (format #f "~a├── ~a" prefix name)))
-                                (loop (cdr items) (cons entry-line current-acc))))))))))
+                                (loop (cdr items) (cons entry-line current-acc)))))))))
                 (lambda _
                   acc))))
     (let
@@ -257,8 +256,7 @@ STYLE can be 'xml (structured tags) or 'markdown."
                 (map (lambda (tool)
                        (let* ((f (assoc-ref tool "function"))
                               (name (assoc-ref f "name"))
-                              (desc (or (assoc-ref f "description") ""))
-                              (params (assoc-ref f "parameters")))
+                              (desc (or (assoc-ref f "description") "")))
                          (format #f "<tool>\n  <name>~a</name>\n  <description>~a</description>\n</tool>"
                                  name desc)))
                      tools)))

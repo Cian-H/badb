@@ -1691,23 +1691,22 @@
     (resolve-modified-key "[1;5A" (lambda _ #f) (lambda _ #f) 362)))
 
 (test-group "tui-conversation-transcript"
-            (let
+            (let*
                 ((msgs
                    '(((role . "user") (content . "hello"))
                      ((role . "assistant") (thoughts . "hmm") (content . "hi there"))
-                     ((role . "error") (content . "boom")))))
-              (let
-                  ((txt (format-conversation-transcript msgs)))
-                (test-assert "transcript has header"
-                             (string-prefix? ";; badb conversation transcript" txt))
-                (test-assert "user block present" (string-contains txt "=== USER ==="))
-                (test-assert "assistant block present"
-                             (string-contains txt "=== ASSISTANT ==="))
-                (test-assert "thinking section present" (string-contains txt "[thinking]"))
-                (test-assert "thinking content recorded" (string-contains txt "hmm"))
-                (test-assert "content recorded" (string-contains txt "hi there"))
-                (test-assert "error block present" (string-contains txt "=== ERROR ==="))
-                (test-assert "error content recorded" (string-contains txt "boom"))))
+                     ((role . "error") (content . "boom"))))
+                 (txt (format-conversation-transcript msgs)))
+              (test-assert "transcript has header"
+                           (string-prefix? ";; badb conversation transcript" txt))
+              (test-assert "user block present" (string-contains txt "=== USER ==="))
+              (test-assert "assistant block present"
+                           (string-contains txt "=== ASSISTANT ==="))
+              (test-assert "thinking section present" (string-contains txt "[thinking]"))
+              (test-assert "thinking content recorded" (string-contains txt "hmm"))
+              (test-assert "content recorded" (string-contains txt "hi there"))
+              (test-assert "error block present" (string-contains txt "=== ERROR ==="))
+              (test-assert "error content recorded" (string-contains txt "boom")))
             (test-assert
               "empty transcript is just the header"
               (string=? ";; badb conversation transcript\n"

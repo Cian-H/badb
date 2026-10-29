@@ -12,6 +12,8 @@
 
 (define-module (badb history-tools)
   #:use-module
+  (badb util)
+  #:use-module
   (badb context)
   #:use-module
   (json)
@@ -24,7 +26,8 @@
   #:use-module
   (srfi srfi-13)
   #:export
-  (summarize-turns
+  (jsonl-line->turn
+   summarize-turns
    summarize-history-file))
 
 ;;;
@@ -93,13 +96,6 @@ single-character fragments are discarded."
                 (cons (cons w 1) acc))))
         '()
         words))
-
-(define (truncate-display text max-chars)
-  "Return TEXT capped at MAX-CHARS characters, the tail replaced by an
-ellipsis when it had to be cut."
-  (if (> (string-length text) max-chars)
-      (string-append (substring text 0 (- max-chars 3)) "...")
-      text))
 
 ;;;
 ;;; Topic Sketch
@@ -171,12 +167,7 @@ a topic sketch of the top 8 non-stopword words across user messages."
   "Parse a single JSONL LINE into a turn alist of the form
 ((role . STRING) (content . STRING)); return #f for blank or malformed
 lines and for entries without string role and content fields."
-  (let ((parsed (catch #t
-                  (lambda ()
-                    (and (string? line)
-                         (not (string-null? (string-trim-both line)))
-                         (json-string->scm (string-trim-both line))))
-                  (lambda _ #f))))
+  (let ((parsed (safe-json-parse line)))
     (if (and (list? parsed)
              (string? (assoc-ref parsed "role"))
              (string? (assoc-ref parsed "content")))

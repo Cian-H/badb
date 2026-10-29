@@ -108,6 +108,17 @@
       (test-equal "verification_failed status returned" "verification_failed" (assoc-ref res 'status))
       (test-assert "checkpoint rolled back" (assoc-ref res 'checkpoint-rolled-back))
       (test-assert "file content restored to valid state"
+        (string-contains (call-with-input-file target-file read-line) "updated-world")))
+
+    ;; Omitting #:verify-target still checks workspace .scm syntax and rolls back on broken syntax
+    (let ((res (with-neuro-symbolic-gate v mgr "corrupted workspace edit without target"
+                 (lambda ()
+                   (call-with-output-file target-file
+                     (lambda (p) (display "(define (unclosed-workspace-form" p)))
+                   'corrupted))))
+      (test-equal "workspace syntax check catches error without verify-target"
+        "verification_failed" (assoc-ref res 'status))
+      (test-assert "file content restored after workspace syntax failure"
         (string-contains (call-with-input-file target-file read-line) "updated-world"))))
   (teardown-test-env!))
 

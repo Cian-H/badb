@@ -33,6 +33,7 @@
             checkpoint-registry-state
 
             ;; Operations
+            scan-text-files
             create-checkpoint!
             list-checkpoints
             get-checkpoint
@@ -45,11 +46,14 @@
 ;;; Filesystem Helpers
 ;;;
 (define (read-file-content path)
-  "Read the entire content of PATH as string, or #f if unreadable/non-existent."
+  "Read the entire content of PATH as string, or #f if unreadable/non-existent/binary."
   (catch #t
     (lambda ()
-      (if (file-exists? path)
-          (call-with-input-file path read-string)
+      (if (and (file-exists? path) (not (file-is-directory? path)))
+          (let ((s (call-with-input-file path read-string)))
+            (if (and (string? s) (not (string-index s #\nul)))
+                s
+                #f))
           #f))
     (lambda _ #f)))
 
@@ -63,20 +67,22 @@
 ;;; Data Records
 ;;;
 (define-record-type <checkpoint>
-  (%make-checkpoint id description timestamp files registry-state)
+  (%make-checkpoint id description timestamp files registry-state full-scan?)
   checkpoint?
   (id checkpoint-id)
   (description checkpoint-description)
   (timestamp checkpoint-timestamp)
   (files checkpoint-files)                   ;; alist: ((rel-path . (existed? . content)))
-  (registry-state checkpoint-registry-state)) ;; alist: ((feature-id . (impl . metadata)))
+  (registry-state checkpoint-registry-state) ;; alist: ((feature-id . (impl . metadata)))
+  (full-scan? checkpoint-full-scan?))
 
-(define* (make-checkpoint id description #:key (timestamp #f) (files '()) (registry-state '()))
+(define* (make-checkpoint id description #:key (timestamp #f) (files '()) (registry-state '()) (full-scan? #f))
   (%make-checkpoint id
                     description
                     (or timestamp (current-iso8601-timestamp))
                     files
-                    registry-state))
+                    registry-state
+                    full-scan?))
 
 (define-record-type <rollback-manager>
   (%make-rollback-manager workspace-dir registry journal storage-dir checkpoints)
@@ -87,14 +93,61 @@
   (storage-dir rollback-manager-storage-dir)
   (checkpoints rollback-manager-checkpoints set-rollback-manager-checkpoints!))
 
+(define (load-persisted-checkpoints storage-dir)
+  "Load persisted <checkpoint> records from STORAGE-DIR JSON files if present."
+  (if (and storage-dir (file-exists? storage-dir) (file-is-directory? storage-dir))
+      (catch #t
+        (lambda ()
+          (let* ((stream (opendir storage-dir))
+                 (entries (let loop ((acc '()))
+                            (let ((e (readdir stream)))
+                              (if (eof-object? e)
+                                  (begin (closedir stream) (sort acc string>?))
+                                  (loop (cons e acc)))))))
+            (filter-map
+             (lambda (fname)
+               (and (string-suffix? ".json" fname)
+                    (catch #t
+                      (lambda ()
+                        (let* ((full (string-append storage-dir "/" fname))
+                               (parsed (call-with-input-file full json->scm))
+                               (id (assoc-ref parsed "id"))
+                               (desc (or (assoc-ref parsed "description") ""))
+                               (ts (assoc-ref parsed "timestamp"))
+                               (full-scan? (and (assoc-ref parsed "full-scan") #t))
+                               (raw-files (assoc-ref parsed "files"))
+                               (files-list (cond
+                                            ((vector? raw-files) (vector->list raw-files))
+                                            ((list? raw-files) raw-files)
+                                            (else '())))
+                               (file-snaps
+                                (filter-map
+                                 (lambda (item)
+                                   (and (list? item)
+                                        (let ((p (assoc-ref item "path"))
+                                              (ex (assoc-ref item "existed"))
+                                              (ct (assoc-ref item "content")))
+                                          (and p (cons p (cons (and ex #t) (and ex ct)))))))
+                                 files-list)))
+                          (and id
+                               (make-checkpoint id desc
+                                                #:timestamp ts
+                                                #:files file-snaps
+                                                #:full-scan? full-scan?))))
+                      (lambda _ #f))))
+             entries)))
+        (lambda _ '()))
+      '()))
+
 (define* (make-rollback-manager #:key
                                 (workspace-dir (getcwd))
                                 (registry #f)
                                 (journal #f)
                                 (storage-dir #f))
   "Create a new <rollback-manager> instance."
-  (let ((eff-storage (or storage-dir (string-append workspace-dir "/.badb/checkpoints"))))
-    (%make-rollback-manager workspace-dir registry journal eff-storage '())))
+  (let* ((eff-storage (or storage-dir (string-append workspace-dir "/.badb/checkpoints")))
+         (persisted (load-persisted-checkpoints eff-storage)))
+    (%make-rollback-manager workspace-dir registry journal eff-storage persisted)))
 
 ;;;
 ;;; Checkpoint Creation
@@ -157,6 +210,7 @@ and active registry state. Persists metadata to disk and journal if configured."
        (reg (rollback-manager-registry mgr))
        (jrn (rollback-manager-journal mgr))
        (id (format #f "chkpt-~a-~a" (current-time) (random 100000)))
+       (full-scan? (not (list? files)))
        (target-files
          (cond
            ((list? files) files)
@@ -177,13 +231,22 @@ and active registry state. Persists metadata to disk and journal if configured."
                           #:files
                           file-snapshots
                           #:registry-state
-                          reg-state)))
+                          reg-state
+                          #:full-scan?
+                          full-scan?)))
     ;; Prepend to in-memory checkpoint list
     (set-rollback-manager-checkpoints! mgr
                                        (cons chkpt (rollback-manager-checkpoints mgr)))
-    ;; Persist to disk
+    ;; Persist to disk (including file snapshots)
     (let
-        ((chkpt-file (format #f "~a/~a.json" (rollback-manager-storage-dir mgr) id)))
+        ((chkpt-file (format #f "~a/~a.json" (rollback-manager-storage-dir mgr) id))
+         (serialized-files
+          (list->vector
+           (map (lambda (entry)
+                  `((path . ,(car entry))
+                    (existed . ,(cadr entry))
+                    (content . ,(or (cddr entry) ""))))
+                file-snapshots))))
       (catch #t
         (lambda ()
           (ensure-parent-directory! chkpt-file)
@@ -192,8 +255,10 @@ and active registry state. Persists metadata to disk and journal if configured."
                                    (scm->json
                                      `((id . ,id) (description . ,description)
                                        (timestamp . ,(checkpoint-timestamp chkpt))
+                                       (full-scan . ,full-scan?)
                                        (files-count . ,(length file-snapshots))
-                                       (registry-count . ,(length reg-state)))
+                                       (registry-count . ,(length reg-state))
+                                       (files . ,serialized-files))
                                      port))))
         (lambda _
           #f)))
@@ -272,6 +337,17 @@ Returns an alist describing restoration results."
                    (delete-file full-path)
                    (set! removed-files (cons rel-path removed-files)))))))
            (checkpoint-files chkpt))
+          ;; 1b. If checkpoint was a full workspace scan, remove any newly created files
+          (when (checkpoint-full-scan? chkpt)
+            (let ((recorded-paths (map car (checkpoint-files chkpt))))
+              (for-each
+               (lambda (cur-rel)
+                 (unless (member cur-rel recorded-paths)
+                   (let ((full-path (resolve-workspace-path ws cur-rel)))
+                     (when (file-exists? full-path)
+                       (delete-file full-path)
+                       (set! removed-files (cons cur-rel removed-files))))))
+               (scan-text-files ws))))
           ;; 2. Restore Registry
           (restore-registry! reg (checkpoint-registry-state chkpt))
           ;; 3. Log to Journal

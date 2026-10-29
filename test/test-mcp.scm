@@ -4,6 +4,7 @@
   #:use-module (srfi srfi-64)
   #:use-module (badb mcp)
   #:use-module (badb config)
+  #:use-module (badb util)
   #:use-module (json)
   #:use-module (ice-9 rdelim)
   #:use-module (ice-9 threads))

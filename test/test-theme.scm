@@ -72,26 +72,25 @@
        (let ((th (lookup-theme name)))
          (test-assert (format #f "lookup-theme resolves built-in ~a" name)
            (and (theme? th) (string=? (theme-name th) name)))
-         (test-assert (format #f "~a defines the 'default fallback role" name)
-           (assq 'default (theme-roles th)))
-         (for-each
-          (lambda (role)
-            (test-assert (format #f "~a defines role ~a" name role)
-              (assq role (theme-roles th)))
-            (let ((spec (theme-ref th role)))
-              (test-assert
-                  (format #f "~a role ~a has 3-part spec" name role)
-                (and (list? spec) (= 3 (length spec))))
-              (test-assert
-                  (format #f "~a role ~a has valid fg color" name role)
-                (valid-theme-color? (car spec)))
-              (test-assert
-                  (format #f "~a role ~a has valid bg color" name role)
-                (valid-theme-color? (cadr spec)))
-              (test-assert
-                  (format #f "~a role ~a has valid attrs" name role)
-                (%valid-attrs? (caddr spec)))))
-          (cons 'default theme-role-names))))
+         (test-equal (format #f "~a defines all required roles with valid specs" name)
+           '()
+           (filter-map
+            (lambda (role)
+              (let ((entry (assq role (theme-roles th)))
+                    (spec (theme-ref th role)))
+                (cond
+                 ((not entry)
+                  (list role 'missing-role))
+                 ((not (and (list? spec) (= 3 (length spec))))
+                  (list role 'invalid-spec spec))
+                 ((not (valid-theme-color? (car spec)))
+                  (list role 'invalid-fg (car spec)))
+                 ((not (valid-theme-color? (cadr spec)))
+                  (list role 'invalid-bg (cadr spec)))
+                 ((not (%valid-attrs? (caddr spec)))
+                  (list role 'invalid-attrs (caddr spec)))
+                 (else #f))))
+            (cons 'default theme-role-names)))))
      names)))
 
 ;;;

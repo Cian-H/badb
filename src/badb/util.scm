@@ -22,6 +22,7 @@
                         normalize-role
                         get-prop
                         prop-ref
+                        json-ref
                         prop-set
                         alist-remove
                         alist-merge
@@ -30,6 +31,8 @@
                         sanitize-for-json
                         format-exception
                         split-words
+                        truncate-string
+                        truncate-display
                         normalize-env-alist
                         env-alist->exec-strings))
 
@@ -147,6 +150,8 @@
                     (loop (cdr rest)))))))
       default))
 
+(define json-ref prop-ref)
+
 (define (alist-remove key alist)
   "Return ALIST with all entries whose car matches KEY removed.
 Matches against string, symbol, or keyword forms via ensure-string."
@@ -190,7 +195,7 @@ precedence over entries in BASE with matching keys (compared via ensure-string).
    ((string? val) val)
    (else (catch #t
            (lambda () (scm->json-string val))
-           (lambda _ (object->string val))))))
+           (lambda (_key . _args) (object->string val))))))
 
 (define* (safe-json-parse str #:optional (fallback #f))
   "Parse JSON string STR, returning FALLBACK if parsing fails."
@@ -238,6 +243,15 @@ precedence over entries in BASE with matching keys (compared via ensure-string).
               (not (string-null? s)))
             (string-split (string-trim-both str) #\space))))
 
+(define (truncate-string text max-chars)
+  "Return TEXT capped at MAX-CHARS characters, the tail replaced by an
+ellipsis when it had to be cut."
+  (if (> (string-length text) max-chars)
+      (string-append (substring text 0 (- max-chars 3)) "...")
+      text))
+
+(define truncate-display truncate-string)
+
 (define (format-exception ex-key ex-args)
   "Format an exception key and args into a human-readable diagnostic string."
   (cond
@@ -254,7 +268,7 @@ precedence over entries in BASE with matching keys (compared via ensure-string).
           (if (list? msg-args)
               (apply format #f msg-fmt msg-args)
               (format #f "~a" msg-fmt))))
-      (lambda _
+      (lambda (_k . _a)
         (format #f "~a: ~s" ex-key ex-args))))
    ((and (pair? ex-args) (string? (car ex-args))) (car ex-args))
    (else (format #f "~a: ~s" ex-key ex-args))))

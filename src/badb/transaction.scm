@@ -204,7 +204,6 @@ if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed mod
       ((reg (transaction-manager-registry mgr))
        (journal (transaction-manager-journal mgr))
        (effective-meta (or metadata meta-pos '()))
-       (prior-impl (registry-lookup reg feature-id))
        (prior-meta (or (registry-metadata reg feature-id) '()))
        (target-module
          (cond

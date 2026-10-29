@@ -314,48 +314,50 @@
 ;;; check the record argument and their return value; modifiers check
 ;;; the record argument and the new value.
 ;;;
-;;; The internal constructor/accessor/modifier names are hygienic
-;;; introduced identifiers, distinct per field thanks to per-template
-;;; instantiation renaming.
+;;; The internal accessor/modifier names must be a distinct hygienic
+;;; identifier per field.  Pure syntax-rules cannot mint them: a
+;;; template-introduced identifier accumulates a single rename across
+;;; recursive expansion steps, so every field's wrapper would end up
+;;; referring to the same binding (the last field's accessor).  This
+;;; transformer is written in syntax-case and uses
+;;; `generate-temporaries' to keep the per-field internal names
+;;; genuinely distinct.
 ;;;
 
 (define-syntax %define-record-type-checked
-  (syntax-rules ()
-    ((_ type-name constructor predicate
-        (fields ...) (field-wrappers ...))
-     (begin
-       (define-record-type
-           type-name constructor predicate
-           fields ...)
-       field-wrappers ...))
-    ((_ type-name constructor predicate
-        (fields ...) (field-wrappers ...) (field pred accessor modifier)
-        fields-to-process ...)
-     (%define-record-type-checked
-      type-name constructor predicate
-      (fields ... (field internal-accessor internal-modifier))
-      (field-wrappers
-       ...
-       (define (accessor record)
-         (check-arg predicate record 'type-name)
-         (values-checked (pred) (internal-accessor record)))
-       (define (modifier record new)
-         (check-arg predicate record 'type-name)
-         (check-arg pred new 'type-name)
-         (internal-modifier record new)))
-      fields-to-process ...))
-    ((_ type-name constructor predicate
-        (fields ...) (field-wrappers ...) (field pred accessor)
-        fields-to-process ...)
-     (%define-record-type-checked
-      type-name constructor predicate
-      (fields ... (field internal-accessor))
-      (field-wrappers
-       ...
-       (define (accessor record)
-         (check-arg predicate record 'type-name)
-         (values-checked (pred) (internal-accessor record))))
-      fields-to-process ...))))
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ type-name constructor predicate (fields ...) (field-wrappers ...))
+       #'(begin
+           (define-record-type type-name constructor predicate fields ...)
+           field-wrappers ...))
+      ((_ type-name constructor predicate (fields ...) (field-wrappers ...)
+          (field pred accessor) fields-to-process ...)
+       (with-syntax (((internal-accessor) (generate-temporaries '(internal-accessor))))
+         #'(%define-record-type-checked
+            type-name constructor predicate
+            (fields ... (field internal-accessor))
+            (field-wrappers ...
+             (define (accessor record)
+               (check-arg predicate record 'type-name)
+               (values-checked (pred) (internal-accessor record))))
+            fields-to-process ...)))
+      ((_ type-name constructor predicate (fields ...) (field-wrappers ...)
+          (field pred accessor modifier) fields-to-process ...)
+       (with-syntax (((internal-accessor internal-modifier)
+                      (generate-temporaries '(internal-accessor internal-modifier))))
+         #'(%define-record-type-checked
+            type-name constructor predicate
+            (fields ... (field internal-accessor internal-modifier))
+            (field-wrappers ...
+             (define (accessor record)
+               (check-arg predicate record 'type-name)
+               (values-checked (pred) (internal-accessor record)))
+             (define (modifier record new)
+               (check-arg predicate record 'type-name)
+               (check-arg pred new 'type-name)
+               (internal-modifier record new)))
+            fields-to-process ...))))))
 
 (define-syntax %wrap-constructor
   (syntax-rules ()

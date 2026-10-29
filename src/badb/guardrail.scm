@@ -41,7 +41,6 @@
                                    mutating-operation?
                                    ;; Decision evaluation & level inspection
                                    evaluate-guardrail
-                                   guardrail-evaluate
                                    guardrail-level-rank
                                    guardrail-allow?
                                    guardrail-deny?
@@ -107,34 +106,51 @@ NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wild
 ;;;
 (define* (dangerous-operation? tool-name #:optional (args '()))
   "Return #t if TOOL-NAME and ARGS constitute a dangerous destructive operation."
-  (let ((name-str (ensure-string tool-name)))
+  (let ((name-str (string-downcase (ensure-string tool-name))))
     (if (string-contains name-str "danger")
       #t
       (let
           ((args-str
-             (if (string? args)
-               args
-               (object->string args))))
+             (string-downcase
+              (if (string? args)
+                args
+                (object->string args)))))
         (and
           (or (string-contains args-str "rm -rf")
               (string-contains args-str "rm  -rf")
+              (string-contains args-str "rm -fr")
               (string-contains args-str "rm -r -f")
+              (string-contains args-str "rm -f -r")
               (string-contains args-str "rm --recursive")
               (string-contains args-str "drop table")
-              (string-contains args-str "format disk"))
+              (string-contains args-str "drop database")
+              (string-contains args-str "truncate table")
+              (string-contains args-str "format disk")
+              (string-contains args-str "mkfs")
+              (string-contains args-str "> /dev/sd")
+              (string-contains args-str "dd if="))
           #t)))))
 
-(define* (mutating-operation? tool-name #:optional (args '()))
+(define* (mutating-operation? tool-name #:optional (_args '()))
   "Return #t if TOOL-NAME represents a state-mutating operation."
   (let
-      ((name-str (ensure-string tool-name)))
+      ((name-str (string-downcase (ensure-string tool-name))))
     (and
-      (or (string-prefix? "write" name-str)
+      (or (and (member name-str '("bash" "sh" "zsh" "ksh" "cmd" "command")) #t)
+          (string-prefix? "write" name-str)
           (string-prefix? "edit" name-str)
           (string-prefix? "delete" name-str)
+          (string-prefix? "remove" name-str)
+          (string-prefix? "unlink" name-str)
           (string-prefix? "create" name-str)
           (string-prefix? "shell" name-str)
-          (string-contains name-str "exec"))
+          (string-prefix? "run_" name-str)
+          (string-prefix? "run-" name-str)
+          (string-prefix? "patch" name-str)
+          (string-prefix? "modify" name-str)
+          (string-contains name-str "exec")
+          (string-contains name-str "mutate")
+          (string-contains name-str "eval"))
       #t)))
 
 (define* (default-cautious-evaluator tool-name args level #:optional (context '()))
@@ -271,8 +287,6 @@ Returns a pair: (verdict-symbol . reason-string), e.g. '(allow . \"...\") or '(d
                              (reason . ,reason)))
 
     decision))
-
-(define guardrail-evaluate evaluate-guardrail)
 
 (define (guardrail-allow? decision)
   (eq? (car decision) 'allow))

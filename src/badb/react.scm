@@ -588,7 +588,7 @@ Returns (values content reasoning)."
                   ""))
       (tool_calls . ,tool-calls-vec))))
 
-(define (run-isolated-hook! fn label . hook-args)
+(define* (run-isolated-hook! fn label #:rest hook-args)
   "Invoke FN with HOOK-ARGS when it is a procedure, reporting a failure on
 stderr as a warning instead of letting it abort the caller."
   (catch #t

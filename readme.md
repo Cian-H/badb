@@ -58,11 +58,41 @@ and `FORCE_COLOR` conventions.
 ├── license.md            LGPLv3
 ├── scripts/
 │   ├── badb              CLI launcher (Guile)
-│   └── devenv            one-command dev environment
-└── src/
-    └── badb/
-        ├── cli.scm       presentation helpers (color support)
-        └── main.scm      CLI entry point
+│   ├── devenv            one-command dev environment
+│   ├── test              unit test runner
+│   └── test-e2e          headless TUI end-to-end test runner
+├── src/
+│   ├── srfi/
+│   │   └── srfi-253.scm  Data Type-Checking and Contract Helpers (SRFI-253)
+│   └── badb/
+│       ├── cli.scm           CLI presentation helpers & ANSI color support
+│       ├── config.scm        S-expression configuration & provider presets
+│       ├── context.scm       token estimation & conversation compaction
+│       ├── digest.scm        pure-Guile SHA-256 (FIPS 180-4) implementation
+│       ├── eval.scm          golden task evaluation harness
+│       ├── filetree-mcp.scm  built-in filetree & symbol outline MCP server
+│       ├── guardrail.scm     tool-call risk classification & safety policy
+│       ├── history-tools.scm JSONL conversation history search & summarization
+│       ├── journal.scm       append-only provenance journal
+│       ├── log.scm           rotating debug & error logging
+│       ├── main.scm          CLI entry point & mode dispatch
+│       ├── mcp-server.scm    JSON-RPC 2.0 stdio MCP server framework
+│       ├── mcp.scm           MCP client & server lifecycle manager
+│       ├── model.scm         OpenAI-compatible LLM HTTP/SSE client
+│       ├── nc.scm            libnotcurses FFI terminal backend
+│       ├── prompt.scm        system prompt composer & project rule discovery
+│       ├── react.scm         autonomous ReAct tool-calling loop & steering
+│       ├── registry.scm      mutable runtime feature registry
+│       ├── rollback.scm      workspace & registry checkpoint rollback manager
+│       ├── spec-gate.scm     kernel-owned locked-spec verification gate
+│       ├── spec-runner.scm   out-of-process spec execution worker
+│       ├── spec.scm          declarative contract & property-based test engine
+│       ├── theme.scm         semantic color theming & built-in palettes
+│       ├── transaction.scm   contract-gated atomic feature transactions
+│       ├── tui.scm           interactive full-screen terminal UI
+│       ├── util.scm          shared string, alist, filesystem & JSON helpers
+│       └── verify.scm        neuro-symbolic syntax & test verification gate
+└── test/                 unit & end-to-end test suites
 ```
 
 ## Development

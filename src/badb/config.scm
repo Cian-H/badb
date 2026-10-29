@@ -314,6 +314,7 @@ Returns #t on success, or #f if provider NAME was not found."
                                    #:model-endpoint (badb-config-model-endpoint base-config)
                                    #:model-api-key (badb-config-model-api-key base-config)
                                    #:model-temperature (badb-config-model-temperature base-config)
+                                   #:model-max-tokens (badb-config-model-max-tokens base-config)
                                    #:journal-path (badb-config-journal-path base-config)
                                    #:ui-theme (badb-config-ui-theme base-config)
                                    #:mcp-servers (badb-config-mcp-servers base-config)
@@ -382,7 +383,7 @@ Returns #t on success, or #f if provider NAME was not found."
 ;;;
 ;;; File I/O
 ;;;
-(define (read-config-file path)
+(define* (read-config-file path #:optional (base-config #f))
         "Read and parse a configuration file from PATH. Returns <badb-config> or #f if not found."
         (if (file-exists? path)
           (catch #t
@@ -400,11 +401,11 @@ Returns #t on success, or #f if provider NAME was not found."
                                                      ((and (null? (cdr sexps)) (pair? (car sexps)) (eq? (caar sexps) 'badb-config))
                                                        (car sexps))
                                                      (else (reverse sexps))))
-                                                 (cfg (parse-config-sexp combined)))
+                                                 (cfg (parse-config-sexp combined base-config)))
                                               (set-badb-config-source-path! cfg path)
                                               cfg)
                                             (loop (cons expr sexps))))))))
-            (lambda (key . args)
+            (lambda (_key . args)
               (format (current-error-port)
                       "Warning: error reading config file ~a: ~s
 "
@@ -458,14 +459,24 @@ unique base servers are retained."
           (set-badb-config-mcp-servers! merged combined-mcp)
           merged))
 
+(define (make-unset-overlay-config)
+  "Create a <badb-config> with #f scalar fields so only explicitly parsed fields override base."
+  (make-badb-config #:model-name #f
+                    #:model-endpoint #f
+                    #:model-api-key #f
+                    #:model-temperature #f
+                    #:model-max-tokens #f
+                    #:journal-path #f
+                    #:ui-theme #f))
+
 (define* (load-config #:key
                       (global-path (default-global-config-path))
                       (local-path (default-local-config-path)))
   "Discover and load badb configuration with hierarchical resolution:
 Defaults -> Global (~/.config/badb/config.scm) -> Local (.badb/config.scm)."
   (let* ((cfg (make-badb-config))
-         (global-cfg (and global-path (read-config-file global-path)))
-         (local-cfg (and local-path (read-config-file local-path)))
+         (global-cfg (and global-path (read-config-file global-path (make-unset-overlay-config))))
+         (local-cfg (and local-path (read-config-file local-path (make-unset-overlay-config))))
          (with-global (if global-cfg (merge-configs cfg global-cfg) cfg))
          (final-cfg (if local-cfg (merge-configs with-global local-cfg) with-global)))
     final-cfg))

@@ -160,4 +160,29 @@
                 "good-edit" (call-with-input-file main-file read-line)))
             (teardown-test-env!))
 
+;;;
+;;; 6. Disk Persistence Reload & Full-Scan New-File Cleanup
+;;;
+(test-group "rollback-persistence-and-new-files"
+  (setup-test-env!)
+  (let* ((mgr (make-rollback-manager #:workspace-dir %test-ws))
+         (main-file (string-append %test-ws "/src/main.scm"))
+         (untracked-new (string-append %test-ws "/src/newly-created.scm"))
+         (chkpt (create-checkpoint! mgr "full workspace snapshot")))
+    ;; Modify main.scm and create a brand-new file not known at checkpoint time
+    (call-with-output-file main-file (lambda (p) (display "modified\n" p)))
+    (call-with-output-file untracked-new (lambda (p) (display "(define new 1)\n" p)))
+    (test-assert "untracked-new exists before rollback" (file-exists? untracked-new))
+
+    ;; Reload manager from disk storage-dir and rollback using reloaded checkpoint
+    (let* ((reloaded-mgr (make-rollback-manager #:workspace-dir %test-ws))
+           (res (rollback-to-checkpoint! reloaded-mgr (checkpoint-id chkpt))))
+      (test-equal "reloaded manager has 1 checkpoint" 1 (length (list-checkpoints reloaded-mgr)))
+      (test-equal "reloaded rollback succeeded" "rolled_back" (assoc-ref res 'status))
+      (test-assert "main.scm restored from disk snapshot"
+        (string-contains (call-with-input-file main-file read-line) "'original"))
+      (test-assert "newly-created.scm removed on full-scan rollback"
+        (not (file-exists? untracked-new)))))
+  (teardown-test-env!))
+
 (test-end "badb-rollback")

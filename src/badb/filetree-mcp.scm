@@ -237,12 +237,12 @@ character."
 (define (define-name line)
   "Extract the defined name from a define form line: the procedure
 name for (define (name args) ...) forms, the bound name otherwise."
-  (let* ((rest (substring line (string-length "(define")))
-         (rest (if (string-prefix? "*" rest) (substring rest 1) rest))
-         (rest (string-trim rest)))
-    (first-token (if (string-prefix? "(" rest)
-                     (substring rest 1)
-                     rest))))
+  (let* ((after-def (substring line (string-length "(define")))
+         (after-star (if (string-prefix? "*" after-def) (substring after-def 1) after-def))
+         (trimmed (string-trim after-star)))
+    (first-token (if (string-prefix? "(" trimmed)
+                     (substring trimmed 1)
+                     trimmed))))
 
 (define (scheme-outline path)
   "Return the outline of Scheme file PATH: one line per top-level

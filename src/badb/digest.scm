@@ -36,8 +36,8 @@
 
 (define (sha256-rotr x n)
   "Rotate the 32-bit word X right by N bits."
-  (logand %sha256-mask
-          (logior (ash x (- n)) (ash x (- 32 n)))))
+  (logior (ash (logand x %sha256-mask) (- n))
+          (ash (logand x (- (ash 1 n) 1)) (- 32 n))))
 
 (define (sha256-add . words)
   "Sum WORDS modulo 2^32."

@@ -41,7 +41,6 @@
                                 mcp-list-tools
                                 mcp-call-tool
                                 mcp-close-client
-                                json-ref
                                 tools->list
                                 make-mcp-manager
                                 mcp-manager?
@@ -87,11 +86,6 @@ Optionally accepts a process ID PID if backed by a child process."
 ;;;
 ;;; Utilities
 ;;;
-(define (json-ref alist key)
-  "Look up KEY (string or symbol) in ALIST. Returns the associated value,
-or #f if not present."
-  (prop-ref alist key))
-
 (define (json-member key obj)
   "Return the (key . value) pair for the string KEY in OBJ, matching either
 string or symbol keys, or #f when absent."
@@ -118,7 +112,7 @@ and return a new <mcp-client> connected to its stdio. Stderr is redirected to
                              command-args))))
          (log-dir (if (file-exists? ".badb") ".badb" "/tmp"))
          (log-file (string-append log-dir "/mcp.log"))
-         (wrapper (list "sh" "-c" (format #f "exec \"$@\" 2>>~a" log-file) "sh"))
+         (wrapper (list "sh" "-c" "log=\"$1\"; shift; exec \"$@\" 2>>\"$log\"" "sh" log-file))
          (wrapped-args (append wrapper args))
          (pipe-port (apply open-pipe* OPEN_BOTH wrapped-args))
          (pid (hashq-ref port/pid-table pipe-port)))

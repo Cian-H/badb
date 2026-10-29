@@ -268,7 +268,7 @@
 (define (dimmed-rgb rgb)
   "Halve each RGB channel of RGB, the notcurses-substitute for a dim
 text style: curses' A_DIM renders as reduced foreground intensity."
-  (logior (logand rgb #x7f7f7f)))
+  (logand (ash rgb -1) #x7f7f7f))
 (define (apply-foreground!)
   (cond
     ((and (eq? %fg 'default) (not %dim?)) (%set-fg-default %plane))

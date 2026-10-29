@@ -93,8 +93,8 @@ tools/list, and tools/call."
         (if handler
           (let ((text (catch #t
                         (lambda () (handler (or args '())))
-                        (lambda (key . args)
-                          (format #f "tool error: ~a ~s" key args)))))
+                        (lambda (key . err-args)
+                          (format #f "tool error: ~a ~s" key err-args)))))
             (write-response!
               (result-response
                 id
