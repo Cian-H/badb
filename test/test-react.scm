@@ -9,6 +9,7 @@
   #:use-module (json)
   #:use-module (web response)
   #:use-module (badb model)
+  #:use-module (badb config)
   #:use-module (badb registry)
   #:use-module (badb journal)
   #:use-module (badb transaction)
@@ -553,5 +554,143 @@
                                                (and (equal? (assoc-ref m 'role) "tool")
                                                     (string-contains (assoc-ref m 'content) "pong")))
                                              (react-session-messages (caddr verdict-result))))))))
+
+;;;
+;;; 9. Agentic Tool Call Through a Spawned Dummy MCP Server
+;;;
+;;; Spawns test/dummy-mcp-server.scm as a real subprocess via the MCP
+;;; manager (the same spawn/initialize/discover path production uses),
+;;; then runs the full ReAct loop with a mock model: turn 1 issues a
+;;; native tool call for the server's echo tool, the loop must execute
+;;; it over stdio JSON-RPC, and turn 2 must receive the observation
+;;; back as a tool message before the model answers.
+;;;
+(test-group "react-mcp-agentic-tool-call"
+  (let* ((script-path
+          (or (search-path %load-path "test/dummy-mcp-server.scm")
+              "test/dummy-mcp-server.scm"))
+         (cfg (make-badb-config))
+         (_ (badb-config-add-mcp-server!
+             cfg "dummy-mcp" "guile" (list "--no-auto-compile" script-path)))
+         (mgr (make-mcp-manager cfg))
+         (client (make-model-client #:endpoint "http://127.0.0.1:10100"
+                                    #:model "mock-llm"))
+         (turn 0)
+         (model-saw-echo-tool #f)
+         (model-saw-observation #f))
+    (call-with-values (lambda () (mcp-manager-start-server! mgr "dummy-mcp"))
+      (lambda (srv-client tools error)
+        (test-assert "dummy MCP server started without error"
+          (and srv-client (not error)))
+        (test-equal "server advertises 2 tools" 2 (length tools))
+        (test-assert "echo tool advertised"
+          (any (lambda (t) (equal? (assoc-ref t "name") "echo")) tools))
+
+        (when srv-client
+          ;; Direct tool call on the spawned server, bypassing the model.
+          (let ((content (mcp-manager-call-tool mgr "add"
+                                                 '(("a" . 19) ("b" . 23)))))
+            (test-equal "direct add call via dummy server returns 42"
+              "42" (assoc-ref (car (tools->list content)) "text")))
+
+          ;; Mock model: turn 1 calls the echo tool over MCP; turn 2
+          ;; receives the observation and produces the final answer.
+          (let ((mock-poster
+                 (lambda* (uri #:key body headers streaming?)
+                   (set! turn (+ turn 1))
+                   (if (= turn 1)
+                       (let* ((parsed (json-string->scm body))
+                              (tools-offered
+                               (or (assoc-ref parsed "tools") #())))
+                         (set! model-saw-echo-tool
+                               (any (lambda (t)
+                                      (equal?
+                                       (assoc-ref
+                                        (assoc-ref t "function") "name")
+                                       "echo"))
+                                    (vector->list tools-offered)))
+                         (values
+                          (build-response #:code 200)
+                          (scm->json-string
+                           '((choices
+                              .
+                              #(((message
+                                  .
+                                  ((role . "assistant")
+                                   (content . "Let me echo that.")
+                                   (tool_calls
+                                    .
+                                    #(((id . "call_m1")
+                                       (type . "function")
+                                       (function
+                                        .
+                                        ((name . "echo")
+                                         (arguments
+                                          .
+                                          "{\"text\":\"hello from dummy mcp\"}")))))))))))))))
+                       (let* ((parsed (json-string->scm body))
+                              (msgs
+                               (vector->list
+                                (or (assoc-ref parsed "messages") #())))
+                              (tool-msgs
+                               (filter (lambda (m)
+                                         (equal? (assoc-ref m "role") "tool"))
+                                       msgs)))
+                         (set! model-saw-observation
+                               (and (= 1 (length tool-msgs))
+                                    (equal? (assoc-ref (car tool-msgs)
+                                                       "tool_call_id")
+                                            "call_m1")
+                                    (equal? (assoc-ref (car tool-msgs) "name")
+                                            "echo")
+                                    (string-contains
+                                     (assoc-ref (car tool-msgs) "content")
+                                     "echo: hello from dummy mcp")))
+                         (values
+                          (build-response #:code 200)
+                          (scm->json-string
+                           '((choices
+                              .
+                              #(((message
+                                  .
+                                  ((role . "assistant")
+                                   (content
+                                    .
+                                    "The dummy MCP server replied: echo: hello from dummy mcp."))))))))))))))
+
+            (parameterize ((current-http-post mock-poster))
+              (let* ((session
+                      (make-react-session client
+                                          #:initial-messages
+                                          '(((role . "user")
+                                             (content . "Echo 'hello from dummy mcp' through the dummy MCP server.")))
+                                          #:mcp-manager mgr
+                                          #:max-iterations 5))
+                     (verdict-result
+                      (call-with-values
+                          (lambda () (react-run! session))
+                        (lambda (verdict content sess)
+                          (list verdict content sess)))))
+                (test-equal "agentic loop completed" 'completed
+                  (car verdict-result))
+                (test-equal "final answer reflects dummy MCP observation"
+                  "The dummy MCP server replied: echo: hello from dummy mcp."
+                  (cadr verdict-result))
+                (test-assert "model was offered the MCP echo tool"
+                  model-saw-echo-tool)
+                (test-assert "model received the dummy server's observation"
+                  model-saw-observation)
+                (test-equal "both model turns happened" 2 turn)
+                (let ((msgs (react-session-messages (caddr verdict-result))))
+                  (test-equal "transcript has 4 messages" 4 (length msgs))
+                  (let ((tool-msg (caddr msgs)))
+                    (test-equal "tool message name is echo" "echo"
+                      (assoc-ref tool-msg 'name))
+                    (test-assert "tool message carries server response"
+                      (string-contains (assoc-ref tool-msg 'content)
+                                       "echo: hello from dummy mcp"))))))))
+
+        ;; Release the spawned server process in every outcome.
+        (mcp-manager-stop-all! mgr)))))
 
 (test-end "badb-react")
