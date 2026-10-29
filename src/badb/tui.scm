@@ -10,7 +10,7 @@
 ;;; rounded pop-ups. All colors resolve through the (badb theme) module, so
 ;;; the six built-in themes restyle the whole interface. Message blocks are
 ;;; collapsible: reasoning collapses to a single summary line by default;
-;;; Ctrl+H/Ctrl+N select a block and Ctrl+E toggles collapse. While the
+;;; Ctrl+Up/Ctrl+Down select a block and Ctrl+E toggles collapse. While the
 ;;; autonomous ReAct loop runs, the terminal is polled non-blocking so the
 ;;; user can type steering messages (Enter sends, Ctrl+I interrupts) that
 ;;; the running agent sees at the next iteration boundary.
@@ -142,6 +142,7 @@
                         system-message-label
                         color-symbol->ncurses-constant
                         key->code
+                        resolve-modified-key
                         format-message-entry))
 
 ;;;
@@ -418,7 +419,7 @@ MODE (a symbol: chat, shell, scheme, selector, menu or steering)."
     ((selector) "up/down:choose tab:complete enter:run esc:dismiss")
     ((menu) "up/down:move enter:apply esc:close")
     ((steering) "type:steer enter:send ^i:interrupt bs:edit esc:clear")
-    (else "!:shell ,:scheme /:cmds ^h/^n:select ^e:collapse up/dn+pgup/dn:scroll")))
+    (else "!:shell ,:scheme /:cmds ^up/^dn:select ^e:collapse up/dn+pgup/dn:scroll")))
 
 ;;;
 ;;; Agent Steering Helpers
@@ -735,6 +736,17 @@ integers — so all key dispatch must compare against the normalized code."
    ((not ch) ch)
    ((char? ch) (char->integer ch))
    (else ch)))
+
+(define (resolve-modified-key seq probe bind fallback)
+  "Return the integer code getch delivers when the terminal sends the
+escape sequence SEQ, for modifier combinations like Ctrl+Up whose codes
+terminfo assigns dynamically or not at all. PROBE returns the code
+already bound to SEQ or #f; when nothing is bound, BIND associates SEQ
+with FALLBACK. Returns 0 - a code no keypress produces - when the key
+cannot be resolved, so callers can dispatch safely."
+  (or (probe seq)
+      (and (bind seq fallback) fallback)
+      0))
 
 (define (input-visible-window buffer cursor-pos avail-width)
   "Compute the horizontally scrolled slice of BUFFER that fits a window
@@ -1472,7 +1484,11 @@ header, an optional thinking section, and the content. Pure - no I/O."
        (KEY_RIGHT (nref 'KEY_RIGHT))
        (KEY_HOME (nref 'KEY_HOME))
        (KEY_END (nref 'KEY_END))
-       (KEY_DC (nref 'KEY_DC)))
+       (KEY_DC (nref 'KEY_DC))
+       (key-defined (nref 'key-defined))
+       (define-key (nref 'define-key))
+       (KEY_FIND (nref 'KEY_FIND))
+       (KEY_OPEN (nref 'KEY_OPEN)))
     ;; Initialize Configuration & Kernel State
     (define cfg (or config (load-config)))
     ;; Resolve the active UI theme from the configuration, falling back to
@@ -1743,7 +1759,7 @@ header, an optional thinking section, and the content. Pure - no I/O."
                                 "• While the agent runs you can steer it: type a course correction, enter sends it, ctrl+i interrupts (applied at the next iteration)\n"
                                 "• ! switches to shell mode, ( or , to Scheme REPL; backspace on an empty prompt returns to chat\n"
                                 "• / opens the command palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context)\n"
-                                "• ctrl+h / ctrl+n select a message block, ctrl+e collapse or expand it\n"
+                                "• ctrl+up / ctrl+down select a message block, ctrl+e collapse or expand it\n"
                                 "• /config, /model or /endpoint alone open interactive menus (up/down move, enter apply, esc close)\n"
                                 "• The bottom line lists the keys active in the current mode.")))))
     (define llm-history (list (make-system-turn)))
@@ -1762,10 +1778,10 @@ header, an optional thinking section, and the content. Pure - no I/O."
     (define active-menu #f)
     ;; Viewport message selection index (#f = inactive) for collapse control.
     ;; Key bindings (single control chars, non-conflicting with existing codes):
-    ;;   Ctrl+H (char 8)  = select previous message card (modern terminals
-    ;;                      send 127 for backspace, so 8 is free)
-    ;;   Ctrl+N (char 14) = select next message card (Ctrl+J cannot be
-    ;;                      used: under cbreak the tty delivers Enter as 10)
+    ;;   Ctrl+Up / Ctrl+Down = select previous / next message card; the
+    ;;                      codes come from terminfo, resolved at startup
+    ;;                      with a define-key fallback on bare entries, so
+    ;;                      plain Up/Down keep scrolling the transcript
     ;;   Ctrl+E (char 5)  = toggle collapse on the selected message
     ;;                      (falls back to cursor-to-end when no selection,
     ;;                      preserving the pre-existing Ctrl+E binding)
@@ -3390,7 +3406,7 @@ any open menu first; submenu actions open the next menu in its place."
                                    "  /dump [PATH]      Export the conversation to a text file\n"
                                    "  !<command>        Execute shell command\n"
                                    "  ,<expr> or (..)   Evaluate Scheme code\n"
-                                   "  ctrl+h / ctrl+n   Select a message block\n"
+                                   "  ctrl+up / ctrl+down   Select a message block\n"
                                    "  ctrl+e            Collapse or expand the selected message\n"
                                    "  while agent runs  type to steer it: enter sends, ctrl+i interrupts\n"
                                    "  menus             up/down move, enter apply, esc close (/config, /model, /endpoint)\n"
@@ -3530,6 +3546,17 @@ any open menu first; submenu actions open the next menu in its place."
     (cbreak!)
     (noecho!)
     (keypad! stdscr #t)
+    ;; Message selection keys: Ctrl+Up / Ctrl+Down. Their codes are
+    ;; assigned dynamically by terminfo and absent on some entries, so
+    ;; probe the curses keymap and fall back to binding the xterm escape
+    ;; sequences to otherwise-unused keycodes. 0 means unresolvable; no
+    ;; keypress ever delivers it.
+    (define ctrl-up-key
+      (resolve-modified-key (string #\esc #\[ #\1 #\; #\5 #\A)
+                            key-defined define-key KEY_FIND))
+    (define ctrl-down-key
+      (resolve-modified-key (string #\esc #\[ #\1 #\; #\5 #\B)
+                            key-defined define-key KEY_OPEN))
     (safe-curs-set! 1)
     (set! colors-enabled? (has-colors?))
     (when colors-enabled? (start-color!))
@@ -3732,9 +3759,8 @@ any open menu first; submenu actions open the next menu in its place."
                   (else (set! scroll-offset (max 0 (- scroll-offset 1)))))
                 (loop))
               ;; Backspace: delete character or return to normal mode if
-              ;; prompt is empty (Ctrl+H no longer backspaces: it is the
-              ;; vim-tradition select-previous key)
-              ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 127))
+              ;; prompt is empty (127 on modern terminals, 8 on older ones)
+              ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 127) (eqv? ch 8))
                 (cond
                   ((> (string-length input-buffer) 0)
                     (call-with-values
@@ -3755,18 +3781,18 @@ any open menu first; submenu actions open the next menu in its place."
                 (set! scroll-offset
                       (max 0 (- scroll-offset (max 1 (quotient (- (getmaxy stdscr) 6) 2)))))
                 (loop))
-              ;; Ctrl+H (control char 8): select the previous message card,
-              ;; starting from the newest message
-              ((eqv? ch 8)
+              ;; Ctrl+Up: select the previous message card, starting from
+              ;; the newest message (code resolved at startup)
+              ((eqv? ch ctrl-up-key)
                 (unless (null? messages)
                   (set! msgsel-index
                         (if msgsel-index
                           (max 0 (- msgsel-index 1))
                           (- (length messages) 1))))
                 (loop))
-              ;; Ctrl+N (control char 14): advance the message selection to
-              ;; the next card (no-op without selection)
-              ((eqv? ch 14)
+              ;; Ctrl+Down: advance the message selection to the next
+              ;; card (no-op without selection; code resolved at startup)
+              ((eqv? ch ctrl-down-key)
                 (when (and msgsel-index (pair? messages))
                   (set! msgsel-index (min (- (length messages) 1) (+ msgsel-index 1))))
                 (loop))

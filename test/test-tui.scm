@@ -445,7 +445,7 @@
   (test-assert "chat keymap lists the modal prompt keys"
                (string-contains (format-keymap-line 'chat) "!:shell"))
   (test-assert "chat keymap lists the message selection keys"
-               (string-contains (format-keymap-line 'chat) "^h/^n:select"))
+               (string-contains (format-keymap-line 'chat) "^up/^dn:select"))
   (test-assert "chat keymap lists the collapse key"
                (string-contains (format-keymap-line 'chat) "^e:collapse"))
   (test-assert "shell keymap documents the run key"
@@ -1538,6 +1538,31 @@
   (test-assert "#f stays #f (non-blocking read miss)" (not (key->code #f)))
   (test-assert "chars and their codes are NOT eqv? in Guile"
                (not (eqv? #\esc 27))))
+
+;;;
+;;; Modified key resolution (resolve-modified-key)
+;;;
+(test-group "tui-resolve-modified-key"
+  ;; Ctrl+Up/Ctrl+Down codes are terminfo-assigned; the resolver probes
+  ;; first, binds a fallback, and never returns a code a keypress yields
+  ;; when resolution fails.
+  (test-equal "terminfo-assigned code wins without binding"
+    575
+    (resolve-modified-key "[1;5A"
+                          (lambda (s) (and (string=? s "[1;5A") 575))
+                          (lambda _ (error "must not bind"))
+                          362))
+  (test-equal "unbound sequence binds the fallback code"
+    362
+    (resolve-modified-key "[1;5A"
+                          (lambda _ #f)
+                          (lambda (s code) (and (string=? s "[1;5A")
+                                                (= code 362)
+                                                #t))
+                          362))
+  (test-equal "binding failure resolves to 0"
+    0
+    (resolve-modified-key "[1;5A" (lambda _ #f) (lambda _ #f) 362)))
 
 (test-group "tui-conversation-transcript"
             (let
