@@ -141,7 +141,8 @@ command exits non-zero."
                                (lambda (name)
                                  (and (not (member name '("." "..")))
                                       (not (member name ignore-patterns))
-                                      (not (string-prefix? "." name))))
+                                      (not (string-prefix? "." name))
+                                      (not (string-suffix? ".log" name))))
                                entries)
                              string<?)))
                       (let loop
