@@ -286,6 +286,16 @@ text style: curses' A_DIM renders as reduced foreground intensity."
 ;;;
 
 (define (initscr)
+  ;; Clear the physical screen first: anything printed before the TUI
+  ;; (guile compilation notes, subprocess stderr, shell output) is
+  ;; invisible to notcurses' diff renderer, which only rewrites cells
+  ;; it knows it changed - stale bytes would bleed through the frame
+  ;; wherever the TUI draws nothing. ncurses' clearok-equivalent.
+  (catch #t
+    (lambda ()
+      (display "\x1b[2J\x1b[H" (current-output-port))
+      (force-output (current-output-port)))
+    (lambda _ #f))
   (let* ((opts (make-bytevector 64 0))
          ;; NCOPTION_SUPPRESS_BANNERS (0x20) |
          ;; NCOPTION_NO_ALTERNATE_SCREEN (0x40): match the previous
@@ -515,6 +525,13 @@ text style: curses' A_DIM renders as reduced foreground intensity."
   ;; taking modifiers into account (shift+1 -> '!', ctrl+d -> 0x04).
   (bytevector-u32-native-ref %ncinput 36))
 
+(define %delivered-keys
+  ;; Every synthesized key id this backend hands to the application.
+  ;; Anything else in the preterunicode range is skipped by getch.
+  (list KEY_UP KEY_RIGHT KEY_DOWN KEY_LEFT KEY_DC KEY_BACKSPACE
+         KEY_NPAGE KEY_PPAGE KEY_HOME KEY_END KEY_ENTER KEY_RESIZE
+         KEY_FIND KEY_OPEN))
+
 (define (getch win)
   (let loop ((id (read-raw-id)))
     (cond
@@ -565,6 +582,14 @@ text style: curses' A_DIM renders as reduced foreground intensity."
             (< id %preterunicode-base)
             (> (input-eff-text) 0))
         (input-eff-text))
+      ;; Synthesized keys we do not deliver (modifier keys like
+      ;; NCKEY_LSHIFT, media keys, mouse buttons, ...) are noise under
+      ;; the kitty protocol; skip them and read the next event rather
+      ;; than leaking a huge codepoint into printable-character
+      ;; handling, where integer->char would crash the app.
+      ((and (>= id %preterunicode-base)
+            (not (memv id %delivered-keys)))
+        (loop (read-raw-id)))
       (else id))))
 
 (define (nodelay! win enabled?)

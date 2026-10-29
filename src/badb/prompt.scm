@@ -49,7 +49,11 @@
 ;;;
 (define* (exec-cmd-output cmd args #:optional (dir #f))
   "Execute CMD with ARGS, optionally within DIR, and capture stdout as a trimmed string.
-Returns #f if execution fails or command exits non-zero."
+The child's stderr is routed to /dev/null: under the notcurses backend
+any stderr bytes land on the same tty as the diff-rendered frame and
+corrupt it mid-session (git's 'fatal: not a repository' noise was
+bleeding straight through the UI). Returns #f if execution fails or
+command exits non-zero."
   (catch #t
     (lambda ()
       (let ((orig-dir (and dir (getcwd))))
@@ -58,7 +62,14 @@ Returns #f if execution fails or command exits non-zero."
             (when dir (chdir dir)))
           (lambda ()
             (let*
-                ((pipe (apply open-pipe* "r" cmd args))
+                ;; sh -c 'exec "$0" "$@"' passes the command and
+                ;; arguments through sh's own safe word splitting - no
+                ;; quoting to get wrong - while the trailing redirect
+                ;; silences the child's stderr.
+                ((pipe (apply open-pipe* "r"
+                              "/bin/sh" "-c"
+                              "exec \"$0\" \"$@\" 2>/dev/null"
+                              cmd args))
                  (output (read-string pipe))
                  (status (close-pipe pipe)))
               (if (zero? (status:exit-val status))
