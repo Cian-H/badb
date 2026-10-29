@@ -5,7 +5,7 @@ launch_tui
 expect_visible "badb" 20000                 # wordmark in the header
 expect_visible "Welcome to badb microharness TUI!" 20000
 expect_visible "You are badb, an expert autonomous coding agent" 5000
-expect_visible "!:shell ,:scheme /:cmds ^up/^dn:select" 5000  # keymap hint
+expect_visible "! shell · , scheme · / cmds · ^↑/^↓ select" 5000  # keymap hint
 expect_visible "❯" 5000                    # chat prompt indicator
 
 # Typing renders into the input row and backspace removes it again.

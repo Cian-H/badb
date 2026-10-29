@@ -5,12 +5,12 @@ launch_tui
 expect_visible "Welcome to badb microharness TUI!" 20000
 
 type_text "/config"
-expect_visible "up/down:choose tab:complete enter:run esc:dismiss" 5000
+expect_visible "↑↓:choose · tab:complete · enter:run · esc:dismiss" 5000
 press Enter
-expect_visible "up/down:move enter:apply esc:close" 5000
+expect_visible "↑↓:move · enter:apply · esc:close" 5000
 
 press Escape
-expect_hidden "up/down:move enter:apply esc:close" 3000
+expect_hidden "↑↓:move · enter:apply · esc:close" 3000
 
 # Clear the /config text left in the buffer.
 press Backspace Backspace Backspace Backspace Backspace Backspace Backspace

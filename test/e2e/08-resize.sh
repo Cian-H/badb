@@ -7,7 +7,7 @@ expect_visible "Welcome to badb microharness TUI!" 20000
 
 tui resize 100 30
 expect_visible "Welcome to badb microharness TUI!" 8000
-expect_visible "!:shell ,:scheme /:cmds" 5000
+expect_visible "! shell · , scheme" 5000
 if tui state 2>/dev/null | grep -q "cols: 100"; then
   pass "terminal resized to 100 columns"
 else

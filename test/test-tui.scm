@@ -396,9 +396,9 @@
     (test-assert "header carries the model name in dim after the wordmark"
                  (find (lambda (s) (equal? s (list 5 "minicpm5-1b:gguf:q8" 'dim #f)))
                        segs))
-    (test-assert "header carries the status word in the status role"
+    (test-assert "header carries the status word in the success role"
                  (find (lambda (s)
-                         (and (string=? (cadr s) "READY") (eq? (caddr s) 'status)))
+                         (and (string=? (cadr s) "READY") (eq? (caddr s) 'success)))
                        segs))
     (test-assert "header carries the feature count when nonzero"
                  (find (lambda (s) (string-contains (cadr s) "3 feats")) segs))
@@ -443,11 +443,11 @@
 
 (test-group "tui-keymap-hints"
   (test-assert "chat keymap lists the modal prompt keys"
-               (string-contains (format-keymap-line 'chat) "!:shell"))
+               (string-contains (format-keymap-line 'chat) "! shell"))
   (test-assert "chat keymap lists the message selection keys"
-               (string-contains (format-keymap-line 'chat) "^up/^dn:select"))
+               (string-contains (format-keymap-line 'chat) "^↑/^↓ select"))
   (test-assert "chat keymap lists the collapse key"
-               (string-contains (format-keymap-line 'chat) "^e:collapse"))
+               (string-contains (format-keymap-line 'chat) "^e collapse"))
   (test-assert "shell keymap documents the run key"
                (string-contains (format-keymap-line 'shell) "enter:run"))
   (test-assert "shell keymap documents the return key"
@@ -455,7 +455,7 @@
   (test-assert "scheme keymap documents the eval key"
                (string-contains (format-keymap-line 'scheme) "enter:eval"))
   (test-assert "selector keymap documents the palette keys"
-               (string-contains (format-keymap-line 'selector) "up/down:choose"))
+               (string-contains (format-keymap-line 'selector) "↑↓:choose"))
   (test-assert "menu keymap documents the menu keys"
                (string-contains (format-keymap-line 'menu) "enter:apply"))
   (test-assert "unknown modes fall back to the chat keymap"

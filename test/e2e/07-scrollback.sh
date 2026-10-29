@@ -6,7 +6,7 @@ launch_tui
 expect_visible "Welcome to badb microharness TUI!" 20000
 
 press '!'
-expect_visible "enter:run backspace:back to chat" 5000
+expect_visible "enter:run · backspace:back to chat" 5000
 submit_line "seq 1 60"
 expect_visible "60" 10000
 

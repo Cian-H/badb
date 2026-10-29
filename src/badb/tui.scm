@@ -318,6 +318,15 @@ by the renderer). The neutral 'default maps to white."
 ;;;
 ;;; Morphing Prompt Indicator
 ;;;
+(define %spinner-frames (vector "⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧"))
+(define (streaming-spinner-glyph)
+  "Return the current braille spinner frame, advanced by wall-clock
+time so the prompt indicator animates on every streaming redraw."
+  (let* ((ms (quotient (get-internal-run-time)
+                       (quotient internal-time-units-per-second 1000)))
+         (i (modulo (quotient ms 80) (vector-length %spinner-frames))))
+    (vector-ref %spinner-frames i)))
+
 (define* (get-prompt-indicator input-buffer status-text #:optional (prompt-mode 'chat))
   "Return (values glyph-char theme-role bold?) for the prompt indicator
 based on current input mode, execution status, and active prompt mode."
@@ -355,8 +364,23 @@ based on current input mode, execution status, and active prompt mode."
 underline."
   (make-string (max 0 maxx) #\─))
 
+(define (status->theme-role status-text)
+  "Map a STATUS-TEXT word to the theme role it should carry in the
+header: idle is success-green, active work is accent-cyan, and anything
+else falls back to the neutral status role."
+  (cond
+    ((string=? status-text "READY") 'success)
+    ((or (string-prefix? "EXEC" status-text)
+         (string-prefix? "EVAL" status-text)
+         (string-prefix? "STREAMING" status-text)
+         (string-prefix? "TESTING" status-text)
+         (string-prefix? "REACT" status-text)
+         (string-prefix? "TOOL" status-text))
+      'accent)
+    (else 'status)))
+
 (define* (format-header-segments maxx status-text model-name feat-count jrn-count
-                                 #:optional (mcp-info #f))
+                                 #:optional (mcp-info #f) (ctx-info #f))
   "Build the slim header line as positioned segments of the form
 ((x text role bold?) ...) for a terminal MAXX columns wide: the badb
 wordmark leads in the accent role with the model name dim behind it, and
@@ -371,7 +395,9 @@ sides would collide; the model name truncates last."
            (filter-map
              (lambda (item) (and (pair? item) item))
              (list (and (string? status-text) (not (string-null? status-text))
-                        (cons 'status status-text))
+                        (cons (status->theme-role status-text) status-text))
+                   (and (string? ctx-info) (not (string-null? ctx-info))
+                        (cons 'dim ctx-info))
                    (and (> feat-count 0) (cons 'dim (format #f "~a feats" feat-count)))
                    (and (> jrn-count 0) (cons 'dim (format #f "~a chkpts" jrn-count)))
                    (and (string? mcp-info) (not (string-null? mcp-info))
@@ -415,12 +441,12 @@ sides would collide; the model name truncates last."
   "Return the dim bottom keymap hint line describing the keys active in
 MODE (a symbol: chat, shell, scheme, selector, menu or steering)."
   (case mode
-    ((shell) "enter:run backspace:back to chat")
-    ((scheme) "enter:eval backspace:back to chat")
-    ((selector) "up/down:choose tab:complete enter:run esc:dismiss")
-    ((menu) "up/down:move enter:apply esc:close")
-    ((steering) "type:steer enter:send ^i:interrupt bs:edit esc:clear")
-    (else "!:shell ,:scheme /:cmds ^up/^dn:select ^e:collapse up/dn+pgup/dn:scroll")))
+    ((shell) "enter:run · backspace:back to chat")
+    ((scheme) "enter:eval · backspace:back to chat")
+    ((selector) "↑↓:choose · tab:complete · enter:run · esc:dismiss")
+    ((menu) "↑↓:move · enter:apply · esc:close")
+    ((steering) "type:steer · enter:send · ^i:interrupt · bs:edit · esc:clear")
+    (else "! shell · , scheme · / cmds · ^↑/^↓ select · ^e collapse · ↑↓ scroll")))
 
 ;;;
 ;;; Agent Steering Helpers
@@ -1488,6 +1514,7 @@ header, an optional thinking section, and the content. Pure - no I/O."
        (KEY_RESIZE (nref 'KEY_RESIZE))
        (key-defined (nref 'key-defined))
        (define-key (nref 'define-key))
+       (beep (nref 'beep))
        (KEY_FIND (nref 'KEY_FIND))
        (KEY_OPEN (nref 'KEY_OPEN)))
     ;; Initialize Configuration & Kernel State
@@ -1757,12 +1784,9 @@ header, an optional thinking section, and the content. Pure - no I/O."
                              ,(string-append
                                 "Welcome to badb microharness TUI!\n"
                                 "• Type a message to chat with the model (autonomous ReAct loop active)\n"
-                                "• While the agent runs you can steer it: type a course correction, enter sends it, ctrl+i interrupts (applied at the next iteration)\n"
-                                "• ! switches to shell mode, ( or , to Scheme REPL; backspace on an empty prompt returns to chat\n"
-                                "• / opens the command palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context)\n"
-                                "• ctrl+up / ctrl+down select a message block, ctrl+e collapse or expand it\n"
-                                "• /config, /model or /endpoint alone open interactive menus (up/down move, enter apply, esc close)\n"
-                                "• The bottom line lists the keys active in the current mode.")))))
+                                "• While the agent runs, type to steer it: enter sends · ctrl+i interrupts (applied at the next iteration)\n"
+                                "• ! shell · , scheme · / command palette · ctrl+↑/↓ select a block · ctrl+e collapse it\n"
+                                "• The status line up top and the keymap below stay live; /help for details")))))
     (define llm-history (list (make-system-turn)))
     (define input-buffer "")
     (define cursor-pos 0)
@@ -2273,10 +2297,11 @@ and append it to the persistent history journal file."
                                               cur-model
                                               (length (registry-list reg))
                                               (journal-count jrn)
-                                              mcp-info))
-                    (draw-role! 'frame #t)
+                                              mcp-info
+                                              (context-gauge-info)))
+                    (draw-role! 'dim #t)
                     (safe-addstr stdscr 1 0 (format-rule-line maxx) maxx)
-                    (draw-role! 'frame #f))
+                    (draw-role! 'dim #f))
                   ;; 2. Flat message history blocks
                   ;; Rows are tagged with their owning message index so the
                   ;; selection marker and auto-scroll can address messages,
@@ -2354,6 +2379,8 @@ and append it to the persistent history journal file."
                     (lambda ()
                       (get-prompt-indicator input-buffer status-text prompt-mode))
                     (lambda (glyph theme-role bold?)
+                      (when (string=? status-text "STREAMING...")
+                        (set! glyph (streaming-spinner-glyph)))
                       (draw-role! theme-role #t)
                       (when bold? (attr-on! stdscr A_BOLD))
                       (safe-addstr stdscr prompt-top 0 glyph 1)
@@ -2503,6 +2530,24 @@ placeholder flag, so the next streamed call starts a fresh card."
     (define (reset-react-stream-state!)
             (set! react-stream-content "")
             (set! react-stream-thoughts ""))
+    ;; Live context gauge for the header: estimated conversation tokens
+    ;; over the compactor ceiling, e.g. "ctx 12.4k/16k". Cheap enough to
+    ;; compute per frame; tells the user when /compact is due.
+    (define %ctx-cache-tokens #f)
+    (define %ctx-cache-key #f)
+    (define (context-gauge-info)
+            (let ((key (length llm-history)))
+              ;; The estimate only changes when history grows; cache it.
+              (unless (eq? key %ctx-cache-key)
+                (set! %ctx-cache-key key)
+                (set! %ctx-cache-tokens
+                      (estimate-conversation-tokens llm-history)))
+              (let* ((used %ctx-cache-tokens)
+                     (ceiling (context-compactor-effective-ceiling compactor))
+                     (k (lambda (n) (format #f "~,1fk" (/ n 1000.0)))))
+                (if (and (number? used) (> ceiling 0))
+                  (format #f "ctx ~a/~a" (k used) (k ceiling))
+                  #f))))
     (define (throttled-stream-render!)
             ;; Repaint at most ~15fps while streaming: every delta updates
             ;; state cheaply, full-frame paints are rate-limited.
@@ -3680,7 +3725,12 @@ any open menu first; submenu actions open the next menu in its place."
                                 (add-user-msg! user-text)
                                 (catch #t
                                   (lambda ()
-                                    (execute-chat-stream! user-text))
+                                    (execute-chat-stream! user-text)
+                                    ;; The ReAct loop ran for a while:
+                                    ;; ring the terminal bell so an
+                                    ;; away-from-keyboard user knows badb
+                                    ;; is waiting for them again.
+                                    (beep))
                                   (lambda (key . args)
                                     (add-err-msg! (format #f "Chat error (~a): ~s" key args))
                                     (set! status-text "READY")

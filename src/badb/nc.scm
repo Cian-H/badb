@@ -46,6 +46,7 @@
               KEY_LEFT KEY_RIGHT KEY_HOME KEY_END KEY_DC KEY_RESIZE
               KEY_FIND KEY_OPEN
               key-defined define-key
+              beep
               COLOR_BLACK COLOR_RED COLOR_GREEN COLOR_YELLOW
               COLOR_BLUE COLOR_MAGENTA COLOR_CYAN COLOR_WHITE))
 
@@ -255,16 +256,23 @@
 (define %fg 'default)
 (define %bg 'default)
 (define %nodelay? #f)
+(define %dim? #f)
 (define %cursor-visible? #f)
 (define %cursor-y 0)
 (define %cursor-x 0)
 (define %next-y 0)                          ; pending (move) position
 (define %next-x 0)
 
+(define (dimmed-rgb rgb)
+  "Halve each RGB channel of RGB, the notcurses-substitute for a dim
+text style: curses' A_DIM renders as reduced foreground intensity."
+  (logior (logand rgb #x7f7f7f)))
 (define (apply-foreground!)
-  (if (eq? %fg 'default)
-    (%set-fg-default %plane)
-    (%set-fg-rgb %plane %fg)))
+  (cond
+    ((and (eq? %fg 'default) (not %dim?)) (%set-fg-default %plane))
+    ((eq? %fg 'default) (%set-fg-rgb %plane (dimmed-rgb (terminal-default-fg))))
+    (%dim? (%set-fg-rgb %plane (dimmed-rgb %fg)))
+    (else (%set-fg-rgb %plane %fg))))
 (define (apply-background!)
   (if (eq? %bg 'default)
     (%set-bg-default %plane)
@@ -415,7 +423,10 @@
         (set! %fg b)
         (set! %bg f)
         (apply-channels!)))
-    ((eqv? attr A_DIM) #t)   ; no notcurses equivalent
+    ((eqv? attr A_DIM)
+      ;; Emulated: halve the foreground intensity while dim is on.
+      (set! %dim? #t)
+      (apply-foreground!))
     (else
       (let ((rgb (hashv-ref %pairs attr)))
         (when rgb
@@ -435,7 +446,9 @@
         (set! %fg b)
         (set! %bg f)
         (apply-channels!)))
-    ((eqv? attr A_DIM) #t)
+    ((eqv? attr A_DIM)
+      (set! %dim? #f)
+      (apply-foreground!))
     (else
       ;; Turning a color pair off restores default colors.
       (set! %fg 'default)
@@ -533,9 +546,6 @@
       ;; The kitty protocol reports plain keys as their unmodified id
       ;; plus a modifier bitmask ('!' is 1+shift). Compose to curses
       ;; semantics:
-      ;;   - ctrl+letter (kitty) is the classic control code
-      ;;     (a=1..z=26); legacy terminals already send that code, and
-      ;;     both paths must deliver it unchanged.
       ;;   - notcurses' eff_text is only safe for shift/capslock
       ;;     composition of printables: for ctrl input it gives the
       ;;     UPPERCASE letter (ctrl+e -> 'E'), and it must never
@@ -571,3 +581,13 @@
     (else #f)))
 
 (define (define-key seq code) #t)
+
+;; Ring the terminal bell: a raw BEL byte on stderr, which shares the
+;; tty in TUI usage. Safe to call at any time; never disturbs the
+;; rendered frame.
+(define (beep)
+  (catch #t
+    (lambda ()
+      (display "\a" (current-error-port))
+      (force-output (current-error-port)))
+    (lambda _ #f)))
