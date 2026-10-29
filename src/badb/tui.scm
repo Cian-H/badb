@@ -68,6 +68,10 @@
                (srfi srfi-11)
                #:use-module
                (srfi srfi-19)
+               #:use-module
+               (badb spec-gate)
+               #:use-module
+               (badb digest)
                #:export
                (run-tui format-conversation-transcript
                         wrap-line
@@ -154,6 +158,10 @@
                         color-symbol->ncurses-constant
                         key->code
                         resolve-modified-key
+                        spec-tool-lock
+                        spec-tool-verify
+                        spec-tool-status
+                        register-spec-tools!
                         format-message-entry))
 
 ;;;
@@ -1610,6 +1618,217 @@ header, an optional thinking section, and the content. Pure - no I/O."
                  messages)))
           (string-append ";; badb conversation transcript\n" (string-join blocks ""))))
 
+;;;
+;;; Kernel-Owned Spec Gate Tools (roadmap Phase 2/3 dogfood)
+;;;
+(define (spec-tool-format-failure failure)
+        "Render one parsed spec failure record (a string-keyed alist from
+the diagnostics JSON) as a single diagnostic line."
+        (format #f
+                "- ~a [kind: ~a] seed: ~a inputs: ~s exception: ~a\n"
+                (or (assoc-ref failure "name") "?")
+                (or (assoc-ref failure "kind") "?")
+                (or (assoc-ref failure "seed") "?")
+                (or (assoc-ref failure "inputs") '?)
+                (or (assoc-ref failure "exception") "?")))
+
+(define (spec-tool-lock spec-path feature-id)
+        "Kernel tool 'spec.lock': lock the authored spec at SPEC-PATH for
+FEATURE-ID into the kernel-owned locked spec store and return the
+locked copy path plus its SHA-256 spec-hash. Locking is how a
+contract becomes binding: the kernel re-reads the LOCKED copy at
+commit time, never the agent's working copy. The gate itself
+constrains the copy to (spec-gate-root)/specs/."
+        (catch #t
+          (lambda ()
+            (cond
+              ((not
+                 (and (string? spec-path)
+                      (not (string-null? (string-trim-both spec-path)))
+                      (string? feature-id)
+                      (not (string-null? (string-trim-both feature-id)))))
+                "Error: spec.lock requires non-empty string arguments spec-path and feature-id")
+              ((not (file-exists? spec-path))
+                (format #f "Error: spec file '~a' does not exist" spec-path))
+              ((not
+                 (catch #t
+                   (lambda ()
+                     (call-with-input-file spec-path
+                                           (lambda (port)
+                                             #t)))
+                   (lambda _
+                     #f)))
+                (format #f "Error: spec file '~a' is not readable" spec-path))
+              (else
+                (let*
+                    ((hash (lock-spec spec-path feature-id)) (locked (locked-spec-path feature-id)))
+                  (format #f
+                          "Locked spec for feature '~a'.\nLocked copy: ~a\nSHA-256 spec-hash: ~a\nThe kernel re-reads the LOCKED copy at commit time; locking is how this contract became binding."
+                          feature-id
+                          locked
+                          hash)))))
+          (lambda (key . args)
+            (format #f "Error locking spec (~a): ~s" key args))))
+
+(define (spec-tool-verify feature-id)
+        "Kernel tool 'spec.verify': replay the LOCKED spec copy for
+FEATURE-ID in a disposable kernel subprocess and return the verdict,
+spec-hash, summary counts, and failure diagnostics. The verdict comes
+only from kernel subprocess replay of the locked copy, never from
+agent self-report, and the gate fails closed on any spawn, timeout,
+or parse failure."
+        (if
+            (not
+              (and (string? feature-id) (not (string-null? (string-trim-both feature-id)))))
+          "Error: spec.verify requires a non-empty string feature-id"
+          (let*
+              ((result (verify-locked-spec feature-id))
+               (verdict (ensure-string (assoc-ref result 'verdict)))
+               (failures (assoc-ref result 'failures)))
+            (apply string-append
+                   (append
+                     (list
+                       (format #f
+                               "Kernel replay verdict: ~a for feature '~a'.\n"
+                               (string-upcase verdict)
+                               feature-id)
+                       (format #f "spec-hash: ~a\n" (or (assoc-ref result 'spec-hash) "none"))
+                       (format #f
+                               "summary: total=~a passed=~a failed=~a\n"
+                               (or (assoc-ref result 'summary-total) "?")
+                               (or (assoc-ref result 'summary-passed) "?")
+                               (or (assoc-ref result 'summary-failed) "?"))
+                       (format #f "seed: ~a\n" (ensure-string (assoc-ref result 'seed)))
+                       (format #f
+                               "exit-status: ~a signal: ~a timed-out: ~a\n"
+                               (or (assoc-ref result 'exit-status) "none")
+                               (or (assoc-ref result 'signal) "none")
+                               (assoc-ref result 'timed-out?))
+                       (format #f "reason: ~a\n" (ensure-string (assoc-ref result 'reason)))
+                       "Verdicts come only from kernel subprocess replay of the LOCKED copy; the kernel re-reads it at commit time.\n")
+                     (if (or (not failures) (null? failures))
+                       (list "failures: none\n")
+                       (cons "failures:\n" (map spec-tool-format-failure failures))))))))
+
+(define (spec-tool-list-locked-specs)
+        "Return the sorted locked spec file names in the kernel locked-spec
+store directory, or the empty list when the store does not exist yet."
+        (let ((dir (spec-gate-dir)))
+          (if (not (file-exists? dir))
+            '()
+            (let ((d (opendir dir)))
+              (let loop
+                ((names '()))
+                (let
+                    ((entry
+                       (catch #t
+                         (lambda ()
+                           (readdir d))
+                         (lambda _
+                           #f))))
+                  (cond
+                    ((or (not entry) (eof-object? entry)) (closedir d) (sort names string<?))
+                    ((string-suffix? ".scm" entry) (loop (cons entry names)))
+                    (else (loop names)))))))))
+
+(define (spec-tool-status . maybe-feature-id)
+        "Kernel tool 'spec.status': list the locked specs in the kernel
+locked-spec store with their recomputed SHA-256 hashes and, when a
+FEATURE-ID is supplied, report whether that feature has a locked
+spec. The kernel re-reads the LOCKED copies at commit time; locking
+is how a contract becomes binding."
+        (let*
+            ((raw-fid (and (pair? maybe-feature-id) (car maybe-feature-id)))
+             (feature-id
+               (and (string? raw-fid) (not (string-null? (string-trim-both raw-fid))) raw-fid))
+             (dir (spec-gate-dir))
+             (names (spec-tool-list-locked-specs)))
+          (apply string-append
+                 (append
+                   (list (format #f "Locked spec store: ~a\n" dir)
+                         (if (null? names)
+                           "No locked specs yet.\n"
+                           (format #f
+                                   "~a locked spec~a:\n"
+                                   (length names)
+                                   (if (= (length names) 1)
+                                     ""
+                                     "s"))))
+                   (map
+                     (lambda (name)
+                       (let*
+                           ((path (string-append dir "/" name))
+                            (hash
+                              (catch #t
+                                (lambda ()
+                                  (sha256-hex (call-with-input-file path read-string)))
+                                (lambda _
+                                  "unreadable"))))
+                         (format #f
+                                 "  ~a  ~a  (~a)\n"
+                                 (substring name 0 (- (string-length name) 4))
+                                 hash
+                                 path)))
+                     names)
+                   (if feature-id
+                     (let ((locked (locked-spec-path feature-id)))
+                       (list
+                         (if (file-exists? locked)
+                           (format #f "Locked spec for feature '~a': present at ~a\n" feature-id locked)
+                           (format #f
+                                   "Locked spec for feature '~a': none (no locked copy at ~a)\n"
+                                   feature-id
+                                   locked))))
+                     '())))))
+
+(define (register-spec-tools! reg)
+        "Attach the kernel-owned spec gate tools to the kernel feature
+registry REG: spec.lock, spec.verify, and spec.status. The
+descriptions tell the agent that the kernel re-reads the LOCKED copy
+at commit time, that locking is how a contract becomes binding, and
+that verdicts come only from kernel subprocess replay."
+        (registry-attach! reg
+                          "spec.lock"
+                          (lambda (spec-path feature-id)
+                            (spec-tool-lock spec-path feature-id))
+                          '((description .
+                             "Lock the authored spec at spec-path for feature-id into the kernel-owned locked spec store; returns the locked copy path and its SHA-256 spec-hash. Locking is how a contract becomes binding: the kernel re-reads the LOCKED copy at commit time, never the agent's working copy.")
+                            (parameters .
+                             ((type . "object")
+                              (properties .
+                               ((spec-path .
+                                 ((type . "string") (description . "Path to the authored spec file to lock")))
+                                (feature-id .
+                                 ((type . "string") (description . "Feature identifier the spec gates")))))
+                              (required . #("spec-path" "feature-id"))))))
+        (registry-attach! reg
+                          "spec.verify"
+                          (lambda (feature-id)
+                            (spec-tool-verify feature-id))
+                          '((description .
+                             "Ask the kernel to replay the LOCKED spec copy for feature-id in a disposable subprocess; returns the verdict, spec-hash, summary counts, and failure diagnostics. Verdicts come only from kernel subprocess replay of the locked copy, never from agent self-report; the gate fails closed.")
+                            (parameters .
+                             ((type . "object")
+                              (properties .
+                               ((feature-id .
+                                 ((type . "string")
+                                  (description . "Feature identifier whose locked spec to replay")))))
+                              (required . #("feature-id"))))))
+        (registry-attach! reg
+                          "spec.status"
+                          (lambda args
+                            (apply spec-tool-status args))
+                          '((description .
+                             "List the locked specs in the kernel locked-spec store with recomputed SHA-256 hashes; with optional feature-id, report whether that feature has a locked spec. The kernel re-reads the LOCKED copies at commit time.")
+                            (parameters .
+                             ((type . "object")
+                              (properties .
+                               ((feature-id .
+                                 ((type . "string")
+                                  (description . "Optional feature identifier to check for a locked spec")))))
+                              (required . #())))))
+        reg)
+
 (define*
   (run-tui #:key
            (endpoint #f)
@@ -1899,6 +2118,8 @@ header, an optional thinking section, and the content. Pure - no I/O."
                           (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args (car maybe-args))
                           (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args)))
                       '((description . "Call a tool on an MCP server")))
+    ;; Register kernel-owned spec gate tools (Phase 2 dogfood)
+    (register-spec-tools! reg)
     ;; Auto-start configured MCP servers with auto-start: #t
     (catch #t
       (lambda ()
