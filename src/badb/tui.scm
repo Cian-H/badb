@@ -1485,6 +1485,7 @@ header, an optional thinking section, and the content. Pure - no I/O."
        (KEY_HOME (nref 'KEY_HOME))
        (KEY_END (nref 'KEY_END))
        (KEY_DC (nref 'KEY_DC))
+       (KEY_RESIZE (nref 'KEY_RESIZE))
        (key-defined (nref 'key-defined))
        (define-key (nref 'define-key))
        (KEY_FIND (nref 'KEY_FIND))
@@ -3829,6 +3830,12 @@ any open menu first; submenu actions open the next menu in its place."
                 (loop))
               ;; Ctrl+C or Ctrl+D: exit
               ((or (eqv? ch 3) (eqv? ch 4)) 'done)
+              ;; Window resize: ncurses reports the new size as the
+              ;; synthetic KEY_RESIZE code (410). Consume it and redraw
+              ;; at the top of the loop; it must never reach the
+              ;; printable clause below, where it would insert the
+              ;; character U+019A into the input buffer.
+              ((eqv? ch KEY_RESIZE) (loop))
               ;; Printable character input (codepoints >= 32). Unbound
               ;; control codes fall through to the else branch and are
               ;; discarded rather than inserted into the buffer.
