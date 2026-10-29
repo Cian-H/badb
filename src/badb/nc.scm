@@ -421,6 +421,18 @@ text style: curses' A_DIM renders as reduced foreground intensity."
 
 (define (color-pair id) id)
 
+(define (pair-background rgb)
+  "Background channel for a color pair whose RGB bg is CDR of RGB: a
+black background is the curses convention for 'whatever the terminal's
+background is' (ncurses rendered it through the terminal's default
+pair), so it maps to notcurses' transparent default background instead
+of painting an opaque black that mismatches the user's terminal. Any
+other color is a genuine painted background (selection highlights,
+reversed cards) and stays opaque."
+  (if (= (cdr rgb) #x000000)
+    'default
+    (cdr rgb)))
+
 (define (attr-on! win attr)
   (cond
     ((eqv? attr A_BOLD) (%on-styles %plane %ncstyle-bold))
@@ -441,7 +453,7 @@ text style: curses' A_DIM renders as reduced foreground intensity."
       (let ((rgb (hashv-ref %pairs attr)))
         (when rgb
           (set! %fg (car rgb))
-          (set! %bg (cdr rgb))
+          (set! %bg (pair-background rgb))
           (apply-channels!)))))
   #t)
 
