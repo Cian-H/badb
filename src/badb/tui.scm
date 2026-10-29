@@ -1671,6 +1671,7 @@ header, an optional thinking section, and the content. Pure - no I/O."
        (define-key (nref 'define-key))
        (beep (nref 'beep))
        (cursor-shape (nref 'cursor-shape))
+       (drain-mouse-events (nref 'drain-mouse-events))
        (KEY_FIND (nref 'KEY_FIND))
        (KEY_OPEN (nref 'KEY_OPEN)))
     ;; Initialize Configuration & Kernel State
@@ -1994,6 +1995,11 @@ header, an optional thinking section, and the content. Pure - no I/O."
     ;; Incremental rendering: formatted block rows are memoized per
     ;; message object so each frame only formats new messages.
     (define row-cache (make-row-cache))
+    ;; Mouse hit map: screen row -> click target, rebuilt by every
+    ;; render. Transcript rows map to their owning message index;
+    ;; popup rows map to ('menu-item . ABS-INDEX) or
+    ;; ('palette-item . INDEX); handle-mouse-event! dispatches on it.
+    (define %click-targets (make-hash-table 61))
     ;; Agent steering state: the queue is shared with every react session
     ;; and persists across runs (and /clear, which only resets the
     ;; transcript) so /steer and /interrupt can pre-queue entries between
@@ -2042,7 +2048,8 @@ header, an optional thinking section, and the content. Pure - no I/O."
     (define (record-session-usage! usage)
             "Accumulate one model call's USAGE alist ((prompt . N) (completion . N))
 into the session counters and mark the current turn exactly accounted."
-            (let ((p (assoc-ref usage 'prompt)) (c (assoc-ref usage 'completion)))
+            (let
+                ((p (assoc-ref usage 'prompt)) (c (assoc-ref usage 'completion)))
               (when (and (number? p) (number? c))
                 (set! session-prompt-tokens (+ session-prompt-tokens p))
                 (set! session-completion-tokens (+ session-completion-tokens c))
@@ -2192,9 +2199,7 @@ and append it to the persistent history journal file."
                        (let ((id next-pair-id))
                          (catch #t
                            (lambda ()
-                             (init-pair! id
-                                         (theme-color->backend-value fg)
-                                         (theme-color->backend-value bg)))
+                             (init-pair! id (theme-color->backend-value fg) (theme-color->backend-value bg)))
                            (lambda _
                              #f))
                          (set! role-pair-cache (acons key id role-pair-cache))
@@ -2376,7 +2381,8 @@ and append it to the persistent history journal file."
         ;; Blank the rectangle behind the pop-up first: without this,
         ;; underlying message text shows through between the drawn
         ;; fragments (a clear rendering error on busy screens).
-        (let blank-rows ((by start-y) (bi 0))
+        (let blank-rows
+          ((by start-y) (bi 0))
           (when (< bi (+ vis-count 2))
             (safe-addstr stdscr by start-x (make-string box-w #\space) box-w)
             (blank-rows (+ by 1) (+ bi 1))))
@@ -2443,8 +2449,7 @@ and append it to the persistent history journal file."
                      (input-layout
                        (call-with-values
                          (lambda ()
-                           (input-wrapped-rows input-buffer cursor-pos
-                                               avail-width %max-input-rows))
+                           (input-wrapped-rows input-buffer cursor-pos avail-width %max-input-rows))
                          list))
                      (input-lines (car input-layout))
                      (input-cur-row (cadr input-layout))
@@ -2455,6 +2460,7 @@ and append it to the persistent history journal file."
                      (view-bottom (- maxy 3 (- input-rows 1)))
                      (view-height (max 1 (- view-bottom view-top)))
                      (content-width (max 10 (- maxx 3))))
+                  (set! %click-targets (make-hash-table 61))
                   (erase stdscr)
                   ;; 1. Slim header line (wordmark, model, status, counts)
                   ;;    over a thin horizontal rule
@@ -2495,7 +2501,7 @@ and append it to the persistent history journal file."
                   (row-cache-prune! row-cache messages)
                   (let*
                       ((msg-count (length messages))
-                       (sel-idx (and msgsel-index (< msgsel-index msg-count) msgsel-index))
+                       (sel-idx (and (integer? msgsel-index) (< msgsel-index msg-count) msgsel-index))
                        (indexed-rows
                          (map
                            (lambda (idx msg)
@@ -2538,6 +2544,7 @@ and append it to the persistent history journal file."
                         ((lines visible-lines) (y view-top))
                         (unless (or (null? lines) (>= y view-bottom))
                           (let ((tagged (car lines)))
+                            (hashq-set! %click-targets y (car tagged))
                             (draw-block-line y
                                              (cdr tagged)
                                              content-width
@@ -2605,7 +2612,14 @@ and append it to the persistent history journal file."
                                    (cons (format #f "/~a" (car item)) (cdr item)))
                                  (take matches vis-count))))
                           (when (>= start-y 2)
-                            (draw-popup! "commands" rows selector-index box-w start-y 2 0 0))))))
+                            (draw-popup! "commands" rows selector-index box-w start-y 2 0 0)
+                            ;; Mouse hit map: palette rows are items;
+                            ;; clicking one selects it.
+                            (let li
+                              ((i 0))
+                              (when (< i vis-count)
+                                (hashq-set! %click-targets (+ start-y 1 i) (cons 'palette-item i))
+                                (li (+ i 1)))))))))
                   ;; 6. Floating Menu Popup Overlay (same visual language as
                   ;; the slash selector: accent rounded box, bold selected
                   ;; row, capped visible rows with scroll indicators)
@@ -2646,15 +2660,18 @@ and append it to the persistent history journal file."
                                              start-y
                                              2
                                              offset
-                                             (- m-count offset vis-count)))))))))
+                                             (- m-count offset vis-count))
+                                (let mi
+                                  ((i 0))
+                                  (when (< i vis-count)
+                                    (hashq-set! %click-targets (+ start-y 1 i) (cons 'menu-item (+ offset i)))
+                                    (mi (+ i 1)))))))))))
                   ;; Position the terminal cursor at the editing position
                   ;; LAST: row draws below the input line (keymap hint,
                   ;; pop-ups) displace the cursor, so reposition right
                   ;; before refreshing or the hardware cursor visibly
                   ;; rests after the last drawn row.
-                  (move stdscr
-                        (+ prompt-top input-cur-row)
-                        (+ 2 input-cur-col))
+                  (move stdscr (+ prompt-top input-cur-row) (+ 2 input-cur-col))
                   ;; Cursor compatibility: the terminal cursor's shape
                   ;; signals the active mode - a bar for chat typing,
                   ;; an underline in the modal REPLs, a block while a
@@ -2664,15 +2681,11 @@ and append it to the persistent history journal file."
                   ;; every frame is free; endwin restores the default.
                   (cond
                     ((agent-run-active? status-text) (safe-curs-set! 0))
-                    (msgsel-index
-                      (safe-curs-set! 1)
-                      (cursor-shape 'block))
+                    ((integer? msgsel-index) (safe-curs-set! 1) (cursor-shape 'block))
                     ((memq prompt-mode '(shell scheme))
                       (safe-curs-set! 1)
                       (cursor-shape 'underline))
-                    (else
-                      (safe-curs-set! 1)
-                      (cursor-shape 'bar)))
+                    (else (safe-curs-set! 1) (cursor-shape 'bar)))
                   (refresh stdscr)))
               (lambda (key . args)
                 ;; Never swallow render failures silently: surface each new
@@ -2687,7 +2700,10 @@ and append it to the persistent history journal file."
     ;; transcript as deltas arrive ('streaming flag); later steps replace
     ;; exactly that placeholder, commit it permanently, or remove it.
     (define (react-stream-placeholder-index)
-            (list-index (lambda (m) (assoc-ref m 'streaming)) messages))
+            (list-index
+              (lambda (m)
+                (assoc-ref m 'streaming))
+              messages))
     (define (update-react-stream-message! delta type)
             (cond
               ((eq? type 'thought)
@@ -2697,7 +2713,8 @@ and append it to the persistent history journal file."
               ((eq? type 'usage) (record-session-usage! delta))
               (else #f))
             (call-with-values
-              (lambda () (split-thoughts-and-content react-stream-content))
+              (lambda ()
+                (split-thoughts-and-content react-stream-content))
               (lambda (inline-th inline-ct)
                 (let*
                     ((total-th
@@ -2707,16 +2724,13 @@ and append it to the persistent history journal file."
                          ((non-empty-string? react-stream-thoughts) react-stream-thoughts)
                          (else inline-th)))
                      (updated
-                       (cons
-                         (cons 'streaming #t)
-                         (default-collapse-message
-                           `((role . "assistant") (thoughts . ,total-th) (content . ,inline-ct))))))
+                       (cons (cons 'streaming #t)
+                             (default-collapse-message
+                               `((role . "assistant") (thoughts . ,total-th) (content . ,inline-ct))))))
                   (let ((idx (react-stream-placeholder-index)))
                     (if idx
                       (set! messages
-                            (append (take messages idx)
-                                    (list updated)
-                                    (drop messages (+ idx 1))))
+                            (append (take messages idx) (list updated) (drop messages (+ idx 1))))
                       (set! messages (append messages (list updated)))))))))
     (define (commit-react-stream-message!)
             "Keep the streamed assistant card permanently but drop its
@@ -2725,11 +2739,18 @@ placeholder flag, so the next streamed call starts a fresh card."
                   (map
                     (lambda (m)
                       (if (assoc-ref m 'streaming)
-                        (filter (lambda (p) (not (eq? (car p) 'streaming))) m)
+                        (filter
+                          (lambda (p)
+                            (not (eq? (car p) 'streaming)))
+                          m)
                         m))
                     messages)))
     (define (remove-react-stream-message!)
-            (set! messages (filter (lambda (m) (not (assoc-ref m 'streaming))) messages)))
+            (set! messages
+                  (filter
+                    (lambda (m)
+                      (not (assoc-ref m 'streaming)))
+                    messages)))
     (define (reset-react-stream-state!)
             (set! react-stream-content "")
             (set! react-stream-thoughts ""))
@@ -2743,11 +2764,13 @@ placeholder flag, so the next streamed call starts a fresh card."
               ;; The estimate only changes when history grows; cache it.
               (unless (eq? key %ctx-cache-key)
                 (set! %ctx-cache-key key)
-                (set! %ctx-cache-tokens
-                      (estimate-conversation-tokens llm-history)))
-              (let* ((used %ctx-cache-tokens)
-                     (ceiling (context-compactor-effective-ceiling compactor))
-                     (k (lambda (n) (format #f "~,1fk" (/ n 1000.0)))))
+                (set! %ctx-cache-tokens (estimate-conversation-tokens llm-history)))
+              (let*
+                  ((used %ctx-cache-tokens)
+                   (ceiling (context-compactor-effective-ceiling compactor))
+                   (k
+                     (lambda (n)
+                       (format #f "~,1fk" (/ n 1000.0)))))
                 (if (and (number? used) (> ceiling 0))
                   (format #f "ctx ~a/~a" (k used) (k ceiling))
                   #f))))
@@ -2755,8 +2778,9 @@ placeholder flag, so the next streamed call starts a fresh card."
             ;; Repaint at most ~15fps while streaming: every delta updates
             ;; state cheaply, full-frame paints are rate-limited.
             (let ((now (get-internal-run-time)))
-              (when (>= (- now react-stream-last-render)
-                        (quotient internal-time-units-per-second 15))
+              (when
+                  (>= (- now react-stream-last-render)
+                      (quotient internal-time-units-per-second 15))
                 (set! react-stream-last-render now)
                 (render!))))
     ;; Execute streaming query against LLM with separated thoughts
@@ -2836,8 +2860,8 @@ placeholder flag, so the next streamed call starts a fresh card."
                                                                       res-str)))
                                                                (add-msg! "tool-result"
                                                                          (if err?
-                                                                             (format #f "Tool ~a failed: ~a" t-name preview)
-                                                                             (format #f "Tool ~a returned: ~a" t-name preview)))
+                                                                           (format #f "Tool ~a failed: ~a" t-name preview)
+                                                                           (format #f "Tool ~a returned: ~a" t-name preview)))
                                                                (poll-steering-input!)
                                                                (render!))))
                                                      (cons 'on-delta
@@ -2925,16 +2949,14 @@ placeholder flag, so the next streamed call starts a fresh card."
                                                        ;; the session accounting.
                                                        (record-session-usage! (extract-usage delta))
                                                        (call-with-values
-                                                         (lambda () (determine-step-content delta))
+                                                         (lambda ()
+                                                           (determine-step-content delta))
                                                          (lambda (ct rc)
-                                                           (set! raw-api-content
-                                                                 (string-append raw-api-content ct))
-                                                           (set! raw-api-thoughts
-                                                                 (string-append raw-api-thoughts (or rc ""))))))
+                                                           (set! raw-api-content (string-append raw-api-content ct))
+                                                           (set! raw-api-thoughts (string-append raw-api-thoughts (or rc ""))))))
                                                      ((eq? chunk-type 'thought)
                                                        (set! raw-api-thoughts (string-append raw-api-thoughts delta)))
-                                                     (else
-                                                       (set! raw-api-content (string-append raw-api-content delta))))
+                                                     (else (set! raw-api-content (string-append raw-api-content delta))))
                                                    (call-with-values
                                                      (lambda ()
                                                        (split-thoughts-and-content raw-api-content))
@@ -2964,11 +2986,11 @@ placeholder flag, so the next streamed call starts a fresh card."
             ;; No endpoint usage block this turn: account an estimate of
             ;; the conversation growth instead, labeled on the /usage card.
             (unless turn-usage-seen?
-              (let ((post (estimate-conversation-tokens llm-history)))
+              (let
+                  ((post (estimate-conversation-tokens llm-history)))
                 (when (number? post)
                   (set! session-estimated-tokens
-                        (+ session-estimated-tokens
-                           (max 0 (- post (or turn-pre-estimate 0))))))))
+                        (+ session-estimated-tokens (max 0 (- post (or turn-pre-estimate 0))))))))
             ;; Persist the whole conversation to the session log after
             ;; every chat turn so /resume can pick it up later.
             (persist-session-file! session-file llm-history)
@@ -3541,27 +3563,27 @@ any open menu first; submenu actions open the next menu in its place."
                 ((and (pair? action) (eq? (car action) 'set-guardrail))
                   (handle-guardrail-cmd! (symbol->string (cdr action))))
                 ((and (pair? action) (eq? (car action) 'resume-session))
-                  (let* ((path (cdr action))
-                         (loaded (load-session-file path))
-                         (turn-count
-                           (length (filter (lambda (m)
-                                              (not (string=? (assoc-ref m 'role) "system")))
-                                            loaded))))
+                  (let*
+                      ((path (cdr action))
+                       (loaded (load-session-file path))
+                       (turn-count
+                         (length
+                           (filter
+                             (lambda (m)
+                               (not (string=? (assoc-ref m 'role) "system")))
+                             loaded))))
                     (if (null? loaded)
                       (add-err-msg!
-                        (format #f
-                                "Session file ~a is empty or unreadable."
-                                (basename path)))
-                      (begin
-                        (set! llm-history loaded)
-                        ;; Force the header context gauge to re-estimate.
-                        (set! %ctx-cache-key #f)
-                        (set! scroll-offset 0)
-                        (add-sys-msg!
-                          (format #f
-                                  "Resumed session ~a (~a turns)"
-                                  (truncate-string (basename path) %session-filename-max-length)
-                                  turn-count))))))
+                        (format #f "Session file ~a is empty or unreadable." (basename path)))
+                      (begin (set! llm-history loaded)
+                             ;; Force the header context gauge to re-estimate.
+                             (set! %ctx-cache-key #f)
+                             (set! scroll-offset 0)
+                             (add-sys-msg!
+                               (format #f
+                                       "Resumed session ~a (~a turns)"
+                                       (truncate-string (basename path) %session-filename-max-length)
+                                       turn-count))))))
                 (else (add-err-msg! "Unsupported menu action.")))))
     ;; Handle /theme: with a NAME switch instantly through the same
     ;; path as the theme menu (applies live, persists to config);
@@ -3569,19 +3591,39 @@ any open menu first; submenu actions open the next menu in its place."
     (define (handle-theme-cmd! arg)
             (let ((name (string-trim-both arg)))
               (cond
-                ((string-null? name)
-                  (set! active-menu (make-menu "Theme" (theme-menu-items))))
-                ((lookup-theme name)
-                  =>
-                  (lambda (th)
-                    (badb-config-set-ui-theme! cfg name)
-                    (set! ui-theme th)
-                    (try-save-config!)
-                    (add-sys-msg! (format #f "UI theme set to '~a' and saved." name))))
+                ((string-null? name) (set! active-menu (make-menu "Theme" (theme-menu-items))))
+                ((lookup-theme name) =>
+                                     (lambda (th)
+                                       (badb-config-set-ui-theme! cfg name)
+                                       (set! ui-theme th)
+                                       (try-save-config!)
+                                       (add-sys-msg! (format #f "UI theme set to '~a' and saved." name))))
                 (else
                   (add-err-msg!
-                    (format #f "Unknown theme '~a'. /theme alone opens the picker with all ~a themes."
-                            name (length (all-theme-names))))))))
+                    (format #f
+                            "Unknown theme '~a'. /theme alone opens the picker with all ~a themes."
+                            name
+                            (length (all-theme-names))))))))
+    (define (handle-mouse-event! ev)
+            (let
+                ((button (car ev)) (y (cadr ev)) (x (caddr ev)))
+              (cond
+                ((= button 4) (set! scroll-offset (+ scroll-offset 3)))
+                ((= button 5) (set! scroll-offset (max 0 (- scroll-offset 3))))
+                ((= button 1)
+                  (let ((target (hashq-ref %click-targets y)))
+                    (cond
+                      ((and active-menu (pair? target) (eq? (car target) 'menu-item))
+                        (set! active-menu
+                              (menu-move active-menu (- (cdr target) (menu-selected-index active-menu))))
+                        (let ((item (menu-selected-item active-menu)))
+                          (when item (apply-menu-selection! item))))
+                      ((and (selector-active? input-buffer)
+                            (pair? target)
+                            (eq? (car target) 'palette-item))
+                        (set! selector-index (cdr target)))
+                      ((integer? target) (set! msgsel-index target))
+                      (else (set! msgsel-index #f))))))))
     ;; Handle context compaction command
     (define (handle-compact-cmd! arg)
             (let*
@@ -3673,7 +3715,9 @@ any open menu first; submenu actions open the next menu in its place."
             (let*
                 ((used (estimate-conversation-tokens llm-history))
                  (ceiling (context-compactor-effective-ceiling compactor))
-                 (k (lambda (n) (format #f "~,1fk" (/ n 1000.0))))
+                 (k
+                   (lambda (n)
+                     (format #f "~,1fk" (/ n 1000.0))))
                  (est-suffix
                    (if (> session-estimated-tokens 0)
                      (format #f " (+~a estimated)" session-estimated-tokens)
@@ -3685,11 +3729,16 @@ any open menu first; submenu actions open the next menu in its place."
                         est-suffix
                         session-completion-tokens
                         session-turns
-                        (if (number? used) (k used) "?")
-                        (if (> ceiling 0) (k ceiling) "?")))))
+                        (if (number? used)
+                          (k used)
+                          "?")
+                        (if (> ceiling 0)
+                          (k ceiling)
+                          "?")))))
     ;; Handle session resume: interactive picker over recent session logs
     (define (handle-resume-cmd! arg)
-            (let ((sessions (recent-session-files (default-sessions-dir))))
+            (let
+                ((sessions (recent-session-files (default-sessions-dir))))
               (if (null? sessions)
                 (add-sys-msg!
                   "No saved sessions found. A session file is written after every chat turn.")
@@ -3698,8 +3747,9 @@ any open menu first; submenu actions open the next menu in its place."
                                  (map
                                    (lambda (path)
                                      (cons
-                                       (cons (truncate-string (basename path) %session-filename-max-length)
-                                             (session-mtime-string path))
+                                       (cons
+                                         (truncate-string (basename path) %session-filename-max-length)
+                                         (session-mtime-string path))
                                        (cons 'resume-session path)))
                                    sessions))))))
     ;; Handle slash commands
@@ -3902,11 +3952,17 @@ any open menu first; submenu actions open the next menu in its place."
     ;; dance keeps both the startup logic and any future backend
     ;; honest. 0 means unresolvable; no keypress ever delivers it.
     (define ctrl-up-key
-      (resolve-modified-key (string #\esc #\[ #\1 #\; #\5 #\A)
-                            key-defined define-key KEY_FIND))
+            (resolve-modified-key
+              (string #\esc #\[ #\1 #\; #\5 #\A)
+              key-defined
+              define-key
+              KEY_FIND))
     (define ctrl-down-key
-      (resolve-modified-key (string #\esc #\[ #\1 #\; #\5 #\B)
-                            key-defined define-key KEY_OPEN))
+            (resolve-modified-key
+              (string #\esc #\[ #\1 #\; #\5 #\B)
+              key-defined
+              define-key
+              KEY_OPEN))
     (safe-curs-set! 1)
     (set! colors-enabled? (has-colors?))
     (when colors-enabled? (start-color!))
@@ -3932,6 +3988,10 @@ any open menu first; submenu actions open the next menu in its place."
                        (car (list-ref matches safe-idx)))))
         (let loop
           ()
+          ;; Drain mouse events BEFORE rendering so a click's effects
+          ;; draw in this same iteration (the click map is rebuilt by
+          ;; every render; handlers act on the displayed frame).
+          (for-each handle-mouse-event! (drain-mouse-events))
           (render!)
           (let ((ch (key->code (getch stdscr))))
             (unless (or (eqv? ch KEY_UP) (eqv? ch KEY_DOWN))
@@ -4066,7 +4126,7 @@ any open menu first; submenu actions open the next menu in its place."
                     (set! prompt-mode 'chat)
                     (set! input-buffer "")
                     (set! cursor-pos 0))
-                  ((and msgsel-index (string-null? input-buffer)) (set! msgsel-index #f)))
+                  ((and (integer? msgsel-index) (string-null? input-buffer)) (set! msgsel-index #f)))
                 (loop))
               ;; Up Arrow: selector navigation, input history recall while
               ;; typing, or scrolling back through the transcript on an
@@ -4081,8 +4141,7 @@ any open menu first; submenu actions open the next menu in its place."
                               (if (<= selector-index 0)
                                 (- (length matches) 1)
                                 (- selector-index 1))))))
-                  ((or (> (string-length input-buffer) 0)
-                       (history-recall-position input-history))
+                  ((or (> (string-length input-buffer) 0) (history-recall-position input-history))
                     (unless (history-recall-position input-history)
                       (set! history-draft input-buffer)
                       (set! history-draft-pos cursor-pos))
@@ -4101,8 +4160,7 @@ any open menu first; submenu actions open the next menu in its place."
                         ((matches (matching-slash-commands input-buffer)))
                       (unless (null? matches)
                         (set! selector-index (remainder (+ selector-index 1) (length matches))))))
-                  ((or (> (string-length input-buffer) 0)
-                       (history-recall-position input-history))
+                  ((or (> (string-length input-buffer) 0) (history-recall-position input-history))
                     (let*
                         ((was-recalling? (history-recall-position input-history))
                          (entry (history-recall input-history 1)))
@@ -4141,14 +4199,14 @@ any open menu first; submenu actions open the next menu in its place."
               ((eqv? ch ctrl-up-key)
                 (unless (null? messages)
                   (set! msgsel-index
-                        (if msgsel-index
+                        (if (integer? msgsel-index)
                           (max 0 (- msgsel-index 1))
                           (- (length messages) 1))))
                 (loop))
               ;; Ctrl+Down: advance the message selection to the next
               ;; card (no-op without selection; code resolved at startup)
               ((eqv? ch ctrl-down-key)
-                (when (and msgsel-index (pair? messages))
+                (when (and (integer? msgsel-index) (pair? messages))
                   (set! msgsel-index (min (- (length messages) 1) (+ msgsel-index 1))))
                 (loop))
               ;; Left Arrow: move editing cursor left
@@ -4168,7 +4226,7 @@ any open menu first; submenu actions open the next menu in its place."
               ;; no message is selected (pre-existing binding)
               ((eqv? ch 5)
                 (if
-                    (and msgsel-index (pair? messages) (< msgsel-index (length messages)))
+                    (and (integer? msgsel-index) (pair? messages) (< msgsel-index (length messages)))
                   (toggle-selected-collapse!)
                   (set! cursor-pos (string-length input-buffer)))
                 (loop))

@@ -48,6 +48,7 @@
               key-defined define-key
               beep
               cursor-shape
+              drain-mouse-events
               COLOR_BLACK COLOR_RED COLOR_GREEN COLOR_YELLOW
               COLOR_BLUE COLOR_MAGENTA COLOR_CYAN COLOR_WHITE))
 
@@ -299,9 +300,11 @@ text style: curses' A_DIM renders as reduced foreground intensity."
     (set! %nc (%init (bytevector->pointer opts) %null-pointer))
     (when (null-pointer? %nc)
       (error "notcurses_init failed"))
-    ;; Disable mouse reporting so button events never reach the key
-    ;; dispatch (NCMICE_NO_EVENTS = 0).
-    (%mice-enable %nc 0)
+    ;; Mouse support: NCMICE_BUTTON_EVENT (0x2) enables button presses
+    ;; and wheel ticks (move/drag events stay off). Mouse events are
+    ;; queued by getch and drained by the application via
+    ;; drain-mouse-events; they never surface as key codes.
+    (%mice-enable %nc 2)
     (set! %plane (%stdplane %nc))
     (set! %fg 'default)
     (set! %bg 'default)
@@ -564,10 +567,32 @@ reversed cards) and stays opaque."
         ((terminal-size-changed?) KEY_RESIZE)
         (else (%sleep-ms 20) (poll (%get-nblock %nc %ncinput-ptr)))))))
 
-(define (input-eff-text)
-  ;; ncinput.eff_text[0] (uint32 at offset 36): the composed codepoint
+(define (input-eff-text)  ;; ncinput.eff_text[0] (uint32 at offset 36): the composed codepoint
   ;; taking modifiers into account (shift+1 -> '!', ctrl+d -> 0x04).
   (bytevector-u32-native-ref %ncinput 36))
+
+;; Mouse events: NCKEY_BUTTON1..10 (preterunicode 201..210) arrive in
+;; the ncinput struct with the cell coordinates. Button presses and
+;; wheel ticks queue as (button-number y x) for the application to
+;; drain; releases are skipped. Queuing returns ERR from getch so a
+;; click or scroll wakes the blocking read immediately instead of
+;; waiting for the next keypress.
+(define %mouse-queue '())
+
+(define (queue-mouse-event! id)
+  (set! %mouse-queue
+        (append %mouse-queue
+                (list (list (- id %preterunicode-base 200)
+                            (bytevector-s32-native-ref %ncinput 4)
+                            (bytevector-s32-native-ref %ncinput 8))))))
+
+(define (drain-mouse-events)
+  "Return the queued mouse events as a list of (BUTTON Y X) - button
+number 1..10 (4 = wheel up, 5 = wheel down), Y/X in cell coordinates -
+and clear the queue."
+  (let ((events %mouse-queue))
+    (set! %mouse-queue '())
+    events))
 
 (define %delivered-keys
   ;; Every synthesized key id this backend hands to the application.
@@ -587,6 +612,14 @@ reversed cards) and stays opaque."
       ;; release event after every press; curses has no releases, so
       ;; skip them lest each keypress dispatch twice.
       ((input-release?) (loop (read-raw-id)))
+      ;; Mouse: button presses and wheel ticks queue as mouse events;
+      ;; button releases are skipped. ERR wakes the blocking main loop
+      ;; so the app drains the event right away.
+      ((and (>= id (+ %preterunicode-base 201))
+            (<= id (+ %preterunicode-base 210)))
+        (if (input-release?)
+          (loop (read-raw-id))
+          (begin (queue-mouse-event! id) ERR)))
       ;; Ctrl+Up / Ctrl+Down arrive as NCKEY_UP/DOWN with the ctrl
       ;; modifier; synthesize the sentinels key-defined reports for
       ;; the xterm sequences so existing dispatch keeps working.
