@@ -38,7 +38,9 @@
                              journal-entry-author
                              journal-entry-details
                              journal-entry-ast-diff-hash
-                             journal-entry-contract-id
+                             journal-entry-spec-hash
+                             journal-entry-quickcheck-seed
+                             journal-entry-quickcheck-verdict
                              journal-entry-kernel-replay-verdict))
 
 ;;;
@@ -71,7 +73,9 @@ Ensures that any parent directory exists."
                                          author
                                          details
                                          ast-diff-hash
-                                         contract-id
+                                         spec-hash
+                                         quickcheck-seed
+                                         quickcheck-verdict
                                          kernel-replay-verdict)
                     journal-entry?
                     (timestamp journal-entry-timestamp)
@@ -82,7 +86,9 @@ Ensures that any parent directory exists."
                     (author journal-entry-author)
                     (details journal-entry-details)
                     (ast-diff-hash journal-entry-ast-diff-hash)
-                    (contract-id journal-entry-contract-id)
+                    (spec-hash journal-entry-spec-hash)
+                    (quickcheck-seed journal-entry-quickcheck-seed)
+                    (quickcheck-verdict journal-entry-quickcheck-verdict)
                     (kernel-replay-verdict journal-entry-kernel-replay-verdict))
 
 (define*
@@ -95,7 +101,9 @@ Ensures that any parent directory exists."
                       (author %unspecified)
                       (details %unspecified)
                       (ast-diff-hash %unspecified)
-                      (contract-id %unspecified)
+                      (spec-hash %unspecified)
+                      (quickcheck-seed %unspecified)
+                      (quickcheck-verdict %unspecified)
                       (kernel-replay-verdict %unspecified))
   "Create a <journal-entry> record with the given fields."
   (%make-journal-entry timestamp
@@ -106,7 +114,9 @@ Ensures that any parent directory exists."
                        author
                        details
                        ast-diff-hash
-                       contract-id
+                       spec-hash
+                       quickcheck-seed
+                       quickcheck-verdict
                        kernel-replay-verdict))
 
 (define (journal-entry->alist entry)
@@ -122,7 +132,9 @@ Ensures that any parent directory exists."
                  (cons "author" (journal-entry-author entry))
                  (cons "details" (journal-entry-details entry))
                  (cons "ast-diff-hash" (journal-entry-ast-diff-hash entry))
-                 (cons "contract-id" (journal-entry-contract-id entry))
+                 (cons "spec-hash" (journal-entry-spec-hash entry))
+                 (cons "quickcheck-seed" (journal-entry-quickcheck-seed entry))
+                 (cons "quickcheck-verdict" (journal-entry-quickcheck-verdict entry))
                  (cons "kernel-replay-verdict" (journal-entry-kernel-replay-verdict entry)))))
           (filter
             (lambda (p)
