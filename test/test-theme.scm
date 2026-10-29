@@ -84,10 +84,10 @@
                 (and (list? spec) (= 3 (length spec))))
               (test-assert
                   (format #f "~a role ~a has valid fg color" name role)
-                (memq (car spec) %valid-colors))
+                (valid-theme-color? (car spec)))
               (test-assert
                   (format #f "~a role ~a has valid bg color" name role)
-                (memq (cadr spec) %valid-colors))
+                (valid-theme-color? (cadr spec)))
               (test-assert
                   (format #f "~a role ~a has valid attrs" name role)
                 (%valid-attrs? (caddr spec)))))

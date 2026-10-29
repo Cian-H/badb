@@ -286,21 +286,14 @@ text style: curses' A_DIM renders as reduced foreground intensity."
 ;;;
 
 (define (initscr)
-  ;; Clear the physical screen first: anything printed before the TUI
-  ;; (guile compilation notes, subprocess stderr, shell output) is
-  ;; invisible to notcurses' diff renderer, which only rewrites cells
-  ;; it knows it changed - stale bytes would bleed through the frame
-  ;; wherever the TUI draws nothing. ncurses' clearok-equivalent.
-  (catch #t
-    (lambda ()
-      (display "\x1b[2J\x1b[H" (current-output-port))
-      (force-output (current-output-port)))
-    (lambda _ #f))
+  ;; The TUI runs on the alternate screen: on exit the terminal
+  ;; restores the pre-TUI screen, so no rendered frame leaks into the
+  ;; shell's scrollback (the primary-screen layout left the last frame
+  ;; stranded in history, mixing with subsequent shell output).
   (let* ((opts (make-bytevector 64 0))
-         ;; NCOPTION_SUPPRESS_BANNERS (0x20) |
-         ;; NCOPTION_NO_ALTERNATE_SCREEN (0x40): match the previous
-         ;; ncurses behavior of drawing over the primary screen.
-         (flags #x60))
+         ;; NCOPTION_SUPPRESS_BANNERS (0x20). The alternate screen is
+         ;; the default; NO_ALTERNATE_SCREEN is deliberately unset.
+         (flags #x20))
     (bytevector-u64-native-set! opts 32 flags)
     (set! %nc (%init (bytevector->pointer opts) %null-pointer))
     (when (null-pointer? %nc)
@@ -414,9 +407,12 @@ text style: curses' A_DIM renders as reduced foreground intensity."
     #x000000))
 
 (define (init-pair! id fg bg)
+  ;; fg/bg are either palette indices 0..7 (the COLOR_* constants,
+  ;; mapped through %color-rgb) or raw 0xRRGGBB integers (exact theme
+  ;; palettes like Tokyo Night's blue).
   (hashv-set! %pairs id
-              (cons (vector-ref %color-rgb fg)
-                    (vector-ref %color-rgb bg)))
+              (cons (if (<= fg 7) (vector-ref %color-rgb fg) fg)
+                    (if (<= bg 7) (vector-ref %color-rgb bg) bg)))
   #t)
 
 (define (color-pair id) id)

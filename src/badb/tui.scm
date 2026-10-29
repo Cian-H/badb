@@ -205,6 +205,7 @@ breaking on whitespace when possible."
           ("provider" . "Switch or inspect model provider preset (e.g. lmstudio)")
           ("mcp" . "Manage MCP servers (list, start, stop, add, remove, tools)")
           ("config" . "Inspect, reload, or save badb configuration")
+          ("theme" . "Inspect or switch the active UI theme")
           ("guardrail" . "Inspect or set guardrail security policy level")
           ("compact" . "Compact conversation history context")
           ("resume" . "Resume a previous chat session from disk")
@@ -1505,7 +1506,20 @@ other plain data); #f when the item carries none."
     ("nord" . "Nord-inspired cool blues")
     ("solarized-dark" . "Solarized dark warm tones")
     ("paper" . "Light paper-like scheme")
-    ("mono" . "Monochrome, no colors")))
+    ("mono" . "Monochrome, no colors")
+    ("tokyo-night" . "Blue-heavy modern night theme")
+    ("tokyo-night-storm" . "Tokyo Night, deeper and muted")
+    ("tokyo-night-day" . "Tokyo Night light variant")
+    ("catppuccin-mocha" . "Pastel dark standard")
+    ("catppuccin-latte" . "Pastel light counterpart")
+    ("gruvbox-dark" . "Warm retro groove")
+    ("gruvbox-light" . "Daytime groove")
+    ("dracula" . "The famous purple-dark theme")
+    ("kanagawa" . "Japanese wave palette")
+    ("rose-pine" . "Soft sunset pastels")
+    ("everforest-dark" . "Calm forest greens")
+    ("monokai" . "Classic editor dark")
+    ("onedark" . "Atom editor classic")))
 
 ;; Guardrail policy levels with short descriptions for the Guardrail menu.
 (define %guardrail-levels
@@ -2163,6 +2177,13 @@ and append it to the persistent history journal file."
                 ((memq a '(bold dim reverse)) (list a))
                 ((list? a) a)
                 (else '()))))
+    ;; Theme colors arrive as named curses colors (resolved against the
+    ;; backend module) or as #rrggbb hex strings (resolved to raw RGB
+    ;; integers the backend accepts directly).
+    (define (theme-color->backend-value color)
+            (if (string? color)
+              (string->number (substring color 1) 16)
+              (nref (color-symbol->ncurses-constant color))))
     (define (ensure-color-pair! fg bg)
             (let ((key (cons fg bg)))
               (or (assoc-ref role-pair-cache key)
@@ -2171,8 +2192,8 @@ and append it to the persistent history journal file."
                          (catch #t
                            (lambda ()
                              (init-pair! id
-                                         (nref (color-symbol->ncurses-constant fg))
-                                         (nref (color-symbol->ncurses-constant bg))))
+                                         (theme-color->backend-value fg)
+                                         (theme-color->backend-value bg)))
                            (lambda _
                              #f))
                          (set! role-pair-cache (acons key id role-pair-cache))
@@ -3523,6 +3544,25 @@ any open menu first; submenu actions open the next menu in its place."
                                   (truncate-string (basename path) %session-filename-max-length)
                                   turn-count))))))
                 (else (add-err-msg! "Unsupported menu action.")))))
+    ;; Handle /theme: with a NAME switch instantly through the same
+    ;; path as the theme menu (applies live, persists to config);
+    ;; without one, open the theme picker menu.
+    (define (handle-theme-cmd! arg)
+            (let ((name (string-trim-both arg)))
+              (cond
+                ((string-null? name)
+                  (set! active-menu (make-menu "Theme" (theme-menu-items))))
+                ((lookup-theme name)
+                  =>
+                  (lambda (th)
+                    (badb-config-set-ui-theme! cfg name)
+                    (set! ui-theme th)
+                    (try-save-config!)
+                    (add-sys-msg! (format #f "UI theme set to '~a' and saved." name))))
+                (else
+                  (add-err-msg!
+                    (format #f "Unknown theme '~a'. /theme alone opens the picker with all ~a themes."
+                            name (length (all-theme-names))))))))
     ;; Handle context compaction command
     (define (handle-compact-cmd! arg)
             (let*
@@ -3728,6 +3768,7 @@ any open menu first; submenu actions open the next menu in its place."
                 ((string=? cmd "provider") (handle-provider-cmd! arg))
                 ((string=? cmd "mcp") (handle-mcp-cmd! arg))
                 ((string=? cmd "config") (handle-config-cmd! arg))
+                ((string=? cmd "theme") (handle-theme-cmd! arg))
                 ((or (string=? cmd "sh") (string=? cmd "shell"))
                   (if (string-null? arg)
                     (add-sys-msg! "Usage: /sh <command> (or !<command>)")
