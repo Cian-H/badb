@@ -1670,6 +1670,7 @@ header, an optional thinking section, and the content. Pure - no I/O."
        (key-defined (nref 'key-defined))
        (define-key (nref 'define-key))
        (beep (nref 'beep))
+       (cursor-shape (nref 'cursor-shape))
        (KEY_FIND (nref 'KEY_FIND))
        (KEY_OPEN (nref 'KEY_OPEN)))
     ;; Initialize Configuration & Kernel State
@@ -2654,6 +2655,24 @@ and append it to the persistent history journal file."
                   (move stdscr
                         (+ prompt-top input-cur-row)
                         (+ 2 input-cur-col))
+                  ;; Cursor compatibility: the terminal cursor's shape
+                  ;; signals the active mode - a bar for chat typing,
+                  ;; an underline in the modal REPLs, a block while a
+                  ;; message card is selected - and it hides entirely
+                  ;; while the agent runs (the spinner conveys the
+                  ;; activity). The backend caches shapes, so styling
+                  ;; every frame is free; endwin restores the default.
+                  (cond
+                    ((agent-run-active? status-text) (safe-curs-set! 0))
+                    (msgsel-index
+                      (safe-curs-set! 1)
+                      (cursor-shape 'block))
+                    ((memq prompt-mode '(shell scheme))
+                      (safe-curs-set! 1)
+                      (cursor-shape 'underline))
+                    (else
+                      (safe-curs-set! 1)
+                      (cursor-shape 'bar)))
                   (refresh stdscr)))
               (lambda (key . args)
                 ;; Never swallow render failures silently: surface each new

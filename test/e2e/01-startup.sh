@@ -7,6 +7,12 @@ expect_visible "Welcome to badb microharness TUI!" 20000
 expect_visible "You are badb, an expert autonomous coding agent" 5000
 expect_visible "! shell · , scheme · / cmds · ^↑/^↓ select" 5000  # keymap hint
 expect_visible "❯" 5000                    # chat prompt indicator
+# Terminal cursor compatibility: chat typing shows a bar cursor.
+if tui state 2>/dev/null | grep -q "\"shape\":\"bar\""; then
+  pass "chat mode uses a bar cursor"
+else
+  fail "chat mode cursor is not a bar"
+fi
 
 # Typing renders into the input row and backspace removes it again.
 type_text "abc"

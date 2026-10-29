@@ -47,6 +47,7 @@
               KEY_FIND KEY_OPEN
               key-defined define-key
               beep
+              cursor-shape
               COLOR_BLACK COLOR_RED COLOR_GREEN COLOR_YELLOW
               COLOR_BLUE COLOR_MAGENTA COLOR_CYAN COLOR_WHITE))
 
@@ -316,6 +317,10 @@ text style: curses' A_DIM renders as reduced foreground intensity."
 
 (define (endwin)
   (unless (null-pointer? %nc)
+    ;; Restore the user's default cursor style: DECSCUSR is global to
+    ;; the terminal (not per-screen), so without this the TUI's mode
+    ;; cursor would outlive the session.
+    (cursor-shape 'default)
     (%stop %nc)
     (set! %nc %null-pointer)
     (set! %plane %null-pointer)))
@@ -384,6 +389,37 @@ text style: curses' A_DIM renders as reduced foreground intensity."
       (set! %cursor-visible? #t)
       (%cursor-enable %nc %cursor-y %cursor-x)))
   #t)
+
+;; Cursor shapes via DECSCUSR (CSI Ps SP q), supported by xterm,
+;; kitty, alacritty, ghostty, foot, gnome-terminal and iTerm2;
+;; terminals that don't know the sequence ignore it harmlessly. The
+;; bytes go to the shared tty like beep(), between frames - notcurses
+;; does not model cursor shape, so there is no diff to conflict with.
+;; Shapes are cached: repeated styling calls are no-ops, so the TUI
+;; can restyle on every render without spamming the terminal.
+(define %cursor-shape-codes
+  '((default . 0)
+    (block-blink . 1)
+    (block . 2)
+    (underline-blink . 3)
+    (underline . 4)
+    (bar-blink . 5)
+    (bar . 6)))
+(define %last-cursor-shape 'none)
+
+(define (cursor-shape shape)
+  "Set the terminal cursor SHAPE - a symbol from %cursor-shape-codes -
+via DECSCUSR, written directly to the tty. Shape 'default (Ps 0)
+restores the terminal's configured default cursor, which endwin emits
+so the TUI never leaves the user's cursor style clobbered."
+  (let ((code (assq-ref %cursor-shape-codes shape)))
+    (when (and code (not (eq? shape %last-cursor-shape)))
+      (catch #t
+        (lambda ()
+          (format (current-error-port) "\x1b[~a q" code)
+          (force-output (current-error-port)))
+        (lambda _ #f))
+      (set! %last-cursor-shape shape))))
 
 ;;;
 ;;; Attributes and colors (curses emulation)

@@ -6,6 +6,11 @@ expect_visible "Welcome to badb microharness TUI!" 20000
 
 press '!'
 expect_visible "enter:run · backspace:back to chat" 5000
+if tui state 2>/dev/null | grep -q "\"shape\":\"underline\""; then
+  pass "shell mode uses an underline cursor"
+else
+  fail "shell mode cursor is not an underline"
+fi
 
 submit_line "echo badb-e2e-shell-marker"
 expect_visible "badb-e2e-shell-marker" 10000

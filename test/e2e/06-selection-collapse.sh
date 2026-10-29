@@ -15,6 +15,11 @@ expect_visible "=> 42" 10000
 press ctrl+up
 press ctrl+e
 expect_visible "scheme output (2 lines)" 5000
+if tui state 2>/dev/null | grep -q "\"shape\":\"block\""; then
+  pass "selection mode uses a block cursor"
+else
+  fail "selection mode cursor is not a block"
+fi
 expect_hidden "=> 42" 3000
 
 press ctrl+e
