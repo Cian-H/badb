@@ -129,6 +129,14 @@
                         default-history-file-path
                         load-history-file
                         append-history-file-entry!
+                        turn->jsonl-line
+                        jsonl-line->turn
+                        default-sessions-dir
+                        session-file-path
+                        truncate-string
+                        persist-session-file!
+                        load-session-file
+                        recent-session-files
                         message-collapsed?
                         make-collapsed-message
                         message-with-collapsed
@@ -199,10 +207,12 @@ breaking on whitespace when possible."
           ("config" . "Inspect, reload, or save badb configuration")
           ("guardrail" . "Inspect or set guardrail security policy level")
           ("compact" . "Compact conversation history context")
+          ("resume" . "Resume a previous chat session from disk")
           ("checkpoint" . "Create a workspace and registry checkpoint")
           ("rollback" . "Revert to latest or specified checkpoint")
           ("rules" . "Inspect discovered project rules & workspace tree")
           ("context" . "View conversation token stats and metrics")
+          ("usage" . "Show per-session token usage report")
           ("features" . "List kernel registered features")
           ("journal" . "View checkpoint provenance audit log")
           ("test" . "Run bootstrap verification test suite")
@@ -980,6 +990,137 @@ and #f on any filesystem failure."
         (close-port port)
         #t))
     (lambda _ #f)))
+
+;;;
+;;; Chat Session Persistence (/resume)
+;;;
+(define %session-filename-max-length 40)
+
+(define (default-sessions-dir)
+  "Return the standard directory for persisted chat sessions
+(~/.local/share/badb/sessions, honoring XDG_DATA_HOME)."
+  (let ((xdg (getenv "XDG_DATA_HOME"))
+        (home (getenv "HOME")))
+    (cond
+     ((and xdg (not (string-null? xdg)))
+      (string-append xdg "/badb/sessions"))
+     ((and home (not (string-null? home)))
+      (string-append home "/.local/share/badb/sessions"))
+     (else
+      "/tmp/badb/sessions"))))
+
+(define (session-file-path)
+  "Return the JSONL path for this TUI process's session log: a
+<timestamp>-<pid> name under (default-sessions-dir)."
+  (string-append
+   (default-sessions-dir) "/"
+   (date->string (current-date 0) "~Y~m~dT~H~M~SZ")
+   "-"
+   (number->string (getpid))
+   ".jsonl"))
+
+(define (truncate-string text max-length)
+  "Return TEXT capped at MAX-LENGTH characters, the tail replaced by an
+ellipsis when it had to be cut."
+  (if (> (string-length text) max-length)
+      (string-append (substring text 0 (- max-length 3)) "...")
+      text))
+
+(define (turn->jsonl-line msg)
+  "Serialize one conversation turn MSG (an alist with role and content)
+into a single JSON object line {\"role\":...,\"content\":...}."
+  (scm->json-string
+   `(("role" . ,(ensure-string (or (prop-ref msg 'role) "user")))
+     ("content" . ,(ensure-string (or (prop-ref msg 'content) ""))))))
+
+(define (jsonl-line->turn line)
+  "Parse a single session JSONL LINE into a conversation turn alist of the
+form ((role . STRING) (content . STRING)). Return #f for blank or
+malformed lines and for entries without string role and content fields."
+  (let ((parsed (catch #t
+                  (lambda ()
+                    (and (string? line)
+                         (not (string-null? (string-trim-both line)))
+                         (json-string->scm (string-trim-both line))))
+                  (lambda _ #f))))
+    (if (and (list? parsed)
+             (string? (assoc-ref parsed "role"))
+             (string? (assoc-ref parsed "content")))
+        `((role . ,(assoc-ref parsed "role"))
+          (content . ,(assoc-ref parsed "content")))
+        #f)))
+
+(define (persist-session-file! path history)
+  "Write the whole conversation HISTORY to the session JSONL file at PATH,
+one JSON turn object per line (the system prompt first, as-is), creating
+the enclosing directory when missing. Return #t on success and #f on any
+filesystem failure."
+  (catch #t
+    (lambda ()
+      (ensure-parent-directory! path)
+      (call-with-output-file path
+        (lambda (port)
+          (for-each
+           (lambda (msg)
+             (display (turn->jsonl-line msg) port)
+             (newline port))
+           history)))
+      #t)
+    (lambda _ #f)))
+
+(define (load-session-file path)
+  "Load the conversation turns persisted in the session JSONL file at PATH,
+oldest first, skipping blank or malformed lines. An absent or unreadable
+file yields the empty list."
+  (catch #t
+    (lambda ()
+      (if (and (string? path) (file-exists? path))
+          (let ((raw (catch #t
+                       (lambda () (call-with-input-file path read-string))
+                       (lambda _ ""))))
+            (filter-map jsonl-line->turn (string-split raw #\newline)))
+          '()))
+    (lambda _ '())))
+
+(define (recent-session-files dir)
+  "Return up to 7 session JSONL file paths in DIR, most recently modified
+first. A missing or unreadable directory yields the empty list."
+  (catch #t
+    (lambda ()
+      (let* ((names
+              (catch 'system-error
+                (lambda ()
+                  (let ((stream (opendir dir)))
+                    (let loop ((accum '()))
+                      (let ((entry (readdir stream)))
+                        (if (eof-object? entry)
+                            (begin (closedir stream) (reverse accum))
+                            (loop (cons entry accum)))))))
+                (lambda _ '())))
+             (paths
+              (filter-map
+               (lambda (name)
+                 (and (string-suffix? ".jsonl" name)
+                      (let ((path (string-append dir "/" name)))
+                        (and (file-exists? path) path))))
+               names)))
+        (take
+         (sort paths
+               (lambda (a b)
+                 (> (stat:mtime (stat a))
+                    (stat:mtime (stat b)))))
+         (min 7 (length paths)))))
+    (lambda _ '())))
+
+(define (session-mtime-string path)
+  "Format the modification time of PATH as a local timestamp for the
+resume menu."
+  (catch #t
+    (lambda ()
+      (date->string
+       (time-utc->date (make-time time-utc 0 (stat:mtime (stat path))))
+       "~Y-~m-~d ~H:~M"))
+    (lambda _ "unknown")))
 
 ;;;
 ;;; Message Collapse State & Block Formatting
@@ -1788,6 +1929,19 @@ header, an optional thinking section, and the content. Pure - no I/O."
                                 "• ! shell · , scheme · / command palette · ctrl+↑/↓ select a block · ctrl+e collapse it\n"
                                 "• The status line up top and the keymap below stay live; /help for details")))))
     (define llm-history (list (make-system-turn)))
+    ;; Session log for /resume: the whole llm-history is rewritten to
+    ;; this JSONL file after every chat turn (system prompt first).
+    (define session-file (session-file-path))
+    ;; Per-session token accounting for /usage: exact totals accumulate
+    ;; from endpoint-reported usage blocks; turns that report none fall
+    ;; back to a context-growth estimate tracked separately and labeled
+    ;; "estimated" on the card.
+    (define session-prompt-tokens 0)
+    (define session-completion-tokens 0)
+    (define session-estimated-tokens 0)
+    (define session-turns 0)
+    (define turn-usage-seen? #f)
+    (define turn-pre-estimate 0)
     (define input-buffer "")
     (define cursor-pos 0)
     (define input-history
@@ -1870,6 +2024,14 @@ header, an optional thinking section, and the content. Pure - no I/O."
     (define (add-cmd-msg! content) (add-msg! "shell-cmd" content))
     (define (add-scm-msg! content) (add-msg! "scheme-in" content))
     (define (add-user-msg! content) (add-msg! "user" content))
+    (define (record-session-usage! usage)
+            "Accumulate one model call's USAGE alist ((prompt . N) (completion . N))
+into the session counters and mark the current turn exactly accounted."
+            (let ((p (assoc-ref usage 'prompt)) (c (assoc-ref usage 'completion)))
+              (when (and (number? p) (number? c))
+                (set! session-prompt-tokens (+ session-prompt-tokens p))
+                (set! session-completion-tokens (+ session-completion-tokens c))
+                (set! turn-usage-seen? #t))))
     ;; Poll the terminal without blocking while the react loop runs: drain
     ;; every pending keypress into the steering buffer / queue. Called from
     ;; the react hooks (on-step, on-tool-call, on-tool-result) so input
@@ -2492,6 +2654,7 @@ and append it to the persistent history journal file."
                 (set! react-stream-thoughts (string-append react-stream-thoughts delta)))
               ((eq? type 'content)
                 (set! react-stream-content (string-append react-stream-content delta)))
+              ((eq? type 'usage) (record-session-usage! delta))
               (else #f))
             (call-with-values
               (lambda () (split-thoughts-and-content react-stream-content))
@@ -2559,6 +2722,12 @@ placeholder flag, so the next streamed call starts a fresh card."
     ;; Execute streaming query against LLM with separated thoughts
     (define (execute-chat-stream! user-prompt)
             (set! scroll-offset 0)
+            ;; Session accounting: a new turn starts, and until an
+            ;; endpoint usage block arrives the growth of the
+            ;; conversation provides the fallback estimate.
+            (set! session-turns (+ session-turns 1))
+            (set! turn-usage-seen? #f)
+            (set! turn-pre-estimate (estimate-conversation-tokens llm-history))
             (catch #t
               (lambda ()
                 (set! llm-history
@@ -2711,7 +2880,10 @@ placeholder flag, so the next streamed call starts a fresh card."
                                                      ((eq? chunk-type 'complete-json)
                                                        ;; Endpoint ignored stream:true:
                                                        ;; deliver the whole completion
-                                                       ;; as one update.
+                                                       ;; as one update; its usage
+                                                       ;; block, when present, feeds
+                                                       ;; the session accounting.
+                                                       (record-session-usage! (extract-usage delta))
                                                        (call-with-values
                                                          (lambda () (determine-step-content delta))
                                                          (lambda (ct rc)
@@ -2749,6 +2921,17 @@ placeholder flag, so the next streamed call starts a fresh card."
                                (add-err-msg! (format #f "Stream error (~a): ~s" key args))))))))
               (lambda (key . args)
                 (add-err-msg! (format #f "Execution error (~a): ~s" key args))))
+            ;; No endpoint usage block this turn: account an estimate of
+            ;; the conversation growth instead, labeled on the /usage card.
+            (unless turn-usage-seen?
+              (let ((post (estimate-conversation-tokens llm-history)))
+                (when (number? post)
+                  (set! session-estimated-tokens
+                        (+ session-estimated-tokens
+                           (max 0 (- post (or turn-pre-estimate 0))))))))
+            ;; Persist the whole conversation to the session log after
+            ;; every chat turn so /resume can pick it up later.
+            (persist-session-file! session-file llm-history)
             ;; Mid-run steering state resets with the run; queued entries
             ;; in steering-queue persist for the next run by design
             (set! steering-buffer "")
@@ -3317,6 +3500,28 @@ any open menu first; submenu actions open the next menu in its place."
                     (add-sys-msg! (format #f "UI theme set to '~a' and saved." name))))
                 ((and (pair? action) (eq? (car action) 'set-guardrail))
                   (handle-guardrail-cmd! (symbol->string (cdr action))))
+                ((and (pair? action) (eq? (car action) 'resume-session))
+                  (let* ((path (cdr action))
+                         (loaded (load-session-file path))
+                         (turn-count
+                           (length (filter (lambda (m)
+                                              (not (string=? (assoc-ref m 'role) "system")))
+                                            loaded))))
+                    (if (null? loaded)
+                      (add-err-msg!
+                        (format #f
+                                "Session file ~a is empty or unreadable."
+                                (basename path)))
+                      (begin
+                        (set! llm-history loaded)
+                        ;; Force the header context gauge to re-estimate.
+                        (set! %ctx-cache-key #f)
+                        (set! scroll-offset 0)
+                        (add-sys-msg!
+                          (format #f
+                                  "Resumed session ~a (~a turns)"
+                                  (truncate-string (basename path) %session-filename-max-length)
+                                  turn-count))))))
                 (else (add-err-msg! "Unsupported menu action.")))))
     ;; Handle context compaction command
     (define (handle-compact-cmd! arg)
@@ -3404,6 +3609,40 @@ any open menu first; submenu actions open the next menu in its place."
                         (if needed?
                           "COMPACTION REQUIRED"
                           "NORMAL")))))
+    ;; Handle per-session token usage report
+    (define (handle-usage-cmd!)
+            (let*
+                ((used (estimate-conversation-tokens llm-history))
+                 (ceiling (context-compactor-effective-ceiling compactor))
+                 (k (lambda (n) (format #f "~,1fk" (/ n 1000.0))))
+                 (est-suffix
+                   (if (> session-estimated-tokens 0)
+                     (format #f " (+~a estimated)" session-estimated-tokens)
+                     "")))
+              (add-sys-msg!
+                (format #f
+                        "Session token usage:\n• Prompt tokens: ~a~a\n• Completion tokens: ~a\n• Turns: ~a\n• Context: ~a/~a tokens (estimated)"
+                        session-prompt-tokens
+                        est-suffix
+                        session-completion-tokens
+                        session-turns
+                        (if (number? used) (k used) "?")
+                        (if (> ceiling 0) (k ceiling) "?")))))
+    ;; Handle session resume: interactive picker over recent session logs
+    (define (handle-resume-cmd! arg)
+            (let ((sessions (recent-session-files (default-sessions-dir))))
+              (if (null? sessions)
+                (add-sys-msg!
+                  "No saved sessions found. A session file is written after every chat turn.")
+                (set! active-menu
+                      (make-menu "Resume Session"
+                                 (map
+                                   (lambda (path)
+                                     (cons
+                                       (cons (truncate-string (basename path) %session-filename-max-length)
+                                             (session-mtime-string path))
+                                       (cons 'resume-session path)))
+                                   sessions))))))
     ;; Handle slash commands
     (define (handle-dump-cmd! arg)
             (let*
@@ -3438,10 +3677,12 @@ any open menu first; submenu actions open the next menu in its place."
                                    "  /config [CMD]     Inspect, reload, save, set configuration; no argument opens a menu\n"
                                    "  /guardrail [LVL]  Set policy level (disabled, permissive, cautious, strict, paranoid)\n"
                                    "  /compact          Compact conversation history\n"
+                                   "  /resume           Resume a previous chat session from disk\n"
                                    "  /checkpoint [DSC] Create a rollback checkpoint snapshot\n"
                                    "  /rollback [ID]    Revert to latest or specified checkpoint\n"
                                    "  /rules            View discovered project rules & workspace tree\n"
                                    "  /context          View conversation token metrics\n"
+                                   "  /usage            Show per-session token usage report\n"
                                    "  /steer [TEXT]     Queue steering text for the running or next agent run\n"
                                    "  /interrupt        Halt the agent at its next iteration boundary\n"
                                    "  /features         List active registry features\n"
@@ -3460,10 +3701,12 @@ any open menu first; submenu actions open the next menu in its place."
                                    "  /eval <expr>      Alias for Scheme eval")))
                 ((string=? cmd "guardrail") (handle-guardrail-cmd! arg))
                 ((string=? cmd "compact") (handle-compact-cmd! arg))
+                ((string=? cmd "resume") (handle-resume-cmd! arg))
                 ((string=? cmd "checkpoint") (handle-checkpoint-cmd! arg))
                 ((string=? cmd "rollback") (handle-rollback-cmd! arg))
                 ((string=? cmd "rules") (handle-rules-cmd! arg))
                 ((string=? cmd "context") (handle-context-cmd! arg))
+                ((string=? cmd "usage") (handle-usage-cmd!))
                 ((string=? cmd "models") (handle-models-cmd!))
                 ((string=? cmd "model")
                   (if (string-null? arg)

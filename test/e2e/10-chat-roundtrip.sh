@@ -56,4 +56,8 @@ expect_visible "Please reply." 10000
 # label for a real model).
 expect_visible "$EXPECT_RESPONSE" 30000 --after-text "Please reply."
 
+# /usage renders the session token report card.
+submit_line "/usage"
+expect_visible "usage" 8000 --after-text "Please reply."
+
 finish

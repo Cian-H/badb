@@ -880,7 +880,133 @@
     (catch #t (lambda () (delete-file path)) (lambda _ #f))))
 
 ;;;
-;;; 17. Message Collapse State Helpers
+;;; 17. Chat Session Persistence (/resume)
+;;;
+(test-group "tui-session-turn-jsonl"
+  ;; Serialize / parse round-trip of one conversation turn
+  (let* ((line (turn->jsonl-line '((role . "user") (content . "hello there"))))
+         (turn (jsonl-line->turn line)))
+    (test-assert "serialized line is a string" (string? line))
+    (test-equal "serialized line contains no raw newline"
+                #f
+                (string-index line #\newline))
+    (test-equal "round-trip preserves role" "user" (assoc-ref turn 'role))
+    (test-equal "round-trip preserves content"
+                "hello there"
+                (assoc-ref turn 'content)))
+
+  ;; Special characters survive the round-trip on a single line
+  (let* ((tricky "say \"hi\"\nnewline & <tool_call>")
+         (turn (jsonl-line->turn (turn->jsonl-line
+                                   `((role . "assistant") (content . ,tricky))))))
+    (test-equal "round-trip preserves escaped special characters"
+                tricky
+                (assoc-ref turn 'content)))
+
+  ;; Defensive parsing
+  (test-equal "parse blank line returns #f" #f (jsonl-line->turn ""))
+  (test-equal "parse garbage returns #f" #f (jsonl-line->turn "not json {"))
+  (test-equal "parse entry without content returns #f"
+              #f
+              (jsonl-line->turn "{\"role\":\"user\"}"))
+  (test-equal "serialize non-string content defensively"
+              "42"
+              (assoc-ref (jsonl-line->turn (turn->jsonl-line '((role . "user") (content . 42))))
+                         'content)))
+
+(test-group "tui-session-file-persistence"
+  (let ((path "/tmp/badb-test-tui-session.jsonl"))
+    (catch #t (lambda () (delete-file path)) (lambda _ #f))
+    (test-equal "persist writes and returns #t"
+                #t
+                (persist-session-file!
+                  path
+                  `(((role . "system") (content . "big system prompt"))
+                    ((role . "user") (content . "hello"))
+                    ((role . "assistant") (content . "hi there")))))
+    (let ((loaded (load-session-file path)))
+      (test-equal "load restores the turn count" 3 (length loaded))
+      (test-equal "load restores the system prompt first line"
+                  "big system prompt"
+                  (assoc-ref (car loaded) 'content))
+      (test-equal "load preserves roles" "user" (assoc-ref (cadr loaded) 'role))
+      (test-equal "load preserves content" "hello" (assoc-ref (cadr loaded) 'content)))
+    (catch #t (lambda () (delete-file path)) (lambda _ #f)))
+
+  ;; Malformed lines are skipped on load
+  (let ((path "/tmp/badb-test-tui-session-malformed.jsonl"))
+    (catch #t (lambda () (delete-file path)) (lambda _ #f))
+    (call-with-output-file path
+      (lambda (port)
+        (display (turn->jsonl-line '((role . "user") (content . "good"))) port)
+        (newline port)
+        (display "this is not json" port)
+        (newline port)
+        (display (turn->jsonl-line '((role . "assistant") (content . "fine"))) port)
+        (newline port)))
+    (let ((loaded (load-session-file path)))
+      (test-equal "malformed lines skipped, good lines kept"
+                  2
+                  (length loaded))
+      (test-equal "kept content survives"
+                  "good"
+                  (assoc-ref (car loaded) 'content)))
+    (catch #t (lambda () (delete-file path)) (lambda _ #f)))
+
+  (test-equal "load missing session yields empty list"
+              '()
+              (load-session-file "/tmp/badb-test-tui-no-such-session.jsonl")))
+
+(test-group "tui-recent-session-files"
+  (let ((dir "/tmp/badb-test-tui-sessions"))
+    (catch #t (lambda () (delete-file (string-append dir "/a.jsonl"))) (lambda _ #f))
+    (catch #t (lambda () (delete-file (string-append dir "/b.jsonl"))) (lambda _ #f))
+    (catch #t (lambda () (rmdir dir)) (lambda _ #f))
+    (test-equal "missing directory yields empty list" '() (recent-session-files dir))
+    (catch #t (lambda () (mkdir dir) #t) (lambda _ #f))
+    (let ((a (string-append dir "/a.jsonl"))
+          (b (string-append dir "/b.jsonl")))
+      (call-with-output-file a (lambda (port) (display "x" port)))
+      (call-with-output-file b (lambda (port) (display "x" port)))
+      (utime a 100 100)
+      (utime b 200 200)
+      (test-equal "most recently modified first"
+                  (list b a)
+                  (recent-session-files dir))
+      (test-equal "non-jsonl entries ignored"
+                  2
+                  (length (recent-session-files dir))))
+    (catch #t (lambda () (delete-file (string-append dir "/a.jsonl"))) (lambda _ #f))
+    (catch #t (lambda () (delete-file (string-append dir "/b.jsonl"))) (lambda _ #f))
+    (catch #t (lambda () (rmdir dir)) (lambda _ #f)))
+
+  ;; Listing caps at 7 entries
+  (let ((dir "/tmp/badb-test-tui-sessions-cap"))
+    (catch #t (lambda () (system* "rm" "-rf" dir)) (lambda _ #f))
+    (catch #t (lambda () (mkdir dir) #t) (lambda _ #f))
+    (let loop ((i 0))
+      (when (< i 9)
+        (call-with-output-file (string-append dir "/s" (number->string i) ".jsonl")
+          (lambda (port) (display "x" port)))
+        (loop (+ i 1))))
+    (test-equal "listing capped at 7 most recent" 7 (length (recent-session-files dir)))
+    (catch #t (lambda () (system* "rm" "-rf" dir)) (lambda _ #f))))
+
+(test-group "tui-session-helpers"
+  (test-equal "truncate-string keeps short strings"
+              "short.jsonl"
+              (truncate-string "short.jsonl" 12))
+  (test-equal "truncate-string caps long strings with ellipsis"
+              (string-append (make-string 37 #\a) "...")
+              (truncate-string (make-string 60 #\a) 40))
+  (test-assert "sessions dir is a string ending in badb/sessions"
+              (string-suffix? "/badb/sessions" (default-sessions-dir)))
+  (test-assert "session file path is jsonl under the sessions dir"
+              (and (string-suffix? ".jsonl" (session-file-path))
+                   (string-contains (session-file-path) (default-sessions-dir)))))
+
+;;;
+;;; 18. Message Collapse State Helpers
 ;;;
 (test-group "tui-message-collapse"
   ;; Flag presence & lookup

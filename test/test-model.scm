@@ -821,4 +821,21 @@
           (string-contains
             (object->string (cadr (car events))) "ping"))))))
 
+(test-group "extract-usage"
+  (let ((response (json-string->scm
+                    "{\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":34,\"total_tokens\":46}}")))
+    (test-equal "extracts prompt and completion tokens"
+      12 (assoc-ref (extract-usage response) 'prompt))
+    (test-equal "extracts completion tokens"
+      34 (assoc-ref (extract-usage response) 'completion)))
+
+  (test-equal "missing usage block yields #f"
+    #f (extract-usage (json-string->scm "{\"choices\":[]}")))
+  (test-equal "non-numeric usage fields yield #f"
+    #f (extract-usage (json-string->scm "{\"usage\":{\"prompt_tokens\":\"many\"}}")))
+  (test-equal "empty usage object yields #f"
+    #f (extract-usage (json-string->scm "{\"usage\":{}}")))
+  (test-equal "non-alist response yields #f" #f (extract-usage "not json"))
+  (test-equal "raw string response yields #f" #f (extract-usage "plain text")))
+
 (test-end "badb-model")

@@ -235,6 +235,13 @@ delivered nothing, fall back to a single model-complete call."
             (set! frag-acc (merge-tool-call-fragment frag-acc payload)))
           ((complete-json)
             ;; Endpoint ignored stream:true: whole completion at once.
+            ;; Its usage block, when present, rides out through the
+            ;; delta channel (type 'usage) for session token accounting.
+            (let ((usage (extract-usage payload)))
+              (when (and usage (procedure? on-delta))
+                (catch #t
+                  (lambda () (on-delta usage 'usage))
+                  (lambda _ #f))))
             (call-with-values
               (lambda () (determine-step-content payload))
               (lambda (c r)
@@ -252,6 +259,11 @@ delivered nothing, fall back to a single model-complete call."
                (string-null? (string-trim-both reasoning))
                (not (pair? frag-acc)))
         (let ((raw-resp (model-complete client messages #:tools tools #:max-tokens max-tokens #:raw? #t)))
+          (let ((usage (extract-usage raw-resp)))
+            (when (and usage (procedure? on-delta))
+              (catch #t
+                (lambda () (on-delta usage 'usage))
+                (lambda _ #f))))
           (call-with-values
             (lambda () (determine-step-content raw-resp))
             (lambda (fb-content fb-reasoning)

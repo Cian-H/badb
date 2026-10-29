@@ -31,6 +31,7 @@
             extract-chat-delta-item
             extract-chat-content
             extract-chat-tool-calls
+            extract-usage
             current-http-post
             default-http-post
             current-http-get
@@ -323,6 +324,20 @@ endpoint that ignored stream:true)."
           ((json-ref msg "content")
            => (lambda (c) (cons 'content c)))
           (else #f)))))
+
+(define (extract-usage response)
+  "Extract the token usage block from a parsed completion RESPONSE: the
+alist ((prompt . N) (completion . N)) built from the OpenAI-style
+usage.prompt_tokens / usage.completion_tokens fields, or #f when the
+response carries no usable usage data."
+  (let ((usage (and (pair? response) (json-ref response "usage"))))
+    (if (pair? usage)
+        (let ((prompt (json-ref usage "prompt_tokens"))
+              (completion (json-ref usage "completion_tokens")))
+          (if (and (number? prompt) (number? completion))
+              `((prompt . ,prompt) (completion . ,completion))
+              #f))
+        #f)))
 
 (define (extract-chat-delta-item chunk)
   "Extract structured delta info from an SSE chunk (parsed JSON alist or JSON string).
