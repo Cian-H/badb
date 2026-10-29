@@ -83,25 +83,24 @@
         (dashes (string-map (lambda (c) (if (char=? c #\_) #\- c)) str)))
     (delete-duplicates (list str dots dashes))))
 
-(define (lookup-registry-feature reg name)
-        "Look up procedure in REG using exact name or denormalized variants."
+(define (lookup-registry-entry reg name lookup-fn)
+        "Look up an entry in REG with LOOKUP-FN using the exact name or a
+denormalized variant (dots/dashes for underscores)."
         (if reg
           (let loop
             ((candidates (denormalize-tool-name name)))
             (if (null? candidates)
               #f
-              (or (registry-lookup reg (car candidates)) (loop (cdr candidates)))))
+              (or (lookup-fn reg (car candidates)) (loop (cdr candidates)))))
           #f))
+
+(define (lookup-registry-feature reg name)
+        "Look up procedure in REG using exact name or denormalized variants."
+        (lookup-registry-entry reg name registry-lookup))
 
 (define (lookup-registry-metadata reg name)
         "Look up metadata alist in REG using exact name or denormalized variants."
-        (if reg
-          (let loop
-            ((candidates (denormalize-tool-name name)))
-            (if (null? candidates)
-              #f
-              (or (registry-metadata reg (car candidates)) (loop (cdr candidates)))))
-          #f))
+        (lookup-registry-entry reg name registry-metadata))
 
 (define %empty-tool-parameters
   '((type . "object")
@@ -213,8 +212,9 @@ If 'properties' is missing from an object schema, inject an empty properties ali
 
 (define (reasoning-fallback-content reasoning)
   "Render REASONING as step content for models that answer only in the
-reasoning trace, matching determine-step-content's fallback policy."
-  (format #f "<think>~a\n\n(Response provided in model reasoning trace)" reasoning))
+reasoning trace, matching determine-step-content's fallback policy:
+the reasoning wrapped in a closed think block, then a plain note."
+  (format #f "<think>~a</think>\n(Response provided in model reasoning trace)" reasoning))
 
 (define* (stream-model-completion client messages tools max-tokens on-delta)
   "Run one streamed chat completion for the ReAct loop: accumulate content
@@ -279,16 +279,12 @@ delivered nothing, fall back to a single model-complete call."
 ;;;
 (define (log-tool-execution! jrn name args status extra-alist)
   "Log tool execution outcome to journal JRN if valid."
-  (when (and jrn (journal? jrn))
-    (catch #t
-      (lambda ()
-        (journal-append! jrn
-                         `((feature-id . ,name)
-                           (checkpoint . ,(format #f "tool:~a" name))
-                           (status . ,status)
-                           (arguments . ,args)
-                           ,@extra-alist)))
-      (lambda _ #f))))
+  (safe-journal-append! jrn
+                        `((feature-id . ,name)
+                          (checkpoint . ,(format #f "tool:~a" name))
+                          (status . ,status)
+                          (arguments . ,args)
+                          ,@extra-alist)))
 
 (define
   (invoke-registry-procedure impl meta args)
@@ -539,10 +535,7 @@ Returns (values content reasoning)."
                        (not (string-null? (string-trim-both orig-content))))
                    orig-content)
                  ((non-empty-string? reasoning)
-                   (format #f
-                           "<think>~a</think>
-(Response provided in model reasoning trace)"
-                           reasoning))
+                   (reasoning-fallback-content reasoning))
                  ((and (non-empty-string? raw-content)
                        (not (member raw-content '("null" ":null"))))
                    raw-content)
@@ -583,6 +576,15 @@ Returns (values content reasoning)."
                   ""))
       (tool_calls . ,tool-calls-vec))))
 
+(define (run-isolated-hook! fn label . hook-args)
+  "Invoke FN with HOOK-ARGS when it is a procedure, reporting a failure on
+stderr as a warning instead of letting it abort the caller."
+  (catch #t
+    (lambda () (when (procedure? fn) (apply fn hook-args)))
+    (lambda (key . err-args)
+      (format (current-error-port)
+              "warning: ~a hook failed (~a): ~s~%" label key err-args))))
+
 (define
   (execute-step-tools tool-calls
                       reg
@@ -597,20 +599,12 @@ Hook exceptions are isolated: a failing on-tool-call or on-tool-result
 callback is reported on stderr and skipped, never aborting the loop."
   (map
     (lambda (tc)
-      (catch #t
-        (lambda () (when (procedure? on-tool-call-fn) (on-tool-call-fn tc)))
-        (lambda (key . args)
-          (format (current-error-port)
-                  "warning: on-tool-call hook failed (~a): ~s~%" key args)))
+      (run-isolated-hook! on-tool-call-fn "on-tool-call" tc)
       (call-with-values
         (lambda ()
           (execute-tool-call tc reg mcp-mgr #:jrn jrn #:mgr mgr #:guardrail guardrail-fn))
         (lambda (res err?)
-          (catch #t
-            (lambda () (when (procedure? on-tool-result-fn) (on-tool-result-fn tc res err?)))
-            (lambda (key . args)
-              (format (current-error-port)
-                      "warning: on-tool-result hook failed (~a): ~s~%" key args)))
+          (run-isolated-hook! on-tool-result-fn "on-tool-result" tc res err?)
           (let*
               ((content-str (safe-json-string res))
                (tc-id (or (prop-ref tc 'id) "call_0"))

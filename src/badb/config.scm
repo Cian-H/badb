@@ -157,9 +157,6 @@
   ".badb/config.scm")
 
 ;;;
-;;; Property Extraction Helper
-;;;
-;;;
 ;;; MCP Server Helpers
 ;;;
 (define (parse-mcp-server-spec entry)
@@ -416,13 +413,9 @@ Returns #t on success, or #f if provider NAME was not found."
               #f))
           #f))
 
-(define (ensure-directory-for-file path)
-        "Ensure the parent directory for PATH exists."
-        (ensure-parent-directory! path))
-
 (define (write-config-file config path)
   "Serialize CONFIG to PATH as readable Scheme code."
-  (ensure-directory-for-file path)
+  (ensure-parent-directory! path)
   (call-with-output-file path
     (lambda (port)
       (display ";;; badb configuration\n" port)

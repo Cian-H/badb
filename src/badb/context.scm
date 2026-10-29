@@ -175,17 +175,12 @@
 
 (define (journal-record-offload! jrn chkpt-id to-offload)
   "Record archived messages to journal JRN."
-  (when (and jrn (journal? jrn))
-    (catch #t
-      (lambda ()
-        (journal-append! jrn
+  (safe-journal-append! jrn
                          `((feature-id . "context")
                            (checkpoint . ,chkpt-id)
                            (status . "archived")
                            (message-count . ,(length to-offload))
                            (messages-json . ,(scm->json-string (list->vector to-offload))))))
-      (lambda _
-        #f))))
 
 (define*
   (strategy-prune-tool-results #:key
@@ -221,6 +216,18 @@ exists. MSGS is in chronological order."
       ((string=? (message-role (car rest)) "user") (car rest))
       (else (loop (cdr rest))))))
 
+(define (finish-sliding-window sys-msg acc pool)
+        "Attach SYS-MSG to the kept window ACC, guaranteeing the newest user
+message from POOL survives even when it fell outside the token budget."
+        (attach-system
+          sys-msg
+          (if (any (lambda (m) (string=? (message-role m) "user")) acc)
+            acc
+            (let ((newest-user (latest-user-message pool)))
+              (if newest-user
+                (cons newest-user acc)
+                acc)))))
+
 (define* (strategy-sliding-window #:key (keep-system-prompt #t))
   "Compaction strategy that keeps the newest turns fitting within target tokens,
 optionally pinning the system prompt at position 0. The newest user message
@@ -242,26 +249,12 @@ resulting transcript."
         (let loop
           ((rest (reverse pool)) (acc '()) (cur-tokens 0))
           (if (null? rest)
-            (attach-system
-              sys-msg
-              (if (any (lambda (m) (string=? (message-role m) "user")) acc)
-                acc
-                (let ((newest-user (latest-user-message pool)))
-                  (if newest-user
-                    (cons newest-user acc)
-                    acc))))
+            (finish-sliding-window sys-msg acc pool)
             (let*
                 ((msg (car rest)) (cost (estimate-message-tokens msg estimator)))
               (if
                   (and (> cur-tokens 0) (> (+ cur-tokens cost) avail-tokens))
-                (attach-system
-                  sys-msg
-                  (if (any (lambda (m) (string=? (message-role m) "user")) acc)
-                    acc
-                    (let ((newest-user (latest-user-message pool)))
-                      (if newest-user
-                        (cons newest-user acc)
-                        acc))))
+                (finish-sliding-window sys-msg acc pool)
                 (loop (cdr rest)
                       (cons msg acc)
                       (+ cur-tokens cost))))))))))

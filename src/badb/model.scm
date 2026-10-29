@@ -540,6 +540,51 @@ Returns a list of tool call alists: ((id . \"...\") (name . \"...\") (arguments 
     (or (and=> (getenv "BADB_REQUEST_TIMEOUT") string->number)
         600)))
 
+(define (curl-header-args headers accept)
+  "Build curl -H argument pairs from HEADERS, coercing header values and
+substituting ACCEPT for the accept header."
+  (append-map
+    (lambda (h)
+      (let* ((key (car h)) (val (cdr h))
+             (str-val
+               (cond
+                 ((string? val) val)
+                 ((and (eq? key 'authorization) (pair? val)) (format #f "Bearer ~a" (cadr val)))
+                 ((eq? key 'content-type) "application/json; charset=utf-8")
+                 ((eq? key 'accept) accept)
+                 (else (format #f "~a" val)))))
+        (list "-H" (format #f "~a: ~a" key str-val))))
+    (or headers '())))
+
+(define (curl-collect-output! in pids)
+  "Read the remaining output of a curl pipeline from IN, close it, reap the
+child PIDS, and return the captured output string."
+  (let ((out-str (read-string in)))
+    (close-port in)
+    (for-each
+      (lambda (p)
+        (catch 'system-error
+          (lambda () (waitpid p))
+          (lambda _ #f)))
+      pids)
+    (or out-str "")))
+
+(define (curl-output->response out-str)
+  "Split the trailing status code appended by curl's -w option from OUT-STR
+and return (values response body-text)."
+  (let* ((trimmed (or out-str ""))
+         (last-nl (string-rindex trimmed #\newline))
+         (code-str
+           (if last-nl
+             (substring trimmed (+ last-nl 1))
+             "200"))
+         (body-text
+           (if last-nl
+             (substring trimmed 0 last-nl)
+             trimmed))
+         (status-code (or (string->number (string-trim-both code-str)) 200)))
+    (values (build-response #:code status-code) body-text)))
+
 (define* (curl-http-post uri #:key body headers (streaming? #f))
   "Execute an HTTP POST using curl subprocess via stdin pipeline. Used as a transparent fallback
 when Guile GnuTLS is not available for HTTPS requests.
@@ -555,22 +600,9 @@ Streams payload directly over standard input without temporary files, captures r
              (list "--max-time" (number->string (inexact->exact secs)))
              '())))
        (header-args
-         (append-map
-           (lambda (h)
-             (let*
-                 ((key (car h)) (val (cdr h))
-                  (str-val
-                    (cond
-                      ((string? val) val)
-                      ((and (eq? key 'authorization) (pair? val)) (format #f "Bearer ~a" (cadr val)))
-                      ((eq? key 'content-type) "application/json; charset=utf-8")
-                      ((eq? key 'accept)
-                        (if streaming?
-                          "text/event-stream"
-                          "application/json"))
-                      (else (format #f "~a" val)))))
-               (list "-H" (format #f "~a: ~a" key str-val))))
-           (or headers '())))
+         (curl-header-args
+           headers
+           (if streaming? "text/event-stream" "application/json")))
        (body-str
          (cond
            ((string? body) body)
@@ -610,29 +642,13 @@ Streams payload directly over standard input without temporary files, captures r
           (lambda (in out pids)
             (display body-str out)
             (close-port out)
-            (let* ((out-str (read-string in)))
-              (close-port in)
-              (for-each
-                (lambda (p)
-                  (catch 'system-error
-                    (lambda ()
-                      (waitpid p))
-                    (lambda _
-                      #f)))
-                pids)
-              (let*
-                  ((trimmed (or out-str ""))
-                   (last-nl (string-rindex trimmed #\newline))
-                   (code-str
-                     (if last-nl
-                       (substring trimmed (+ last-nl 1))
-                       "200"))
-                   (body-text
-                     (if last-nl
-                       (substring trimmed 0 last-nl)
-                       trimmed))
-                   (status-code (or (string->number (string-trim-both code-str)) 200)))
-                (values (build-response #:code status-code) body-text)))))))))
+            (curl-output->response (curl-collect-output! in pids))))))))
+
+(define (gnutls-unavailable? key args)
+  "Return #t when a web client exception (KEY, ARGS) indicates missing GnuTLS
+support for HTTPS requests."
+  (or (eq? key 'gnutls-not-available)
+      (and (pair? args) (string? (car args)) (string-contains (car args) "gnutls"))))
 
 (define* (default-http-post uri #:key body headers (streaming? #f))
   "Dispatch HTTP POST to the bounded curl transport when a request timeout is
@@ -645,8 +661,7 @@ support, so it is only usable when requests are allowed to run unbounded."
       (lambda ()
         (http-post uri #:body body #:headers headers #:streaming? streaming?))
       (lambda (key . args)
-        (if (or (eq? key 'gnutls-not-available)
-                (and (pair? args) (string? (car args)) (string-contains (car args) "gnutls")))
+        (if (gnutls-unavailable? key args)
             (curl-http-post uri #:body body #:headers headers #:streaming? streaming?)
             (apply throw key args))))))
 
@@ -688,6 +703,14 @@ append /chat/completions."
                      #:path new-path
                      #:query (uri-query uri)
                      #:fragment (uri-fragment uri))))))
+
+(define (response-body->string body fallback)
+  "Coerce an HTTP response BODY (bytevector or string) to a string,
+returning FALLBACK when it is neither."
+  (cond
+   ((bytevector? body) (utf8->string body))
+   ((string? body) body)
+   (else fallback)))
 
 (define*
   (model-complete client
@@ -742,11 +765,7 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
                 (loop (- retries 1) (* delay-sec 2)))
               ((not (<= 200 code 299))
                 (let*
-                    ((body-str
-                       (cond
-                         ((bytevector? body) (utf8->string body))
-                         ((string? body) body)
-                         (else "")))
+                    ((body-str (response-body->string body ""))
                      (parsed-err
                        (catch #t
                          (lambda ()
@@ -764,11 +783,7 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
                   (error "model-complete HTTP request failed" code err-msg)))
               (else
                 (let*
-                    ((text
-                       (cond
-                         ((bytevector? body) (utf8->string body))
-                         ((string? body) body)
-                         (else body)))
+                    ((text (response-body->string body body))
                      (parsed
                        (if (string? text)
                          (catch #t
@@ -842,7 +857,7 @@ Returns 'done or 'eof."
                              "failed to read error body"))
                          body-port)))
                   (error "model-stream HTTP request failed" code err-text)))
-              (let ((result (read-sse-events port
+              (let* ((result (read-sse-events port
                                (lambda (chunk)
                                  (let ((fragments (extract-tool-call-deltas chunk)))
                                    (if (pair? fragments)
@@ -860,16 +875,16 @@ Returns 'done or 'eof."
                                              (lambda ()
                                                (chunk-callback (cdr item) (car item)))
                                              (lambda _
-                                               (chunk-callback (cdr item))))))))))))
-                (let ((complete-res (and (pair? result)
-                                         (json-ref result "choices")
-                                         result)))
-                  (when complete-res
-                    (catch #t
-                      (lambda ()
-                        (chunk-callback complete-res 'complete-json))
-                      (lambda _ #f)))
-                  (if complete-res 'done result)))))
+                                               (chunk-callback (cdr item)))))))))))
+                     (complete-res (and (pair? result)
+                                        (json-ref result "choices")
+                                        result)))
+                (when complete-res
+                  (catch #t
+                    (lambda ()
+                      (chunk-callback complete-res 'complete-json))
+                    (lambda _ #f)))
+                (if complete-res 'done result))))
           (lambda ()
             (when
                 (and (port? port) (not (port-closed? port)))
@@ -919,20 +934,7 @@ the first entry of IDS when CURRENT-MODEL is generic (#f, empty, or
 when Guile GnuTLS is not available for HTTPS requests.
 Captures real HTTP status codes."
   (let* ((url (if (string? uri) uri (uri->string uri)))
-         (header-args
-          (append-map
-           (lambda (h)
-             (let* ((key (car h)) (val (cdr h))
-                    (str-val
-                     (cond
-                      ((string? val) val)
-                      ((and (eq? key 'authorization) (pair? val))
-                       (format #f "Bearer ~a" (cadr val)))
-                      ((eq? key 'content-type) "application/json; charset=utf-8")
-                      ((eq? key 'accept) "application/json")
-                      (else (format #f "~a" val)))))
-               (list "-H" (format #f "~a: ~a" key str-val))))
-           (or headers '())))
+         (header-args (curl-header-args headers "application/json"))
          (cmd (append (list "curl"
                             "-s"
                             "-w"
@@ -943,20 +945,7 @@ Captures real HTTP status codes."
         (lambda () (pipeline (list cmd)))
       (lambda (in out pids)
         (close-port out)
-        (let* ((out-str (read-string in)))
-          (close-port in)
-          (for-each
-           (lambda (p)
-             (catch 'system-error
-               (lambda () (waitpid p))
-               (lambda _ #f)))
-           pids)
-          (let* ((trimmed (or out-str ""))
-                 (last-nl (string-rindex trimmed #\newline))
-                 (code-str (if last-nl (substring trimmed (+ last-nl 1)) "200"))
-                 (body-text (if last-nl (substring trimmed 0 last-nl) trimmed))
-                 (status-code (or (string->number (string-trim-both code-str)) 200)))
-            (values (build-response #:code status-code) body-text)))))))
+        (curl-output->response (curl-collect-output! in pids))))))
 
 (define* (default-http-get uri #:key headers)
   "Dispatch HTTP GET to web client, falling back to curl if gnutls is not available."
@@ -964,8 +953,7 @@ Captures real HTTP status codes."
     (lambda ()
       (http-get uri #:headers headers))
     (lambda (key . args)
-      (if (or (eq? key 'gnutls-not-available)
-              (and (pair? args) (string? (car args)) (string-contains (car args) "gnutls")))
+      (if (gnutls-unavailable? key args)
           (curl-http-get uri #:headers headers)
           (apply throw key args)))))
 
@@ -1010,17 +998,13 @@ of available model id strings, or #f on failure."
             (lambda () (getter uri #:headers headers))
           (lambda (response body)
             (let* ((code (response-code response))
-                   (body-str
-                    (cond
-                     ((bytevector? body) (utf8->string body))
-                     ((string? body) body)
-                     (else ""))))
-              (if (not (<= 200 code 299))
-                  (values #f (format #f "HTTP ~a error: ~a" code body-str))
+                   (body-str (response-body->string body "")))
+              (if (<= 200 code 299)
                   (let ((obj (safe-json-parse body-str #f)))
                     (if (pair? obj)
                         (values (parse-models-response obj) #f)
-                        (values #f "failed to parse /models response"))))))))
+                        (values #f "failed to parse /models response")))
+                  (values #f (format #f "HTTP ~a error: ~a" code body-str)))))))
       (lambda (key . args)
         (values #f (format #f "list-models request failed: ~a"
                            (format-exception key args)))))))

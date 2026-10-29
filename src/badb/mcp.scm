@@ -92,6 +92,11 @@ Optionally accepts a process ID PID if backed by a child process."
 or #f if not present."
   (prop-ref alist key))
 
+(define (json-member key obj)
+  "Return the (key . value) pair for the string KEY in OBJ, matching either
+string or symbol keys, or #f when absent."
+  (or (assoc key obj) (assoc (string->symbol key) obj)))
+
 (define (tools->list tools)
   "Normalize TOOLS (which may be a vector or list) into a Scheme list."
   (cond
@@ -105,7 +110,7 @@ or #f if not present."
 (define (mcp-spawn-client command-args)
   "Spawn an MCP server subprocess for COMMAND-ARGS (a string or list of strings)
 and return a new <mcp-client> connected to its stdio. Stderr is redirected to
-.badb/mcp.log so that server logs and warnings do not corrupt curses TUI screens."
+.badb/mcp.log so that server logs and warnings do not corrupt the TUI screen."
   (let* ((args (cond
                 ((string? command-args) (list command-args))
                 ((list? command-args) command-args)
@@ -179,12 +184,12 @@ on a JSON-RPC error response."
           (error "mcp-call: unexpected EOF waiting for response to request" req-id))
          ((not (list? msg)) (error "mcp-call: expected JSON object from server" msg))
          (else
-          (let ((id-pair (or (assoc "id" msg) (assoc 'id msg))))
+          (let ((id-pair (json-member "id" msg)))
             ;; Skip notifications from server (which have no "id" member)
             (if id-pair
                 (let ((resp-id (cdr id-pair))
-                      (err-pair (or (assoc "error" msg) (assoc 'error msg)))
-                      (res-pair (or (assoc "result" msg) (assoc 'result msg))))
+                      (err-pair (json-member "error" msg))
+                      (res-pair (json-member "result" msg)))
                   (unless (equal? resp-id req-id)
                     (error "mcp-call: response ID mismatch" req-id resp-id msg))
                   (if err-pair
@@ -225,8 +230,7 @@ initialization result."
   "Call 'tools/list' and return the tools array/list from the response."
   (let ((result (mcp-call client "tools/list" params)))
     (if (list? result)
-        (let ((entry (or (assoc "tools" result)
-                         (assoc 'tools result))))
+        (let ((entry (json-member "tools" result)))
           (if entry
               (cdr entry)
               result))
@@ -239,8 +243,7 @@ initialization result."
                    (arguments . ,(or arguments '()))))
          (result (mcp-call client "tools/call" params)))
     (if (list? result)
-        (let ((entry (or (assoc "content" result)
-                         (assoc 'content result))))
+        (let ((entry (json-member "content" result)))
           (if entry
               (cdr entry)
               result))

@@ -262,17 +262,13 @@ Returns a pair: (verdict-symbol . reason-string), e.g. '(allow . \"...\") or '(d
          (reason (cdr decision)))
 
     ;; 3. Log provenance to journal if attached
-    (when (and jrn (journal? jrn))
-      (catch #t
-        (lambda ()
-          (journal-append! jrn
+    (safe-journal-append! jrn
                            `((feature-id . "guardrail")
                              (checkpoint . ,(format #f "guardrail:~a" name-str))
                              (tool-name . ,name-str)
                              (level . ,(symbol->string level))
                              (verdict . ,(symbol->string verdict))
-                             (reason . ,reason))))
-        (lambda _ #f)))
+                             (reason . ,reason)))
 
     decision))
 

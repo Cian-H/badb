@@ -7,13 +7,13 @@
   #:use-module (badb util)
   #:use-module (badb registry)
   #:use-module (badb journal)
+  #:use-module (badb log)
   #:use-module (ice-9 rdelim)
   #:use-module (ice-9 format)
   #:use-module (ice-9 optargs)
   #:use-module (json)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-9)
-  #:use-module (srfi srfi-19)
   #:export (<rollback-manager>
             make-rollback-manager
             rollback-manager?
@@ -74,7 +74,7 @@
 (define* (make-checkpoint id description #:key (timestamp #f) (files '()) (registry-state '()))
   (%make-checkpoint id
                     description
-                    (or timestamp (date->string (current-date 0) "~4"))
+                    (or timestamp (current-iso8601-timestamp))
                     files
                     registry-state))
 
@@ -198,17 +198,12 @@ and active registry state. Persists metadata to disk and journal if configured."
         (lambda _
           #f)))
     ;; Record in Journal if present
-    (when (and jrn (journal? jrn))
-      (catch #t
-        (lambda ()
-          (journal-append! jrn
-                           `((checkpoint . ,id)
-                             (status . "checkpoint_created")
-                             (feature-id . "rollback")
-                             (details .
-                                      ((description . ,description) (files-count . ,(length file-snapshots)))))))
-        (lambda _
-          #f)))
+    (safe-journal-append! jrn
+                          `((checkpoint . ,id)
+                            (status . "checkpoint_created")
+                            (feature-id . "rollback")
+                            (details .
+                                     ((description . ,description) (files-count . ,(length file-snapshots))))))
     chkpt))
 
 ;;;
@@ -280,17 +275,13 @@ Returns an alist describing restoration results."
           ;; 2. Restore Registry
           (restore-registry! reg (checkpoint-registry-state chkpt))
           ;; 3. Log to Journal
-          (when (and jrn (journal? jrn))
-            (catch #t
-              (lambda ()
-                (journal-append! jrn
-                                 `((checkpoint . ,checkpoint-id)
-                                   (status . "rolled_back")
-                                   (feature-id . "rollback")
-                                   (details . ((description . ,(checkpoint-description chkpt))
-                                               (restored-count . ,(length restored-files))
-                                               (removed-count . ,(length removed-files)))))))
-              (lambda _ #f)))
+          (safe-journal-append! jrn
+                                `((checkpoint . ,checkpoint-id)
+                                  (status . "rolled_back")
+                                  (feature-id . "rollback")
+                                  (details . ((description . ,(checkpoint-description chkpt))
+                                              (restored-count . ,(length restored-files))
+                                              (removed-count . ,(length removed-files))))))
           `((status . "rolled_back")
             (checkpoint-id . ,checkpoint-id)
             (description . ,(checkpoint-description chkpt))

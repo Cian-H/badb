@@ -5,11 +5,11 @@
 
 (define-module (badb journal)
   #:use-module (badb util)
+  #:use-module (badb log)
   #:use-module (ice-9 rdelim)
   #:use-module (json)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-9)
-  #:use-module (srfi srfi-19)
   #:export (make-journal
             journal?
             journal-path
@@ -21,6 +21,7 @@
             json-string->journal-entry
             journal-verify-integrity
             journal-entry-ref
+            safe-journal-append!
             <journal-entry>
             make-journal-entry
             journal-entry?
@@ -129,9 +130,7 @@ or DEFAULT if KEY is not present."
 ;;;
 ;;; Automatic timestamp and iteration calculation
 ;;;
-(define (current-iso8601-timestamp)
-  "Return the current UTC timestamp formatted as an ISO-8601 string."
-  (date->string (current-date 0) "~4"))
+;; current-iso8601-timestamp is provided by (badb log).
 
 (define (read-last-journal-entry journal)
         "Read the most recent journal entry from disk efficiently via seek,
@@ -231,6 +230,14 @@ iteration if not provided. Returns the prepared entry alist."
           (apply throw key args)))
       (close-port port))
     prepared))
+
+(define (safe-journal-append! jrn entry)
+  "Append ENTRY to JRN when it is a valid <journal>, returning the prepared
+entry; return #f when JRN is absent, invalid, or the append raises."
+  (and (journal? jrn)
+       (catch #t
+         (lambda () (journal-append! jrn entry))
+         (lambda _ #f))))
 
 ;;;
 ;;; Querying entries
