@@ -12,4 +12,5 @@
   "tar"
   "gzip"
   "unzip"
-  "tui-test"))
+  "tui-test"
+  "sema"))
