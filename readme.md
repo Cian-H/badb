@@ -89,8 +89,10 @@ the [tui-test] headless terminal tool (packaged in `guix/badb/packages/`):
 Each scenario boots the TUI in an isolated terminal session and asserts
 on what actually renders: startup, shell and scheme modes, the command
 palette, interactive menus, message selection/collapse, scrollback,
-resize, exit, and a live chat round-trip. The chat scenario is skipped
-unless a model endpoint is provided:
+resize, exit, and a chat round-trip through the ReAct loop. The chat
+scenario is fully hermetic: it starts a static fake model endpoint
+(`test/e2e/fake-endpoint.scm`) and asserts on its canned response. To
+run it against a real model server instead:
 
 ```sh
 E2E_CHAT_ENDPOINT=http://127.0.0.1:1234/v1 \

@@ -73,7 +73,35 @@ expect_exited() {
   fi
 }
 
+wait_port() {
+  # wait_port PORT [TRIES] - block until loopback:PORT accepts an HTTP
+  # request (used for the fake model endpoint readiness).
+  wport="$1"; wtries="${2:-30}"; wi=0
+  while [ "$wi" -lt "$wtries" ]; do
+    if guile --no-auto-compile -c "
+        (use-modules (web client) (web uri))
+        ;; NB: (exit ...) throws a 'quit exception in guile, so it must
+        ;; stay OUTSIDE catch #t or it gets swallowed and turned into a
+        ;; failure.
+        (if (catch #t
+              (lambda ()
+                (http-get (string->uri \"http://127.0.0.1:$wport/v1/models\"))
+                #t)
+              (lambda _ #f))
+          (exit 0)
+          (exit 1))" >/dev/null 2>&1; then
+      return 0
+    fi
+    wi=$((wi + 1))
+    sleep 1
+  done
+  return 1
+}
+
 cleanup() {
+  # Scenarios may define scenario_cleanup for their own resources
+  # (e.g. the fake endpoint process); it runs before session teardown.
+  if type scenario_cleanup >/dev/null 2>&1; then scenario_cleanup; fi
   tui key press ctrl+d >/dev/null 2>&1
   tui wait exit --timeout 10000 >/dev/null 2>&1
   tui-test --session "$SESSION" close >/dev/null 2>&1
