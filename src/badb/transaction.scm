@@ -22,6 +22,8 @@
                (badb registry)
                #:use-module
                (badb journal)
+               #:use-module
+               (badb lema)
                #:export
                (make-transaction-manager transaction-manager?
                                          transaction-manager-registry
@@ -184,14 +186,7 @@ if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed mod
                       (meta-pos #f)
                       #:key
                       (metadata #f))
-  "Apply an atomic transaction for FEATURE-ID:
-1. Looks up prior implementation and metadata (or initializes fresh).
-2. Evaluates FORMS in a staging child sandbox module.
-3. Runs TEST-THUNK (receiving the staged module).
-4. On success: commits new implementation to registry with updated metadata
-   and logs commit checkpoint.
-5. On failure or error: discards staged module, logs revert checkpoint,
-   and returns diagnostics alist."
+  "Apply an atomic transaction for FEATURE-ID:\n1. Looks up prior implementation and metadata (or initializes fresh).\n2. Evaluates FORMS in a staging child sandbox module.\n3. Runs TEST-THUNK (receiving the staged module).\n4. On success: commits new implementation to registry with updated metadata\n   and logs commit checkpoint. When the Lema prove gate is armed\n   (BADB_LEMA_SOCKET set) and the commit carries a contract id, the\n   kernel runs the gate first and pins ast-diff-hash, contract-id and\n   kernel-replay-verdict on the commit record; a failed gate reverts.\n5. On failure or error: discards staged module, logs revert checkpoint,\n   and returns diagnostics alist."
   (unless (transaction-manager? mgr)
     (error "apply-transaction!: expected <transaction-manager>" mgr))
   (let*
@@ -229,15 +224,36 @@ if TARGET-MODULE is #f), and evaluate FORMS within it. Returns the sandboxed mod
                          (filter
                            (lambda (p)
                              (not (eq? (car p) 'module)))
-                           merged-meta))))
-              (registry-attach! reg feature-id impl #:metadata updated-meta)
-              (when journal
-                (log-journal! journal
-                              `((checkpoint . "commit") (status . "pass")
-                                (feature-id . ,(canonical-id-string feature-id))
-                                (test-verdict . "pass")
-                                (metadata . ,(sanitize-for-json effective-meta)))))
-              `((status . "committed") (feature-id . ,feature-id)))
+                           merged-meta)))
+                 (gate-result (lema-transaction-pins (ensure-forms forms) effective-meta))
+                 (pins (alist-remove 'gate gate-result)))
+              ;; Lema prove gate (identity pinning): when BADB_LEMA_SOCKET is
+              ;; set and the commit carries a contract id, the kernel-owned
+              ;; gate already ran inside lema-transaction-pins — a passing
+              ;; verdict pins ast-diff-hash, contract-id and
+              ;; kernel-replay-verdict on the commit record. Without the env
+              ;; variable the gate is disabled and behavior is exactly as
+              ;; before; a failed verdict reverts, and any transport failure
+              ;; raised by the gate fails closed here (never committing).
+              (if
+                  (member (assoc-ref gate-result 'gate) '("disabled" "skipped" "passed"))
+                (begin
+                  (registry-attach! reg feature-id impl #:metadata updated-meta)
+                  (when journal
+                    (log-journal! journal
+                                  (append
+                                    `((checkpoint . "commit") (status . "pass")
+                                      (feature-id . ,(canonical-id-string feature-id))
+                                      (test-verdict . "pass")
+                                      (metadata . ,(sanitize-for-json effective-meta)))
+                                    pins)))
+                  `((status . "committed") (feature-id . ,feature-id)))
+                ;; Gate verdict failed: revert, never commit
+                (revert-and-log!
+                  (string-append "lema prove gate: "
+                                 (or (assoc-ref gate-result 'details) "verdict failed"))
+                  `((gate . ,(assoc-ref gate-result 'gate))
+                    (details . ,(or (assoc-ref gate-result 'details) ""))))))
             ;; Test returned #f: Revert
             (let
                 ((err-msg "test verification failed: test thunk returned #f"))

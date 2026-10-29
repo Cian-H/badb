@@ -1,0 +1,21 @@
+#!/usr/bin/env -S guile --no-auto-compile -s
+!#
+;; scripts/mcp-lema — MCP wrapper for the lema authoring/diagnostics server.
+;;
+;; Launches (badb lema-mcp) on the shared MCP server core over stdio.
+;; Register it in badb's config:
+;;
+;;   (mcp
+;;    (server "lema"
+;;            (command "scripts/mcp-lema")
+;;            (auto-start #t)))
+;;
+;; The server's tools connect to the Lema oracle socket
+;; ($BADB_LEMA_SOCKET or ~/.local/share/lema/lema.sock) — the same
+;; socket the kernel prove gate uses.
+
+(add-to-load-path
+ (canonicalize-path
+  (string-append (dirname (current-filename)) "/../src")))
+(use-modules (badb lema-mcp))
+(lema-mcp-serve)

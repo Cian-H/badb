@@ -3,35 +3,43 @@
 ;;; Provides persistent, append-only checkpoint journaling recording
 ;;; feature iterations and provenance.
 
-(define-module (badb journal)
-  #:use-module (badb util)
-  #:use-module (badb log)
-  #:use-module (ice-9 rdelim)
-  #:use-module (json)
-  #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-9)
-  #:export (make-journal
-            journal?
-            journal-path
-            journal-append!
-            journal-entries
-            journal-latest
-            journal-count
-            journal-entry->json-string
-            json-string->journal-entry
-            journal-verify-integrity
-            journal-entry-ref
-            safe-journal-append!
-            <journal-entry>
-            make-journal-entry
-            journal-entry?
-            journal-entry-timestamp
-            journal-entry-iteration
-            journal-entry-feature-id
-            journal-entry-commit
-            journal-entry-test-verdict
-            journal-entry-author
-            journal-entry-details))
+(define-module (badb journal) #:use-module
+               (badb util)
+               #:use-module
+               (badb log)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (json)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:export
+               (make-journal journal?
+                             journal-path
+                             journal-append!
+                             journal-entries
+                             journal-latest
+                             journal-count
+                             journal-entry->json-string
+                             json-string->journal-entry
+                             journal-verify-integrity
+                             journal-entry-ref
+                             safe-journal-append!
+                             <journal-entry>
+                             make-journal-entry
+                             journal-entry?
+                             journal-entry-timestamp
+                             journal-entry-iteration
+                             journal-entry-feature-id
+                             journal-entry-commit
+                             journal-entry-test-verdict
+                             journal-entry-author
+                             journal-entry-details
+                             journal-entry-ast-diff-hash
+                             journal-entry-contract-id
+                             journal-entry-kernel-replay-verdict))
 
 ;;;
 ;;; Journal record type
@@ -55,36 +63,71 @@ Ensures that any parent directory exists."
 (define %unspecified (list 'unspecified))
 
 (define-record-type <journal-entry>
-  (%make-journal-entry timestamp iteration feature-id commit test-verdict author details)
-  journal-entry?
-  (timestamp    journal-entry-timestamp)
-  (iteration    journal-entry-iteration)
-  (feature-id   journal-entry-feature-id)
-  (commit       journal-entry-commit)
-  (test-verdict journal-entry-test-verdict)
-  (author       journal-entry-author)
-  (details      journal-entry-details))
+                    (%make-journal-entry timestamp
+                                         iteration
+                                         feature-id
+                                         commit
+                                         test-verdict
+                                         author
+                                         details
+                                         ast-diff-hash
+                                         contract-id
+                                         kernel-replay-verdict)
+                    journal-entry?
+                    (timestamp journal-entry-timestamp)
+                    (iteration journal-entry-iteration)
+                    (feature-id journal-entry-feature-id)
+                    (commit journal-entry-commit)
+                    (test-verdict journal-entry-test-verdict)
+                    (author journal-entry-author)
+                    (details journal-entry-details)
+                    (ast-diff-hash journal-entry-ast-diff-hash)
+                    (contract-id journal-entry-contract-id)
+                    (kernel-replay-verdict journal-entry-kernel-replay-verdict))
 
-(define* (make-journal-entry #:key (timestamp %unspecified)
-                                   (iteration %unspecified)
-                                   (feature-id %unspecified)
-                                   (commit %unspecified)
-                                   (test-verdict %unspecified)
-                                   (author %unspecified)
-                                   (details %unspecified))
+(define*
+  (make-journal-entry #:key
+                      (timestamp %unspecified)
+                      (iteration %unspecified)
+                      (feature-id %unspecified)
+                      (commit %unspecified)
+                      (test-verdict %unspecified)
+                      (author %unspecified)
+                      (details %unspecified)
+                      (ast-diff-hash %unspecified)
+                      (contract-id %unspecified)
+                      (kernel-replay-verdict %unspecified))
   "Create a <journal-entry> record with the given fields."
-  (%make-journal-entry timestamp iteration feature-id commit test-verdict author details))
+  (%make-journal-entry timestamp
+                       iteration
+                       feature-id
+                       commit
+                       test-verdict
+                       author
+                       details
+                       ast-diff-hash
+                       contract-id
+                       kernel-replay-verdict))
 
 (define (journal-entry->alist entry)
-  "Convert a <journal-entry> record into an alist, omitting unspecified fields."
-  (let ((fields (list (cons "timestamp" (journal-entry-timestamp entry))
-                      (cons "iteration" (journal-entry-iteration entry))
-                      (cons "feature-id" (journal-entry-feature-id entry))
-                      (cons "commit" (journal-entry-commit entry))
-                      (cons "test-verdict" (journal-entry-test-verdict entry))
-                      (cons "author" (journal-entry-author entry))
-                      (cons "details" (journal-entry-details entry)))))
-    (filter (lambda (p) (not (eq? (cdr p) %unspecified))) fields)))
+        "Convert a <journal-entry> record into an alist, omitting unspecified fields."
+        (let
+            ((fields
+               (list
+                 (cons "timestamp" (journal-entry-timestamp entry))
+                 (cons "iteration" (journal-entry-iteration entry))
+                 (cons "feature-id" (journal-entry-feature-id entry))
+                 (cons "commit" (journal-entry-commit entry))
+                 (cons "test-verdict" (journal-entry-test-verdict entry))
+                 (cons "author" (journal-entry-author entry))
+                 (cons "details" (journal-entry-details entry))
+                 (cons "ast-diff-hash" (journal-entry-ast-diff-hash entry))
+                 (cons "contract-id" (journal-entry-contract-id entry))
+                 (cons "kernel-replay-verdict" (journal-entry-kernel-replay-verdict entry)))))
+          (filter
+            (lambda (p)
+              (not (eq? (cdr p) %unspecified)))
+            fields)))
 
 (define (generic-record->alist rec)
   "Convert an arbitrary SRFI-9 record REC to an alist of string keys."
