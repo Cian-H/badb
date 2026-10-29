@@ -35,6 +35,8 @@
                #:use-module
                (badb context)
                #:use-module
+               (badb history-tools)
+               #:use-module
                (badb prompt)
                #:use-module
                (badb rollback)
@@ -1842,6 +1844,23 @@ header, an optional thinking section, and the content. Pure - no I/O."
                         (parameters .
                          ((type . "object")
                           (properties . ((cmd . ((type . "string") (description . "Test command")))))))))
+    (registry-attach! reg
+                      "history/summarize"
+                      (lambda ()
+                        (let
+                            ((summary (summarize-turns llm-history))
+                             (hist-file (getenv "BADB_HISTORY_FILE")))
+                          (if
+                              (and hist-file (not (string-null? hist-file)))
+                            (let
+                                ((file-summary (summarize-history-file hist-file)))
+                              (if file-summary
+                                (string-append summary "\n\n--- " hist-file " ---\n" file-summary)
+                                summary))
+                            summary)))
+                      '((description .
+                         "Summarize the current conversation: turn counts, token estimate, recent topics")
+                        (parameters . ((type . "object") (properties . ()) (required . #())))))
     ;; Register MCP Kernel Features
     (registry-attach! reg
                       "mcp.list"
