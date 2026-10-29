@@ -1,4 +1,4 @@
 #!/bin/sh
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 export GUIX_LOCPATH="$HOME/.guix-profile/lib/locale"
-exec guix time-machine -C "$ROOT_DIR/channels.scm" -- shell -m "$ROOT_DIR/manifest.scm" "$@"
+exec guix time-machine -C "$ROOT_DIR/channels.scm" -- shell -L "$ROOT_DIR/guix" -m "$ROOT_DIR/manifest.scm" "$@"

@@ -11,4 +11,5 @@
   "make"
   "tar"
   "gzip"
-  "unzip"))
+  "unzip"
+  "tui-test"))
