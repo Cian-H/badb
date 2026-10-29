@@ -1,6 +1,7 @@
 ;;; badb — Terminal User Interface (TUI)
 ;;;
-;;; Interactive full-screen terminal interface for badb powered by guile-ncurses.
+;;; Interactive full-screen terminal interface for badb powered by
+;;; notcurses, bound through the (badb nc) Guile FFI module.
 ;;; Provides live streaming LLM chat with separated thought reasoning blocks,
 ;;; modal prompt switching (! for shell, ( or , for Scheme, backspace to return),
 ;;; interactive slash-command selector palette, menu-driven configuration
@@ -300,8 +301,8 @@ Returns (values thoughts content)."
 ;;; Theme Color Mapping
 ;;;
 (define (color-symbol->ncurses-constant color)
-  "Map a theme COLOR symbol to the name of the matching ncurses color
-constant symbol (resolved against the (ncurses curses) module at runtime
+  "Map a theme COLOR symbol to the name of the matching color constant
+symbol (resolved against the (badb nc) backend module at runtime
 by the renderer). The neutral 'default maps to white."
   (case color
     ((black) 'COLOR_BLACK)
@@ -726,11 +727,10 @@ A no-op when POS is at the end. Return (values new-buffer new-pos)."
                 p))))
 
 (define (key->code ch)
-  "Normalize a keypress CH from guile-ncurses getch to an integer code:
+  "Normalize a keypress CH from the backend's getch to an integer code:
 chars become their codepoint, integers pass through unchanged, anything
-else (e.g. #f from a failed/non-blocking read) stays as-is. guile-ncurses
-returns control keys as chars (e.g. #\\esc) while function keys arrive as
-integer curses constants, and Guile's eqv? never equates chars with
+else (e.g. #f from a failed/non-blocking read) stays as-is. The backend
+may return control keys as chars while function keys arrive as
 integers — so all key dispatch must compare against the normalized code."
   (cond
    ((not ch) ch)
@@ -1438,17 +1438,17 @@ header, an optional thinking section, and the content. Pure - no I/O."
   (unless
       (catch #t
         (lambda ()
-          (resolve-interface '(ncurses curses))
+          (resolve-interface '(badb nc))
           #t)
         (lambda _
           #f))
     (format (current-error-port)
-            "Error: (ncurses curses) module is not installed.~%~
+            "Error: (badb nc) notcurses backend is not available.~%~
              Please run badb within the Guix dev environment:~%~
                ./scripts/devenv -- ./scripts/badb~%")
     (exit 1))
   (let*
-      ((ncurses-mod (resolve-module '(ncurses curses)))
+      ((ncurses-mod (resolve-module '(badb nc)))
        (nref
          (lambda (s)
            (module-ref ncurses-mod s)))
@@ -1810,8 +1810,8 @@ header, an optional thinking section, and the content. Pure - no I/O."
     (define steering-queue (make-steering-queue))
     (define steering-buffer "")
     (define interrupt-requested? #f)
-    ;; Non-blocking input support: guile-ncurses 3.x exports nodelay!
-    ;; (some builds name it nodelay). When neither resolves, mid-run
+    ;; Non-blocking input support: the (badb nc) backend exports nodelay!
+    ;; (kept also as the alias nodelay). When neither resolves, mid-run
     ;; polling is disabled and steering stays available between runs
     ;; through /steer and /interrupt.
     (define nodelay-proc
@@ -3547,11 +3547,12 @@ any open menu first; submenu actions open the next menu in its place."
     (cbreak!)
     (noecho!)
     (keypad! stdscr #t)
-    ;; Message selection keys: Ctrl+Up / Ctrl+Down. Their codes are
-    ;; assigned dynamically by terminfo and absent on some entries, so
-    ;; probe the curses keymap and fall back to binding the xterm escape
-    ;; sequences to otherwise-unused keycodes. 0 means unresolvable; no
-    ;; keypress ever delivers it.
+    ;; Message selection keys: Ctrl+Up / Ctrl+Down. The (badb nc)
+    ;; notcurses backend decodes the modifier natively and synthesizes
+    ;; the KEY_FIND / KEY_OPEN sentinel codes for these sequences, so
+    ;; resolution never fails under notcurses; the resolve-modified-key
+    ;; dance keeps both the startup logic and any future backend
+    ;; honest. 0 means unresolvable; no keypress ever delivers it.
     (define ctrl-up-key
       (resolve-modified-key (string #\esc #\[ #\1 #\; #\5 #\A)
                             key-defined define-key KEY_FIND))

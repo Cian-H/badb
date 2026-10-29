@@ -1,0 +1,573 @@
+;;; badb/nc.scm — notcurses backend for the badb TUI, via Guile's FFI.
+;;;
+;;; Exposes the exact guile-ncurses call surface that (badb tui)
+;;; resolves at runtime (initscr, getch, attr-on!, color-pair, KEY_*,
+;;; COLOR_* ...), implemented on top of libnotcurses 3.x with
+;;; pointer-based FFI calls. The curses attribute/color-pair model is
+;;; emulated on notcurses channels:
+;;;
+;;;   - attr-on!/attr-off! with a color-pair id set plane fg/bg RGB
+;;;     from the pair table built by init-pair!; turning a pair off
+;;;     restores default colors, exactly like curses attribute bits.
+;;;   - A_BOLD maps to NCSTYLE_BOLD; A_REVERSE swaps the tracked
+;;;     fg/bg channels (notcurses 3 has no reverse style), resolving
+;;;     'default channels to the terminal's concrete default colors
+;;;     first so a swap over defaults is visible; A_DIM has
+;;;     no notcurses equivalent and is a no-op.
+;;;   - getch returns notcurses input ids. Plain codepoints and the
+;;;     NCKEY_* special keys are distinct by construction, and modifier
+;;;     combos are native: Ctrl+Up/Ctrl+Down are synthesized as the
+;;;     KEY_FIND/KEY_OPEN sentinel codes that key-defined reports for
+;;;     the xterm escape sequences, so the TUI's resolution logic and
+;;;     dispatch work unchanged. Escape arrives as 27 and Tab as 9,
+;;;     matching the dispatch's expectations. Mouse reporting is
+;;;     disabled at init, so no button events reach the key dispatch.
+;;;     Kitty-keyboard release events (delivered after each press when
+;;;     the terminal negotiates that protocol) are consumed, so getch
+;;;     reports presses only, exactly like curses.
+;;;
+;;; Library discovery mirrors how the TUI is deployed: the current
+;;; guix environment (GUIX_ENVIRONMENT), the user's profile, then the
+;;; system loader. The module loads libnotcurses, libnotcurses-core and
+;;; libnotcurses-ffi, resolving each symbol from whichever exports it.
+
+(define-module (badb nc)
+  #:use-module (srfi srfi-1)
+  #:use-module (system foreign)
+  #:use-module (system foreign-library)
+  #:use-module (rnrs bytevectors)
+  #:export (initscr endwin cbreak! noecho! keypad! curs-set
+              erase refresh getmaxy getmaxx move addstr getch
+              attr-on! attr-off! has-colors? start-color! init-pair!
+              color-pair nodelay! nodelay
+              ERR
+              A_BOLD A_DIM A_REVERSE
+              KEY_ENTER KEY_BACKSPACE KEY_UP KEY_DOWN KEY_PPAGE KEY_NPAGE
+              KEY_LEFT KEY_RIGHT KEY_HOME KEY_END KEY_DC KEY_RESIZE
+              KEY_FIND KEY_OPEN
+              key-defined define-key
+              COLOR_BLACK COLOR_RED COLOR_GREEN COLOR_YELLOW
+              COLOR_BLUE COLOR_MAGENTA COLOR_CYAN COLOR_WHITE))
+
+;;;
+;;; Library discovery and FFI plumbing
+;;;
+
+(define (library-candidates soname)
+  (append
+    (filter-map
+      (lambda (dir) (and dir (string-append dir "/lib/" soname)))
+      (list (getenv "GUIX_ENVIRONMENT")
+            (and=> (getenv "HOME")
+                   (lambda (h) (string-append h "/.guix-profile")))))
+    (list soname)))
+
+(define %handles
+  (filter-map
+    (lambda (soname)
+      (let loop ((paths (library-candidates soname)))
+        (if (null? paths)
+          #f
+          (or (false-if-exception (load-foreign-library (car paths)))
+              (loop (cdr paths))))))
+    '("libnotcurses.so.3" "libnotcurses-core.so.3" "libnotcurses-ffi.so.3")))
+
+(when (null? %handles)
+  (error "libnotcurses not found; run badb inside ./scripts/devenv"))
+
+;; pointer->procedure needs foreign type *objects* (int, uint32, void
+;; are module variables from (system foreign)); only '* is passed as a
+;; symbol. Translate our declarative symbols accordingly.
+(define (resolve-type t)
+  (case t
+    ((int) int)
+    ((uint32) uint32)
+    ((void) void)
+    (else t)))
+
+(define (lookup-procedure name ret arg-types)
+  (let loop ((handles %handles))
+    (if (null? handles)
+      (error "notcurses symbol not found" name)
+      (or (false-if-exception
+            (pointer->procedure (resolve-type ret)
+                               (dynamic-func name (car handles))
+                               (map resolve-type arg-types)))
+          (loop (cdr handles))))))
+
+(define %init
+  (lookup-procedure "notcurses_init" '*
+                    '(* *)))
+(define %stop
+  (lookup-procedure "notcurses_stop" 'int '(*)))
+(define %stdplane
+  (lookup-procedure "notcurses_stdplane" '* '(*)))
+(define %render
+  (lookup-procedure "notcurses_render" 'int '(*)))
+(define %nc-refresh
+  (lookup-procedure "notcurses_refresh" 'int '(* * *)))
+(define %get
+  (lookup-procedure "notcurses_get" 'uint32 '(* * *)))
+(define %get-nblock
+  (lookup-procedure "notcurses_get_nblock" 'uint32 '(* *)))
+(define %mice-enable
+  (lookup-procedure "notcurses_mice_enable" 'int '(* uint32)))
+(define %cursor-enable
+  (lookup-procedure "notcurses_cursor_enable" 'int '(* int int)))
+(define %cursor-disable
+  (lookup-procedure "notcurses_cursor_disable" 'int '(*)))
+(define %putstr-yx
+  (lookup-procedure "ncplane_putstr_yx" 'int (list '* 'int 'int '*)))
+(define %plane-erase
+  (lookup-procedure "ncplane_erase" 'void '(*)))
+(define %plane-dim-yx
+  (lookup-procedure "ncplane_dim_yx" 'void '(* * *)))
+(define %plane-cursor-yx
+  (lookup-procedure "ncplane_cursor_yx" 'void '(* * *)))
+(define %on-styles
+  (lookup-procedure "ncplane_on_styles" 'void (list '* uint32)))
+(define %off-styles
+  (lookup-procedure "ncplane_off_styles" 'void (list '* uint32)))
+(define %set-fg-rgb
+  (lookup-procedure "ncplane_set_fg_rgb" 'int (list '* uint32)))
+(define %set-bg-rgb
+  (lookup-procedure "ncplane_set_bg_rgb" 'int (list '* uint32)))
+(define %set-fg-default
+  (lookup-procedure "ncplane_set_fg_default" 'void '(*)))
+(define %set-bg-default
+  (lookup-procedure "ncplane_set_bg_default" 'void '(*)))
+(define %default-fg
+  (lookup-procedure "notcurses_default_foreground" 'int '(* *)))
+(define %default-bg
+  (lookup-procedure "notcurses_default_background" 'int '(* *)))
+
+;; libc's nanosleep, used for the input-drain quiescence windows in
+;; initscr. Resolved through the same environment/profile/system
+;; search as libnotcurses.
+(define %libc
+  (let loop ((paths (library-candidates "libc.so.6")))
+    (cond
+      ((null? paths) #f)
+      ((false-if-exception (load-foreign-library (car paths))))
+      (else (loop (cdr paths))))))
+
+(define %nanosleep
+  (and %libc
+       (pointer->procedure void
+                          (dynamic-func "nanosleep" %libc)
+                          '(* *))))
+
+;; ioctl(fd, TIOCGWINSZ, struct winsize*) to poll the terminal's true
+;; geometry. SIGWINCH is delivered to whichever thread is not blocking
+;; it, and guile runs worker threads (subprocess pipes), so the main
+;; thread's blocking read() is not always interrupted; ncurses polled
+;; the tty size itself, and we must do the same to report resizes
+;; without waiting for the next keypress.
+(define %ioctl
+  (and %libc
+       (pointer->procedure int
+                           (dynamic-func "ioctl" %libc)
+                           (list int uint64 '*))))
+(define %tiocgwinsz #x5413)              ; x86_64 linux
+(define %winsize (make-bytevector 8 0))  ; { u16 rows, cols, xpix, ypix }
+(define %known-rows 0)
+(define %known-cols 0)
+
+(define (sync-known-size!)
+  (when (zero? (%ioctl 1 %tiocgwinsz (bytevector->pointer %winsize)))
+    (set! %known-rows (bytevector-u16-native-ref %winsize 0))
+    (set! %known-cols (bytevector-u16-native-ref %winsize 2))))
+
+(define (terminal-size-changed?)
+  (and %ioctl
+       (zero? (%ioctl 1 %tiocgwinsz (bytevector->pointer %winsize)))
+       (or (not (= (bytevector-u16-native-ref %winsize 0) %known-rows))
+           (not (= (bytevector-u16-native-ref %winsize 2) %known-cols)))))
+
+;; struct timespec on x86_64: { int64 tv_sec; int64 tv_nsec; }
+(define %sleep-req (make-bytevector 16 0))
+
+(define (%sleep-ms ms)
+  (when %nanosleep
+    (bytevector-u64-native-set! %sleep-req 0 0)
+    (bytevector-u64-native-set! %sleep-req 8 (* ms 1000000))
+    (%nanosleep (bytevector->pointer %sleep-req) %null-pointer)))
+
+;;;
+;;; Constants
+;;;
+;;; NCKEY_* are preterunicode(n) = 1115000 + n from notcurses' nckeys.h;
+;;; KEY_FIND/KEY_OPEN are sentinels for Ctrl+Up/Ctrl+Down defined far
+;;; outside the preterunicode range so no input collides with them.
+
+(define %preterunicode-base 1115000)
+(define %nckey-invalid (+ %preterunicode-base 0))
+(define %nckey-mod-ctrl 4)
+(define %nctype-release 3)              ; ncintype_e NCTYPE_RELEASE
+(define %u32-err 4294967295)            ; (uint32_t)-1, the error return
+(define %ncstyle-bold #x02)
+(define %ncstyle-none #x00)
+
+(define ERR -1)
+(define A_BOLD #x10000)
+(define A_DIM  #x20000)
+(define A_REVERSE #x40000)
+
+(define KEY_UP (+ %preterunicode-base 2))
+(define KEY_RIGHT (+ %preterunicode-base 3))
+(define KEY_DOWN (+ %preterunicode-base 4))
+(define KEY_LEFT (+ %preterunicode-base 5))
+(define KEY_DC (+ %preterunicode-base 7))
+(define KEY_BACKSPACE (+ %preterunicode-base 8))
+(define KEY_NPAGE (+ %preterunicode-base 9))
+(define KEY_PPAGE (+ %preterunicode-base 10))
+(define KEY_HOME (+ %preterunicode-base 11))
+(define KEY_END (+ %preterunicode-base 12))
+(define KEY_ENTER (+ %preterunicode-base 121))
+(define KEY_RESIZE (+ %preterunicode-base 1))
+;; Sentinels for Ctrl+Up/Ctrl+Down, deliberately far outside the
+;; preterunicode range (which tops out at preterunicode(500) =
+;; NCKEY_EOF) so no synthesized input can collide with them.
+(define KEY_FIND 2000000)
+(define KEY_OPEN 2000001)
+
+;; Curses color constants and their RGB equivalents (classic xterm 8).
+(define COLOR_BLACK 0)
+(define COLOR_RED 1)
+(define COLOR_GREEN 2)
+(define COLOR_YELLOW 3)
+(define COLOR_BLUE 4)
+(define COLOR_MAGENTA 5)
+(define COLOR_CYAN 6)
+(define COLOR_WHITE 7)
+
+(define %color-rgb
+  #(#x000000 #xcd0000 #x00cd00 #xcdcd00
+    #x0000cd #xcd00cd #x00cdcd #xe5e5e5))
+
+;;;
+;;; Emulated curses state
+;;;
+
+(define %nc %null-pointer)
+(define %plane %null-pointer)
+(define %pairs (make-hash-table 61))       ; pair id -> (fg . bg) rgb
+(define %fg 'default)
+(define %bg 'default)
+(define %nodelay? #f)
+(define %cursor-visible? #f)
+(define %cursor-y 0)
+(define %cursor-x 0)
+(define %next-y 0)                          ; pending (move) position
+(define %next-x 0)
+
+(define (apply-foreground!)
+  (if (eq? %fg 'default)
+    (%set-fg-default %plane)
+    (%set-fg-rgb %plane %fg)))
+(define (apply-background!)
+  (if (eq? %bg 'default)
+    (%set-bg-default %plane)
+    (%set-bg-rgb %plane %bg)))
+(define (apply-channels!)
+  (apply-foreground!)
+  (apply-background!))
+
+;;;
+;;; Session lifecycle
+;;;
+
+(define (initscr)
+  (let* ((opts (make-bytevector 64 0))
+         ;; NCOPTION_SUPPRESS_BANNERS (0x20) |
+         ;; NCOPTION_NO_ALTERNATE_SCREEN (0x40): match the previous
+         ;; ncurses behavior of drawing over the primary screen.
+         (flags #x60))
+    (bytevector-u64-native-set! opts 32 flags)
+    (set! %nc (%init (bytevector->pointer opts) %null-pointer))
+    (when (null-pointer? %nc)
+      (error "notcurses_init failed"))
+    ;; Disable mouse reporting so button events never reach the key
+    ;; dispatch (NCMICE_NO_EVENTS = 0).
+    (%mice-enable %nc 0)
+    (set! %plane (%stdplane %nc))
+    (set! %fg 'default)
+    (set! %bg 'default)
+    (set! %pairs (make-hash-table 61))
+    (when %ioctl (sync-known-size!))
+    ;; Terminals answer notcurses_init's capability/palette queries a
+    ;; few milliseconds after init returns, and notcurses only drains
+    ;; part of those replies; whatever it misses would surface through
+    ;; getch as stray keypresses. Drain until the queue is quiet, like
+    ;; curses, whose initscr never leaves reply residue behind.
+    (drain-input!)
+    %plane))
+
+(define (endwin)
+  (unless (null-pointer? %nc)
+    (%stop %nc)
+    (set! %nc %null-pointer)
+    (set! %plane %null-pointer)))
+
+;; notcurses always runs cbreak/noecho with keypad-style decoding; these
+;; exist only for call-surface compatibility.
+(define (cbreak!) #t)
+(define (noecho!) #t)
+(define (keypad! win enabled?) #t)
+(define (has-colors?) #t)
+(define (start-color!) #t)
+
+;;;
+;;; Geometry, drawing, rendering
+;;;
+
+(define %dim-y (make-bytevector 4))
+(define %dim-x (make-bytevector 4))
+(define (refresh-dims!)
+  (%plane-dim-yx %plane
+                 (bytevector->pointer %dim-y)
+                 (bytevector->pointer %dim-x)))
+
+(define (getmaxy win) (refresh-dims!) (bytevector-u32-native-ref %dim-y 0))
+(define (getmaxx win) (refresh-dims!) (bytevector-u32-native-ref %dim-x 0))
+
+(define (move win y x)
+  (set! %next-y y)
+  (set! %next-x x)
+  ;; The physical cursor sits at the last position drawn or moved to,
+  ;; like curses; refresh places it.
+  (set! %cursor-y y)
+  (set! %cursor-x x)
+  #t)
+
+(define (addstr win str)
+  (let ((y %next-y) (x %next-x))
+    (when (and (>= y 0) (>= x 0))
+      (%putstr-yx %plane y x (string->pointer str)))
+    (set! %cursor-y y)
+    (set! %cursor-x (+ x (string-length str)))
+    #t))
+
+(define (erase win) (%plane-erase %plane) #t)
+
+(define (refresh win)
+  (let ((r (%render %nc)))
+    (when %cursor-visible?
+      ;; Clamp the tracked position to the current plane size: after a
+      ;; resize the old coordinates can lie outside the plane, and
+      ;; notcurses_cursor_enable silently fails on invalid input.
+      (refresh-dims!)
+      (let ((maxy (bytevector-u32-native-ref %dim-y 0))
+            (maxx (bytevector-u32-native-ref %dim-x 0)))
+        (set! %cursor-y (min (max %cursor-y 0) (- maxy 1)))
+        (set! %cursor-x (min (max %cursor-x 0) (- maxx 1)))
+        (%cursor-enable %nc %cursor-y %cursor-x)))
+    r))
+
+(define (curs-set visibility)
+  (cond
+    ((= visibility 0)
+      (set! %cursor-visible? #f)
+      (%cursor-disable %nc))
+    (else
+      (set! %cursor-visible? #t)
+      (%cursor-enable %nc %cursor-y %cursor-x)))
+  #t)
+
+;;;
+;;; Attributes and colors (curses emulation)
+;;;
+
+(define %default-fg-slot (make-bytevector 4))
+(define %default-bg-slot (make-bytevector 4))
+
+;; The terminal's default fg/bg as concrete RGB (from notcurses' OSC
+;; 10/11 queries), falling back to the classic xterm defaults when
+;; notcurses could not determine them. A_REVERSE over 'default
+;; channels needs concrete values: swapping 'default with 'default
+;; would render as a no-op.
+(define (terminal-default-fg)
+  (if (= (%default-fg %nc (bytevector->pointer %default-fg-slot)) 0)
+    (logand (bytevector-u32-native-ref %default-fg-slot 0) #xffffff)
+    #xe5e5e5))
+(define (terminal-default-bg)
+  (if (= (%default-bg %nc (bytevector->pointer %default-bg-slot)) 0)
+    (logand (bytevector-u32-native-ref %default-bg-slot 0) #xffffff)
+    #x000000))
+
+(define (init-pair! id fg bg)
+  (hashv-set! %pairs id
+              (cons (vector-ref %color-rgb fg)
+                    (vector-ref %color-rgb bg)))
+  #t)
+
+(define (color-pair id) id)
+
+(define (attr-on! win attr)
+  (cond
+    ((eqv? attr A_BOLD) (%on-styles %plane %ncstyle-bold))
+    ((eqv? attr A_REVERSE)
+      ;; Substitute 'default channels with the terminal's concrete
+      ;; default colors before swapping; plain fg/bg RGB swaps on top
+      ;; of that.
+      (let ((f (if (eq? %fg 'default) (terminal-default-fg) %fg))
+            (b (if (eq? %bg 'default) (terminal-default-bg) %bg)))
+        (set! %fg b)
+        (set! %bg f)
+        (apply-channels!)))
+    ((eqv? attr A_DIM) #t)   ; no notcurses equivalent
+    (else
+      (let ((rgb (hashv-ref %pairs attr)))
+        (when rgb
+          (set! %fg (car rgb))
+          (set! %bg (cdr rgb))
+          (apply-channels!)))))
+  #t)
+
+(define (attr-off! win attr)
+  (cond
+    ((eqv? attr A_BOLD) (%off-styles %plane %ncstyle-bold))
+    ((eqv? attr A_REVERSE)
+      ;; attr-on! resolved 'default to concrete RGB, so this swap
+      ;; restores the pre-reverse colors (default colors return as
+      ;; their RGB equivalents, rendering identically).
+      (let ((f %fg) (b %bg))
+        (set! %fg b)
+        (set! %bg f)
+        (apply-channels!)))
+    ((eqv? attr A_DIM) #t)
+    (else
+      ;; Turning a color pair off restores default colors.
+      (set! %fg 'default)
+      (set! %bg 'default)
+      (apply-channels!)))
+  #t)
+
+;;;
+;;; Input
+;;;
+
+;; ncinput layout (x86_64, notcurses 3.0.16):
+;;   uint32 id (0) | int y (4) | int x (8) | char utf8[5] (12) |
+;;   bool alt (17) | bool shift (18) | bool ctrl (19) |
+;;   int evtype (20) | unsigned modifiers (24)
+;; struct is 52 bytes; 128 leaves ample headroom.
+(define %ncinput (make-bytevector 128 0))
+(define %ncinput-ptr (bytevector->pointer %ncinput))
+
+(define (input-pending?)
+  ;; notcurses reports "no input available" as 0 and errors as
+  ;; (uint32)-1; anything else is a queued event.
+  (let ((id (%get-nblock %nc %ncinput-ptr)))
+    (not (or (= id 0) (= id %u32-err)))))
+
+;; Consume everything currently queued, then require two consecutive
+;; 50ms windows with no input so replies still in flight are caught.
+(define (drain-input!)
+  (let drain ((quiet 0))
+    (let flush ()
+      (when (input-pending?) (flush)))
+    (%sleep-ms 50)
+    (cond
+      ((input-pending?) (drain 0))
+      ((< quiet 1) (drain (+ quiet 1)))
+      (else #t))))
+
+(define (input-modifiers)
+  (bytevector-u32-native-ref %ncinput 24))
+
+(define (input-release?)
+  (= (bytevector-s32-native-ref %ncinput 20) %nctype-release))
+
+(define (input-ctrl?)
+  (= (logand (input-modifiers) %nckey-mod-ctrl) %nckey-mod-ctrl))
+
+(define (read-raw-id)
+  (if %nodelay?
+    (let ((r (%get-nblock %nc %ncinput-ptr)))
+      (if (or (= r 0) (= r %u32-err)) #f r))
+    ;; Blocking read, emulated as a poll loop: SIGWINCH may be swallowed
+    ;; by a non-main thread (see terminal-size-changed?), so an
+    ;; unbounded notcurses_get would miss resizes until the next
+    ;; keypress. Poll every 20ms: sub-perceptual input latency, and a
+    ;; resize is reported within one poll.
+    (let poll ((r (%get-nblock %nc %ncinput-ptr)))
+      (cond
+        ((and (not (= r 0)) (not (= r %u32-err))) r)
+        ((terminal-size-changed?) KEY_RESIZE)
+        (else (%sleep-ms 20) (poll (%get-nblock %nc %ncinput-ptr)))))))
+
+(define (input-eff-text)
+  ;; ncinput.eff_text[0] (uint32 at offset 36): the composed codepoint
+  ;; taking modifiers into account (shift+1 -> '!', ctrl+d -> 0x04).
+  (bytevector-u32-native-ref %ncinput 36))
+
+(define (getch win)
+  (let loop ((id (read-raw-id)))
+    (cond
+      ((not id) ERR)
+      ;; 0 = no input available, (uint32)-1 = error, and the
+      ;; never-delivered NCKEY_INVALID sentinel: all are ERR.
+      ((or (= id 0) (= id %u32-err) (= id %nckey-invalid)) ERR)
+      ;; Terminals with the kitty keyboard protocol negotiated send a
+      ;; release event after every press; curses has no releases, so
+      ;; skip them lest each keypress dispatch twice.
+      ((input-release?) (loop (read-raw-id)))
+      ;; Ctrl+Up / Ctrl+Down arrive as NCKEY_UP/DOWN with the ctrl
+      ;; modifier; synthesize the sentinels key-defined reports for
+      ;; the xterm sequences so existing dispatch keeps working.
+      ((and (= id KEY_UP) (input-ctrl?)) KEY_FIND)
+      ((and (= id KEY_DOWN) (input-ctrl?)) KEY_OPEN)
+      ;; notcurses resizes its planes lazily (at the next render);
+      ;; notcurses_refresh applies the new geometry immediately, so
+      ;; the TUI's render that follows this KEY_RESIZE lays out at
+      ;; the correct size. NULL out-params: we read dims via
+      ;; ncplane_dim_yx as usual.
+      ((= id KEY_RESIZE)
+        (catch #t
+          (lambda ()
+            (%nc-refresh %nc %null-pointer %null-pointer)
+            (when %ioctl (sync-known-size!)))
+          (lambda _ #f))
+        KEY_RESIZE)
+      ;; The kitty protocol reports plain keys as their unmodified id
+      ;; plus a modifier bitmask ('!' is 1+shift). Compose to curses
+      ;; semantics:
+      ;;   - ctrl+letter (kitty) is the classic control code
+      ;;     (a=1..z=26); legacy terminals already send that code, and
+      ;;     both paths must deliver it unchanged.
+      ;;   - notcurses' eff_text is only safe for shift/capslock
+      ;;     composition of printables: for ctrl input it gives the
+      ;;     UPPERCASE letter (ctrl+e -> 'E'), and it must never
+      ;;     override an already-composed control code.
+      ;;   - special NCKEY_* ids never reach here.
+      ;; ctrl+letter is the classic control code (a=1..z=26). notcurses
+      ;; reports it two ways: kitty protocol sends the lowercase id
+      ;; plus the ctrl modifier, while legacy control codes arrive
+      ;; normalized to the UPPERCASE letter with the ctrl modifier
+      ;; (0x05 -> 'E'). Compose both to the control code.
+      ((and (input-ctrl?)
+            (or (and (>= id 97) (<= id 122))
+                (and (>= id 65) (<= id 90))))
+        (if (< id 97) (- id 64) (- id 96)))
+      ((and (not (input-ctrl?))
+            (>= id 32)
+            (< id %preterunicode-base)
+            (> (input-eff-text) 0))
+        (input-eff-text))
+      (else id))))
+
+(define (nodelay! win enabled?)
+  (set! %nodelay? (if enabled? #t #f))
+  #t)
+(define nodelay nodelay!)
+
+;; The ctrl-arrow escape sequences are decoded natively by notcurses;
+;; key-defined/define-key keep the TUI's startup resolution working.
+(define (key-defined seq)
+  (cond
+    ((string=? seq "\x1b[1;5A") KEY_FIND)
+    ((string=? seq "\x1b[1;5B") KEY_OPEN)
+    (else #f)))
+
+(define (define-key seq code) #t)

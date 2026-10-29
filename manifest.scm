@@ -5,7 +5,7 @@
   "grep"
   "guile"
   "guile-json"
-  "guile-ncurses"
+  "notcurses"
   "sed"
   "findutils"
   "make"
