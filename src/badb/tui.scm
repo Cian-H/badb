@@ -10,7 +10,7 @@
 ;;; rounded pop-ups. All colors resolve through the (badb theme) module, so
 ;;; the six built-in themes restyle the whole interface. Message blocks are
 ;;; collapsible: reasoning collapses to a single summary line by default;
-;;; Ctrl+H/Ctrl+J select a block and Ctrl+E toggles collapse. While the
+;;; Ctrl+H/Ctrl+N select a block and Ctrl+E toggles collapse. While the
 ;;; autonomous ReAct loop runs, the terminal is polled non-blocking so the
 ;;; user can type steering messages (Enter sends, Ctrl+I interrupts) that
 ;;; the running agent sees at the next iteration boundary.
@@ -418,7 +418,7 @@ MODE (a symbol: chat, shell, scheme, selector, menu or steering)."
     ((selector) "up/down:choose tab:complete enter:run esc:dismiss")
     ((menu) "up/down:move enter:apply esc:close")
     ((steering) "type:steer enter:send ^i:interrupt bs:edit esc:clear")
-    (else "!:shell ,:scheme /:cmds ^h/^j:select ^e:collapse up/dn+pgup/dn:scroll")))
+    (else "!:shell ,:scheme /:cmds ^h/^n:select ^e:collapse up/dn+pgup/dn:scroll")))
 
 ;;;
 ;;; Agent Steering Helpers
@@ -1743,7 +1743,7 @@ header, an optional thinking section, and the content. Pure - no I/O."
                                 "• While the agent runs you can steer it: type a course correction, enter sends it, ctrl+i interrupts (applied at the next iteration)\n"
                                 "• ! switches to shell mode, ( or , to Scheme REPL; backspace on an empty prompt returns to chat\n"
                                 "• / opens the command palette (/guardrail, /compact, /checkpoint, /rollback, /rules, /context)\n"
-                                "• ctrl+h / ctrl+j select a message block, ctrl+e collapse or expand it\n"
+                                "• ctrl+h / ctrl+n select a message block, ctrl+e collapse or expand it\n"
                                 "• /config, /model or /endpoint alone open interactive menus (up/down move, enter apply, esc close)\n"
                                 "• The bottom line lists the keys active in the current mode.")))))
     (define llm-history (list (make-system-turn)))
@@ -1762,9 +1762,10 @@ header, an optional thinking section, and the content. Pure - no I/O."
     (define active-menu #f)
     ;; Viewport message selection index (#f = inactive) for collapse control.
     ;; Key bindings (single control chars, non-conflicting with existing codes):
-    ;;   Ctrl+H (char 8)  = select previous message card (vim h/j tradition;
-    ;;                      modern terminals send 127 for backspace)
-    ;;   Ctrl+J (char 10) = select next message card (Enter sends 13)
+    ;;   Ctrl+H (char 8)  = select previous message card (modern terminals
+    ;;                      send 127 for backspace, so 8 is free)
+    ;;   Ctrl+N (char 14) = select next message card (Ctrl+J cannot be
+    ;;                      used: under cbreak the tty delivers Enter as 10)
     ;;   Ctrl+E (char 5)  = toggle collapse on the selected message
     ;;                      (falls back to cursor-to-end when no selection,
     ;;                      preserving the pre-existing Ctrl+E binding)
@@ -3389,7 +3390,7 @@ any open menu first; submenu actions open the next menu in its place."
                                    "  /dump [PATH]      Export the conversation to a text file\n"
                                    "  !<command>        Execute shell command\n"
                                    "  ,<expr> or (..)   Evaluate Scheme code\n"
-                                   "  ctrl+h / ctrl+j   Select a message block\n"
+                                   "  ctrl+h / ctrl+n   Select a message block\n"
                                    "  ctrl+e            Collapse or expand the selected message\n"
                                    "  while agent runs  type to steer it: enter sends, ctrl+i interrupts\n"
                                    "  menus             up/down move, enter apply, esc close (/config, /model, /endpoint)\n"
@@ -3568,14 +3569,15 @@ any open menu first; submenu actions open the next menu in its place."
                   ((eqv? ch KEY_UP) (set! active-menu (menu-move active-menu -1)))
                   ((eqv? ch KEY_DOWN) (set! active-menu (menu-move active-menu 1)))
                   ((eqv? ch 27) (set! active-menu #f))
-                  ((or (eqv? ch KEY_ENTER) (eqv? ch 13))
+                  ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
                     (let ((item (menu-selected-item active-menu)))
                       (when item (apply-menu-selection! item))))
                   (else #f))
                 (loop))
               ;; Enter key: process buffer, execute modal command, or
-              ;; complete selector (Ctrl+J is select-next, not Enter)
-              ((or (eqv? ch KEY_ENTER) (eqv? ch 13))
+              ;; complete selector. Under cbreak the tty's ICRNL maps the
+              ;; Enter key to 10, so 10 must submit (Ctrl+N is select-next)
+              ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
                 (if (selector-active? input-buffer)
                   (let
                       ((matches (matching-slash-commands input-buffer)))
@@ -3754,8 +3756,7 @@ any open menu first; submenu actions open the next menu in its place."
                       (max 0 (- scroll-offset (max 1 (quotient (- (getmaxy stdscr) 6) 2)))))
                 (loop))
               ;; Ctrl+H (control char 8): select the previous message card,
-              ;; starting from the newest message - h/j follow vim's
-              ;; movement key tradition
+              ;; starting from the newest message
               ((eqv? ch 8)
                 (unless (null? messages)
                   (set! msgsel-index
@@ -3763,9 +3764,9 @@ any open menu first; submenu actions open the next menu in its place."
                           (max 0 (- msgsel-index 1))
                           (- (length messages) 1))))
                 (loop))
-              ;; Ctrl+J (control char 10): advance the message selection to
+              ;; Ctrl+N (control char 14): advance the message selection to
               ;; the next card (no-op without selection)
-              ((eqv? ch 10)
+              ((eqv? ch 14)
                 (when (and msgsel-index (pair? messages))
                   (set! msgsel-index (min (- (length messages) 1) (+ msgsel-index 1))))
                 (loop))
