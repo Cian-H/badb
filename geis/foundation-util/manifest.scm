@@ -1,0 +1,1 @@
+((bundle-version . 1) (feature-id . "foundation-util") (version . "1.0.0") (spec . "spec.geis.scm") (depends (guile-modules (srfi srfi-64) (badb spec) (badb util)) (badb-version . "0.1.0")) (provenance (origin . "migrated-from-flat-spec")) (sha256 ("spec.geis.scm" . "5402ed5f0efd0ce26bfb041fcfded5a8925bbdf3eeb956930fece735e3d33039")))
