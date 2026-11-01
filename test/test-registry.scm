@@ -2,7 +2,7 @@
 
 (define-module (test test-registry)
   #:use-module (srfi srfi-64)
-  #:use-module (badb registry)
+  #:use-module (badb kernel registry)
   #:use-module (ice-9 threads))
 
 (test-begin "badb-registry")

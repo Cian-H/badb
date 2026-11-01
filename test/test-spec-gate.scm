@@ -9,11 +9,11 @@
 ;;; the transaction manager.
 
 (define-module (test test-spec-gate)
-  #:use-module (badb digest)
-  #:use-module (badb journal)
-  #:use-module (badb registry)
-  #:use-module (badb spec-gate)
-  #:use-module (badb transaction)
+  #:use-module (badb kernel digest)
+  #:use-module (badb kernel journal)
+  #:use-module (badb kernel registry)
+  #:use-module (badb kernel geis-gate)
+  #:use-module (badb kernel transaction)
   #:use-module (badb util)
   #:use-module (ice-9 textual-ports)
   #:use-module (srfi srfi-1)

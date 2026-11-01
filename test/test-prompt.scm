@@ -3,7 +3,7 @@
 (define-module (test test-prompt)
   #:use-module (srfi srfi-64)
   #:use-module (srfi srfi-1)
-  #:use-module (badb prompt))
+  #:use-module (badb runtimes prompt))
 
 (test-begin "badb-prompt")
 

@@ -10,9 +10,11 @@
   #:use-module (srfi srfi-64)
   #:use-module (json)
   #:use-module (web response)
-  #:use-module (badb model)
-  #:use-module (badb registry)
-  #:use-module (badb react))
+  #:use-module (badb providers common)
+  #:use-module (badb providers openai)
+  #:use-module (badb providers mock)
+  #:use-module (badb kernel registry)
+  #:use-module (badb runtimes react))
 
 (test-begin "badb-react-stream")
 

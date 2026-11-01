@@ -4,7 +4,7 @@
 ;;; and cross-checks a randomized input against the system sha256sum.
 
 (define-module (test test-digest)
-  #:use-module (badb digest)
+  #:use-module (badb kernel digest)
   #:use-module (ice-9 popen)
   #:use-module (ice-9 rdelim)
   #:use-module (srfi srfi-1)

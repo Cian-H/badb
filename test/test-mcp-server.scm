@@ -10,8 +10,8 @@
   #:use-module (srfi srfi-64)
   #:use-module (json)
   #:use-module (ice-9 format)
-  #:use-module (badb mcp-server)
-  #:use-module (badb filetree-mcp))
+  #:use-module (badb capabilities mcp-server)
+  #:use-module (badb capabilities filetree-mcp))
 
 (test-begin "mcp-server")
 

@@ -7,7 +7,7 @@
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-64)
   #:use-module (ice-9 ftw)
-  #:use-module (badb journal))
+  #:use-module (badb kernel journal))
 
 ;;;
 ;;; Test helpers

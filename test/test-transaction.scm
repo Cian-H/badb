@@ -2,9 +2,9 @@
 
 (define-module (test test-transaction)
   #:use-module (srfi srfi-64)
-  #:use-module (badb registry)
-  #:use-module (badb transaction)
-  #:use-module (badb journal))
+  #:use-module (badb kernel registry)
+  #:use-module (badb kernel transaction)
+  #:use-module (badb kernel journal))
 
 (test-begin "badb-transaction")
 

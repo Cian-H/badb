@@ -11,10 +11,10 @@
 ;;; throwaway BADB_SPEC_GATE_ROOT so nothing touches .badb/specs/.
 
 (define-module (test test-spec-tools)
-  #:use-module (badb digest)
-  #:use-module (badb registry)
-  #:use-module (badb spec-gate)
-  #:use-module (badb tui)
+  #:use-module (badb kernel digest)
+  #:use-module (badb kernel registry)
+  #:use-module (badb kernel geis-gate)
+  #:use-module (badb surfaces tui)
   #:use-module (srfi srfi-64))
 
 ;;;

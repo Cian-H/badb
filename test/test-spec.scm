@@ -11,7 +11,7 @@
 
 (define-module (test test-spec)
   #:use-module (badb spec)
-  #:use-module (badb spec-gate)
+  #:use-module (badb kernel geis-gate)
   #:use-module (ice-9 format)
   #:use-module (json)
   #:use-module (language tree-il)

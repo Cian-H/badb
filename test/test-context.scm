@@ -6,8 +6,8 @@
 (define-module (test test-context)
   #:use-module (srfi srfi-64)
   #:use-module (srfi srfi-1)
-  #:use-module (badb journal)
-  #:use-module (badb context))
+  #:use-module (badb kernel journal)
+  #:use-module (badb runtimes context))
 
 (test-begin "badb-context")
 

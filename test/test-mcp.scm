@@ -2,7 +2,7 @@
 
 (define-module (test test-mcp)
   #:use-module (srfi srfi-64)
-  #:use-module (badb mcp)
+  #:use-module (badb capabilities mcp)
   #:use-module (badb config)
   #:use-module (badb util)
   #:use-module (json)

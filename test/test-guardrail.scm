@@ -8,9 +8,11 @@
   #:use-module (srfi srfi-1)
   #:use-module (json)
   #:use-module (web response)
-  #:use-module (badb model)
-  #:use-module (badb journal)
-  #:use-module (badb guardrail))
+  #:use-module (badb providers common)
+  #:use-module (badb providers openai)
+  #:use-module (badb providers mock)
+  #:use-module (badb kernel journal)
+  #:use-module (badb policies guardrail))
 
 (test-begin "badb-guardrail")
 

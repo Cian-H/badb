@@ -9,7 +9,7 @@
 (define-module (test test-history-tools)
   #:use-module (srfi srfi-64)
   #:use-module (srfi srfi-1)
-  #:use-module (badb history-tools))
+  #:use-module (badb capabilities history-tools))
 
 (test-begin "badb-history-tools")
 

@@ -4,9 +4,9 @@
   #:use-module (srfi srfi-64)
   #:use-module (srfi srfi-1)
   #:use-module (ice-9 rdelim)
-  #:use-module (badb registry)
-  #:use-module (badb journal)
-  #:use-module (badb rollback))
+  #:use-module (badb kernel registry)
+  #:use-module (badb kernel journal)
+  #:use-module (badb runtimes rollback))
 
 (test-begin "badb-rollback")
 

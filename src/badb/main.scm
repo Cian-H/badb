@@ -1,18 +1,15 @@
 (define-module (badb main) #:use-module
                (ice-9 format)
                #:use-module
-               (badb cli)
+               (badb surfaces cli)
                #:autoload
-               (badb tui)
+               (badb surfaces tui)
                (run-tui spec-tool-status spec-tool-verify)
                #:autoload
-               (test runner)
-               (run-all-tests)
-               #:autoload
-               (badb filetree-mcp)
+               (badb capabilities filetree-mcp)
                (run-filetree-mcp)
                #:autoload
-               (badb synthesis)
+               (badb runtimes synthesis)
                (run-synthesis-cli)
                #:export
                (%program-name %version main))
@@ -39,7 +36,15 @@
         (let ((options (cdr args)))
           (cond
             ((or (null? options) (member (car options) '("tui" "-t" "--tui"))) (run-tui))
-            ((equal? (car options) "test") (run-all-tests))
+            ((equal? (car options) "test")
+             (let ((runner (catch #t
+                             (lambda () (module-ref (resolve-interface '(test runner)) 'run-all-tests))
+                             (lambda _ #f))))
+               (if runner
+                   (runner)
+                   (begin
+                     (format (current-error-port) "Error: test runner module (test runner) not found.\n")
+                     (exit 1)))))
             ((equal? (car options) "mcp-filetree") (run-filetree-mcp))
             ((equal? (car options) "synthesize") (run-synthesis-cli (cdr options)))
             ((equal? (car options) "geis")
