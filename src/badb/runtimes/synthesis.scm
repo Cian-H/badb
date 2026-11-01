@@ -25,26 +25,42 @@
 ;;;      and records the commit checkpoint in the provenance journal.
 
 (define-module (badb runtimes synthesis)
-  #:use-module (badb kernel digest)
-  #:use-module (badb kernel journal)
-  #:use-module (badb kernel registry)
-  #:use-module (badb kernel geis-gate)
-  #:use-module (badb kernel transaction)
-  #:use-module (badb util)
-  #:use-module (ice-9 format)
-  #:use-module (ice-9 ftw)
-  #:use-module (ice-9 popen)
-  #:use-module (ice-9 rdelim)
-  #:use-module (ice-9 textual-ports)
-  #:use-module (json)
-  #:use-module (srfi srfi-1)
-  #:export (find-sema-executable
-            lock-feature-spec
-            commit-synthesized-module!
-            commit-synthesized-module-cli
-            run-synthesis-workflow
-            synthesize-feature!
-            run-synthesis-cli))
+               #:use-module
+               (badb kernel digest)
+               #:use-module
+               (badb kernel journal)
+               #:use-module
+               (badb kernel registry)
+               #:use-module
+               (badb kernel geis-gate)
+               #:use-module
+               (badb geis bundle)
+               #:use-module
+               (badb kernel transaction)
+               #:use-module
+               (badb util)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 ftw)
+               #:use-module
+               (ice-9 popen)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 textual-ports)
+               #:use-module
+               (json)
+               #:use-module
+               (srfi srfi-1)
+               #:export
+               (find-sema-executable lock-feature-spec
+                                     commit-synthesized-module!
+                                     commit-synthesized-module-cli
+                                     default-workflow-path
+                                     run-synthesis-workflow
+                                     synthesize-feature!
+                                     run-synthesis-cli))
 
 ;;;
 ;;; Binary and workflow path discovery
@@ -325,67 +341,106 @@ Options:
 "))
 
 (define (run-synthesis-cli args)
-  "CLI dispatcher for `badb synthesize`."
-  (if (or (null? args) (member (car args) '("-h" "--help")))
-      (begin
-        (print-synthesis-usage (current-output-port))
-        (exit 0))
-      (let loop ((rest args)
-                 (feature-id #f)
-                 (spec-path #f)
-                 (target-path #f)
-                 (model #f)
-                 (budget-tokens #f)
-                 (budget-usd #f)
-                 (cassette #f)
-                 (cassette-mode #f)
-                 (max-turns #f)
-                 (commit-only? #f))
-        (cond
-         ((null? rest)
-          (if (not feature-id)
-              (begin
-                (format (current-error-port) "Error: missing required feature-id argument.~%")
-                (exit 1))
-              (if commit-only?
-                  (commit-synthesized-module-cli feature-id (or target-path (format #f "src/badb/~a.scm" feature-id)))
-                  (let* ((budget (if (or budget-tokens budget-usd)
-                                     `((max-tokens . ,budget-tokens)
-                                       (max-cost-usd . ,budget-usd))
-                                     #f))
-                         (res (run-synthesis-workflow feature-id
-                                                     #:spec-path spec-path
-                                                     #:target-path target-path
-                                                     #:model model
-                                                     #:budget budget
-                                                     #:cassette cassette
-                                                     #:cassette-mode cassette-mode
-                                                     #:max-turns max-turns))
+        "CLI dispatcher for `badb synthesize`."
+        (if
+            (or (null? args) (member (car args) '("-h" "--help")))
+          (begin (print-synthesis-usage (current-output-port)) (exit 0))
+          (let loop
+            ((rest args) (feature-id #f)
+             (spec-path #f)
+             (target-path #f)
+             (model #f)
+             (budget-tokens #f)
+             (budget-usd #f)
+             (cassette #f)
+             (cassette-mode #f)
+             (max-turns #f)
+             (commit-only? #f))
+            (cond
+              ((null? rest)
+                (if (not feature-id)
+                  (begin
+                    (format (current-error-port) "Error: missing required feature-id argument.~%")
+                    (exit 1))
+                  (if commit-only?
+                    (commit-synthesized-module-cli feature-id
+                                                   (or target-path (format #f "src/badb/~a.scm" feature-id)))
+                    (let*
+                        ((budget
+                           (if (or budget-tokens budget-usd)
+                             `((max-tokens . ,budget-tokens) (max-cost-usd . ,budget-usd))
+                             #f))
+                         (res
+                           (run-synthesis-workflow feature-id
+                                                   #:spec-path
+                                                   spec-path
+                                                   #:target-path
+                                                   target-path
+                                                   #:model
+                                                   model
+                                                   #:budget
+                                                   budget
+                                                   #:cassette
+                                                   cassette
+                                                   #:cassette-mode
+                                                   cassette-mode
+                                                   #:max-turns
+                                                   max-turns))
                          (status (assoc-ref res 'status)))
-                    (format #t "Sema synthesis ~a for feature '~a'.~%" status feature-id)
-                    (when (assoc-ref res 'result)
-                      (format #t "Result: ~a~%" (scm->json-string (assoc-ref res 'result))))
-                    (exit (if (string=? (or status "") "success") 0 1))))))
-         ((equal? (car rest) "--commit-only")
-          (loop (cdr rest) feature-id spec-path target-path model budget-tokens budget-usd cassette cassette-mode max-turns #t))
-         ((and (equal? (car rest) "--spec") (pair? (cdr rest)))
-          (loop (cddr rest) feature-id (cadr rest) target-path model budget-tokens budget-usd cassette cassette-mode max-turns commit-only?))
-         ((and (equal? (car rest) "--target") (pair? (cdr rest)))
-          (loop (cddr rest) feature-id spec-path (cadr rest) model budget-tokens budget-usd cassette cassette-mode max-turns commit-only?))
-         ((and (equal? (car rest) "--model") (pair? (cdr rest)))
-          (loop (cddr rest) feature-id spec-path target-path (cadr rest) budget-tokens budget-usd cassette cassette-mode max-turns commit-only?))
-         ((and (equal? (car rest) "--budget-tokens") (pair? (cdr rest)))
-          (loop (cddr rest) feature-id spec-path target-path model (string->number (cadr rest)) budget-usd cassette cassette-mode max-turns commit-only?))
-         ((and (equal? (car rest) "--budget-usd") (pair? (cdr rest)))
-          (loop (cddr rest) feature-id spec-path target-path model budget-tokens (string->number (cadr rest)) cassette cassette-mode max-turns commit-only?))
-         ((and (equal? (car rest) "--cassette") (pair? (cdr rest)))
-          (loop (cddr rest) feature-id spec-path target-path model budget-tokens budget-usd (cadr rest) (or cassette-mode "replay") max-turns commit-only?))
-         ((and (equal? (car rest) "--cassette-mode") (pair? (cdr rest)))
-          (loop (cddr rest) feature-id spec-path target-path model budget-tokens budget-usd cassette (cadr rest) max-turns commit-only?))
-         ((and (equal? (car rest) "--max-turns") (pair? (cdr rest)))
-          (loop (cddr rest) feature-id spec-path target-path model budget-tokens budget-usd cassette cassette-mode (string->number (cadr rest)) commit-only?))
-         ((not feature-id)
-          (loop (cdr rest) (car rest) spec-path target-path model budget-tokens budget-usd cassette cassette-mode max-turns commit-only?))
-         (else
-          (format (current-error-port) "Error: unrecognized argument '~a'~%" (car rest))
-          (exit 1))))))
+                      (format #t "Sema synthesis ~a for feature '~a'.~%" status feature-id)
+                      (when (assoc-ref res 'result)
+                        (format #t "Result: ~a~%" (scm->json-string (assoc-ref res 'result))))
+                      (catch #t
+                        (lambda ()
+                          (let ((pending (geis-take-pending-prompt)))
+                            (geis-bundle-assemble! feature-id
+                                                   #:workflow-path
+                                                   (default-workflow-path)
+                                                   #:cassette-path
+                                                   cassette
+                                                   #:request
+                                                   (and pending (assoc-ref pending 'request))
+                                                   #:rendered-prompt
+                                                   (and pending (assoc-ref pending 'rendered))
+                                                   #:target-path
+                                                   target-path)))
+                        (lambda _
+                          #f))
+                      (exit
+                        (if (string=? (or status "") "success")
+                          0
+                          1))))))
+              ((equal? (car rest) "--commit-only")
+                (loop (cdr rest) feature-id spec-path target-path model budget-tokens
+                      budget-usd cassette cassette-mode max-turns #t))
+              ((and (equal? (car rest) "--spec") (pair? (cdr rest)))
+                (loop (cddr rest) feature-id (cadr rest) target-path model budget-tokens
+                      budget-usd cassette cassette-mode max-turns commit-only?))
+              ((and (equal? (car rest) "--target") (pair? (cdr rest)))
+                (loop (cddr rest) feature-id spec-path (cadr rest) model budget-tokens
+                      budget-usd cassette cassette-mode max-turns commit-only?))
+              ((and (equal? (car rest) "--model") (pair? (cdr rest)))
+                (loop (cddr rest) feature-id spec-path target-path (cadr rest) budget-tokens
+                      budget-usd cassette cassette-mode max-turns commit-only?))
+              ((and (equal? (car rest) "--budget-tokens") (pair? (cdr rest)))
+                (loop (cddr rest) feature-id spec-path target-path model
+                      (string->number (cadr rest)) budget-usd cassette cassette-mode max-turns
+                      commit-only?))
+              ((and (equal? (car rest) "--budget-usd") (pair? (cdr rest)))
+                (loop (cddr rest) feature-id spec-path target-path model budget-tokens
+                      (string->number (cadr rest)) cassette cassette-mode max-turns commit-only?))
+              ((and (equal? (car rest) "--cassette") (pair? (cdr rest)))
+                (loop (cddr rest) feature-id spec-path target-path model budget-tokens
+                      budget-usd (cadr rest) (or cassette-mode "replay") max-turns commit-only?))
+              ((and (equal? (car rest) "--cassette-mode") (pair? (cdr rest)))
+                (loop (cddr rest) feature-id spec-path target-path model budget-tokens
+                      budget-usd cassette (cadr rest) max-turns commit-only?))
+              ((and (equal? (car rest) "--max-turns") (pair? (cdr rest)))
+                (loop (cddr rest) feature-id spec-path target-path model budget-tokens
+                      budget-usd cassette cassette-mode (string->number (cadr rest)) commit-only?))
+              ((not feature-id)
+                (loop (cdr rest) (car rest) spec-path target-path model budget-tokens
+                      budget-usd cassette cassette-mode max-turns commit-only?))
+              (else
+                (format (current-error-port) "Error: unrecognized argument '~a'~%" (car rest))
+                (exit 1))))))

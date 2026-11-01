@@ -16,37 +16,67 @@
 ;;; user can type steering messages (Enter sends, Ctrl+I interrupts) that
 ;;; the running agent sees at the next iteration boundary.
 
-(define-module (badb surfaces tui)
-  #:use-module (badb providers common)
-  #:use-module (badb providers openai)
-  #:use-module (badb kernel registry)
-  #:use-module (badb kernel transaction)
-  #:use-module (badb kernel journal)
-  #:use-module (badb kernel geis-gate)
-  #:use-module (badb kernel digest)
-  #:use-module (badb config)
-  #:use-module (badb capabilities mcp)
-  #:use-module (badb capabilities history-tools)
-  #:use-module (badb runtimes react)
-  #:use-module (badb policies guardrail)
-  #:use-module (badb runtimes context)
-  #:use-module (badb runtimes prompt)
-  #:use-module (badb runtimes rollback)
-  #:use-module (badb runtimes verify)
-  #:use-module (badb surfaces theme)
-  #:use-module (badb log)
-  #:use-module (badb util)
-  #:use-module (json)
-  #:use-module (ice-9 format)
-  #:use-module (ice-9 popen)
-  #:use-module (ice-9 rdelim)
-  #:use-module (ice-9 optargs)
-  #:use-module (ice-9 regex)
-  #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-9)
-  #:use-module (srfi srfi-11)
-  #:use-module (srfi srfi-19)
-  #:export
+(define-module (badb surfaces tui) #:use-module
+               (badb providers common)
+               #:use-module
+               (badb providers openai)
+               #:use-module
+               (badb kernel registry)
+               #:use-module
+               (badb kernel transaction)
+               #:use-module
+               (badb kernel journal)
+               #:use-module
+               (badb kernel geis-gate)
+               #:use-module
+               (badb geis bundle)
+               #:use-module
+               (badb kernel digest)
+               #:use-module
+               (badb config)
+               #:use-module
+               (badb capabilities mcp)
+               #:use-module
+               (badb capabilities history-tools)
+               #:use-module
+               (badb runtimes react)
+               #:use-module
+               (badb policies guardrail)
+               #:use-module
+               (badb runtimes context)
+               #:use-module
+               (badb runtimes prompt)
+               #:use-module
+               (badb runtimes rollback)
+               #:use-module
+               (badb runtimes verify)
+               #:use-module
+               (badb surfaces theme)
+               #:use-module
+               (badb log)
+               #:use-module
+               (badb util)
+               #:use-module
+               (json)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 popen)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 optargs)
+               #:use-module
+               (ice-9 regex)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:use-module
+               (srfi srfi-11)
+               #:use-module
+               (srfi srfi-19)
+               #:export
                (run-tui format-conversation-transcript
                         wrap-line
                         wrap-text
@@ -142,8 +172,7 @@
                         <row-cache>
                         <menu>)
                #:re-export
-               (jsonl-line->turn
-                truncate-string))
+               (jsonl-line->turn truncate-string))
 
 ;;;
 ;;; Text Formatting & Word Wrapping Helpers
@@ -2430,8 +2459,9 @@ a manual entry item."
   (unless
       (catch #t
         (lambda ()
-          (or (false-if-exception (resolve-interface '(badb surfaces nc)))
-              (resolve-interface '(badb nc)))
+          (or
+            (false-if-exception (resolve-interface '(badb surfaces nc)))
+            (resolve-interface '(badb nc)))
           #t)
         (lambda _
           #f))
@@ -2441,8 +2471,10 @@ a manual entry item."
                ./scripts/devenv -- ./scripts/badb~%")
     (exit 1))
   (let*
-      ((ncurses-mod (or (false-if-exception (resolve-module '(badb surfaces nc)))
-                        (resolve-module '(badb nc))))
+      ((ncurses-mod
+         (or
+           (false-if-exception (resolve-module '(badb surfaces nc)))
+           (resolve-module '(badb nc))))
        (nref
          (lambda (s)
            (module-ref ncurses-mod s)))
@@ -2492,10 +2524,23 @@ a manual entry item."
        ;; polling is disabled and steering stays available between runs
        ;; through /steer and /interrupt.
        (nodelay-proc
-         (or (catch #t (lambda () (nref 'nodelay!)) (lambda _ #f))
-             (catch #t (lambda () (nref 'nodelay)) (lambda _ #f))))
+         (or
+           (catch #t
+             (lambda ()
+               (nref 'nodelay!))
+             (lambda _
+               #f))
+           (catch #t
+             (lambda ()
+               (nref 'nodelay))
+             (lambda _
+               #f))))
        (steering-err-val
-         (catch #t (lambda () (nref 'ERR)) (lambda _ -1)))
+         (catch #t
+           (lambda ()
+             (nref 'ERR))
+           (lambda _
+             -1)))
        (ctrl-up-key 0)
        (ctrl-down-key 0))
     ;; Initialize Configuration & Kernel State
@@ -2529,7 +2574,12 @@ a manual entry item."
     (define composer (make-prompt-composer))
     ;; Register Built-in Autonomous Agent Tools & Auto-start MCP servers
     (define llm-history '())
-    (register-builtin-tui-tools! reg rollback-mgr verifier mcp-mgr (lambda () llm-history))
+    (register-builtin-tui-tools! reg
+                                 rollback-mgr
+                                 verifier
+                                 mcp-mgr
+                                 (lambda ()
+                                   llm-history))
     (auto-start-mcp-servers! cfg mcp-mgr)
     (define client
             (make-model-client #:endpoint
@@ -2703,8 +2753,8 @@ into the session counters and mark the current turn exactly accounted."
     ;; point at any message, but only collapsible ones (with content or
     ;; thoughts) change state; the toggle itself is a pure alist update.
     (define (toggle-selected-collapse!)
-            (let* ((idx (min msgsel-index (- (length messages) 1)))
-                   (msg (list-ref messages idx)))
+            (let*
+                ((idx (min msgsel-index (- (length messages) 1))) (msg (list-ref messages idx)))
               (when (message-collapsible? msg)
                 (set! messages (replace-nth messages idx (message-toggle-collapsed msg))))))
     (define (record-history! input mode)
@@ -2964,9 +3014,7 @@ and append it to the persistent history journal file."
                               " ")))
            (top-str
              (string-append top-tag
-                            (make-string
-                              (max 0 (- box-w (string-length top-tag) 1))
-                              #\─)
+                            (make-string (max 0 (- box-w (string-length top-tag) 1)) #\─)
                             "╮"))
            (bot-tag
              (if (> below-count 0)
@@ -2974,9 +3022,7 @@ and append it to the persistent history journal file."
                "╰"))
            (bot-str
              (string-append bot-tag
-                            (make-string
-                              (max 0 (- box-w (string-length bot-tag) 1))
-                              #\─)
+                            (make-string (max 0 (- box-w (string-length bot-tag) 1)) #\─)
                             "╯")))
         ;; Blank the rectangle behind the pop-up first: without this,
         ;; underlying message text shows through between the drawn
@@ -3204,8 +3250,11 @@ and append it to the persistent history journal file."
                       (unless (null? matches)
                         (call-with-values
                           (lambda ()
-                            (selector-visible-slice matches (min %selector-max-visible (max 1 (- maxy 5))) selector-index))
-                          (lambda (vis-items offset sel-pos above-count below-count)
+                            (selector-visible-slice matches
+                                                    (min %selector-max-visible (max 1 (- maxy 5)))
+                                                    selector-index))
+                          (lambda
+                              (vis-items offset sel-pos above-count below-count)
                             (let*
                                 ((vis-count (length vis-items))
                                  (box-h (+ vis-count 2))
@@ -3803,8 +3852,7 @@ any open menu first; submenu actions open the next menu in its place."
                             (make-menu "Model"
                                        (build-live-or-recorded-model-menu-items client cfg cur-model))))
                     ((open-endpoint-menu)
-                      (set! active-menu
-                            (make-menu "Endpoint" (endpoint-menu-items-for-config cfg))))
+                      (set! active-menu (make-menu "Endpoint" (endpoint-menu-items-for-config cfg))))
                     ((open-theme-menu) (set! active-menu (make-menu "Theme" (theme-menu-items))))
                     ((open-guardrail-menu)
                       (set! active-menu (make-menu "Guardrail" (guardrail-menu-items))))
@@ -3877,8 +3925,7 @@ any open menu first; submenu actions open the next menu in its place."
                             name
                             (length (all-theme-names))))))))
     (define (handle-mouse-event! ev)
-            (let
-                ((button (car ev)) (y (cadr ev)))
+            (let ((button (car ev)) (y (cadr ev)))
               (cond
                 ((= button 4) (set! scroll-offset (+ scroll-offset 3)))
                 ((= button 5) (set! scroll-offset (max 0 (- scroll-offset 3))))
@@ -3998,82 +4045,120 @@ any open menu first; submenu actions open the next menu in its place."
                   (add-err-msg! (format #f "Dump failed (~a): ~s" key args))))))
     ;; Handle geis command (contract gate and dynamic feature synthesis)
     (define (handle-geis-cmd! arg)
-      (let* ((trimmed (string-trim-both arg))
-             (space-pos (string-index trimmed #\space))
-             (sub (if space-pos (substring trimmed 0 space-pos) trimmed))
-             (rest-arg (if space-pos (string-trim-both (substring trimmed (+ space-pos 1))) "")))
-        (cond
-          ((or (string-null? trimmed) (string=? sub "help"))
-           (add-sys-msg!
-             (string-append
-               "Geis (Contract Gate & Dynamic Synthesis):\n"
-               "  /geis add <description>            - Prompt agent to draft spec, lock contract, synthesize module, and hot-attach\n"
-               "  /geis list                         - List all locked feature contracts (geasa)\n"
-               "  /geis status [feature-id]          - Check status/hash of locked contract(s)\n"
-               "  /geis verify <feature-id>          - Replay locked contract in a disposable kernel subprocess\n"
-               "  /geis synthesize <feature-id> ...  - Run Sema plugin synthesis for locked feature\n\n"
-               "Example:\n"
-               "  /geis add retrieval for the numpy docs\n")))
-          ((string=? sub "add")
-           (if (string-null? rest-arg)
-             (add-sys-msg! "Usage: /geis add <feature description>\nExample: /geis add retrieval for the numpy docs")
-             (let ((user-line (format #f "/geis add ~a" rest-arg)))
-               (record-history! user-line 'chat)
-               (add-user-msg! user-line)
-               (set! status-text "SYNTHESIZING...")
-               (render!)
-               (catch #t
-                 (lambda ()
-                   (execute-chat-stream! (build-geis-add-prompt rest-arg))
-                   (beep))
-                 (lambda (key . args)
-                   (add-err-msg! (format #f "Geis synthesis error (~a): ~s" key args))
-                   (set! status-text "READY")
-                   (render!))))))
-          ((string=? sub "list")
-           (add-sys-msg! (spec-tool-status)))
-          ((string=? sub "status")
-           (add-sys-msg! (apply spec-tool-status (if (string-null? rest-arg) '() (list rest-arg)))))
-          ((string=? sub "verify")
-           (if (string-null? rest-arg)
-             (add-sys-msg! "Usage: /geis verify <feature-id>")
-             (add-sys-msg! (spec-tool-verify rest-arg))))
-          ((string=? sub "synthesize")
-           (if (string-null? rest-arg)
-             (add-sys-msg! "Usage: /geis synthesize <feature-id> [target-path] [spec-path]")
-             (let* ((parts (string-split rest-arg #\space))
-                    (parts (filter (lambda (s) (not (string-null? s))) parts))
-                    (fid (car parts))
-                    (target-p (and (pair? (cdr parts)) (cadr parts)))
-                    (spec-p (and (pair? (cdr parts)) (pair? (cddr parts)) (caddr parts))))
-               (set! status-text "SYNTHESIZING...")
-               (render!)
-               (catch #t
-                 (lambda ()
-                   (let* ((synth-fn (module-ref (or (false-if-exception (resolve-module '(badb runtimes synthesis)))
-                                                      (resolve-module '(badb synthesis)))
-                                                'run-synthesis-workflow))
-                          (res (synth-fn fid #:target-path target-p #:spec-path spec-p))
-                          (status (assoc-ref res 'status))
-                          (wf-result (assoc-ref res 'result)))
-                     (if (eq? status 'passed)
-                       (add-sys-msg! (format #f "Geis synthesis passed for '~a'!\n~a"
-                                             fid
-                                             (if wf-result (scm->json-string wf-result) (or (assoc-ref res 'stdout) ""))))
-                       (add-err-msg! (format #f "Geis synthesis ~a for '~a'.\n~a\n~a"
-                                             status fid
-                                             (or (assoc-ref res 'error) "")
-                                             (or (assoc-ref res 'stderr) ""))))))
-                 (lambda (k . a)
-                   (add-err-msg! (format #f "Geis synthesis error (~a): ~s" k a))))
-               (set! status-text "READY"))))
-          (else
-           (add-err-msg! (format #f "Unknown /geis subcommand '~a'. Type /geis help for available commands." sub))))))
+            (let*
+                ((trimmed (string-trim-both arg))
+                 (space-pos (string-index trimmed #\space))
+                 (sub
+                   (if space-pos
+                     (substring trimmed 0 space-pos)
+                     trimmed))
+                 (rest-arg
+                   (if space-pos
+                     (string-trim-both (substring trimmed (+ space-pos 1)))
+                     "")))
+              (cond
+                ((or (string-null? trimmed) (string=? sub "help"))
+                  (add-sys-msg!
+                    (string-append
+                      "Geis (Contract Gate & Dynamic Synthesis):\n"
+                      "  /geis add <description>            - Prompt agent to draft spec, lock contract, synthesize module, and hot-attach\n"
+                      "  /geis list                         - List all locked feature contracts (geasa)\n"
+                      "  /geis status [feature-id]          - Check status/hash of locked contract(s)\n"
+                      "  /geis verify <feature-id>          - Replay locked contract in a disposable kernel subprocess\n"
+                      "  /geis synthesize <feature-id> ...  - Run Sema plugin synthesis for locked feature\n\n"
+                      "Example:\n"
+                      "  /geis add retrieval for the numpy docs\n")))
+                ((string=? sub "add")
+                  (if (string-null? rest-arg)
+                    (add-sys-msg!
+                      "Usage: /geis add <feature description>\nExample: /geis add retrieval for the numpy docs")
+                    (let
+                        ((user-line (format #f "/geis add ~a" rest-arg)))
+                      (record-history! user-line 'chat)
+                      (add-user-msg! user-line)
+                      (set! status-text "SYNTHESIZING...")
+                      (render!)
+                      (catch #t
+                        (lambda ()
+                          (begin
+                            ;; capture the /geis add provenance (request + rendered prompt) for the
+                            ;; bundle assembly step; defensive: never break the chat flow
+                            (catch #t
+                              (lambda ()
+                                (geis-capture-pending-prompt! rest-arg (build-geis-add-prompt rest-arg)))
+                              (lambda _
+                                #f))
+                            (execute-chat-stream! (build-geis-add-prompt rest-arg)))
+                          (beep))
+                        (lambda (key . args)
+                          (add-err-msg! (format #f "Geis synthesis error (~a): ~s" key args))
+                          (set! status-text "READY")
+                          (render!))))))
+                ((string=? sub "list") (add-sys-msg! (spec-tool-status)))
+                ((string=? sub "status")
+                  (add-sys-msg!
+                    (apply spec-tool-status
+                           (if (string-null? rest-arg)
+                             '()
+                             (list rest-arg)))))
+                ((string=? sub "verify")
+                  (if (string-null? rest-arg)
+                    (add-sys-msg! "Usage: /geis verify <feature-id>")
+                    (add-sys-msg! (spec-tool-verify rest-arg))))
+                ((string=? sub "synthesize")
+                  (if (string-null? rest-arg)
+                    (add-sys-msg! "Usage: /geis synthesize <feature-id> [target-path] [spec-path]")
+                    (let*
+                        ((parts (string-split rest-arg #\space))
+                         (parts
+                           (filter
+                             (lambda (s)
+                               (not (string-null? s)))
+                             parts))
+                         (fid (car parts))
+                         (target-p (and (pair? (cdr parts)) (cadr parts)))
+                         (spec-p (and (pair? (cdr parts)) (pair? (cddr parts)) (caddr parts))))
+                      (set! status-text "SYNTHESIZING...")
+                      (render!)
+                      (catch #t
+                        (lambda ()
+                          (let*
+                              ((synth-fn
+                                 (module-ref
+                                   (or
+                                     (false-if-exception (resolve-module '(badb runtimes synthesis)))
+                                     (resolve-module '(badb synthesis)))
+                                   'run-synthesis-workflow))
+                               (res (synth-fn fid #:target-path target-p #:spec-path spec-p))
+                               (status (assoc-ref res 'status))
+                               (wf-result (assoc-ref res 'result)))
+                            (if (eq? status 'passed)
+                              (add-sys-msg!
+                                (format #f
+                                        "Geis synthesis passed for '~a'!\n~a"
+                                        fid
+                                        (if wf-result
+                                          (scm->json-string wf-result)
+                                          (or (assoc-ref res 'stdout) ""))))
+                              (add-err-msg!
+                                (format #f
+                                        "Geis synthesis ~a for '~a'.\n~a\n~a"
+                                        status
+                                        fid
+                                        (or (assoc-ref res 'error) "")
+                                        (or (assoc-ref res 'stderr) ""))))))
+                        (lambda (k . a)
+                          (add-err-msg! (format #f "Geis synthesis error (~a): ~s" k a))))
+                      (set! status-text "READY"))))
+                (else
+                  (add-err-msg!
+                    (format #f
+                            "Unknown /geis subcommand '~a'. Type /geis help for available commands."
+                            sub))))))
     (define (handle-command! cmd-pair)
             (let ((cmd (car cmd-pair)) (arg (cdr cmd-pair)))
               (cond
-                ((or (string=? cmd "help") (string=? cmd "?"))
-                  (add-sys-msg! %tui-help-message))
+                ((or (string=? cmd "help") (string=? cmd "?")) (add-sys-msg! %tui-help-message))
                 ((string=? cmd "guardrail") (handle-guardrail-cmd! arg))
                 ((string=? cmd "compact") (handle-compact-cmd! arg))
                 ((string=? cmd "resume") (handle-resume-cmd! arg))
@@ -4096,8 +4181,7 @@ any open menu first; submenu actions open the next menu in its place."
                            (add-sys-msg! (format #f "Model switched to: ~a (saved to config)" cur-model)))))
                 ((string=? cmd "endpoint")
                   (if (string-null? arg)
-                    (set! active-menu
-                          (make-menu "Endpoint" (endpoint-menu-items-for-config cfg)))
+                    (set! active-menu (make-menu "Endpoint" (endpoint-menu-items-for-config cfg)))
                     (begin (set! cur-endpoint arg)
                            (badb-config-set-model-endpoint! cfg arg)
                            (refresh-client!)
@@ -4117,29 +4201,33 @@ any open menu first; submenu actions open the next menu in its place."
                     (add-sys-msg!
                       "Usage: /eval <scheme-code> (or ,<scheme-code> or (<scheme-code>))")
                     (begin (add-scm-msg! arg) (execute-scheme! arg))))
-                ((string=? cmd "features")
-                  (add-sys-msg! (format-features-list reg)))
-                ((string=? cmd "journal")
-                  (add-sys-msg! (format-journal-recent jrn)))
+                ((string=? cmd "features") (add-sys-msg! (format-features-list reg)))
+                ((string=? cmd "journal") (add-sys-msg! (format-journal-recent jrn)))
                 ((string=? cmd "test")
                   (set! status-text "TESTING...")
                   (render!)
                   (catch #t
                     (lambda ()
-                      (let* ((test-cmd (if (string-null? (string-trim-both arg))
-                                           "./scripts/test"
-                                           (string-trim-both arg)))
-                             (res (verify-test-suite #:command test-cmd))
-                             (passed? (assoc-ref res 'passed?))
-                             (exit-code (assoc-ref res 'exit-code))
-                             (out (or (assoc-ref res 'output) "")))
+                      (let*
+                          ((test-cmd
+                             (if (string-null? (string-trim-both arg))
+                               "./scripts/test"
+                               (string-trim-both arg)))
+                           (res (verify-test-suite #:command test-cmd))
+                           (passed? (assoc-ref res 'passed?))
+                           (exit-code (assoc-ref res 'exit-code))
+                           (out (or (assoc-ref res 'output) "")))
                         (if passed?
-                            (add-sys-msg!
-                              (format #f "Test suite PASSED (exit ~a).\n~a"
-                                      exit-code (truncate-string (string-trim-both out) 600)))
-                            (add-err-msg!
-                              (format #f "Test suite FAILED (exit ~a):\n~a"
-                                      exit-code (truncate-string (string-trim-both out) 600))))))
+                          (add-sys-msg!
+                            (format #f
+                                    "Test suite PASSED (exit ~a).\n~a"
+                                    exit-code
+                                    (truncate-string (string-trim-both out) 600)))
+                          (add-err-msg!
+                            (format #f
+                                    "Test suite FAILED (exit ~a):\n~a"
+                                    exit-code
+                                    (truncate-string (string-trim-both out) 600))))))
                     (lambda (k . a)
                       (add-err-msg! (format #f "Test error: ~a ~s" k a))))
                   (set! status-text "READY"))
@@ -4272,10 +4360,12 @@ any open menu first; submenu actions open the next menu in its place."
                         (set! selector-index 0)
                         (if (string-null? trimmed)
                           (loop)
-                          (let* ((action (classify-input trimmed))
-                                 (res (if (and action (eq? (car action) 'slash))
-                                          (handle-command! (cons (cadr action) (caddr action)))
-                                          #f)))
+                          (let*
+                              ((action (classify-input trimmed))
+                               (res
+                                 (if (and action (eq? (car action) 'slash))
+                                   (handle-command! (cons (cadr action) (caddr action)))
+                                   #f)))
                             (unless (eq? res 'exit) (loop)))))
                       (let ((chosen (selected-command-name matches)))
                         (cond
@@ -4371,7 +4461,8 @@ any open menu first; submenu actions open the next menu in its place."
                     (set! prompt-mode 'chat)
                     (set! input-buffer "")
                     (set! cursor-pos 0))
-                  ((and (integer? msgsel-index) (string-null? input-buffer)) (set! msgsel-index #f)))
+                  ((and (integer? msgsel-index) (string-null? input-buffer))
+                    (set! msgsel-index #f)))
                 (loop))
               ;; Up Arrow: selector navigation, input history recall while
               ;; typing, or scrolling back through the transcript on an
@@ -4382,8 +4473,8 @@ any open menu first; submenu actions open the next menu in its place."
                     (let
                         ((matches (matching-slash-commands input-buffer)))
                       (unless (null? matches)
-                        (let* ((count (length matches))
-                               (cur (max 0 (min selector-index (- count 1)))))
+                        (let*
+                            ((count (length matches)) (cur (max 0 (min selector-index (- count 1)))))
                           (set! selector-index
                                 (if (<= cur 0)
                                   (- count 1)
@@ -4406,8 +4497,8 @@ any open menu first; submenu actions open the next menu in its place."
                     (let
                         ((matches (matching-slash-commands input-buffer)))
                       (unless (null? matches)
-                        (let* ((count (length matches))
-                               (cur (max 0 (min selector-index (- count 1)))))
+                        (let*
+                            ((count (length matches)) (cur (max 0 (min selector-index (- count 1)))))
                           (set! selector-index (remainder (+ cur 1) count))))))
                   ((or (> (string-length input-buffer) 0) (history-recall-position input-history))
                     (let*
@@ -4455,7 +4546,8 @@ any open menu first; submenu actions open the next menu in its place."
               ;; Ctrl+Down: advance the message selection to the next
               ;; card (no-op without selection; code resolved at startup)
               ((eqv? ch ctrl-down-key)
-                (when (and (integer? msgsel-index) (pair? messages))
+                (when
+                    (and (integer? msgsel-index) (pair? messages))
                   (set! msgsel-index (min (- (length messages) 1) (+ msgsel-index 1))))
                 (loop))
               ;; Left Arrow: move editing cursor left
@@ -4475,7 +4567,9 @@ any open menu first; submenu actions open the next menu in its place."
               ;; no message is selected (pre-existing binding)
               ((eqv? ch 5)
                 (if
-                    (and (integer? msgsel-index) (pair? messages) (< msgsel-index (length messages)))
+                    (and (integer? msgsel-index)
+                         (pair? messages)
+                         (< msgsel-index (length messages)))
                   (toggle-selected-collapse!)
                   (set! cursor-pos (string-length input-buffer)))
                 (loop))

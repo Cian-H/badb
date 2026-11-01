@@ -7,24 +7,37 @@
 ;;; is the content hash over every file except manifest.scm, so identical
 ;;; content yields the same bundle hash wherever it lives.
 
-(define-module (badb geis bundle)
-  #:use-module (badb kernel digest)
-  #:use-module (ice-9 ftw)
-  #:use-module (ice-9 format)
-  #:use-module (ice-9 textual-ports)
-  #:use-module (srfi srfi-1)
-  #:use-module (badb kernel geis-gate)
-  #:export (geis-bundle-search-path
-            find-geis-bundle
-            read-geis-manifest
-            manifest-field
-            geis-manifest-valid?
-            geis-bundle-files
-            compute-geis-sha256-pins
-            geis-bundle-hash
-            resolve-geis-load-path
-            geis-bundle-pack
-            geis-bundle-install))
+(define-module (badb geis bundle) #:use-module
+               (badb kernel digest)
+               #:use-module
+               (ice-9 ftw)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 textual-ports)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (badb runtimes synthesis)
+               #:use-module
+               (json)
+               #:use-module
+               (badb kernel geis-gate)
+               #:export
+               (geis-bundle-search-path find-geis-bundle
+                                        read-geis-manifest
+                                        manifest-field
+                                        geis-manifest-valid?
+                                        geis-bundle-files
+                                        compute-geis-sha256-pins
+                                        geis-bundle-hash
+                                        resolve-geis-load-path
+                                        geis-bundle-pack
+                                        geis-bundle-install
+                                        geis-capture-pending-prompt!
+                                        geis-take-pending-prompt
+                                        geis-bundle-assemble!
+                                        geis-bundle-replay))
 
 (define (%string-split-char s delim)
   "Split S on single-character DELIM into a list of substrings."
@@ -487,3 +500,278 @@ Throw 'geis-bundle-error when validation fails."
               (cons 'locked locked-fids)
               (cons 'verify-verdict (assoc-ref verdict 'verdict))
               (cons 'verify-reason (assoc-ref verdict 'reason)))))))
+(define (%list-dir d)
+        " scandir without the dot entries; empty list on error."
+        (or
+          (catch #t
+            (lambda ()
+              (scandir d
+                       (lambda (n)
+                         (not (member n '("." ".."))))))
+            (lambda _
+              #f))
+          '()))
+
+(define (%copy-into! src dst)
+        "Copy file SRC to DST creating parent dirs; #f when SRC is #f or missing."
+        (if (and src (file-exists? src))
+          (begin (%mkdir-p (dirname dst)) (copy-file src dst) #t)
+          #f))
+
+(define (%manifest-with manifest key value)
+        "Return MANIFEST with KEY bound to VALUE (replacing any prior binding)."
+        (append
+          (remove
+            (lambda (pair)
+              (eq? (car pair) key))
+            manifest)
+          (list (cons key value))))
+
+(define
+  (geis-capture-pending-prompt! request rendered)
+  "Capture a /geis add request and its rendered prompt into the gate's
+pending store (<gate-root>/geis-pending.json) for the bundle assembly
+step to pick up.  Defensive: returns #f instead of raising when the
+store cannot be written."
+  (catch #t
+    (lambda ()
+      (%mkdir-p (geis-gate-root))
+      (let
+          ((path (string-append (geis-gate-root) "/geis-pending.json")))
+        (call-with-output-file path
+                               (lambda (port)
+                                 (display
+                                   (scm->json-string
+                                     (list (cons 'request request)
+                                           (cons 'rendered rendered)
+                                           (cons 'timestamp (number->string (get-internal-real-time)))))
+                                   port)))
+        #t))
+    (lambda _
+      #f)))
+
+(define (geis-take-pending-prompt)
+        "Read and consume the pending /geis add prompt store.  Returns an alist
+with request and rendered fields, or #f when absent."
+        (let
+            ((path (string-append (geis-gate-root) "/geis-pending.json")))
+          (if (file-exists? path)
+            (let
+                ((pending
+                   (catch #t
+                     (lambda ()
+                       (call-with-input-file path
+                                             (lambda (port)
+                                               (json-string->scm (get-string-all port)))))
+                     (lambda _
+                       #f))))
+              (catch #t
+                (lambda ()
+                  (delete-file path))
+                (lambda _
+                  #f))
+              (and (pair? pending)
+                   (list
+                     (cons 'request (assoc-ref pending "request"))
+                     (cons 'rendered (assoc-ref pending "rendered")))))
+            #f)))
+
+(define*
+  (geis-bundle-assemble! feature-id
+                         #:key
+                         (workflow-path #f)
+                         (cassette-path #f)
+                         (request #f)
+                         (rendered-prompt #f)
+                         (synthesis-prompt #f)
+                         (target-path #f)
+                         (bundle-dir #f))
+  "Assemble provenance artifacts into the bundle for FEATURE-ID: copy the
+locked spec (when the bundle has no spec yet), the synthesis workflow,
+the captured prompts (request, rendered /geis add prompt, synthesis
+invocation record) and the cassette; then refresh the manifest (fields,
+provenance, sha256 pins) and validate it.  Returns the manifest alist;
+throws 'geis-bundle-error on validation failure."
+  (let*
+      ((fid (%fid->string feature-id))
+       (dir (or bundle-dir (string-append (car (geis-bundle-search-path)) "/" fid))))
+    (%mkdir-p dir)
+    (unless
+        (file-exists? (string-append dir "/spec.geis.scm"))
+      (let ((locked (locked-spec-path fid)))
+        (when (file-exists? locked)
+          (%copy-into! locked (string-append dir "/spec.geis.scm")))))
+    (let*
+        ((wf-captured? (%copy-into! workflow-path (string-append dir "/workflow.sema")))
+         (cass-name (and cassette-path (basename cassette-path)))
+         (cass-captured?
+           (and cass-name
+                (%copy-into! cassette-path (string-append dir "/cassettes/" cass-name))))
+         (prompts-dir (string-append dir "/prompts")))
+      (%mkdir-p prompts-dir)
+      (when request
+        (call-with-output-file
+          (string-append prompts-dir "/request.md")
+          (lambda (port)
+            (display request port))))
+      (when rendered-prompt
+        (call-with-output-file
+          (string-append prompts-dir "/geis-add.md")
+          (lambda (port)
+            (display rendered-prompt port))))
+      (when synthesis-prompt
+        (call-with-output-file
+          (string-append prompts-dir "/synthesis.md")
+          (lambda (port)
+            (display synthesis-prompt port))))
+      (let*
+          ((manifest-path (string-append dir "/manifest.scm"))
+           (base
+             (or (read-geis-manifest manifest-path)
+                 (list (cons 'bundle-version 1)
+                       (cons 'feature-id fid)
+                       (cons 'version "1.0.0")
+                       (cons 'spec "spec.geis.scm"))))
+           (m1
+             (if wf-captured?
+               (%manifest-with base 'workflow "workflow.sema")
+               base))
+           (m2
+             (if cass-captured?
+               (%manifest-with m1 'cassettes "cassettes")
+               m1))
+           (prompt-files
+             (filter
+               (lambda (p)
+                 (file-exists? (string-append dir "/" p)))
+               (list "prompts/request.md" "prompts/geis-add.md" "prompts/synthesis.md")))
+           (m3
+             (if (pair? prompt-files)
+               (%manifest-with m2 'prompts prompt-files)
+               m2))
+           (old-prov (or (manifest-field m3 'provenance) '()))
+           (prov1
+             (append
+               (remove
+                 (lambda (p)
+                   (eq? (car p) 'origin))
+                 old-prov)
+               (list (cons 'origin "agent-synthesized"))))
+           (prov2
+             (if target-path
+               (append
+                 (remove
+                   (lambda (p)
+                     (eq? (car p) 'target-path))
+                   prov1)
+                 (list (cons 'target-path target-path)))
+               prov1))
+           (prov3
+             (if cass-captured?
+               (append
+                 (remove
+                   (lambda (p)
+                     (eq? (car p) 'cassette))
+                   prov2)
+                 (list (cons 'cassette (string-append "cassettes/" cass-name))))
+               prov2))
+           (m4 (%manifest-with m3 'provenance prov3))
+           (m5 (%manifest-with m4 'sha256 (compute-geis-sha256-pins dir))))
+        (call-with-output-file manifest-path
+                               (lambda (port)
+                                 (write m5 port)
+                                 (newline port)))
+        (let ((errors (geis-manifest-valid? dir)))
+          (unless (null? errors)
+            (throw 'geis-bundle-error
+                   (format #f "assembled manifest invalid: ~a" (string-join errors "; ")))))
+        m5))))
+
+(define*
+  (geis-bundle-replay feature-id #:key (timeout 120) (target-path #f))
+  "Replay the synthesis workflow for FEATURE-ID in cassette mode against
+its locked contract, with the replay target taken from provenance's
+target-path or the bundle's plugin.scm, and compare the re-synthesized
+content against the pinned plugin.  Returns a report alist:
+((feature-id ...) (workflow-verdict ...) (plugin-match ...) (pinned-hash ...)
+ (replayed-hash ...)).  Note: the recorded synthesis target file is
+modified by the replay (cassette mode re-runs the edits)."
+  (let*
+      ((fid (%fid->string feature-id)) (dir (find-geis-bundle fid)))
+    (if (not dir)
+      (throw 'geis-bundle-error
+             (format #f "bundle not found for feature-id '~a'" fid))
+      (let*
+          ((manifest (read-geis-manifest (string-append dir "/manifest.scm")))
+           (wf (manifest-field manifest 'workflow))
+           (cass-dir (manifest-field manifest 'cassettes))
+           (prov (manifest-field manifest 'provenance))
+           (recorded-target (and (list? prov) (manifest-field prov 'target-path))))
+        (if (not (and (string? wf) (string? cass-dir)))
+          (list (cons 'feature-id fid)
+                (cons 'workflow-verdict "fail")
+                (cons 'plugin-match "n/a")
+                (cons 'pinned-hash #f)
+                (cons 'replayed-hash #f)
+                (cons 'reason "bundle records no workflow or cassettes"))
+          (let*
+              ((cass-files (%list-dir (string-append dir "/" cass-dir)))
+               (cassette
+                 (and (pair? cass-files) (string-append dir "/" cass-dir "/" (car cass-files))))
+               (spec-path (string-append dir "/spec.geis.scm"))
+               (plugin-path (string-append dir "/plugin.scm"))
+               (has-plugin? (file-exists? plugin-path))
+               (target
+                 (or target-path
+                     recorded-target
+                     (and has-plugin?
+                          (let ((tmp (mkdtemp "/tmp/badb-replay-XXXXXX")))
+                            (let ((dst (string-append tmp "/plugin.scm")))
+                              (%copy-into! plugin-path dst)
+                              dst)))))
+               (run-dir (mkdtemp "/tmp/badb-replay-run-XXXXXX")))
+            (if (not (and cassette target))
+              (list (cons 'feature-id fid)
+                    (cons 'workflow-verdict "fail")
+                    (cons 'plugin-match "n/a")
+                    (cons 'pinned-hash #f)
+                    (cons 'replayed-hash #f)
+                    (cons 'reason
+                          (if cassette
+                            "no synthesis target recorded"
+                            "no cassette recorded")))
+              (let*
+                  ((res
+                     (run-synthesis-workflow fid
+                                             #:spec-path
+                                             spec-path
+                                             #:target-path
+                                             target
+                                             #:workflow-path
+                                             (string-append dir "/" wf)
+                                             #:cassette
+                                             cassette
+                                             #:cassette-mode
+                                             "replay"
+                                             #:run-dir
+                                             run-dir))
+                   (wf-result (assoc-ref res 'result))
+                   (verdict
+                     (or
+                       (and (list? wf-result) (assoc-ref wf-result "verdict"))
+                       (assoc-ref res 'status)))
+                   (replayed-hash (sha256-hex (%read-file-string target)))
+                   (pinned-hash
+                     (if has-plugin?
+                       (sha256-hex (%read-file-string plugin-path))
+                       #f))
+                   (match
+                     (cond
+                       ((not has-plugin?) "n/a (kernel-referenced bundle)")
+                       ((string= replayed-hash pinned-hash) #t)
+                       (else #f))))
+                (list (cons 'feature-id fid)
+                      (cons 'workflow-verdict verdict)
+                      (cons 'plugin-match match)
+                      (cons 'pinned-hash pinned-hash)
+                      (cons 'replayed-hash replayed-hash))))))))))
