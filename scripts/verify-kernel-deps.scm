@@ -21,7 +21,7 @@
       "src/badb/kernel"))
 
 (define forbidden-subsystems
-  '(providers runtimes capabilities surfaces policies))
+  '(providers runtimes capabilities surfaces policies geis))
 
 (define legacy-userspace-modules
   '(model react synthesis filetree-mcp history-tools cli nc tui guardrail
@@ -109,6 +109,37 @@
             (loop (read-line port) (+ line-num 1))))))
     violations))
 
+(define (geis-import-feature-id mod)
+  "For an import (geis <fid> ...), return <fid> as a string; else #f."
+  (and (list? mod)
+       (>= (length mod) 2)
+       (eq? (car mod) 'geis)
+       (symbol->string (cadr mod))))
+
+(define (check-builtin-geis filepath)
+  "Kernel modules may only import (geis ...) modules that ship as builtin
+bundles under ./geis/<fid>/ in the repo - never user-installed ones."
+  (let ((violations '()))
+    (catch #t
+      (lambda ()
+        (call-with-input-file filepath
+          (lambda (port)
+            (let loop ((form (read port)))
+              (unless (eof-object? form)
+                (for-each
+                 (lambda (imp)
+                   (let ((fid (geis-import-feature-id imp)))
+                     (when (and fid (not (file-exists?
+                                          (string-append "geis/" fid "/manifest.scm"))))
+                       (set! violations
+                             (cons (format #f "import ~s is not a builtin bundle (no geis/~a/manifest.scm)"
+                                           imp fid)
+                                   violations)))))
+                 (extract-imports-from-form form))
+                (loop (read port)))))))
+      (lambda _ #f))
+    violations))
+
 (define (run-check)
   (format #t "=== Verifying Zero User-Space Dependencies in '~a' ===~%" kernel-dir)
   (unless (file-exists? kernel-dir)
@@ -126,8 +157,13 @@
         (let* ((filepath (string-append kernel-dir "/" filename))
                (ast-violations (check-file-ast filepath))
                (regex-violations (check-file-regex filepath)))
+          (let ((geis-violations (check-builtin-geis filepath)))
+            (set! total-violations (+ total-violations (length geis-violations)))
+            (for-each (lambda (v)
+                        (format (current-error-port) "  Geis Violation: ~a in ~a~%" v filename))
+                      geis-violations))
           (format #t "Checking ~a... " filename)
-          (if (and (null? ast-violations) (null? regex-violations))
+          (if (and (null? ast-violations) (null? regex-violations) (= total-violations 0))
               (format #t "PASS (clean)~%")
               (begin
                 (format #t "FAIL!~%")

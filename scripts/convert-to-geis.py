@@ -24,11 +24,15 @@ mapping = {
     "test-srfi-253.scm": "foundation-srfi-253"
 }
 
-os.makedirs("test/specs", exist_ok=True)
+# Emits the geis bundle layout: geis/<feature-id>/spec.geis.scm.
+# The manifest.scm (and any fixtures/cassettes/workflow) is authored
+# separately; scripts/verify-geasa.sh discovers both this layout and the
+# legacy flat test/specs/*.geis.scm layout.
 
 for src_file, feature_id in mapping.items():
     src_path = os.path.join("test", src_file)
-    dst_path = os.path.join("test", "specs", f"{feature_id}.geis.scm")
+    os.makedirs(os.path.join("geis", feature_id), exist_ok=True)
+    dst_path = os.path.join("geis", feature_id, "spec.geis.scm")
     with open(src_path, "r", encoding="utf-8") as f:
         content = f.read()
 

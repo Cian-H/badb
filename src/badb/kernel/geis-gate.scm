@@ -72,32 +72,35 @@
             #f)))
 
 (define (%delete-tree! path)
-        "Best-effort recursive delete of the file or directory tree at PATH."
-        (let
-            ((entries
-               (catch #t
-                 (lambda ()
-                   (scandir path
-                            (lambda (n)
-                              (not (member n '("." ".."))))))
-                 (lambda _
-                   #f))))
-          (if (not entries)
+        "Best-effort recursive delete of the tree at PATH; unlocks permissions
+first so previously locked (read-only) trees can be removed."
+        (if (%file-is-dir? path)
+          (begin
+            (catch 'system-error
+              (lambda ()
+                (chmod path #o755))
+              (lambda _
+                #f))
+            (for-each
+              (lambda (e)
+                (%delete-tree! (string-append path "/" e)))
+              (%list-dir path))
+            (catch 'system-error
+              (lambda ()
+                (rmdir path))
+              (lambda _
+                #f)))
+          (begin
+            (catch 'system-error
+              (lambda ()
+                (chmod path #o644))
+              (lambda _
+                #f))
             (catch 'system-error
               (lambda ()
                 (delete-file path))
               (lambda _
-                #f))
-            (begin
-              (for-each
-                (lambda (e)
-                  (%delete-tree! (string-append path "/" e)))
-                (or entries '()))
-              (catch 'system-error
-                (lambda ()
-                  (rmdir path))
-                (lambda _
-                  #f))))))
+                #f)))))
 
 (define (%list-dir d)
         " scandir without the dot entries, empty list on error."
@@ -141,18 +144,7 @@ the gate store read-only and return the bundle content hash."
                  (canonicalize-path r)))
              (target (locked-geis-bundle-path feature-id))
              (files (%collect-bundle-files bundle-dir)))
-          (when (file-exists? target)
-            (let make-writable!
-              ((p target))
-              (when
-                  (and (> (string-length p) (string-length root)) (file-exists? p))
-                (catch 'system-error
-                  (lambda ()
-                    (chmod p #o755))
-                  (lambda _
-                    #f))
-                (make-writable! (dirname p))))
-            (%delete-tree! target))
+          (when (file-exists? target) (%delete-tree! target))
           (mkdir-p target)
           (for-each
             (lambda (pair)

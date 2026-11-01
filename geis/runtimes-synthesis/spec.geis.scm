@@ -1,4 +1,4 @@
-;;; test/test-synthesis.scm — tests for Sema synthesis workflow and badb kernel gate.
+;;; geis/runtimes-synthesis/spec.geis.scm — Sema synthesis workflow geis bundle.
 ;;;
 ;;; Roadmap Phase 3 Point 1:
 ;;; - Sema plugin-synthesis workflow: given a locked spec.scm, run a Sema workflow
@@ -23,9 +23,9 @@
 
 (define %temp-dir (mkdtemp "/tmp/badb-synthesis-test-XXXXXX"))
 (define %target-path "test/fixtures/lib/math-utils.scm")
-(define %spec-source "test/fixtures/spec-pass.scm")
+(define %spec-source (spec-bundle-ref "fixtures/spec-pass.scm"))
 (define %feature-id "math-utils-synthesized")
-(define %cassette "test/cassettes/synthesis-fixture.jsonl")
+(define %cassette (spec-bundle-ref "cassettes/synthesis-fixture.jsonl"))
 
 (define %original-target-content
   (call-with-input-file %target-path get-string-all))
