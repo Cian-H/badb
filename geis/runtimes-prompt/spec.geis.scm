@@ -56,11 +56,18 @@
 ;;;
 
 (test-group "prompt-file-tree"
-  (let ((tree (build-workspace-file-tree (getcwd) #:max-depth 2 #:max-files 30)))
-    (test-assert "file tree is string" (string? tree))
-    (test-assert "file tree contains src directory" (string-contains tree "src/"))
-    (test-assert "file tree contains branch glyphs" (string-contains tree "├── "))
-    (test-assert "file tree ignores .git directory" (not (string-contains tree ".git/")))))
+  (let* ((tmp-dir (mkdtemp "/tmp/badb-prompt-tree-XXXXXX")))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda ()
+        (mkdir (string-append tmp-dir "/src"))
+        (mkdir (string-append tmp-dir "/.git"))
+        (let ((tree (build-workspace-file-tree tmp-dir #:max-depth 2 #:max-files 30)))
+          (test-assert "file tree is string" (string? tree))
+          (test-assert "file tree contains src directory" (string-contains tree "src/"))
+          (test-assert "file tree contains branch glyphs" (string-contains tree "├── "))
+          (test-assert "file tree ignores .git directory" (not (string-contains tree ".git/")))))
+      (lambda () (system* "rm" "-rf" tmp-dir)))))
 
 ;;;
 ;;; 4. Project Rules Discovery
