@@ -5,10 +5,11 @@
 
 (define-module (test test-config)
   #:use-module (srfi srfi-1)
+  #:use-module (badb spec)
   #:use-module (srfi srfi-64)
   #:use-module (badb config))
 
-(test-begin "badb-config")
+(spec-begin "foundation-config")
 
 ;;;
 ;;; 1. Configuration Construction and Accessors
@@ -318,4 +319,5 @@
     (when (file-exists? gpath) (delete-file gpath))
     (when (file-exists? lpath) (delete-file lpath))))
 
-(test-end "badb-config")
+(spec-end)
+(spec-exit)

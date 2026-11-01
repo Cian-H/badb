@@ -57,11 +57,15 @@
                  ((equal? (car sub-args) "status")
                   (display (apply spec-tool-status (cdr sub-args))))
                  ((equal? (car sub-args) "verify")
-                  (if (null? (cdr sub-args))
-                      (begin
-                        (format (current-error-port) "Error: badb geis verify requires <feature-id>\n")
-                        (exit 1))
-                      (display (spec-tool-verify (cadr sub-args)))))
+                  (cond
+                    ((null? (cdr sub-args))
+                     (format (current-error-port) "Error: badb geis verify requires <feature-id> or --all\n")
+                     (exit 1))
+                    ((member (cadr sub-args) '("--all" "-a" "all"))
+                     (let ((status (system* "./scripts/verify-geasa.sh")))
+                       (exit (status:exit-val status))))
+                    (else
+                     (display (spec-tool-verify (cadr sub-args))))))
                  ((equal? (car sub-args) "synthesize")
                   (run-synthesis-cli (cdr sub-args)))
                  (else

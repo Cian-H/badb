@@ -13,6 +13,7 @@
 (use-modules (srfi srfi-64)
              (ice-9 ftw)
              (ice-9 format)
+             (ice-9 popen)
              (ice-9 rdelim))
 
 (define (main args)
@@ -43,7 +44,7 @@
 
     (format #t "Loaded ~a baseline test cases from manifest.~%" baseline-count)
 
-    ;; 2. Run test suite and collect results
+    ;; 2. Stage 1: Run bootstrap test files in test/
     (let* ((runner (test-runner-null))
            (current-file "")
            (executed-table (make-hash-table 2500))
@@ -76,7 +77,59 @@
 
       (set-current-module orig-module)
 
-      ;; 3. Check for missing or altered tests from baseline
+      ;; 3. Stage 2: Run Subsystem Geasa via verify-geasa.sh
+      (format #t "--- Running Subsystem Geasa via Kernel Replay ---~%")
+      (let* ((pipe (open-pipe* OPEN_READ "./scripts/verify-geasa.sh"))
+             (geis-passes 0)
+             (geis-fails 0)
+             (spec-status-table (make-hash-table 30)))
+        (let loop ((line (read-line pipe)))
+          (unless (eof-object? line)
+            (cond
+              ((string-contains line "* PASS: geis")
+               ;; Extract spec name, e.g., "  * PASS: geis policies-guardrail (summary: total=31 passed=31 failed=0)"
+               (let* ((sub (string-copy line))
+                      (m (string-contains sub "geis "))
+                      (rest (substring sub (+ m 5)))
+                      (sp (string-index rest #\space))
+                      (fid (if sp (substring rest 0 sp) rest))
+                      (spec-file (string-append "test/specs/" fid ".geis.scm"))
+                      (p-idx (string-contains rest "passed="))
+                      (p-sub (if p-idx (substring rest (+ p-idx 7)) "1"))
+                      (p-sp (string-index p-sub #\space))
+                      (p-val (or (string->number (if p-sp (substring p-sub 0 p-sp) p-sub)) 1)))
+                 (hash-set! spec-status-table spec-file 'pass)
+                 (set! geis-passes (+ geis-passes p-val))))
+              ((string-contains line "* FAIL: geis")
+               (let* ((sub (string-copy line))
+                      (m (string-contains sub "geis "))
+                      (rest (substring sub (+ m 5)))
+                      (sp (string-index rest #\space))
+                      (fid (if sp (substring rest 0 sp) rest))
+                      (spec-file (string-append "test/specs/" fid ".geis.scm")))
+                 (hash-set! spec-status-table spec-file 'fail)
+                 (set! geis-fails (+ geis-fails 1)))))
+            (loop (read-line pipe))))
+        (let* ((status (close-pipe pipe))
+               (exit-val (status:exit-val status)))
+          (when (not (zero? exit-val))
+            (set! geis-fails (+ geis-fails 1)))
+
+          ;; Map geis results to executed-table
+          (hash-for-each
+            (lambda (key val)
+              (let* ((colon (string-contains key "::"))
+                     (file (if colon (substring key 0 colon) "")))
+                (when (string-prefix? "test/specs/" file)
+                  (let ((spec-res (hash-ref spec-status-table file #f)))
+                    (when (eq? spec-res 'pass)
+                      (hash-set! executed-table key 'pass))))))
+            baseline-table)
+
+          (set! passes (+ passes geis-passes))
+          (set! fails (+ fails geis-fails))))
+
+      ;; 4. Check for missing or altered tests from baseline
       (let ((missing-tests '()))
         (hash-for-each
           (lambda (key val)
@@ -85,7 +138,7 @@
                 (set! missing-tests (cons (cons key result) missing-tests)))))
           baseline-table)
 
-        ;; 4. Check for unexpected test failures or errors
+        ;; 5. Check for unexpected test failures or errors
         (format #t "~%=== Test Verification Results ===~%")
         (format #t "  Executed Passes    : ~a~%" passes)
         (format #t "  Executed Failures  : ~a~%" fails)

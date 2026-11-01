@@ -8,10 +8,11 @@
 
 (define-module (test test-history-tools)
   #:use-module (srfi srfi-64)
+  #:use-module (badb spec)
   #:use-module (srfi srfi-1)
   #:use-module (badb capabilities history-tools))
 
-(test-begin "badb-history-tools")
+(spec-begin "capabilities-history-tools")
 
 ;;;
 ;;; 1. Deterministic fixture for summarize-turns
@@ -141,4 +142,5 @@ Topics: hello"
     (summarize-history-file "/tmp/badb-no-such-history-file.jsonl"))
   (delete-file %temp-jsonl-path))
 
-(test-end "badb-history-tools")
+(spec-end)
+(spec-exit)

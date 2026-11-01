@@ -5,6 +5,7 @@
 
 (define-module (test test-model) #:use-module
                (srfi srfi-64)
+  #:use-module (badb spec)
                #:use-module
                (json)
                #:use-module
@@ -20,7 +21,7 @@
                #:use-module
                (badb model))
 
-(test-begin "badb-model")
+(spec-begin "providers-model")
 
 ;;;
 ;;; 1. Client Record Creation and Accessors
@@ -838,4 +839,5 @@
   (test-equal "non-alist response yields #f" #f (extract-usage "not json"))
   (test-equal "raw string response yields #f" #f (extract-usage "plain text")))
 
-(test-end "badb-model")
+(spec-end)
+(spec-exit)

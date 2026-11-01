@@ -12,6 +12,7 @@
 
 (define-module (test test-spec-tools)
   #:use-module (badb kernel digest)
+  #:use-module (badb spec)
   #:use-module (badb kernel registry)
   #:use-module (badb kernel geis-gate)
   #:use-module (badb surfaces tui)
@@ -66,7 +67,7 @@
 (primitive-exit 1)
 ")
 
-(test-begin "spec-tools")
+(spec-begin "surfaces-spec-tools")
 
 ;;;
 ;;; Shared fixture workspace: a temp locked-spec root for the suite.
@@ -216,7 +217,8 @@
 ;;; so nothing leaks into .badb/specs/ or /tmp.
 ;;;
 
-(test-end "spec-tools")
+(spec-end)
+(spec-exit)
 
 (let ((cleanup
        (lambda ()

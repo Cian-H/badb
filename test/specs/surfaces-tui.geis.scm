@@ -4,6 +4,7 @@
 
 (define-module (test test-tui)
   #:use-module (srfi srfi-1)
+  #:use-module (badb spec)
   #:use-module (srfi srfi-64)
   #:use-module (badb providers common)
   #:use-module (badb providers openai)
@@ -14,7 +15,7 @@
   #:use-module (badb capabilities mcp)
   #:use-module (badb surfaces tui))
 
-(test-begin "badb-tui")
+(spec-begin "surfaces-tui")
 
 ;;;
 ;;; 1. Word Wrapping (wrap-line and wrap-text)
@@ -1851,4 +1852,5 @@
                       (registry-lookup reg "spec.status")
                       (registry-lookup reg "spec.synthesize")))))
 
-(test-end "badb-tui")
+(spec-end)
+(spec-exit)

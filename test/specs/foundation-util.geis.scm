@@ -5,9 +5,10 @@
 
 (define-module (test test-util)
   #:use-module (srfi srfi-64)
+  #:use-module (badb spec)
   #:use-module (badb util))
 
-(test-begin "badb-util")
+(spec-begin "foundation-util")
 
 ;;;
 ;;; 1. Coercion & Identifier Normalization
@@ -122,4 +123,5 @@
   (test-equal "truncate-display is an alias for truncate-string"
     "hello..." (truncate-display "hello world" 8)))
 
-(test-end "badb-util")
+(spec-end)
+(spec-exit)

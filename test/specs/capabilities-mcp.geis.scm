@@ -2,6 +2,7 @@
 
 (define-module (test test-mcp)
   #:use-module (srfi srfi-64)
+  #:use-module (badb spec)
   #:use-module (badb capabilities mcp)
   #:use-module (badb config)
   #:use-module (badb util)
@@ -9,7 +10,7 @@
   #:use-module (ice-9 rdelim)
   #:use-module (ice-9 threads))
 
-(test-begin "mcp")
+(spec-begin "capabilities-mcp")
 
 ;;;
 ;;; 1. Client Construction and Predicates
@@ -453,4 +454,5 @@
     (mcp-manager-stop-all! mgr)
     (test-assert "stop-all completed" #t)))
 
-(test-end "mcp")
+(spec-end)
+(spec-exit)

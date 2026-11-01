@@ -7,6 +7,7 @@
 
 (define-module (test test-react-stream)
   #:use-module (srfi srfi-1)
+  #:use-module (badb spec)
   #:use-module (srfi srfi-64)
   #:use-module (json)
   #:use-module (web response)
@@ -16,7 +17,7 @@
   #:use-module (badb kernel registry)
   #:use-module (badb runtimes react))
 
-(test-begin "badb-react-stream")
+(spec-begin "runtimes-react-stream")
 
 (test-group "stream-model-completion-assembly"
   (let* ((client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "s"))
@@ -128,4 +129,5 @@
         (test-equal "both the streamed and fallback requests happened" 2 call-count)))))
 
 
-(test-end "badb-react-stream")
+(spec-end)
+(spec-exit)

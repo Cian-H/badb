@@ -8,12 +8,13 @@
 
 (define-module (test test-log) #:use-module
                (srfi srfi-64)
+  #:use-module (badb spec)
                #:use-module
                (ice-9 rdelim)
                #:use-module
                (badb log))
 
-(test-begin "badb-log")
+(spec-begin "foundation-log")
 
 (test-group "log-entry-formatting"
             (test-equal "entry line format"
@@ -88,4 +89,5 @@
                                                  (lambda (port)
                                                    (string-contains (read-line port) "misc-error"))))))
 
-(test-end "badb-log")
+(spec-end)
+(spec-exit)

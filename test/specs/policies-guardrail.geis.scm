@@ -5,6 +5,7 @@
 
 (define-module (test test-guardrail)
   #:use-module (srfi srfi-64)
+  #:use-module (badb spec)
   #:use-module (srfi srfi-1)
   #:use-module (json)
   #:use-module (web response)
@@ -14,7 +15,7 @@
   #:use-module (badb kernel journal)
   #:use-module (badb policies guardrail))
 
-(test-begin "badb-guardrail")
+(spec-begin "policies-guardrail")
 
 ;;;
 ;;; 1. Levels & Ranking
@@ -163,4 +164,5 @@
       (test-equal "tool logged is write_file" "write_file" (assoc-ref entry "tool-name"))
       (test-equal "level logged is cautious" "cautious" (assoc-ref entry "level")))))
 
-(test-end "badb-guardrail")
+(spec-end)
+(spec-exit)

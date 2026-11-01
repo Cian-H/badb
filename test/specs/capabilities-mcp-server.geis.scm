@@ -7,13 +7,14 @@
 
 (define-module (test test-mcp-server)
   #:use-module (srfi srfi-1)
+  #:use-module (badb spec)
   #:use-module (srfi srfi-64)
   #:use-module (json)
   #:use-module (ice-9 format)
   #:use-module (badb capabilities mcp-server)
   #:use-module (badb capabilities filetree-mcp))
 
-(test-begin "mcp-server")
+(spec-begin "capabilities-mcp-server")
 
 ;;;
 ;;; 1. Stdio driver: request lines in, parsed JSON-RPC out.
@@ -309,6 +310,7 @@ must never be listed."
         (string-contains (response-text (response-for responses 4))
                          "first note line")))))
 
-(test-end "mcp-server")
+(spec-end)
+(spec-exit)
 
 (system* "rm" "-rf" %fixture-dir)

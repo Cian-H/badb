@@ -2,12 +2,13 @@
 
 (define-module (test test-verify)
   #:use-module (srfi srfi-64)
+  #:use-module (badb spec)
   #:use-module (srfi srfi-1)
   #:use-module (ice-9 rdelim)
   #:use-module (badb runtimes rollback)
   #:use-module (badb runtimes verify))
 
-(test-begin "badb-verify")
+(spec-begin "runtimes-verify")
 
 (define %test-ws "/tmp/badb-test-verify-ws")
 
@@ -122,4 +123,5 @@
         (string-contains (call-with-input-file target-file read-line) "updated-world"))))
   (teardown-test-env!))
 
-(test-end "badb-verify")
+(spec-end)
+(spec-exit)

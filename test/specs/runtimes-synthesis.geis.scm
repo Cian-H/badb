@@ -8,6 +8,7 @@
 
 (define-module (test test-synthesis)
   #:use-module (badb kernel digest)
+  #:use-module (badb spec)
   #:use-module (badb kernel journal)
   #:use-module (badb kernel registry)
   #:use-module (badb kernel geis-gate)
@@ -18,7 +19,7 @@
   #:use-module (json)
   #:use-module (srfi srfi-64))
 
-(test-begin "badb-synthesis")
+(spec-begin "runtimes-synthesis")
 
 (define %temp-dir (mkdtemp "/tmp/badb-synthesis-test-XXXXXX"))
 (define %target-path "test/fixtures/lib/math-utils.scm")
@@ -210,4 +211,5 @@
         (and (string? desc)
              (string-contains desc "Sema plugin synthesis workflow"))))))
 
-(test-end "badb-synthesis")
+(spec-end)
+(spec-exit)

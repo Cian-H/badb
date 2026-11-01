@@ -5,6 +5,7 @@
 
 (define-module (test test-react)
   #:use-module (srfi srfi-64)
+  #:use-module (badb spec)
   #:use-module (srfi srfi-1)
   #:use-module (json)
   #:use-module (web response)
@@ -19,7 +20,7 @@
   #:use-module (badb runtimes react)
   #:use-module (ice-9 optargs))
 
-(test-begin "badb-react")
+(spec-begin "runtimes-react")
 
 ;;;
 ;;; 1. Tool Schema Conversion
@@ -695,4 +696,5 @@
         ;; Release the spawned server process in every outcome.
         (mcp-manager-stop-all! mgr)))))
 
-(test-end "badb-react")
+(spec-end)
+(spec-exit)

@@ -2,10 +2,11 @@
 
 (define-module (test test-prompt)
   #:use-module (srfi srfi-64)
+  #:use-module (badb spec)
   #:use-module (srfi srfi-1)
   #:use-module (badb runtimes prompt))
 
-(test-begin "badb-prompt")
+(spec-begin "runtimes-prompt")
 
 ;;;
 ;;; 1. Composer Construction
@@ -144,4 +145,5 @@
       (and (string? default-prompt) (> (string-length default-prompt) 100)))
     (test-assert "default-system-prompt includes custom rule" (string-contains default-prompt "Rule 1"))))
 
-(test-end "badb-prompt")
+(spec-end)
+(spec-exit)

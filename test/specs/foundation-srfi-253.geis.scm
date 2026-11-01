@@ -10,6 +10,7 @@
 
 (define-module (test test-srfi-253)
   #:use-module (srfi srfi-64)
+  #:use-module (badb spec)
   #:use-module (ice-9 format)
   #:use-module ((rnrs exceptions) #:select (guard))
   #:use-module ((rnrs conditions) #:select (assertion-violation?
@@ -30,7 +31,7 @@
     (thunk)
     'no-error-raised))
 
-(test-begin "srfi-253")
+(spec-begin "foundation-srfi-253")
 
 ;;;
 ;;; 1. check-arg
@@ -336,4 +337,5 @@
   (test-error "second record type immutable field has no modifier" #t
     (eval '(set-point-x! (make-point 1 2) 3) (current-module))))
 
-(test-end "srfi-253")
+(spec-end)
+(spec-exit)

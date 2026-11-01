@@ -5,11 +5,12 @@
 
 (define-module (test test-theme)
   #:use-module (srfi srfi-1)
+  #:use-module (badb spec)
   #:use-module (srfi srfi-64)
   #:use-module (ice-9 format)
   #:use-module (badb surfaces theme))
 
-(test-begin "badb-theme")
+(spec-begin "surfaces-theme")
 
 ;;;
 ;;; 1. Theme Record Construction
@@ -155,4 +156,5 @@
   (test-equal "default-theme restored after parameterize"
     "badb-dark" (theme-name (default-theme))))
 
-(test-end "badb-theme")
+(spec-end)
+(spec-exit)

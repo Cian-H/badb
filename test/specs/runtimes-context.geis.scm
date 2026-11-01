@@ -5,11 +5,12 @@
 
 (define-module (test test-context)
   #:use-module (srfi srfi-64)
+  #:use-module (badb spec)
   #:use-module (srfi srfi-1)
   #:use-module (badb kernel journal)
   #:use-module (badb runtimes context))
 
-(test-begin "badb-context")
+(spec-begin "runtimes-context")
 
 ;;;
 ;;; 1. Token Estimators
@@ -207,4 +208,5 @@
              (list '((role . "assistant") (content . "hi"))
                    '((role . "tool") (content . "result"))))))))
 
-(test-end "badb-context")
+(spec-end)
+(spec-exit)

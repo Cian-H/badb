@@ -2,13 +2,14 @@
 
 (define-module (test test-rollback)
   #:use-module (srfi srfi-64)
+  #:use-module (badb spec)
   #:use-module (srfi srfi-1)
   #:use-module (ice-9 rdelim)
   #:use-module (badb kernel registry)
   #:use-module (badb kernel journal)
   #:use-module (badb runtimes rollback))
 
-(test-begin "badb-rollback")
+(spec-begin "runtimes-rollback")
 
 (define %test-ws "/tmp/badb-test-rollback-ws")
 (define %test-jrn-path "/tmp/badb-test-rollback-jrn.jsonl")
@@ -185,4 +186,5 @@
         (not (file-exists? untracked-new)))))
   (teardown-test-env!))
 
-(test-end "badb-rollback")
+(spec-end)
+(spec-exit)
