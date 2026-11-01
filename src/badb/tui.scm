@@ -160,6 +160,7 @@
                         spec-tool-verify
                         spec-tool-status
                         register-spec-tools!
+                        build-geis-add-prompt
                         format-message-entry)
                #:re-export
                (jsonl-line->turn
@@ -223,6 +224,7 @@ breaking on whitespace when possible."
           ("checkpoint" . "Create a workspace and registry checkpoint")
           ("rollback" . "Revert to latest or specified checkpoint")
           ("rules" . "Inspect discovered project rules & workspace tree")
+          ("geis" . "Contract-gated dynamic harness synthesis (/geis add <desc>, list, verify, status)")
           ("context" . "View conversation token stats and metrics")
           ("usage" . "Show per-session token usage report")
           ("features" . "List kernel registered features")
@@ -1791,7 +1793,55 @@ that verdicts come only from kernel subprocess replay."
                                  ((type . "string")
                                   (description . "Optional feature identifier to check for a locked spec")))))
                               (required . #())))))
+        (registry-attach! reg
+                          "spec.synthesize"
+                          (lambda* (feature-id #:optional target-path spec-path)
+                            (catch #t
+                              (lambda ()
+                                (let* ((synth-fn (module-ref (resolve-module '(badb synthesis)) 'run-synthesis-workflow))
+                                       (res (synth-fn feature-id
+                                                      #:target-path target-path
+                                                      #:spec-path spec-path))
+                                       (status (assoc-ref res 'status))
+                                       (wf-result (assoc-ref res 'result)))
+                                  (format #f "Sema plugin synthesis ~a for feature '~a'.\n~a"
+                                          status
+                                          feature-id
+                                          (if wf-result
+                                              (scm->json-string wf-result)
+                                              (or (assoc-ref res 'stdout) "")))))
+                              (lambda (k . a)
+                                (format #f "Error during synthesis (~a): ~s" k a))))
+                          '((description .
+                             "Run the Sema plugin synthesis workflow for feature-id against its locked contract specification; iteratively synthesizes the Guile module from counterexamples and triggers kernel commit + hot-attach.")
+                            (parameters .
+                             ((type . "object")
+                              (properties .
+                               ((feature-id .
+                                 ((type . "string")
+                                  (description . "Feature identifier to synthesize")))
+                                (target-path .
+                                 ((type . "string")
+                                  (description . "Optional path to target Guile module implementation file")))
+                                (spec-path .
+                                 ((type . "string")
+                                  (description . "Optional path to contract specification file")))))
+                              (required . #("feature-id"))))))
         reg)
+
+(define (build-geis-add-prompt desc)
+  "Construct a structured prompt instructing the agent to author a contract
+specification, lock it via spec.lock, synthesize it via spec.synthesize, and
+verify hot-attachment."
+  (format #f
+"Please implement and dynamically attach a new feature to the badb harness: ~a
+
+Follow the contract-gated dynamic synthesis workflow:
+1. Design and write a declarative contract specification in Scheme (SRFI-64) defining the feature requirements, exported procedures, invariants, and test cases. Save this to a file under 'specs/' (e.g. 'specs/<feature-id>.spec.scm').
+2. Lock the specification into the kernel-owned spec store using the 'spec.lock' tool with feature-id and spec-path. (Locking makes the contract binding; the kernel re-reads the locked copy at commit time).
+3. Synthesize the Guile module implementation using the 'spec.synthesize' tool for your feature-id (which iteratively runs the Sema plugin-synthesis workflow with counterexample feedback until all contracts pass, then commits and hot-attaches the module).
+4. Verify the newly attached feature is listed in the kernel registry (e.g. via 'spec.status' or kernel inspection) and summarize what capabilities were attached."
+          desc))
 
 ;;;
 ;;; TUI Kernel Tool Registration, Menu Builders & Subcommand Formatters
@@ -2347,6 +2397,7 @@ a manual entry item."
                  "  /checkpoint [DSC] Create a rollback checkpoint snapshot\n"
                  "  /rollback [ID]    Revert to latest or specified checkpoint\n"
                  "  /rules            View discovered project rules & workspace tree\n"
+                 "  /geis [CMD]       Contract-gated dynamic synthesis (/geis add <desc>, list, verify, status)\n"
                  "  /context          View conversation token metrics\n"
                  "  /usage            Show per-session token usage report\n"
                  "  /steer [TEXT]     Queue steering text for the running or next agent run\n"
@@ -3937,6 +3988,77 @@ any open menu first; submenu actions open the next menu in its place."
                   (add-sys-msg! (format #f "Conversation dumped to ~a" path)))
                 (lambda (key . args)
                   (add-err-msg! (format #f "Dump failed (~a): ~s" key args))))))
+    ;; Handle geis command (contract gate and dynamic feature synthesis)
+    (define (handle-geis-cmd! arg)
+      (let* ((trimmed (string-trim-both arg))
+             (space-pos (string-index trimmed #\space))
+             (sub (if space-pos (substring trimmed 0 space-pos) trimmed))
+             (rest-arg (if space-pos (string-trim-both (substring trimmed (+ space-pos 1))) "")))
+        (cond
+          ((or (string-null? trimmed) (string=? sub "help"))
+           (add-sys-msg!
+             (string-append
+               "Geis (Contract Gate & Dynamic Synthesis):\n"
+               "  /geis add <description>            - Prompt agent to draft spec, lock contract, synthesize module, and hot-attach\n"
+               "  /geis list                         - List all locked feature contracts (geasa)\n"
+               "  /geis status [feature-id]          - Check status/hash of locked contract(s)\n"
+               "  /geis verify <feature-id>          - Replay locked contract in a disposable kernel subprocess\n"
+               "  /geis synthesize <feature-id> ...  - Run Sema plugin synthesis for locked feature\n\n"
+               "Example:\n"
+               "  /geis add retrieval for the numpy docs\n")))
+          ((string=? sub "add")
+           (if (string-null? rest-arg)
+             (add-sys-msg! "Usage: /geis add <feature description>\nExample: /geis add retrieval for the numpy docs")
+             (let ((user-line (format #f "/geis add ~a" rest-arg)))
+               (record-history! user-line 'chat)
+               (add-user-msg! user-line)
+               (set! status-text "SYNTHESIZING...")
+               (render!)
+               (catch #t
+                 (lambda ()
+                   (execute-chat-stream! (build-geis-add-prompt rest-arg))
+                   (beep))
+                 (lambda (key . args)
+                   (add-err-msg! (format #f "Geis synthesis error (~a): ~s" key args))
+                   (set! status-text "READY")
+                   (render!))))))
+          ((string=? sub "list")
+           (add-sys-msg! (spec-tool-status)))
+          ((string=? sub "status")
+           (add-sys-msg! (apply spec-tool-status (if (string-null? rest-arg) '() (list rest-arg)))))
+          ((string=? sub "verify")
+           (if (string-null? rest-arg)
+             (add-sys-msg! "Usage: /geis verify <feature-id>")
+             (add-sys-msg! (spec-tool-verify rest-arg))))
+          ((string=? sub "synthesize")
+           (if (string-null? rest-arg)
+             (add-sys-msg! "Usage: /geis synthesize <feature-id> [target-path] [spec-path]")
+             (let* ((parts (string-split rest-arg #\space))
+                    (parts (filter (lambda (s) (not (string-null? s))) parts))
+                    (fid (car parts))
+                    (target-p (and (pair? (cdr parts)) (cadr parts)))
+                    (spec-p (and (pair? (cdr parts)) (pair? (cddr parts)) (caddr parts))))
+               (set! status-text "SYNTHESIZING...")
+               (render!)
+               (catch #t
+                 (lambda ()
+                   (let* ((synth-fn (module-ref (resolve-module '(badb synthesis)) 'run-synthesis-workflow))
+                          (res (synth-fn fid #:target-path target-p #:spec-path spec-p))
+                          (status (assoc-ref res 'status))
+                          (wf-result (assoc-ref res 'result)))
+                     (if (eq? status 'passed)
+                       (add-sys-msg! (format #f "Geis synthesis passed for '~a'!\n~a"
+                                             fid
+                                             (if wf-result (scm->json-string wf-result) (or (assoc-ref res 'stdout) ""))))
+                       (add-err-msg! (format #f "Geis synthesis ~a for '~a'.\n~a\n~a"
+                                             status fid
+                                             (or (assoc-ref res 'error) "")
+                                             (or (assoc-ref res 'stderr) ""))))))
+                 (lambda (k . a)
+                   (add-err-msg! (format #f "Geis synthesis error (~a): ~s" k a))))
+               (set! status-text "READY"))))
+          (else
+           (add-err-msg! (format #f "Unknown /geis subcommand '~a'. Type /geis help for available commands." sub))))))
     (define (handle-command! cmd-pair)
             (let ((cmd (car cmd-pair)) (arg (cdr cmd-pair)))
               (cond
@@ -3948,6 +4070,7 @@ any open menu first; submenu actions open the next menu in its place."
                 ((string=? cmd "checkpoint") (handle-checkpoint-cmd! arg))
                 ((string=? cmd "rollback") (handle-rollback-cmd! arg))
                 ((string=? cmd "rules") (handle-rules-cmd! arg))
+                ((string=? cmd "geis") (handle-geis-cmd! arg))
                 ((string=? cmd "context") (handle-context-cmd! arg))
                 ((string=? cmd "usage") (handle-usage-cmd!))
                 ((string=? cmd "models") (handle-models-cmd!))
@@ -4149,7 +4272,7 @@ any open menu first; submenu actions open the next menu in its place."
                           ;; Commands that still need a typed argument get
                           ;; prefilled; model/endpoint/config now open their
                           ;; interactive menus via the no-argument flow.
-                          ((member chosen '("provider" "sh" "eval" "steer"))
+                          ((member chosen '("provider" "sh" "eval" "steer" "geis"))
                             (set! input-buffer (string-append "/" chosen " "))
                             (set! cursor-pos (string-length input-buffer))
                             (set! selector-index 0)

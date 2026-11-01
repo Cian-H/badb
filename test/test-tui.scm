@@ -287,6 +287,9 @@
             (test-assert "slash commands list contains rules"
                          (assoc "rules" %slash-commands))
             (test-assert
+              "slash commands list contains geis"
+              (assoc "geis" %slash-commands))
+            (test-assert
               "slash commands list contains context"
               (assoc "context" %slash-commands))
             (test-assert
@@ -313,6 +316,9 @@
             (let
                 ((exact-matches (matching-slash-commands "/jour")))
               (test-equal "matches journal command" '("journal") (map car exact-matches)))
+            (let
+                ((geis-matches (matching-slash-commands "/geis")))
+              (test-equal "matches geis command" '("geis") (map car geis-matches)))
             (let
                 ((no-matches (matching-slash-commands "/xyznonexistent")))
               (test-assert "empty list for non-matching query" (null? no-matches))))
@@ -1803,5 +1809,28 @@
           (row-cache-prune! c '())
           (test-assert "prune with empty transcript evicts everything"
                        (not (eq? before-prune (row-cache-rows c m1 40)))))))))
+
+;;;
+;;; Geis Slash Command & Dynamic Synthesis Prompt
+;;;
+(test-group "tui-geis-slash-command"
+  (test-assert "slash commands list contains geis"
+               (assoc "geis" %slash-commands))
+  (test-assert "matching-slash-commands finds geis"
+               (member "geis" (map car (matching-slash-commands "/geis"))))
+  (test-assert "build-geis-add-prompt embeds description and contract-first instructions"
+               (let ((prompt (build-geis-add-prompt "retrieval for the numpy docs")))
+                 (and (string-contains prompt "retrieval for the numpy docs")
+                      (string-contains prompt "spec.lock")
+                      (string-contains prompt "spec.synthesize")
+                      (string-contains prompt "contract-gated dynamic synthesis workflow")
+                      (string-contains prompt "SRFI-64"))))
+  (test-assert "spec.synthesize is registered in spec tools"
+               (let ((reg (make-registry)))
+                 (register-spec-tools! reg)
+                 (and (registry-lookup reg "spec.lock")
+                      (registry-lookup reg "spec.verify")
+                      (registry-lookup reg "spec.status")
+                      (registry-lookup reg "spec.synthesize")))))
 
 (test-end "badb-tui")
