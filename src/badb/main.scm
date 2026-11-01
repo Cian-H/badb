@@ -51,7 +51,7 @@
              (let ((sub-args (cdr options)))
                (cond
                  ((or (null? sub-args) (member (car sub-args) '("help" "-h" "--help")))
-                  (format #t "Usage: badb geis [status [fid]|list|verify <fid>|synthesize <fid>]\n\nInspect, verify, or synthesize contract specifications (geasa).\nTo dynamically synthesize a feature with an agent, launch the TUI and run:\n  /geis add <feature description>\n"))
+                  (format #t "Usage: badb geis [status [fid]|list|verify <fid>|synthesize <fid>|pack <fid>|install <dir>]\n\nInspect, verify, or synthesize contract specifications (geasa).\npack builds a shareable tarball of a bundle from BADB_GEIS_PATH; install locks\na bundle (and its geis dependencies) into the kernel gate and verifies it.\nTo dynamically synthesize a feature with an agent, launch the TUI and run:\n  /geis add <feature description>\n"))
                  ((equal? (car sub-args) "list")
                   (display (spec-tool-status)))
                  ((equal? (car sub-args) "status")
@@ -68,6 +68,24 @@
                      (display (spec-tool-verify (cadr sub-args))))))
                  ((equal? (car sub-args) "synthesize")
                   (run-synthesis-cli (cdr sub-args)))
+                 ((and (equal? (car sub-args) "pack") (not (null? (cdr sub-args))))
+                  (let ((res ((module-ref (resolve-interface '(badb geis bundle)) 'geis-bundle-pack) (cadr sub-args))))
+                    (format #t "packed: ~a (bundle-sha256 ~a)~%"
+                            (assoc-ref res 'tarball) (assoc-ref res 'bundle-sha256))))
+                 ((equal? (car sub-args) "pack")
+                  (format (current-error-port) "Error: badb geis pack requires <feature-id>\n")
+                  (exit 1))
+                 ((and (equal? (car sub-args) "install") (not (null? (cdr sub-args))))
+                  (let* ((install (module-ref (resolve-interface '(badb geis bundle)) 'geis-bundle-install))
+                         (report (install (cadr sub-args))))
+                    (format #t "installed: ~a (bundle-sha256 ~a)\nlocked: ~a\nverify: ~a\n"
+                            (assoc-ref report 'feature-id)
+                            (assoc-ref report 'bundle-sha256)
+                            (assoc-ref report 'locked)
+                            (assoc-ref report 'verify-verdict))))
+                 ((equal? (car sub-args) "install")
+                  (format (current-error-port) "Error: badb geis install requires <bundle-dir>\n")
+                  (exit 1))
                  (else
                   (format (current-error-port) "Unknown geis subcommand: ~a\n" (car sub-args))
                   (exit 1)))))

@@ -108,6 +108,8 @@
             spec-failure-count
             spec-seed
             spec-seed-string
+            spec-bundle-path
+            spec-bundle-ref
             spec-check-module-exports
             spec-run-property
             spec-parse-falsified-output
@@ -122,6 +124,7 @@
 (define %spec-suite-name #f)
 (define %spec-seed-value #f)
 (define %spec-failures #f)
+(define %spec-file-path #f)
 
 (define (spec-seed)
   "Return the numeric quickcheck seed installed by spec-begin."
@@ -142,6 +145,19 @@ the first spec-end)."
 (define (spec-suite-active?)
   "Return #t between a spec-begin and its spec-end."
   (and %spec-runner #t))
+
+(define (spec-bundle-path)
+  "Return the directory containing the spec file currently being
+executed (i.e. the file that called spec-begin), or (getcwd) if
+that cannot be determined."
+  (if (and %spec-file-path (string? %spec-file-path) (not (string-null? %spec-file-path)))
+      (dirname %spec-file-path)
+      (getcwd)))
+
+(define (spec-bundle-ref rel-path)
+  "Return REL-PATH resolved against (spec-bundle-path).  Returns the
+joined path string; it does NOT require the target to exist."
+  (string-append (spec-bundle-path) "/" rel-path))
 
 ;;;
 ;;; Quickcheck falsification output parsing
@@ -448,12 +464,11 @@ a non-negative exact integer, else the fixed default 42."
         n
         42)))
 
-(define (spec-begin suite-name)
-  "Open spec suite SUITE-NAME: seed quickcheck deterministically
-($BADB_SPEC_SEED or the default 42), install the structured runner,
-and begin the srfi-64 group.  Raises when a suite is already active."
+(define (%spec-begin suite-name filename)
+  "Internal procedure: open spec suite SUITE-NAME with FILENAME."
   (when (spec-suite-active?)
     (error "spec-begin called with a suite already active" suite-name))
+  (set! %spec-file-path filename)
   (set! %spec-seed-value (%spec-resolve-seed))
   (configure-quickcheck (seed %spec-seed-value))
   (set! %spec-suite-name suite-name)
@@ -462,6 +477,17 @@ and begin the srfi-64 group.  Raises when a suite is already active."
     (set! %spec-runner runner)
     (test-runner-current runner)
     (test-begin suite-name)))
+
+;;
+;; Open spec suite SUITE-NAME: seed quickcheck deterministically
+;; ($BADB_SPEC_SEED or the default 42), install the structured runner,
+;; and begin the srfi-64 group.  Raises when a suite is already active.
+;; Captures (current-filename) at the call site to determine the spec
+;; file's directory for spec-bundle-path.
+(define-syntax spec-begin
+  (syntax-rules ()
+    ((_ suite-name)
+     (%spec-begin suite-name (current-filename)))))
 
 (define (spec-end)
   "Close the active spec suite: end the srfi-64 group, emit the JSON
@@ -487,6 +513,7 @@ stdout, restore the previous runner, and return the failure count."
                     (seed . ,(spec-seed-string))
                     (failures . ,(list->vector records))))))
       (set! %spec-failures failed)
+      (set! %spec-file-path #f)
       (set! %spec-runner #f)
       (set! %spec-suite-name #f)
       (test-runner-current %spec-saved-runner)
