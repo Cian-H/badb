@@ -20,6 +20,8 @@
                detect-model-decision
                build-model-menu-items
                selector-active?
+               %selector-max-visible
+               selector-visible-slice
                %menu-max-visible
                make-menu
                menu?

@@ -322,7 +322,24 @@
               (test-equal "matches geis command" '("geis") (map car geis-matches)))
             (let
                 ((no-matches (matching-slash-commands "/xyznonexistent")))
-              (test-assert "empty list for non-matching query" (null? no-matches))))
+              (test-assert "empty list for non-matching query"
+                (and (null? no-matches)
+                     ;; verify selector-visible-slice bounds indices within the box
+                     (call-with-values (lambda () (selector-visible-slice %slash-commands 7 0))
+                       (lambda (vis offset sel-pos above below)
+                         (and (= (length vis) 7) (= offset 0) (= sel-pos 0) (= above 0) (> below 0))))
+                     (call-with-values (lambda () (selector-visible-slice %slash-commands 7 6))
+                       (lambda (vis offset sel-pos above below)
+                         (and (= (length vis) 7) (= offset 0) (= sel-pos 6) (= above 0) (> below 0))))
+                     (call-with-values (lambda () (selector-visible-slice %slash-commands 7 7))
+                       (lambda (vis offset sel-pos above below)
+                         (and (= (length vis) 7) (= offset 1) (= sel-pos 6) (= above 1))))
+                     (call-with-values (lambda () (selector-visible-slice %slash-commands 7 999))
+                       (lambda (vis offset sel-pos above below)
+                         (and (= (length vis) 7)
+                              (= offset (- (length %slash-commands) 7))
+                              (= sel-pos 6)
+                              (= below 0))))))))
 
 ;;;
 ;;; 8. Morphing Single-Character Prompt Indicators (get-prompt-indicator)

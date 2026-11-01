@@ -62,6 +62,8 @@
                         detect-model-decision
                         build-model-menu-items
                         selector-active?
+                        %selector-max-visible
+                        selector-visible-slice
                         %menu-max-visible
                         make-menu
                         menu?
@@ -232,6 +234,27 @@ breaking on whitespace when possible."
         (filter (lambda (item)
                   (string-contains (string-downcase (car item)) clean-q))
                 %slash-commands))))
+
+(define %selector-max-visible 7)
+
+(define* (selector-visible-slice matches #:optional (max-visible %selector-max-visible) (sel-index 0))
+  "Return (values visible-items offset sel-pos above-count below-count):
+the window of at most MAX-VISIBLE items of MATCHES positioned so SEL-INDEX
+stays visible inside the slice. Returns offset, relative sel-pos within the slice,
+and above/below scroll counts."
+  (let* ((items (if (list? matches) matches '()))
+         (count (length items))
+         (cap (max 1 (or max-visible %selector-max-visible)))
+         (sel (min (max 0 sel-index) (max 0 (- count 1)))))
+    (if (<= count cap)
+        (values items 0 sel 0 0)
+        (let* ((start (min (max 0 (- (+ sel 1) cap)) (- count cap)))
+               (vis-items (take (drop items start) cap))
+               (offset start)
+               (sel-pos (- sel offset))
+               (above-count offset)
+               (below-count (- count offset cap)))
+          (values vis-items offset sel-pos above-count below-count)))))
 
 (define (parse-command input)
   "Parse user INPUT into (command . arg-string) or #f if not a slash command."
@@ -3177,26 +3200,30 @@ and append it to the persistent history journal file."
                   (when (selector-active? input-buffer)
                     (let*
                         ((matches (matching-slash-commands input-buffer))
-                         (box-w (min 62 (max 20 (- maxx 4))))
-                         (vis-count (min (length matches) 7)))
-                      (when (> vis-count 0)
-                        (let*
-                            ((box-h (+ vis-count 2))
-                             (start-y (- prompt-top 1 box-h))
-                             (rows
-                               (map
-                                 (lambda (item)
-                                   (cons (format #f "/~a" (car item)) (cdr item)))
-                                 (take matches vis-count))))
-                          (when (>= start-y 2)
-                            (draw-popup! "commands" rows selector-index box-w start-y 2 0 0)
-                            ;; Mouse hit map: palette rows are items;
-                            ;; clicking one selects it.
-                            (let li
-                              ((i 0))
-                              (when (< i vis-count)
-                                (hashq-set! %click-targets (+ start-y 1 i) (cons 'palette-item i))
-                                (li (+ i 1)))))))))
+                         (box-w (min 62 (max 20 (- maxx 4)))))
+                      (unless (null? matches)
+                        (call-with-values
+                          (lambda ()
+                            (selector-visible-slice matches (min %selector-max-visible (max 1 (- maxy 5))) selector-index))
+                          (lambda (vis-items offset sel-pos above-count below-count)
+                            (let*
+                                ((vis-count (length vis-items))
+                                 (box-h (+ vis-count 2))
+                                 (start-y (- prompt-top 1 box-h))
+                                 (rows
+                                   (map
+                                     (lambda (item)
+                                       (cons (format #f "/~a" (car item)) (cdr item)))
+                                     vis-items)))
+                              (when (>= start-y 2)
+                                (draw-popup! "commands" rows sel-pos box-w start-y 2 above-count below-count)
+                                ;; Mouse hit map: palette rows are items;
+                                ;; clicking one selects it.
+                                (let li
+                                  ((i 0))
+                                  (when (< i vis-count)
+                                    (hashq-set! %click-targets (+ start-y 1 i) (cons 'palette-item (+ offset i)))
+                                    (li (+ i 1)))))))))))
                   ;; 6. Floating Menu Popup Overlay (same visual language as
                   ;; the slash selector: accent rounded box, bold selected
                   ;; row, capped visible rows with scroll indicators)
@@ -4200,11 +4227,11 @@ any open menu first; submenu actions open the next menu in its place."
                     (set! selector-index
                           (if (null? matches)
                             0
-                            (min selector-index (- (length matches) 1)))))))
+                            (max 0 (min selector-index (- (length matches) 1))))))))
         (define (selected-command-name matches)
                 (and (pair? matches)
                      (let
-                         ((safe-idx (min selector-index (max 0 (- (length matches) 1)))))
+                         ((safe-idx (max 0 (min selector-index (- (length matches) 1)))))
                        (car (list-ref matches safe-idx)))))
         (let loop
           ()
@@ -4355,10 +4382,12 @@ any open menu first; submenu actions open the next menu in its place."
                     (let
                         ((matches (matching-slash-commands input-buffer)))
                       (unless (null? matches)
-                        (set! selector-index
-                              (if (<= selector-index 0)
-                                (- (length matches) 1)
-                                (- selector-index 1))))))
+                        (let* ((count (length matches))
+                               (cur (max 0 (min selector-index (- count 1)))))
+                          (set! selector-index
+                                (if (<= cur 0)
+                                  (- count 1)
+                                  (- cur 1)))))))
                   ((or (> (string-length input-buffer) 0) (history-recall-position input-history))
                     (unless (history-recall-position input-history)
                       (set! history-draft input-buffer)
@@ -4377,7 +4406,9 @@ any open menu first; submenu actions open the next menu in its place."
                     (let
                         ((matches (matching-slash-commands input-buffer)))
                       (unless (null? matches)
-                        (set! selector-index (remainder (+ selector-index 1) (length matches))))))
+                        (let* ((count (length matches))
+                               (cur (max 0 (min selector-index (- count 1)))))
+                          (set! selector-index (remainder (+ cur 1) count))))))
                   ((or (> (string-length input-buffer) 0) (history-recall-position input-history))
                     (let*
                         ((was-recalling? (history-recall-position input-history))
