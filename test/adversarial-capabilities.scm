@@ -1,9 +1,9 @@
 ;;; test/adversarial-capabilities.scm — Empirical Challenger Stress Harness for Capabilities Subsystem
 ;;;
 ;;; Adversarially challenge and stress-test:
-;;; 1. JSON-RPC Protocol Framing & Transport Resilience ((badb kernel ipc) & (badb capabilities mcp-server))
+;;; 1. JSON-RPC Protocol Framing & Transport Resilience ((badb kernel ipc) & (geasa capabilities-mcp-server plugin))
 ;;; 2. Filetree MCP Security, Limits & Traversal ((badb capabilities filetree-mcp))
-;;; 3. History Tools Summarization & Context Compactor Integration ((badb capabilities history-tools))
+;;; 3. History Tools Summarization & Context Compactor Integration ((geasa capabilities-history-tools plugin))
 ;;; 4. Backwards Compatibility Facade Parity & Record Descriptors
 
 (use-modules (srfi srfi-64)
@@ -16,16 +16,16 @@
              (json)
              ;; Canonical Capability Subsystem modules
              (badb kernel ipc)
-             (badb capabilities mcp)
-             (badb capabilities mcp-server)
+             (geasa capabilities-mcp plugin)
+             (geasa capabilities-mcp-server plugin)
              (badb capabilities filetree-mcp)
-             (badb capabilities history-tools)
-             (badb runtimes context)
+             (geasa capabilities-history-tools plugin)
+             (geasa runtimes-context plugin)
              ;; Backwards-compatibility Facades
-             (badb mcp)
-             (badb mcp-server)
+             (geasa capabilities-mcp plugin)
+             (geasa capabilities-mcp-server plugin)
              (badb filetree-mcp)
-             (badb history-tools))
+             (geasa capabilities-history-tools plugin))
 
 (define (non-blank-lines str)
   (filter (lambda (s) (not (string-null? (string-trim-both s))))
@@ -550,8 +550,8 @@
                    (and (= (length c-exp) (length l-exp))
                         (every (lambda (s) (memq s l-exp)) c-exp))))))
       (and (parity-check '(badb capabilities filetree-mcp) '(badb filetree-mcp))
-           (parity-check '(badb capabilities history-tools) '(badb history-tools))
-           (parity-check '(badb capabilities mcp-server) '(badb mcp-server))
-           (parity-check '(badb capabilities mcp) '(badb mcp))))))
+           (parity-check '(geasa capabilities-history-tools plugin) '(geasa capabilities-history-tools plugin))
+           (parity-check '(geasa capabilities-mcp-server plugin) '(geasa capabilities-mcp-server plugin))
+           (parity-check '(geasa capabilities-mcp plugin) '(geasa capabilities-mcp plugin))))))
 
 (test-end "adversarial-capabilities")

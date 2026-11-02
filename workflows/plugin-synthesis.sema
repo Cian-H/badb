@@ -182,7 +182,7 @@ Process:
 
   (if spec-passed?
       ;; Trigger kernel commit and hot-attach through the kernel gate
-      (let* ((commit-cmd (format "guile --no-auto-compile -L src -L . -c '(use-modules (badb synthesis)) (commit-synthesized-module-cli ~s ~s)'"
+      (let* ((commit-cmd (format "guile --no-auto-compile -L src -L . -c '(use-modules (geasa runtimes-synthesis plugin)) (commit-synthesized-module-cli ~s ~s)'"
                                  feature-id target-path))
              (commit-res (shell commit-cmd))
              (commit-json (extract-last-line (or (:stdout commit-res) "")))

@@ -18,7 +18,7 @@
                #:use-module
                (srfi srfi-1)
                #:use-module
-               (badb runtimes synthesis)
+               (geasa runtimes-synthesis plugin)
                #:use-module
                (json)
                #:use-module
@@ -100,10 +100,10 @@
 ;;;
 (define (geis-bundle-search-path)
   "Return the bundle search roots: BADB_GEIS_PATH split on colons, or
-'(\"geis\") when unset or empty."
+'(\"src/geasa\") when unset or empty."
   (let ((path (getenv "BADB_GEIS_PATH")))
     (if (or (not path) (string-null? path))
-        '("geis")
+        '("src/geasa")
         (%string-split-char path #\:))))
 
 (define (%fid->string fid)

@@ -3,7 +3,7 @@
 #
 # Two layouts are discovered:
 #   legacy flat:  test/specs/<fid>.geis.scm      -> locked into .badb/specs/<fid>.scm
-#   bundle:       geis/<fid>/spec.geis.scm       -> locked into <gate>/geis/<fid>/
+#   bundle:       src/geasa/<fid>/spec.geis.scm       -> locked into <gate>/src/geasa/<fid>/
 # Both are replayed in a disposable kernel subprocess and must emit the
 # gate's JSON diagnostics contract with verdict "pass".
 set -e
@@ -24,8 +24,8 @@ for spec in test/specs/*.geis.scm; do
 " >/dev/null 2>&1
 done
 
-# 1b. Lock all geis bundles from geis/*/spec.geis.scm into <gate>/geis/<fid>/
-for bundle in geis/*/spec.geis.scm; do
+# 1b. Lock all geis bundles from src/geasa/*/spec.geis.scm into <gate>/src/geasa/<fid>/
+for bundle in src/geasa/*/spec.geis.scm; do
   [ -f "$bundle" ] || continue
   bdir=$(dirname "$bundle")
   fid=$(basename "$bdir")
@@ -73,7 +73,7 @@ ls test/specs/*.geis.scm 2>/dev/null | sed -e 's|test/specs/||' -e 's|\.geis\.sc
 
 # Bundles verify through the locked-bundle gate (with the locked bundle
 # itself on the subprocess load path)
-ls -d geis/*/ 2>/dev/null | sed -e 's|geis/||' -e 's|/$||' | \
+ls -d src/geasa/*/ 2>/dev/null | sed -e 's|src/geasa/||' -e 's|/$||' | \
   xargs -n 1 -P "$NUM_JOBS" bash -c '
     fid="$1"
     out=$(guile --no-auto-compile -L src -L . -c "

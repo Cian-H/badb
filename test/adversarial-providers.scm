@@ -1,9 +1,9 @@
 ;;; test/adversarial-providers.scm — Adversarial Stress Test Suite for Providers Subsystem
 ;;;
 ;;; Validates:
-;;; 1. SSE line and event parsing edge cases in (badb providers common)
-;;; 2. Provider HTTP mock dispatch and parameterization in (badb providers mock)
-;;; 3. Error code propagation, retries, and timeout handling in (badb providers openai)
+;;; 1. SSE line and event parsing edge cases in (geasa providers-model common)
+;;; 2. Provider HTTP mock dispatch and parameterization in (geasa providers-model mock)
+;;; 3. Error code propagation, retries, and timeout handling in (geasa providers-model openai)
 
 (use-modules (srfi srfi-64)
              (srfi srfi-1)
@@ -14,18 +14,18 @@
              (web response)
              (web uri)
              (json)
-             (badb providers common)
-             (badb providers mock)
-             (badb providers openai)
-             (badb providers anthropic)
-             (badb model)
-             (badb react)
-             (badb guardrail))
+             (geasa providers-model common)
+             (geasa providers-model mock)
+             (geasa providers-model openai)
+             (geasa providers-model anthropic)
+             (geasa providers-model plugin)
+             (geasa runtimes-react plugin)
+             (geasa policies-guardrail plugin))
 
 (test-begin "adversarial-providers")
 
 ;;; =========================================================================
-;;; 1. SSE LINE & EVENT PARSER STRESS TESTS ((badb providers common))
+;;; 1. SSE LINE & EVENT PARSER STRESS TESTS ((geasa providers-model common))
 ;;; =========================================================================
 (test-group "sse-parser-adversarial"
 
@@ -198,7 +198,7 @@
 )
 
 ;;; =========================================================================
-;;; 2. HTTP MOCK DISPATCH & PARAMETERIZATION ((badb providers mock))
+;;; 2. HTTP MOCK DISPATCH & PARAMETERIZATION ((geasa providers-model mock))
 ;;; =========================================================================
 (test-group "http-mock-dispatch-adversarial"
 
@@ -451,12 +451,12 @@
 )
 
 ;;; =========================================================================
-;;; 4. BACKWARDS COMPATIBILITY FACADE VERIFICATION ((badb model))
+;;; 4. BACKWARDS COMPATIBILITY FACADE VERIFICATION ((geasa providers-model plugin))
 ;;; =========================================================================
 (test-group "facade-equivalence-adversarial"
 
-  ;; Verify all 32 symbols exported by (badb model) match (badb providers *)
-  (let ((model-mod (resolve-module '(badb model)))
+  ;; Verify all 32 symbols exported by (geasa providers-model plugin) match (badb providers *)
+  (let ((model-mod (resolve-module '(geasa providers-model plugin)))
         (symbols '(
           <model-client>
           make-model-client
@@ -763,7 +763,7 @@
 )
 
 ;;; =========================================================================
-;;; 8. CONSUMER COMPATIBILITY: (badb react) AND (badb guardrail)
+;;; 8. CONSUMER COMPATIBILITY: (geasa runtimes-react plugin) AND (geasa policies-guardrail plugin)
 ;;; =========================================================================
 (test-group "consumer-compatibility-adversarial"
 

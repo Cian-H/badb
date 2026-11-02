@@ -1,0 +1,206 @@
+;;; workflows/plugin-synthesis.sema — badb Phase 3 plugin synthesis workflow.
+;;;
+;;; Given a locked contract specification (spec.scm), this workflow:
+;;; 1. Resolves AST MCP structural editing tools (from semcp) and kernel spec runner tools.
+;;; 2. Defines a synthesizer agent (defagent) bounded by llm/with-budget.
+;;; 3. Iteratively synthesizes the Guile module from structured counterexample feedback
+;;;    (failing contract names, QuickCheck seeds and input counterexamples, arity mismatches).
+;;; 4. Replays/records under llm/with-cassette for deterministic, keyless tests.
+;;; 5. Upon all contracts passing, triggers kernel transaction commit and hot-attach
+;;;    via the kernel gate (spec-gate-transaction-pins).
+;;;
+;;; Usage:
+;;;   sema workflow run workflows/plugin-synthesis.sema --args '{"feature-id":"...","spec-path":"...","target-path":"..."}'
+
+(define (extract-last-line text)
+  "Extract the last non-empty line of text."
+  (let* ((lines (filter (fn (l) (not (empty? (string/trim l))))
+                        (string/split text "\n"))))
+    (if (empty? lines)
+        ""
+        (last lines))))
+
+(define (sanitize-feature-id fid)
+  "Sanitize FID into a filename component."
+  (regex/replace-all #"[^a-zA-Z0-9_\-\.]" "_" (str fid)))
+
+(define (run-spec-subprocess spec-file)
+  "Run SPEC-FILE through guile --no-auto-compile and extract structured JSON diagnostics."
+  (let* ((cmd (format "guile --no-auto-compile -L src -L . ~a" spec-file))
+         (out (shell cmd))
+         (stdout-str (or (:stdout out) ""))
+         (stderr-str (or (:stderr out) ""))
+         (exit-code (:exit-code out))
+         (last-line (extract-last-line stdout-str))
+         (parsed (try (json/decode last-line) (catch e nil))))
+    (if (and parsed (map? parsed) (contains? parsed :verdict))
+        parsed
+        {:verdict "fail"
+         :exit-code exit-code
+         :summary {:total 1 :passed 0 :failed 1}
+         :seed ""
+         :failures [{:name "spec-subprocess-error"
+                     :kind "subprocess"
+                     :exception (if (not (empty? stderr-str)) stderr-str stdout-str)
+                     :backtrace ""}]})))
+
+(deftool read_file
+  "Read the text content of a file on disk."
+  {:path {:type :string :description "Absolute or relative file path"}}
+  (fn (path)
+    (if (file/exists? path)
+        (file/read path)
+        (format "Error: file does not exist: ~a" path))))
+
+(deftool write_file
+  "Write text content to a file on disk."
+  {:path {:type :string :description "Absolute or relative file path"}
+   :content {:type :string :description "Full text content to write"}}
+  (fn (path content)
+    (file/write path content)
+    (format "Successfully wrote ~a bytes to ~a" (count content) path)))
+
+(defworkflow plugin-synthesis
+  "Synthesize a Guile module to satisfy a locked contract specification."
+  {:phases ["Setup" "Synthesis" "Commit"]}
+
+  (phase "Setup")
+  (def raw-args (try *workflow-args* (catch e {})))
+  (def env-args (try (json/decode (or (env "BADB_SYNTHESIS_ARGS") "")) (catch e nil)))
+  (def args (if (and env-args (map? env-args) (not (empty? env-args)))
+                env-args
+                raw-args))
+
+  (def feature-id (or (:feature-id args) (:feature_id args) "synthesized-feature"))
+  (def target-path (or (:target-path args) (:target_path args) "src/synthesized_module.scm"))
+  (def spec-path (or (:spec-path args) (:spec_path args) #f))
+  (def gate-root (or (env "BADB_SPEC_GATE_ROOT") ".badb"))
+  (def default-locked-path (format "~a/specs/~a.scm" gate-root (sanitize-feature-id feature-id)))
+
+  ;; Ensure locked spec exists: if spec-path was given and locked copy is absent, lock it now
+  (def locked-spec-path
+    (cond
+      ((file/exists? default-locked-path) default-locked-path)
+      ((and spec-path (file/exists? spec-path))
+       (let* ((lock-cmd (format "guile --no-auto-compile -L src -L . -c '(use-modules (badb spec-gate)) (lock-spec ~s ~s)'"
+                                spec-path feature-id))
+              (lock-res (shell lock-cmd)))
+         (if (= 0 (:exit-code lock-res))
+             default-locked-path
+             spec-path)))
+      (spec-path spec-path)
+      (else default-locked-path)))
+
+  (checkpoint :feature-id feature-id)
+  (checkpoint :target-path target-path)
+  (checkpoint :locked-spec-path locked-spec-path)
+
+  ;; AST MCP connection (best-effort: connect to semcp if available)
+  (def ast-cmd (or (:ast-mcp-command args) (:ast_mcp_command args) "semcp"))
+  (def ast-tools
+    (try
+      (let* ((h (mcp/connect {:command ast-cmd})))
+        (mcp/tools->sema h))
+      (catch e
+        '())))
+
+  ;; Spec runner tool wired to the locked spec
+  (deftool spec_runner
+    "Run the locked contract specification against the implementation on disk and return structured pass/fail verdict and counterexample diagnostics."
+    {:target_path {:type :string :description "Optional path to implementation file" :optional #t}}
+    (fn (target_path)
+      (run-spec-subprocess locked-spec-path)))
+
+  (def tools (append ast-tools (list read_file write_file spec_runner)))
+
+  (phase "Synthesis")
+  (def model-name (or (if (contains? args :model) (:model args) #f) "qwen3.6-35b-a3b"))
+  (def budget-raw (if (and (contains? args :budget) (map? (:budget args))) (:budget args) {}))
+  (def budget-tokens (or (if (contains? budget-raw :max-tokens) (:max-tokens budget-raw) #f)
+                         (if (contains? budget-raw :max_tokens) (:max_tokens budget-raw) #f)
+                         50000))
+  (def budget-usd (or (if (contains? budget-raw :max-cost-usd) (:max-cost-usd budget-raw) #f)
+                      (if (contains? budget-raw :max_cost_usd) (:max_cost_usd budget-raw) #f)
+                      1.0))
+  (def max-turns (or (if (contains? args :max-turns) (:max-turns args) #f)
+                     (if (contains? args :max_turns) (:max_turns args) #f)
+                     10))
+  (def cassette-path (or (if (contains? args :cassette) (:cassette args) #f) (env "BADB_SYNTHESIS_CASSETTE") #f))
+  (def cassette-mode-raw (or (if (contains? args :cassette-mode) (:cassette-mode args) #f)
+                             (if (contains? args :cassette_mode) (:cassette_mode args) #f)
+                             (env "BADB_SYNTHESIS_CASSETTE_MODE")
+                             "auto"))
+  (def cassette-mode (if (= (str cassette-mode-raw) "replay") :replay
+                         (if (= (str cassette-mode-raw) "record") :record :auto)))
+
+  (defagent synthesizer
+    {:system (format "You are an expert GNU Guile Scheme software engineer.
+Your task is to synthesize the Guile module at '~a' to satisfy the contract specification at '~a' for feature '~a'.
+
+Available tools:
+- AST MCP tools and file tools: read_file, write_file, and structural editing tools if active.
+- spec_runner: runs the contract specification and returns structured verdict and counterexamples.
+
+Process:
+1. First, call 'spec_runner' to see the current contract status and counterexamples.
+2. Read the spec requirements, module export reflection requirements, and property contracts.
+3. Edit or write the Guile module implementation at '~a'.
+4. Call 'spec_runner' to verify the implementation.
+5. If contracts fail, analyze the counterexample inputs, arity mismatches, or exception messages, and refine the code.
+6. Once 'spec_runner' returns verdict 'pass' with 0 failures, conclude your answer."
+                     target-path locked-spec-path feature-id target-path)
+     :model model-name
+     :tools tools
+     :max-turns max-turns})
+
+  (def synthesis-prompt
+    (format "Please synthesize the Guile module at '~a' to satisfy the locked contract spec '~a' for feature '~a'."
+            target-path locked-spec-path feature-id))
+
+  (def synthesis-output
+    (llm/with-budget {:max-tokens budget-tokens :max-cost-usd budget-usd}
+      (fn ()
+        (if cassette-path
+            (llm/with-cassette cassette-path {:mode cassette-mode}
+              (fn ()
+                (agent/run synthesizer synthesis-prompt)))
+            (agent/run synthesizer synthesis-prompt)))))
+
+  (checkpoint :synthesis-output synthesis-output)
+
+  (phase "Commit")
+  ;; Final deterministic check of the locked spec by the workflow itself (never trust agent self-report)
+  (def final-spec-result (run-spec-subprocess locked-spec-path))
+  (def summary-map (if (and (map? final-spec-result) (contains? final-spec-result :summary) (map? (:summary final-spec-result)))
+                       (:summary final-spec-result)
+                       {}))
+  (def failed-count (if (contains? summary-map :failed) (:failed summary-map) 1))
+  (def spec-passed? (and (map? final-spec-result)
+                         (contains? final-spec-result :verdict)
+                         (= (:verdict final-spec-result) "pass")
+                         (zero? failed-count)))
+
+  (if spec-passed?
+      ;; Trigger kernel commit and hot-attach through the kernel gate
+      (let* ((commit-cmd (format "guile --no-auto-compile -L src -L . -c '(use-modules (geasa runtimes-synthesis plugin)) (commit-synthesized-module-cli ~s ~s)'"
+                                 feature-id target-path))
+             (commit-res (shell commit-cmd))
+             (commit-json (extract-last-line (or (:stdout commit-res) "")))
+             (commit-parsed (try (json/decode commit-json) (catch e nil))))
+        (if (and (= 0 (:exit-code commit-res))
+                 commit-parsed
+                 (= (or (:status commit-parsed) "") "committed"))
+            {:status :success
+             :feature-id feature-id
+             :verdict "pass"
+             :pins commit-parsed
+             :synthesis-output synthesis-output}
+            {:status :failed
+             :feature-id feature-id
+             :reason (format "Kernel commit rejected: ~a (exit ~a)"
+                             (or (:error commit-parsed) (:stderr commit-res) (:stdout commit-res))
+                             (:exit-code commit-res))}))
+      {:status :failed
+       :feature-id feature-id
+       :reason "Contract specification not satisfied after synthesis."
+       :failures (:failures final-spec-result)}))

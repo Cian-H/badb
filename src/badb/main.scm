@@ -3,14 +3,14 @@
                #:use-module
                (badb surfaces cli)
                #:autoload
-               (badb surfaces tui)
+               (geasa surfaces-tui plugin)
                (run-tui spec-tool-status spec-tool-verify)
                #:autoload
                (badb capabilities filetree-mcp)
                (run-filetree-mcp)
                #:autoload
-               (badb runtimes synthesis)
-               (run-synthesis-cli)
+               (geasa runtimes-synthesis plugin)
+               (run-synthesis-cli synthesis-assemble-hook default-workflow-path)
                #:export
                (%program-name %version main))
 
@@ -32,6 +32,25 @@
                 (cyan port "-h, --help")
                 (cyan port "-V, --version")))
 
+(define (wire-synthesis-assemble!)
+        (synthesis-assemble-hook
+          (lambda (feature-id cassette target-path)
+            (let*
+                ((bundle (resolve-interface '(badb geis bundle)))
+                 (pending ((module-ref bundle 'geis-take-pending-prompt))))
+              ((module-ref bundle 'geis-bundle-assemble!)
+               feature-id
+               #:workflow-path
+               (default-workflow-path)
+               #:cassette-path
+               cassette
+               #:request
+               (and pending (assoc-ref pending 'request))
+               #:rendered-prompt
+               (and pending (assoc-ref pending 'rendered))
+               #:target-path
+               target-path)))))
+
 (define (main args)
         (let ((options (cdr args)))
           (cond
@@ -51,7 +70,8 @@
                             "Error: test runner module (test runner) not found.\n")
                     (exit 1)))))
             ((equal? (car options) "mcp-filetree") (run-filetree-mcp))
-            ((equal? (car options) "synthesize") (run-synthesis-cli (cdr options)))
+            ((equal? (car options) "synthesize")
+              (begin (wire-synthesis-assemble!) (run-synthesis-cli (cdr options))))
             ((equal? (car options) "geis")
               (let ((sub-args (cdr options)))
                 (cond
@@ -72,7 +92,8 @@
                             ((status (system* "./scripts/verify-geasa.sh")))
                           (exit (status:exit-val status))))
                       (else (display (spec-tool-verify (cadr sub-args))))))
-                  ((equal? (car sub-args) "synthesize") (run-synthesis-cli (cdr sub-args)))
+                  ((equal? (car sub-args) "synthesize")
+                    (begin (wire-synthesis-assemble!) (run-synthesis-cli (cdr sub-args))))
                   ((and (equal? (car sub-args) "pack") (not (null? (cdr sub-args))))
                     (let
                         ((res

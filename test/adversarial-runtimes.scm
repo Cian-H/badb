@@ -1,10 +1,10 @@
 ;;; test/adversarial-runtimes.scm — Empirical Challenger Stress Harness for M3 Runtimes
 ;;;
 ;;; Validates hostile inputs, failure modes, boundary conditions, and stress limits across:
-;;; 1. (badb runtimes react) & facade (badb react)
-;;; 2. (badb runtimes context) & facade (badb context)
-;;; 3. (badb runtimes rollback) & facade (badb rollback)
-;;; 4. (badb runtimes prompt) & facade (badb prompt)
+;;; 1. (geasa runtimes-react plugin) & facade (geasa runtimes-react plugin)
+;;; 2. (geasa runtimes-context plugin) & facade (geasa runtimes-context plugin)
+;;; 3. (geasa runtimes-rollback plugin) & facade (geasa runtimes-rollback plugin)
+;;; 4. (geasa runtimes-prompt plugin) & facade (geasa runtimes-prompt plugin)
 
 (define-module (test adversarial-runtimes)
   #:use-module (srfi srfi-64)
@@ -18,25 +18,25 @@
   #:use-module (badb kernel registry)
   #:use-module (badb kernel journal)
   #:use-module (badb kernel transaction)
-  #:use-module (badb providers common)
-  #:use-module (badb providers openai)
-  #:use-module (badb providers mock)
-  #:use-module (badb runtimes react)
-  #:use-module (badb runtimes context)
-  #:use-module (badb runtimes prompt)
-  #:use-module (badb runtimes rollback)
-  #:use-module (badb policies guardrail)
+  #:use-module (geasa providers-model common)
+  #:use-module (geasa providers-model openai)
+  #:use-module (geasa providers-model mock)
+  #:use-module (geasa runtimes-react plugin)
+  #:use-module (geasa runtimes-context plugin)
+  #:use-module (geasa runtimes-prompt plugin)
+  #:use-module (geasa runtimes-rollback plugin)
+  #:use-module (geasa policies-guardrail plugin)
   ;; Compatibility facades
-  #:use-module (badb react)
-  #:use-module (badb context)
-  #:use-module (badb prompt)
-  #:use-module (badb rollback)
-  #:use-module (badb guardrail))
+  #:use-module (geasa runtimes-react plugin)
+  #:use-module (geasa runtimes-context plugin)
+  #:use-module (geasa runtimes-prompt plugin)
+  #:use-module (geasa runtimes-rollback plugin)
+  #:use-module (geasa policies-guardrail plugin))
 
 (test-begin "adversarial-runtimes")
 
 ;;; =========================================================================
-;;; 1. ADVERSARIAL REACT EXECUTION ENGINE ((badb runtimes react))
+;;; 1. ADVERSARIAL REACT EXECUTION ENGINE ((geasa runtimes-react plugin))
 ;;; =========================================================================
 (test-group "challenger-react-hostile-inputs"
 
@@ -308,7 +308,7 @@
                         (react-session-messages session))))))))))
 
 ;;; =========================================================================
-;;; 2. ADVERSARIAL CONTEXT COMPACTOR ((badb runtimes context))
+;;; 2. ADVERSARIAL CONTEXT COMPACTOR ((geasa runtimes-context plugin))
 ;;; =========================================================================
 (test-group "challenger-context-compactor"
 
@@ -421,7 +421,7 @@
            (equal? (assoc-ref (car compacted) 'role) "system")))))
 
 ;;; =========================================================================
-;;; 3. ADVERSARIAL TIME-TRAVEL ROLLBACK ((badb runtimes rollback))
+;;; 3. ADVERSARIAL TIME-TRAVEL ROLLBACK ((geasa runtimes-rollback plugin))
 ;;; =========================================================================
 (test-group "challenger-rollback-engine"
 
@@ -547,7 +547,7 @@
     (system* "rm" "-rf" ws)))
 
 ;;; =========================================================================
-;;; 4. ADVERSARIAL PROMPT COMPOSER ((badb runtimes prompt))
+;;; 4. ADVERSARIAL PROMPT COMPOSER ((geasa runtimes-prompt plugin))
 ;;; =========================================================================
 (test-group "challenger-prompt-composer"
 

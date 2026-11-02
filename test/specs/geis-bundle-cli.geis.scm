@@ -113,10 +113,10 @@
            (dir (string-append %geis-root "/cli-target")))
       (mkdir dir)
       (write-file! (string-append dir "/plugin.scm")
-        (string-append "(define-module (geis cli-target plugin)\n"
+        (string-append "(define-module (geasa cli-target plugin)\n"
                        "  #:export (answer))\n\n(define (answer) 42)\n"))
       (write-file! (string-append dir "/spec.geis.scm")
-        (string-append "(use-modules (geis cli-target plugin) (srfi srfi-64) (json))\n"
+        (string-append "(use-modules (geasa cli-target plugin) (srfi srfi-64) (json))\n"
                        "(test-begin " Q "target" Q ")\n"
                        "(test-assert " Q "answer is 42" Q " (= 42 (answer)))\n"
                        "(test-end " Q "target" Q ")\n"
@@ -128,7 +128,7 @@
               (cons 'feature-id "cli-target")
               (cons 'version "1.0.0")
               (cons 'spec "spec.geis.scm")
-              (cons 'plugin '((module . (geis cli-target plugin)) (file . "plugin.scm")))
+              (cons 'plugin '((module . (geasa cli-target plugin)) (file . "plugin.scm")))
               (cons 'depends
                 (list (cons 'geis
                         (list (cons "cli-dep"
@@ -143,18 +143,18 @@
           (and (string? (assoc-ref report 'bundle-sha256))
                (= 64 (string-length (assoc-ref report 'bundle-sha256)))))
         (test-assert "dependency locked under gate root"
-          (file-exists? (string-append %gate-root "/geis/cli-dep/spec.geis.scm")))
+          (file-exists? (string-append %gate-root "/geasa/cli-dep/spec.geis.scm")))
         (test-assert "target locked under gate root"
-          (file-exists? (string-append %gate-root "/geis/cli-target/spec.geis.scm")))
+          (file-exists? (string-append %gate-root "/geasa/cli-target/spec.geis.scm")))
         (test-assert "locked plugin is read-only"
           (let ((perms (stat:perms
-                        (stat (string-append %gate-root "/geis/cli-target/plugin.scm")))))
+                        (stat (string-append %gate-root "/geasa/cli-target/plugin.scm")))))
             (= #o444 (logand perms #o777))))
         (test-equal "install verifies the locked target: verdict pass"
           "pass" (assoc-ref report 'verify-verdict))
         ;; tamper the WORKING TREE plugin; the locked copy must still verify
         (write-file! (string-append dir "/plugin.scm")
-          (string-append "(define-module (geis cli-target plugin)\n"
+          (string-append "(define-module (geasa cli-target plugin)\n"
                          "  #:export (answer))\n\n(define (answer) 43)\n"))
         (test-equal "locked copy used, not working tree"
           "pass"

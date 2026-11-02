@@ -14,7 +14,7 @@
   #:use-module (badb kernel registry)
   #:use-module (badb kernel geis-gate)
   #:use-module (badb kernel transaction)
-  #:use-module (badb util)
+  #:use-module (geasa foundation-util plugin)
   #:use-module (ice-9 textual-ports)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-64))

@@ -2,8 +2,8 @@
 ;;;
 ;;; Validates hostile inputs, failure modes, boundary conditions, and stress limits across:
 ;;; 1. Root launcher & CLI parsing: scripts/badb, (badb main), (badb surfaces cli), (badb cli)
-;;; 2. Theme Subsystem: (badb surfaces theme) & (badb theme)
-;;; 3. TUI State & Engine: (badb surfaces tui), (badb tui), (badb surfaces nc), (badb nc)
+;;; 2. Theme Subsystem: (geasa surfaces-theme plugin) & (geasa surfaces-theme plugin)
+;;; 3. TUI State & Engine: (geasa surfaces-tui plugin), (geasa surfaces-tui plugin), (geasa surfaces-tui nc), (geasa surfaces-tui nc)
 
 (define-module (test adversarial-surfaces)
   #:use-module (srfi srfi-64)
@@ -14,14 +14,14 @@
   #:use-module (ice-9 popen)
   #:use-module (ice-9 optargs)
   #:use-module (badb main)
-  #:use-module (badb config)
+  #:use-module (geasa foundation-config plugin)
   #:use-module (badb surfaces cli)
-  #:use-module (badb surfaces theme)
-  #:use-module (badb surfaces tui)
+  #:use-module (geasa surfaces-theme plugin)
+  #:use-module (geasa surfaces-tui plugin)
   ;; Backward compatibility facades
-  #:use-module (badb cli)
-  #:use-module (badb theme)
-  #:use-module (badb tui))
+  #:use-module (badb surfaces cli)
+  #:use-module (geasa surfaces-theme plugin)
+  #:use-module (geasa surfaces-tui plugin))
 
 (test-begin "adversarial-surfaces")
 
@@ -45,204 +45,194 @@
 ;;; 1. CLI PARSING & ROOT LAUNCHER STRESS TESTING
 ;;; =========================================================================
 (test-group "challenger-cli-launcher"
-
-  ;; --- 1.1 Hostile CLI flags ---
-  (test-assert "cli-rejects-unknown-long-flag"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb --unknown-adversarial-flag-12345"))
-      (lambda (status out err)
-        (and (= status 1)
-             (string-contains err "unrecognized option '--unknown-adversarial-flag-12345'")))))
-
-  (test-assert "cli-rejects-hostile-special-characters"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb '--flag;rm -rf /;echo'"))
-      (lambda (status out err)
-        (and (= status 1)
-             (string-contains err "unrecognized option '--flag;rm -rf /;echo'")))))
-
-  (test-assert "cli-rejects-empty-argument"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb ''"))
-      (lambda (status out err)
-        (and (= status 1)
-             (string-contains err "unrecognized option ''")))))
-
-  (test-assert "cli-rejects-whitespace-only-argument"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb '   '"))
-      (lambda (status out err)
-        (and (= status 1)
-             (string-contains err "unrecognized option '   '")))))
-
-  (test-assert "cli-rejects-unknown-short-flags"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb -z"))
-      (lambda (status out err)
-        (and (= status 1)
-             (string-contains err "unrecognized option '-z'")))))
-
-  ;; --- 1.2 Help and version flags ---
-  (test-assert "cli-help-flag-succeeds"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb --help"))
-      (lambda (status out err)
-        (and (= status 0)
-             (string-contains out "Usage:")
-             (string-contains out "Commands & Options:")))))
-
-  (test-assert "cli-short-help-flag-succeeds"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb -h"))
-      (lambda (status out err)
-        (and (= status 0)
-             (string-contains out "Usage:")))))
-
-  (test-assert "cli-version-flag-succeeds"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb --version"))
-      (lambda (status out err)
-        (and (= status 0)
-             (string-contains out "badb 0.1.0")))))
-
-  (test-assert "cli-short-version-flag-succeeds"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb -V"))
-      (lambda (status out err)
-        (and (= status 0)
-             (string-contains out "badb 0.1.0")))))
-
-  ;; --- 1.3 Subcommand: geis handling ---
-  (test-assert "cli-geis-bare-prints-usage-exit-0"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb geis"))
-      (lambda (status out err)
-        (and (= status 0)
-             (string-contains out "Usage: badb geis")))))
-
-  (test-assert "cli-geis-help-prints-usage-exit-0"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb geis help"))
-      (lambda (status out err)
-        (and (= status 0)
-             (string-contains out "Usage: badb geis")))))
-
-  (test-assert "cli-geis-status-exits-0"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb geis status"))
-      (lambda (status out err)
-        (and (= status 0)
-             (string-contains out "Locked spec store:")))))
-
-  (test-assert "cli-geis-status-nonexistent-feature"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb geis status non_existent_feature_abc123"))
-      (lambda (status out err)
-        (and (= status 0)
-             (string-contains out "Locked spec for feature 'non_existent_feature_abc123': none")))))
-
-  (test-assert "cli-geis-list-exits-0"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb geis list"))
-      (lambda (status out err)
-        (and (= status 0)
-             (string-contains out "Locked spec store:")))))
-
-  (test-assert "cli-geis-verify-missing-argument-fails-closed"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb geis verify"))
-      (lambda (status out err)
-        (and (= status 1)
-             (string-contains err "Error: badb geis verify requires <feature-id>")))))
-
-  (test-assert "cli-geis-verify-nonexistent-feature-fails-gracefully"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb geis verify nonexistent_feature_xyz999"))
-      (lambda (status out err)
-        ;; verify should run subprocess replay, which fails closed
-        (and (string-contains out "FAIL")))))
-
-  (test-assert "cli-geis-invalid-subcommand-fails-closed"
-    (call-with-values
-      (lambda () (run-cmd-capture "./scripts/badb geis invalid_geis_subcommand_99"))
-      (lambda (status out err)
-        (and (= status 1)
-             (string-contains err "Unknown geis subcommand: invalid_geis_subcommand_99")))))
-
-  ;; --- 1.4 Non-existent config environment resilience ---
-  (test-assert "cli-resilient-under-nonexistent-badb-config"
-    (call-with-values
-      (lambda () (run-cmd-capture "BADB_CONFIG=/non/existent/path/never/ever.conf ./scripts/badb --version"))
-      (lambda (status out err)
-        (and (= status 0)
-             (string-contains out "badb 0.1.0")))))
-
-  ;; --- 1.5 Color presentation & NO_COLOR / FORCE_COLOR conventions ---
-  (test-assert "cli-color-forced-with-force-color-1"
-    (let ((p (open-output-string)))
-      (setenv "FORCE_COLOR" "1")
-      (let ((res (supports-color? p)))
-        (unsetenv "FORCE_COLOR")
-        res)))
-
-  (test-assert "cli-color-disabled-with-force-color-0"
-    (let ((p (open-output-string)))
-      (setenv "FORCE_COLOR" "0")
-      (let ((res (supports-color? p)))
-        (unsetenv "FORCE_COLOR")
-        (not res))))
-
-  (test-assert "cli-color-disabled-with-no-color"
-    (let ((p (open-output-string)))
-      (unsetenv "FORCE_COLOR")
-      (setenv "NO_COLOR" "1")
-      (let ((res (supports-color? p)))
-        (unsetenv "NO_COLOR")
-        (not res))))
-
-  (test-assert "cli-force-color-takes-precedence-over-no-color"
-    (let ((p (open-output-string)))
-      (setenv "FORCE_COLOR" "1")
-      (setenv "NO_COLOR" "1")
-      (let ((res (supports-color? p)))
-        (unsetenv "FORCE_COLOR")
-        (unsetenv "NO_COLOR")
-        res)))
-
-  (test-assert "cli-color-string-formatting-when-disabled"
-    (let ((p (open-output-string)))
-      (setenv "NO_COLOR" "1")
-      (unsetenv "FORCE_COLOR")
-      (let ((b (bold p "test"))
-            (c (cyan p "test"))
-            (g (green p "test"))
-            (r (red p "test")))
-        (unsetenv "NO_COLOR")
-        (and (string=? b "test")
-             (string=? c "test")
-             (string=? g "test")
-             (string=? r "test")))))
-
-  (test-assert "cli-color-string-formatting-when-forced"
-    (let ((p (open-output-string)))
-      (setenv "FORCE_COLOR" "1")
-      (let ((b (bold p "test"))
-            (c (cyan p "test"))
-            (g (green p "test"))
-            (r (red p "test")))
-        (unsetenv "FORCE_COLOR")
-        (and (string-contains b "\x1b[1m")
-             (string-contains c "\x1b[36m")
-             (string-contains g "\x1b[32m")
-             (string-contains r "\x1b[31m")))))
-
-  ;; --- 1.6 Facade compatibility: (badb cli) ---
-  (test-assert "cli-facade-re-exports-identical-procedures"
-    (and (eq? (@@ (badb cli) bold) (@@ (badb surfaces cli) bold))
-         (eq? (@@ (badb cli) cyan) (@@ (badb surfaces cli) cyan))
-         (eq? (@@ (badb cli) green) (@@ (badb surfaces cli) green))
-         (eq? (@@ (badb cli) red) (@@ (badb surfaces cli) red))
-         (eq? (@@ (badb cli) supports-color?) (@@ (badb surfaces cli) supports-color?))))
+            ;; --- 1.1 Hostile CLI flags ---
+            (test-assert "cli-rejects-unknown-long-flag"
+                         (call-with-values
+                           (lambda ()
+                             (run-cmd-capture "./scripts/badb --unknown-adversarial-flag-12345"))
+                           (lambda (status out err)
+                             (and (= status 1)
+                                  (string-contains err "unrecognized option '--unknown-adversarial-flag-12345'")))))
+            (test-assert
+              "cli-rejects-hostile-special-characters"
+              (call-with-values
+                (lambda ()
+                  (run-cmd-capture "./scripts/badb '--flag;rm -rf /;echo'"))
+                (lambda (status out err)
+                  (and (= status 1)
+                       (string-contains err "unrecognized option '--flag;rm -rf /;echo'")))))
+            (test-assert "cli-rejects-empty-argument"
+                         (call-with-values
+                           (lambda ()
+                             (run-cmd-capture "./scripts/badb ''"))
+                           (lambda (status out err)
+                             (and (= status 1) (string-contains err "unrecognized option ''")))))
+            (test-assert
+              "cli-rejects-whitespace-only-argument"
+              (call-with-values
+                (lambda ()
+                  (run-cmd-capture "./scripts/badb '   '"))
+                (lambda (status out err)
+                  (and (= status 1) (string-contains err "unrecognized option '   '")))))
+            (test-assert "cli-rejects-unknown-short-flags"
+                         (call-with-values
+                           (lambda ()
+                             (run-cmd-capture "./scripts/badb -z"))
+                           (lambda (status out err)
+                             (and (= status 1) (string-contains err "unrecognized option '-z'")))))
+            ;; --- 1.2 Help and version flags ---
+            (test-assert "cli-help-flag-succeeds"
+                         (call-with-values
+                           (lambda ()
+                             (run-cmd-capture "./scripts/badb --help"))
+                           (lambda (status out err)
+                             (and (= status 0)
+                                  (string-contains out "Usage:")
+                                  (string-contains out "Commands & Options:")))))
+            (test-assert "cli-short-help-flag-succeeds"
+                         (call-with-values
+                           (lambda ()
+                             (run-cmd-capture "./scripts/badb -h"))
+                           (lambda (status out err)
+                             (and (= status 0) (string-contains out "Usage:")))))
+            (test-assert "cli-version-flag-succeeds"
+                         (call-with-values
+                           (lambda ()
+                             (run-cmd-capture "./scripts/badb --version"))
+                           (lambda (status out err)
+                             (and (= status 0) (string-contains out "badb 0.1.0")))))
+            (test-assert "cli-short-version-flag-succeeds"
+                         (call-with-values
+                           (lambda ()
+                             (run-cmd-capture "./scripts/badb -V"))
+                           (lambda (status out err)
+                             (and (= status 0) (string-contains out "badb 0.1.0")))))
+            ;; --- 1.3 Subcommand: geis handling ---
+            (test-assert "cli-geis-bare-prints-usage-exit-0"
+                         (call-with-values
+                           (lambda ()
+                             (run-cmd-capture "./scripts/badb geis"))
+                           (lambda (status out err)
+                             (and (= status 0) (string-contains out "Usage: badb geis")))))
+            (test-assert "cli-geis-help-prints-usage-exit-0"
+                         (call-with-values
+                           (lambda ()
+                             (run-cmd-capture "./scripts/badb geis help"))
+                           (lambda (status out err)
+                             (and (= status 0) (string-contains out "Usage: badb geis")))))
+            (test-assert "cli-geis-status-exits-0"
+                         (call-with-values
+                           (lambda ()
+                             (run-cmd-capture "./scripts/badb geis status"))
+                           (lambda (status out err)
+                             (and (= status 0) (string-contains out "Locked spec store:")))))
+            (test-assert
+              "cli-geis-status-nonexistent-feature"
+              (call-with-values
+                (lambda ()
+                  (run-cmd-capture "./scripts/badb geis status non_existent_feature_abc123"))
+                (lambda (status out err)
+                  (and (= status 0)
+                       (string-contains out
+                                        "Locked spec for feature 'non_existent_feature_abc123': none")))))
+            (test-assert "cli-geis-list-exits-0"
+                         (call-with-values
+                           (lambda ()
+                             (run-cmd-capture "./scripts/badb geis list"))
+                           (lambda (status out err)
+                             (and (= status 0) (string-contains out "Locked spec store:")))))
+            (test-assert
+              "cli-geis-verify-missing-argument-fails-closed"
+              (call-with-values
+                (lambda ()
+                  (run-cmd-capture "./scripts/badb geis verify"))
+                (lambda (status out err)
+                  (and (= status 1)
+                       (string-contains err "Error: badb geis verify requires <feature-id>")))))
+            (test-assert
+              "cli-geis-verify-nonexistent-feature-fails-gracefully"
+              (call-with-values
+                (lambda ()
+                  (run-cmd-capture "./scripts/badb geis verify nonexistent_feature_xyz999"))
+                (lambda (status out err)
+                  ;; verify should run subprocess replay, which fails closed
+                  (and (string-contains out "FAIL")))))
+            (test-assert
+              "cli-geis-invalid-subcommand-fails-closed"
+              (call-with-values
+                (lambda ()
+                  (run-cmd-capture "./scripts/badb geis invalid_geis_subcommand_99"))
+                (lambda (status out err)
+                  (and (= status 1)
+                       (string-contains err "Unknown geis subcommand: invalid_geis_subcommand_99")))))
+            ;; --- 1.4 Non-existent config environment resilience ---
+            (test-assert
+              "cli-resilient-under-nonexistent-badb-config"
+              (call-with-values
+                (lambda ()
+                  (run-cmd-capture
+                    "BADB_CONFIG=/non/existent/path/never/ever.conf ./scripts/badb --version"))
+                (lambda (status out err)
+                  (and (= status 0) (string-contains out "badb 0.1.0")))))
+            ;; --- 1.5 Color presentation & NO_COLOR / FORCE_COLOR conventions ---
+            (test-assert
+              "cli-color-forced-with-force-color-1"
+              (let ((p (open-output-string)))
+                (setenv "FORCE_COLOR" "1")
+                (let ((res (supports-color? p)))
+                  (unsetenv "FORCE_COLOR")
+                  res)))
+            (test-assert
+              "cli-color-disabled-with-force-color-0"
+              (let ((p (open-output-string)))
+                (setenv "FORCE_COLOR" "0")
+                (let ((res (supports-color? p)))
+                  (unsetenv "FORCE_COLOR")
+                  (not res))))
+            (test-assert "cli-color-disabled-with-no-color"
+                         (let ((p (open-output-string)))
+                           (unsetenv "FORCE_COLOR")
+                           (setenv "NO_COLOR" "1")
+                           (let ((res (supports-color? p)))
+                             (unsetenv "NO_COLOR")
+                             (not res))))
+            (test-assert
+              "cli-force-color-takes-precedence-over-no-color"
+              (let ((p (open-output-string)))
+                (setenv "FORCE_COLOR" "1")
+                (setenv "NO_COLOR" "1")
+                (let ((res (supports-color? p)))
+                  (unsetenv "FORCE_COLOR")
+                  (unsetenv "NO_COLOR")
+                  res)))
+            (test-assert
+              "cli-color-string-formatting-when-disabled"
+              (let ((p (open-output-string)))
+                (setenv "NO_COLOR" "1")
+                (unsetenv "FORCE_COLOR")
+                (let
+                    ((b (bold p "test")) (c (cyan p "test"))
+                     (g (green p "test"))
+                     (r (red p "test")))
+                  (unsetenv "NO_COLOR")
+                  (and (string=? b "test")
+                       (string=? c "test")
+                       (string=? g "test")
+                       (string=? r "test")))))
+            (test-assert
+              "cli-color-string-formatting-when-forced"
+              (let ((p (open-output-string)))
+                (setenv "FORCE_COLOR" "1")
+                (let
+                    ((b (bold p "test")) (c (cyan p "test"))
+                     (g (green p "test"))
+                     (r (red p "test")))
+                  (unsetenv "FORCE_COLOR")
+                  (and (string-contains b "\x1b[1m")
+                       (string-contains c "\x1b[36m")
+                       (string-contains g "\x1b[32m")
+                       (string-contains r "\x1b[31m")))))
+            ;; --- 1.6 Facade compatibility: (badb cli) ---
 )
 
 ;;; =========================================================================
@@ -363,329 +353,369 @@
          (eq? (color-symbol->ncurses-constant 'unknown-color) 'COLOR_WHITE)
          (eq? (color-symbol->ncurses-constant #f) 'COLOR_WHITE)))
 
-  ;; --- 2.5 Facade compatibility: (badb theme) ---
+  ;; --- 2.5 Facade compatibility: (geasa surfaces-theme plugin) ---
   (test-assert "theme-facade-re-exports-identical-procedures-and-record"
-    (and (eq? (@@ (badb theme) make-theme) (@@ (badb surfaces theme) make-theme))
-         (eq? (@@ (badb theme) theme?) (@@ (badb surfaces theme) theme?))
-         (eq? (@@ (badb theme) theme-name) (@@ (badb surfaces theme) theme-name))
-         (eq? (@@ (badb theme) theme-roles) (@@ (badb surfaces theme) theme-roles))
-         (eq? (@@ (badb theme) theme-ref) (@@ (badb surfaces theme) theme-ref))
-         (eq? (@@ (badb theme) all-theme-names) (@@ (badb surfaces theme) all-theme-names))
-         (eq? (@@ (badb theme) lookup-theme) (@@ (badb surfaces theme) lookup-theme))
-         (eq? (@@ (badb theme) default-theme) (@@ (badb surfaces theme) default-theme))))
+    (and (eq? (@@ (geasa surfaces-theme plugin) make-theme) (@@ (geasa surfaces-theme plugin) make-theme))
+         (eq? (@@ (geasa surfaces-theme plugin) theme?) (@@ (geasa surfaces-theme plugin) theme?))
+         (eq? (@@ (geasa surfaces-theme plugin) theme-name) (@@ (geasa surfaces-theme plugin) theme-name))
+         (eq? (@@ (geasa surfaces-theme plugin) theme-roles) (@@ (geasa surfaces-theme plugin) theme-roles))
+         (eq? (@@ (geasa surfaces-theme plugin) theme-ref) (@@ (geasa surfaces-theme plugin) theme-ref))
+         (eq? (@@ (geasa surfaces-theme plugin) all-theme-names) (@@ (geasa surfaces-theme plugin) all-theme-names))
+         (eq? (@@ (geasa surfaces-theme plugin) lookup-theme) (@@ (geasa surfaces-theme plugin) lookup-theme))
+         (eq? (@@ (geasa surfaces-theme plugin) default-theme) (@@ (geasa surfaces-theme plugin) default-theme))))
 )
 
 ;;; =========================================================================
 ;;; 3. TUI STATE, RESIZING, MENU SCROLLING & KEYBINDING STRESS TESTING
 ;;; =========================================================================
 (test-group "challenger-tui-state-stress"
-
-  ;; --- 3.1 Terminal Dimensions & Resizing Edge Cases ---
-  (test-assert "tui-format-header-segments-resilient-on-zero-or-negative-width"
-    (let ((segs-0 (format-header-segments 0 "READY" "gpt-4" 5 10 "2/2" "50%"))
-          (segs-neg (format-header-segments -10 "READY" "gpt-4" 5 10 "2/2" "50%")))
-      (and (list? segs-0)
-           (list? segs-neg))))
-
-  (test-assert "tui-format-header-segments-progressive-truncation-on-narrow-screen"
-    ;; Under width 15, right items are progressively dropped and model is truncated
-    (let ((segs (format-header-segments 15 "READY" "very-long-model-name-gpt-4o" 5 10 "2/2" "50%")))
-      (and (list? segs)
-           (not (null? segs))
-           ;; Wordmark is kept
-           (string=? (cadar segs) "badb"))))
-
-  (test-assert "tui-format-header-segments-wide-screen"
-    (let ((segs (format-header-segments 200 "READY" "gpt-4o" 12 45 "3/3" "75%")))
-      (and (list? segs)
-           (>= (length segs) 4))))
-
-  (test-assert "tui-format-rule-line-boundary-handling"
-    (and (string=? (format-rule-line 0) "")
-         (string=? (format-rule-line -5) "")
-         (= (string-length (format-rule-line 10)) 10)
-         (= (string-length (format-rule-line 80)) 80)))
-
-  (test-assert "tui-word-wrapping-boundary-handling"
-    (and (equal? (wrap-line "" 10) '(""))
-         (equal? (wrap-line "hello" 0) '("hello"))
-         (equal? (wrap-line "hello" -5) '("hello"))
-         (equal? (wrap-line #f 10) '(""))
-         (equal? (wrap-text "" 10) '(""))
-         (equal? (wrap-text "hello world test" 5) '("hello" "world" "test"))))
-
-  (test-assert "tui-input-visible-window-resilient-to-extreme-dimensions"
-    (and
-      (call-with-values
-        (lambda () (input-visible-window "hello world" -5 10))
-        (lambda (str cursor-x)
-          (and (string? str) (integer? cursor-x) (>= cursor-x 0))))
-      (call-with-values
-        (lambda () (input-visible-window "hello world" 999 1))
-        (lambda (str cursor-x)
-          (and (string? str) (= cursor-x 0))))
-      (call-with-values
-        (lambda () (input-visible-window "hello world" 5 0))
-        (lambda (str cursor-x)
-          (and (string? str) (integer? cursor-x))))))
-
-  (test-assert "tui-input-wrapped-rows-resilient-to-extreme-arguments"
-    (call-with-values
-      (lambda () (input-wrapped-rows "a b c d e f" -10 -5 -2))
-      (lambda (lines row col)
-        (and (list? lines)
-             (integer? row)
-             (integer? col)
-             (>= row 0)
-             (>= col 0)))))
-
-  ;; --- 3.2 Menu Data Model, Scrolling & Slicing ---
-  (test-assert "tui-menu-empty-menu-behavior"
-    (let ((m (make-menu "Empty" '())))
-      (and (= (menu-count m) 0)
-           (not (menu-selected-item m))
-           (eq? (menu-move m 1) m)
-           (eq? (menu-move m -1) m))))
-
-  (test-assert "tui-menu-empty-menu-visible-slice"
-    (let ((m (make-menu "Empty" '())))
-      (call-with-values
-        (lambda () (menu-visible-slice m 10))
-        (lambda (items offset)
-          (and (null? items)
-               (= offset 0))))))
-
-  (test-assert "tui-menu-single-item-wraparound"
-    (let* ((m (make-menu "Single" '((("only" . "desc") . action1))))
-           (m-fwd (menu-move m 1))
-           (m-bwd (menu-move m -1))
-           (m-big (menu-move m 100)))
-      (and (= (menu-selected-index m-fwd) 0)
-           (= (menu-selected-index m-bwd) 0)
-           (= (menu-selected-index m-big) 0))))
-
-  (test-assert "tui-menu-scrolling-wraparound-forward-and-backward"
-    (let* ((items (map (lambda (i)
+            ;; --- 3.1 Terminal Dimensions & Resizing Edge Cases ---
+            (test-assert
+              "tui-format-header-segments-resilient-on-zero-or-negative-width"
+              (let
+                  ((segs-0 (format-header-segments 0 "READY" "gpt-4" 5 10 "2/2" "50%"))
+                   (segs-neg (format-header-segments -10 "READY" "gpt-4" 5 10 "2/2" "50%")))
+                (and (list? segs-0) (list? segs-neg))))
+            (test-assert
+              "tui-format-header-segments-progressive-truncation-on-narrow-screen"
+              ;; Under width 15, right items are progressively dropped and model is truncated
+              (let
+                  ((segs
+                     (format-header-segments 15
+                                             "READY"
+                                             "very-long-model-name-gpt-4o"
+                                             5
+                                             10
+                                             "2/2"
+                                             "50%")))
+                (and (list? segs)
+                     (not (null? segs))
+                     ;; Wordmark is kept
+                     (string=? (cadar segs) "badb"))))
+            (test-assert
+              "tui-format-header-segments-wide-screen"
+              (let
+                  ((segs (format-header-segments 200 "READY" "gpt-4o" 12 45 "3/3" "75%")))
+                (and (list? segs) (>= (length segs) 4))))
+            (test-assert
+              "tui-format-rule-line-boundary-handling"
+              (and (string=? (format-rule-line 0) "")
+                   (string=? (format-rule-line -5) "")
+                   (= (string-length (format-rule-line 10)) 10)
+                   (= (string-length (format-rule-line 80)) 80)))
+            (test-assert
+              "tui-word-wrapping-boundary-handling"
+              (and (equal? (wrap-line "" 10) '(""))
+                   (equal? (wrap-line "hello" 0) '("hello"))
+                   (equal? (wrap-line "hello" -5) '("hello"))
+                   (equal? (wrap-line #f 10) '(""))
+                   (equal? (wrap-text "" 10) '(""))
+                   (equal? (wrap-text "hello world test" 5) '("hello" "world" "test"))))
+            (test-assert
+              "tui-input-visible-window-resilient-to-extreme-dimensions"
+              (and
+                (call-with-values
+                  (lambda ()
+                    (input-visible-window "hello world" -5 10))
+                  (lambda (str cursor-x)
+                    (and (string? str) (integer? cursor-x) (>= cursor-x 0))))
+                (call-with-values
+                  (lambda ()
+                    (input-visible-window "hello world" 999 1))
+                  (lambda (str cursor-x)
+                    (and (string? str) (= cursor-x 0))))
+                (call-with-values
+                  (lambda ()
+                    (input-visible-window "hello world" 5 0))
+                  (lambda (str cursor-x)
+                    (and (string? str) (integer? cursor-x))))))
+            (test-assert
+              "tui-input-wrapped-rows-resilient-to-extreme-arguments"
+              (call-with-values
+                (lambda ()
+                  (input-wrapped-rows "a b c d e f" -10 -5 -2))
+                (lambda (lines row col)
+                  (and (list? lines) (integer? row) (integer? col) (>= row 0) (>= col 0)))))
+            ;; --- 3.2 Menu Data Model, Scrolling & Slicing ---
+            (test-assert "tui-menu-empty-menu-behavior"
+                         (let ((m (make-menu "Empty" '())))
+                           (and (= (menu-count m) 0)
+                                (not (menu-selected-item m))
+                                (eq? (menu-move m 1) m)
+                                (eq? (menu-move m -1) m))))
+            (test-assert "tui-menu-empty-menu-visible-slice"
+                         (let ((m (make-menu "Empty" '())))
+                           (call-with-values
+                             (lambda ()
+                               (menu-visible-slice m 10))
+                             (lambda (items offset)
+                               (and (null? items) (= offset 0))))))
+            (test-assert "tui-menu-single-item-wraparound"
+                         (let*
+                             ((m (make-menu "Single" '((("only" . "desc") . action1))))
+                              (m-fwd (menu-move m 1))
+                              (m-bwd (menu-move m -1))
+                              (m-big (menu-move m 100)))
+                           (and (= (menu-selected-index m-fwd) 0)
+                                (= (menu-selected-index m-bwd) 0)
+                                (= (menu-selected-index m-big) 0))))
+            (test-assert
+              "tui-menu-scrolling-wraparound-forward-and-backward"
+              (let*
+                  ((items
+                     (map
+                       (lambda (i)
                          (cons (cons (format #f "Item ~a" i) "desc")
                                (string->symbol (format #f "act-~a" i))))
                        (iota 10)))
-           (m (make-menu "Ten" items #:selected-index 0))
-           (m-fwd (menu-move m 1))
-           (m-wrap-bwd (menu-move m -1))
-           (m-large-fwd (menu-move m 25))
-           (m-large-bwd (menu-move m -25)))
-      (and (= (menu-selected-index m-fwd) 1)
-           (= (menu-selected-index m-wrap-bwd) 9)
-           (= (menu-selected-index m-large-fwd) 5)
-           (= (menu-selected-index m-large-bwd) 5))))
-
-  (test-assert "tui-menu-visible-slice-windowing-and-offset"
-    (let* ((items (map (lambda (i) (cons (format #f "Item ~a" i) i)) (iota 30)))
-           ;; Menu with selected index 15 and max-visible 10
-           (m (make-menu "Thirty" items #:selected-index 15)))
-      (call-with-values
-        (lambda () (menu-visible-slice m 10))
-        (lambda (slice offset)
-          (and (= (length slice) 10)
-               (<= offset 15)
-               (< 15 (+ offset 10))
-               ;; Visible slice contains the selected item
-               (member (menu-selected-item m) slice))))))
-
-  (test-assert "tui-menu-visible-slice-with-zero-or-negative-cap"
-    (let* ((items (map (lambda (i) (cons (format #f "Item ~a" i) i)) (iota 10)))
-           (m (make-menu "Ten" items #:selected-index 4)))
-      (call-with-values
-        (lambda () (menu-visible-slice m 0))
-        (lambda (slice offset)
-          (and (= (length slice) 1)
-               (= offset 4)
-               (equal? (car slice) (menu-selected-item m)))))))
-
-  (test-assert "tui-menu-item-accessors-handle-malformed-items"
-    (and (string=? (menu-item-label "bare-string") "")
-         (string=? (menu-item-description "bare-string") "")
-         (not (menu-item-action "bare-string"))
-         (string=? (menu-item-label '()) "")
-         (string=? (menu-item-description '()) "")
-         (not (menu-item-action '()))))
-
-  ;; --- 3.3 Keybinding Events, Normalization & Steering ---
-  (test-assert "tui-key-to-code-normalization"
-    (and (eqv? (key->code #\a) 97)
-         (eqv? (key->code #\newline) 10)
-         (eqv? (key->code 27) 27)
-         (eqv? (key->code 410) 410) ; KEY_RESIZE
-         (eq? (key->code #f) #f)))
-
-  (test-assert "tui-resolve-modified-key-resolution-order"
-    ;; 1. probe succeeds
-    (and (= (resolve-modified-key "seq1" (lambda (s) 501) (lambda _ #f) 601) 501)
-         ;; 2. probe fails, bind succeeds
-         (= (resolve-modified-key "seq2" (lambda (s) #f) (lambda (s f) #t) 602) 602)
-         ;; 3. probe and bind both fail -> returns 0
-         (= (resolve-modified-key "seq3" (lambda (s) #f) (lambda (s f) #f) 603) 0)))
-
-  (test-assert "tui-steering-key-handle-adversarial-events"
-    (and
-      ;; Printable character
-      (call-with-values
-        (lambda () (steering-key-handle "hello" #\!))
-        (lambda (buf act)
-          (and (string=? buf "hello!") (eq? act 'append))))
-      ;; Enter with empty or whitespace buffer -> no submit
-      (call-with-values
-        (lambda () (steering-key-handle "   " #\newline))
-        (lambda (buf act)
-          (and (string=? buf "   ") (eq? act 'none))))
-      ;; Enter with non-empty buffer -> queue
-      (call-with-values
-        (lambda () (steering-key-handle "stop" 10))
-        (lambda (buf act)
-          (and (string=? buf "") (eq? act 'queue))))
-      ;; Interrupt (Tab / Ctrl+I / 9)
-      (call-with-values
-        (lambda () (steering-key-handle "in-progress" #\tab))
-        (lambda (buf act)
-          (and (string=? buf "") (eq? act 'interrupt))))
-      ;; Escape (27)
-      (call-with-values
-        (lambda () (steering-key-handle "abandon" 27))
-        (lambda (buf act)
-          (and (string=? buf "") (eq? act 'clear))))
-      ;; Backspace on non-empty vs empty
-      (call-with-values
-        (lambda () (steering-key-handle "abc" 127))
-        (lambda (buf act)
-          (and (string=? buf "ab") (eq? act 'backspace))))
-      (call-with-values
-        (lambda () (steering-key-handle "" 127))
-        (lambda (buf act)
-          (and (string=? buf "") (eq? act 'none))))
-      ;; Unknown curses code (e.g. KEY_UP)
-      (call-with-values
-        (lambda () (steering-key-handle "buf" 259))
-        (lambda (buf act)
-          (and (string=? buf "buf") (eq? act 'none))))))
-
-  ;; --- 3.4 Cursor Editing Robustness ---
-  (test-assert "tui-cursor-editing-out-of-bounds-resilience"
-    (and
-      ;; insert-at with negative pos
-      (call-with-values
-        (lambda () (insert-at "world" -10 "hello "))
-        (lambda (b p)
-          (and (string=? b "hello world") (= p 6))))
-      ;; insert-at with pos > length
-      (call-with-values
-        (lambda () (insert-at "hello" 999 " world"))
-        (lambda (b p)
-          (and (string=? b "hello world") (= p 11))))
-      ;; backspace-at at pos 0 or negative
-      (call-with-values
-        (lambda () (backspace-at "abc" 0))
-        (lambda (b p)
-          (and (string=? b "abc") (= p 0))))
-      (call-with-values
-        (lambda () (backspace-at "abc" -5))
-        (lambda (b p)
-          (and (string=? b "abc") (= p 0))))
-      ;; delete-at at end or beyond
-      (call-with-values
-        (lambda () (delete-at "abc" 3))
-        (lambda (b p)
-          (and (string=? b "abc") (= p 3))))
-      (call-with-values
-        (lambda () (delete-at "abc" 100))
-        (lambda (b p)
-          (and (string=? b "abc") (= p 3))))))
-
-  ;; --- 3.5 Input Classification & Malicious Payloads ---
-  (test-assert "tui-input-classifier-adversarial-cases"
-    (and (not (classify-input ""))
-         (not (classify-input "    \t  \n "))
-         (equal? (classify-input "!") '(shell . ""))
-         (equal? (classify-input ",") '(scheme . ""))
-         (equal? (classify-input "/") '(slash "" ""))
-         (equal? (classify-input "/unknown-slash-command   with  arg  ")
-                 '(slash "unknown-slash-command" "with  arg"))
-         (equal? (classify-input "!rm -rf /")
-                 '(shell . "rm -rf /"))
-         (equal? (classify-input "(display \"test\")")
-                 '(scheme . "(display \"test\")"))
-         (equal? (classify-input "hello from agent")
-                 '(chat . "hello from agent"))))
-
-  ;; --- 3.6 Thoughts and Content Separation Stream Resilience ---
-  (test-assert "tui-thoughts-separation-unclosed-streaming-tags"
-    (and
-      (call-with-values
-        (lambda () (split-thoughts-and-content "<think>pondering the problem deeply"))
-        (lambda (th ct)
-          (and (string=? th "pondering the problem deeply")
-               (string=? ct ""))))
-      (call-with-values
-        (lambda () (split-thoughts-and-content "Prefix text <think>internal reasoning</think> Suffix answer"))
-        (lambda (th ct)
-          (and (string=? th "internal reasoning")
-               (string-contains ct "Prefix text")
-               (string-contains ct "Suffix answer"))))
-      (call-with-values
-        (lambda () (split-thoughts-and-content ""))
-        (lambda (th ct)
-          (and (not th)
-               (string=? ct ""))))))
-
-  ;; --- 3.7 Facades compatibility: (badb tui) & (badb nc) ---
-  (test-assert "tui-facade-re-exports-identical-procedures"
-    (and (eq? (@@ (badb tui) make-menu) (@@ (badb surfaces tui) make-menu))
-         (eq? (@@ (badb tui) menu-move) (@@ (badb surfaces tui) menu-move))
-         (eq? (@@ (badb tui) menu-visible-slice) (@@ (badb surfaces tui) menu-visible-slice))
-         (eq? (@@ (badb tui) classify-input) (@@ (badb surfaces tui) classify-input))
-         (eq? (@@ (badb tui) steering-key-handle) (@@ (badb surfaces tui) steering-key-handle))
-         (eq? (@@ (badb tui) insert-at) (@@ (badb surfaces tui) insert-at))
-         (eq? (@@ (badb tui) backspace-at) (@@ (badb surfaces tui) backspace-at))
-         (eq? (@@ (badb tui) delete-at) (@@ (badb surfaces tui) delete-at))))
-
-  (test-assert "nc-facade-re-exports-symbols-and-constants"
-    (let* ((extract-reexports
-             (lambda (path)
-               (let ((form (call-with-input-file path read)))
-                 (let loop ((rest (cddr form)))
-                   (cond ((null? rest) '())
-                         ((eq? (car rest) #:re-export) (cadr rest))
-                         (else (loop (cddr rest))))))))
-           (extract-exports
-             (lambda (path)
-               (let ((form (call-with-input-file path read)))
-                 (let loop ((rest (cddr form)))
-                   (cond ((null? rest) '())
-                         ((eq? (car rest) #:export) (cadr rest))
-                         (else (loop (cddr rest))))))))
-           (nc-exports (extract-exports "src/badb/surfaces/nc.scm"))
-           (facade-reexports (extract-reexports "src/badb/nc.scm"))
-           (missing (lset-difference eq? nc-exports facade-reexports))
-           (extra (lset-difference eq? facade-reexports nc-exports)))
-      (and (= (length nc-exports) 52)
-           (= (length facade-reexports) 52)
-           (null? missing)
-           (null? extra)
-           (member 'KEY_RESIZE facade-reexports)
-           (member 'KEY_ENTER facade-reexports)
-           (member 'COLOR_BLACK facade-reexports)
-           (member 'getmaxy facade-reexports)
-           (member 'getmaxx facade-reexports))))
-
-  (test-assert "nc-module-fails-gracefully-with-devenv-hint-when-libnotcurses-absent"
-    (catch #t
-      (lambda ()
-        (resolve-module '(badb surfaces nc))
-        #f)
-      (lambda (key . args)
-        (let ((msg (and (pair? (cdr args)) (cadr args))))
-          (or (string-contains (format #f "~a" msg) "libnotcurses not found")
-              (string-contains (format #f "~a" msg) "devenv"))))))
-)
+                   (m (make-menu "Ten" items #:selected-index 0))
+                   (m-fwd (menu-move m 1))
+                   (m-wrap-bwd (menu-move m -1))
+                   (m-large-fwd (menu-move m 25))
+                   (m-large-bwd (menu-move m -25)))
+                (and (= (menu-selected-index m-fwd) 1)
+                     (= (menu-selected-index m-wrap-bwd) 9)
+                     (= (menu-selected-index m-large-fwd) 5)
+                     (= (menu-selected-index m-large-bwd) 5))))
+            (test-assert
+              "tui-menu-visible-slice-windowing-and-offset"
+              (let*
+                  ((items
+                     (map
+                       (lambda (i)
+                         (cons (format #f "Item ~a" i) i))
+                       (iota 30)))
+                   ;; Menu with selected index 15 and max-visible 10
+                   (m (make-menu "Thirty" items #:selected-index 15)))
+                (call-with-values
+                  (lambda ()
+                    (menu-visible-slice m 10))
+                  (lambda (slice offset)
+                    (and (= (length slice) 10)
+                         (<= offset 15)
+                         (< 15 (+ offset 10))
+                         ;; Visible slice contains the selected item
+                         (member (menu-selected-item m) slice))))))
+            (test-assert
+              "tui-menu-visible-slice-with-zero-or-negative-cap"
+              (let*
+                  ((items
+                     (map
+                       (lambda (i)
+                         (cons (format #f "Item ~a" i) i))
+                       (iota 10)))
+                   (m (make-menu "Ten" items #:selected-index 4)))
+                (call-with-values
+                  (lambda ()
+                    (menu-visible-slice m 0))
+                  (lambda (slice offset)
+                    (and (= (length slice) 1)
+                         (= offset 4)
+                         (equal? (car slice) (menu-selected-item m)))))))
+            (test-assert
+              "tui-menu-item-accessors-handle-malformed-items"
+              (and
+                (string=? (menu-item-label "bare-string") "")
+                (string=? (menu-item-description "bare-string") "")
+                (not (menu-item-action "bare-string"))
+                (string=? (menu-item-label '()) "")
+                (string=? (menu-item-description '()) "")
+                (not (menu-item-action '()))))
+            ;; --- 3.3 Keybinding Events, Normalization & Steering ---
+            (test-assert "tui-key-to-code-normalization"
+                         (and (eqv? (key->code #\a) 97)
+                              (eqv? (key->code #\newline) 10)
+                              (eqv? (key->code 27) 27)
+                              (eqv? (key->code 410) 410)
+                              ; KEY_RESIZE
+                              (eq? (key->code #f) #f)))
+            (test-assert
+              "tui-resolve-modified-key-resolution-order"
+              ;; 1. probe succeeds
+              (and
+                (=
+                  (resolve-modified-key "seq1"
+                                        (lambda (s)
+                                          501)
+                                        (lambda _
+                                          #f)
+                                        601)
+                  501)
+                ;; 2. probe fails, bind succeeds
+                (=
+                  (resolve-modified-key "seq2"
+                                        (lambda (s)
+                                          #f)
+                                        (lambda (s f)
+                                          #t)
+                                        602)
+                  602)
+                ;; 3. probe and bind both fail -> returns 0
+                (=
+                  (resolve-modified-key "seq3"
+                                        (lambda (s)
+                                          #f)
+                                        (lambda (s f)
+                                          #f)
+                                        603)
+                  0)))
+            (test-assert
+              "tui-steering-key-handle-adversarial-events"
+              (and ;; Printable character
+                (call-with-values
+                  (lambda ()
+                    (steering-key-handle "hello" #\!))
+                  (lambda (buf act)
+                    (and (string=? buf "hello!") (eq? act 'append))))
+                ;; Enter with empty or whitespace buffer -> no submit
+                (call-with-values
+                  (lambda ()
+                    (steering-key-handle "   " #\newline))
+                  (lambda (buf act)
+                    (and (string=? buf "   ") (eq? act 'none))))
+                ;; Enter with non-empty buffer -> queue
+                (call-with-values
+                  (lambda ()
+                    (steering-key-handle "stop" 10))
+                  (lambda (buf act)
+                    (and (string=? buf "") (eq? act 'queue))))
+                ;; Interrupt (Tab / Ctrl+I / 9)
+                (call-with-values
+                  (lambda ()
+                    (steering-key-handle "in-progress" #\tab))
+                  (lambda (buf act)
+                    (and (string=? buf "") (eq? act 'interrupt))))
+                ;; Escape (27)
+                (call-with-values
+                  (lambda ()
+                    (steering-key-handle "abandon" 27))
+                  (lambda (buf act)
+                    (and (string=? buf "") (eq? act 'clear))))
+                ;; Backspace on non-empty vs empty
+                (call-with-values
+                  (lambda ()
+                    (steering-key-handle "abc" 127))
+                  (lambda (buf act)
+                    (and (string=? buf "ab") (eq? act 'backspace))))
+                (call-with-values
+                  (lambda ()
+                    (steering-key-handle "" 127))
+                  (lambda (buf act)
+                    (and (string=? buf "") (eq? act 'none))))
+                ;; Unknown curses code (e.g. KEY_UP)
+                (call-with-values
+                  (lambda ()
+                    (steering-key-handle "buf" 259))
+                  (lambda (buf act)
+                    (and (string=? buf "buf") (eq? act 'none))))))
+            ;; --- 3.4 Cursor Editing Robustness ---
+            (test-assert
+              "tui-cursor-editing-out-of-bounds-resilience"
+              (and ;; insert-at with negative pos
+                (call-with-values
+                  (lambda ()
+                    (insert-at "world" -10 "hello "))
+                  (lambda (b p)
+                    (and (string=? b "hello world") (= p 6))))
+                ;; insert-at with pos > length
+                (call-with-values
+                  (lambda ()
+                    (insert-at "hello" 999 " world"))
+                  (lambda (b p)
+                    (and (string=? b "hello world") (= p 11))))
+                ;; backspace-at at pos 0 or negative
+                (call-with-values
+                  (lambda ()
+                    (backspace-at "abc" 0))
+                  (lambda (b p)
+                    (and (string=? b "abc") (= p 0))))
+                (call-with-values
+                  (lambda ()
+                    (backspace-at "abc" -5))
+                  (lambda (b p)
+                    (and (string=? b "abc") (= p 0))))
+                ;; delete-at at end or beyond
+                (call-with-values
+                  (lambda ()
+                    (delete-at "abc" 3))
+                  (lambda (b p)
+                    (and (string=? b "abc") (= p 3))))
+                (call-with-values
+                  (lambda ()
+                    (delete-at "abc" 100))
+                  (lambda (b p)
+                    (and (string=? b "abc") (= p 3))))))
+            ;; --- 3.5 Input Classification & Malicious Payloads ---
+            (test-assert
+              "tui-input-classifier-adversarial-cases"
+              (and (not (classify-input ""))
+                   (not (classify-input "    \t  \n "))
+                   (equal? (classify-input "!") '(shell . ""))
+                   (equal? (classify-input ",") '(scheme . ""))
+                   (equal? (classify-input "/") '(slash "" ""))
+                   (equal?
+                     (classify-input "/unknown-slash-command   with  arg  ")
+                     '(slash "unknown-slash-command" "with  arg"))
+                   (equal? (classify-input "!rm -rf /") '(shell . "rm -rf /"))
+                   (equal? (classify-input "(display \"test\")") '(scheme . "(display \"test\")"))
+                   (equal? (classify-input "hello from agent") '(chat . "hello from agent"))))
+            ;; --- 3.6 Thoughts and Content Separation Stream Resilience ---
+            (test-assert
+              "tui-thoughts-separation-unclosed-streaming-tags"
+              (and
+                (call-with-values
+                  (lambda ()
+                    (split-thoughts-and-content "<think>pondering the problem deeply"))
+                  (lambda (th ct)
+                    (and (string=? th "pondering the problem deeply") (string=? ct ""))))
+                (call-with-values
+                  (lambda ()
+                    (split-thoughts-and-content
+                      "Prefix text <think>internal reasoning</think> Suffix answer"))
+                  (lambda (th ct)
+                    (and (string=? th "internal reasoning")
+                         (string-contains ct "Prefix text")
+                         (string-contains ct "Suffix answer"))))
+                (call-with-values
+                  (lambda ()
+                    (split-thoughts-and-content ""))
+                  (lambda (th ct)
+                    (and (not th) (string=? ct ""))))))
+            ;; --- 3.7 Facades compatibility: (geasa surfaces-tui plugin) & (geasa surfaces-tui nc) ---
+            (test-assert
+              "tui-facade-re-exports-identical-procedures"
+              (and
+                (eq? (@@ (geasa surfaces-tui plugin) make-menu)
+                     (@@ (geasa surfaces-tui plugin) make-menu))
+                (eq? (@@ (geasa surfaces-tui plugin) menu-move)
+                     (@@ (geasa surfaces-tui plugin) menu-move))
+                (eq?
+                  (@@ (geasa surfaces-tui plugin) menu-visible-slice)
+                  (@@ (geasa surfaces-tui plugin) menu-visible-slice))
+                (eq?
+                  (@@ (geasa surfaces-tui plugin) classify-input)
+                  (@@ (geasa surfaces-tui plugin) classify-input))
+                (eq?
+                  (@@ (geasa surfaces-tui plugin) steering-key-handle)
+                  (@@ (geasa surfaces-tui plugin) steering-key-handle))
+                (eq? (@@ (geasa surfaces-tui plugin) insert-at)
+                     (@@ (geasa surfaces-tui plugin) insert-at))
+                (eq?
+                  (@@ (geasa surfaces-tui plugin) backspace-at)
+                  (@@ (geasa surfaces-tui plugin) backspace-at))
+                (eq? (@@ (geasa surfaces-tui plugin) delete-at)
+                     (@@ (geasa surfaces-tui plugin) delete-at))))
+            (test-assert
+              "nc-module-fails-gracefully-with-devenv-hint-when-libnotcurses-absent"
+              (catch #t
+                (lambda ()
+                  (resolve-module '(geasa surfaces-tui nc))
+                  #f)
+                (lambda (key . args)
+                  (let ((msg (and (pair? (cdr args)) (cadr args))))
+                    (or
+                      (string-contains (format #f "~a" msg) "libnotcurses not found")
+                      (string-contains (format #f "~a" msg) "devenv")))))))
 
 ;;; =========================================================================
 ;;; 4. SCHEME EVAL & SHELL EXECUTION ADVERSARIAL STRESS TESTING

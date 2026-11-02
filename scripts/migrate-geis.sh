@@ -3,7 +3,7 @@
 #
 # usage: scripts/migrate-geis.sh <feature-id>
 #
-# Creates geis/<feature-id>/ with the spec moved via git mv and a validated
+# Creates src/geasa/<feature-id>/ with the spec moved via git mv and a validated
 # manifest.scm (bundle-version 1, sha256-pinned files, guile-module imports
 # extracted from the spec's define-module).  Idempotence guard: refuses when
 # the bundle already exists.
@@ -18,18 +18,18 @@ if [ ! -f "test/specs/$FID.geis.scm" ]; then
   echo "no such flat spec: test/specs/$FID.geis.scm" >&2
   exit 1
 fi
-if [ -d "geis/$FID" ]; then
-  echo "bundle already exists: geis/$FID" >&2
+if [ -d "src/geasa/$FID" ]; then
+  echo "bundle already exists: src/geasa/$FID" >&2
   exit 1
 fi
 
-mkdir -p "geis/$FID"
-git mv "test/specs/$FID.geis.scm" "geis/$FID/spec.geis.scm"
+mkdir -p "src/geasa/$FID"
+git mv "test/specs/$FID.geis.scm" "src/geasa/$FID/spec.geis.scm"
 
 guile --no-auto-compile -L src -L . -c '
 (use-modules (badb geis bundle) (ice-9 format))
 (define fid (cadr (program-arguments)))
-(define dir (string-append "geis/" fid))
+(define dir (string-append "src/geasa/" fid))
 (define imports
   (call-with-input-file (string-append dir "/spec.geis.scm")
     (lambda (p)

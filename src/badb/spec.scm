@@ -118,7 +118,6 @@
 ;;;
 ;;; Suite state (sequential: one active suite per process / test)
 ;;;
-
 (define %spec-runner #f)
 (define %spec-saved-runner #f)
 (define %spec-suite-name #f)
@@ -454,7 +453,6 @@ bump the runner's fail count so the verdict stays honest."
 ;;;
 ;;; Suite entry points
 ;;;
-
 (define (%spec-resolve-seed)
   "Return the quickcheck seed to install: $BADB_SPEC_SEED when it is
 a non-negative exact integer, else the fixed default 42."
@@ -464,19 +462,29 @@ a non-negative exact integer, else the fixed default 42."
         n
         42)))
 
+(define (%spec-source-filename)
+        "Fallback filename for a spec executed as a script: (current-filename) returns #f when the spec file lives under a directory on the module load path (e.g. bundle specs under src/ run with -L src), and the macro-side (current-filename) already captured the call-site value; this covers that #f case via the script entry from (command-line)."
+        (let
+            ((script (and (pair? (command-line)) (car (command-line)))))
+          (and (string? script)
+               (>= (string-length script) 4)
+               (string= ".scm" (substring script (- (string-length script) 4)))
+               (file-exists? script)
+               script)))
+
 (define (%spec-begin suite-name filename)
-  "Internal procedure: open spec suite SUITE-NAME with FILENAME."
-  (when (spec-suite-active?)
-    (error "spec-begin called with a suite already active" suite-name))
-  (set! %spec-file-path filename)
-  (set! %spec-seed-value (%spec-resolve-seed))
-  (configure-quickcheck (seed %spec-seed-value))
-  (set! %spec-suite-name suite-name)
-  (set! %spec-saved-runner (test-runner-current))
-  (let ((runner (%make-spec-runner)))
-    (set! %spec-runner runner)
-    (test-runner-current runner)
-    (test-begin suite-name)))
+        "Internal procedure: open spec suite SUITE-NAME with FILENAME."
+        (when (spec-suite-active?)
+          (error "spec-begin called with a suite already active" suite-name))
+        (set! %spec-file-path (or filename (%spec-source-filename)))
+        (set! %spec-seed-value (%spec-resolve-seed))
+        (configure-quickcheck (seed %spec-seed-value))
+        (set! %spec-suite-name suite-name)
+        (set! %spec-saved-runner (test-runner-current))
+        (let ((runner (%make-spec-runner)))
+          (set! %spec-runner runner)
+          (test-runner-current runner)
+          (test-begin suite-name)))
 
 ;;
 ;; Open spec suite SUITE-NAME: seed quickcheck deterministically
@@ -485,9 +493,7 @@ a non-negative exact integer, else the fixed default 42."
 ;; Captures (current-filename) at the call site to determine the spec
 ;; file's directory for spec-bundle-path.
 (define-syntax spec-begin
-  (syntax-rules ()
-    ((_ suite-name)
-     (%spec-begin suite-name (current-filename)))))
+               (syntax-rules () ((_ suite-name) (%spec-begin suite-name (current-filename)))))
 
 (define (spec-end)
   "Close the active spec suite: end the srfi-64 group, emit the JSON
@@ -530,7 +536,6 @@ had zero failures, 1 otherwise (fail-closed before any spec-end)."
 ;;;
 ;;; Declarative contract DSL
 ;;;
-
 ;; (define-contract-spec proc ((arg arb) ...) -> (result-var post))
 ;; expands to an srfi-64 test-assert, named after PROC by default,
 ;; that runs (quickcheck (property ((arg arb) ...)

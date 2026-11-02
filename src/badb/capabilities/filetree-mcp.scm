@@ -1,7 +1,7 @@
 ;;; badb/capabilities/filetree-mcp.scm — Filetree MCP server.
 ;;;
 ;;; Serves the directory it was started in as an MCP server over
-;;; stdio, built on the (badb capabilities mcp-server) core. The tools expose a
+;;; stdio, built on the (geasa capabilities-mcp-server plugin) core. The tools expose a
 ;;; read-only view of the workspace: "tree" renders an indented project
 ;;; tree, "find" does a case-insensitive substring search over file
 ;;; names, "outline" returns the structure of a single file, and "read"
@@ -10,7 +10,7 @@
 ;;; workspace root.
 
 (define-module (badb capabilities filetree-mcp)
-  #:use-module (badb capabilities mcp-server)
+  #:use-module (geasa capabilities-mcp-server plugin)
   #:use-module (ice-9 format)
   #:use-module (ice-9 ftw)
   #:use-module (ice-9 rdelim)

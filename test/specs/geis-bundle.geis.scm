@@ -18,7 +18,6 @@
 ;;;
 ;;; Fixture helpers
 ;;;
-
 (define %temp-dir #f)
 (define %geis-root #f)
 (define %saved-geis-path #f)
@@ -67,7 +66,6 @@ entries appended.  Returns the bundle directory."
 ;;;
 ;;; Workspace
 ;;;
-
 (set! %temp-dir (mkdtemp "/tmp/badb-geis-bundle-test-XXXXXX"))
 (set! %geis-root (string-append %temp-dir "/geis"))
 (mkdir %geis-root)
@@ -79,7 +77,6 @@ entries appended.  Returns the bundle directory."
 ;;;
 ;;; 1. manifest-read
 ;;;
-
 (test-group "manifest-read"
   (let ((dir (make-bundle! %geis-root "test-read")))
     (test-assert "valid manifest reads to alist with expected fields"
@@ -107,7 +104,6 @@ entries appended.  Returns the bundle directory."
 ;;;
 ;;; 2. manifest-validate
 ;;;
-
 (test-group "manifest-validate"
   (test-assert "fully valid bundle returns empty list"
     (null? (geis-manifest-valid? (make-bundle! %geis-root "valid-bundle"))))
@@ -253,7 +249,6 @@ entries appended.  Returns the bundle directory."
 ;;;
 ;;; 3. bundle-hash
 ;;;
-
 (test-group "bundle-hash"
   (let ((dir1 (mkdtemp "/tmp/badb-hash-a-XXXXXX"))
         (dir2 (mkdtemp "/tmp/badb-hash-b-XXXXXX")))
@@ -281,46 +276,46 @@ entries appended.  Returns the bundle directory."
 ;;;
 ;;; 4. discovery
 ;;;
-
 (test-group "discovery"
-  (let ((root1 (string-append %temp-dir "/root1"))
-        (root2 (string-append %temp-dir "/root2")))
-    (mkdir root1)
-    (mkdir root2)
-    (make-bundle! root1 "bundle-a")
-    (make-bundle! root2 "bundle-b")
-    (test-assert "bundle in first search root found"
-      (begin
-        (setenv "BADB_GEIS_PATH" (string-append root1 ":" root2))
-        (let ((found (find-geis-bundle "bundle-a")))
-          (and found (string-prefix? (string-append root1 "/bundle-a") found)))))
-    (test-assert "bundle only in second root found there"
-      (begin
-        (setenv "BADB_GEIS_PATH" (string-append root1 ":" root2))
-        (let ((found (find-geis-bundle "bundle-b")))
-          (and found (string-prefix? (string-append root2 "/bundle-b") found)))))
-    (test-assert "nonexistent feature-id returns #f"
-      (begin
-        (setenv "BADB_GEIS_PATH" (string-append root1 ":" root2))
-        (not (find-geis-bundle "nonexistent"))))
-    (test-assert "empty BADB_GEIS_PATH defaults to geis root"
-      (begin
-        (setenv "BADB_GEIS_PATH" "")
-        (equal? '("geis") (geis-bundle-search-path))))
-    (test-assert "unset BADB_GEIS_PATH defaults to geis root"
-      (begin
-        (unsetenv "BADB_GEIS_PATH")
-        (equal? '("geis") (geis-bundle-search-path))))
-    (test-assert "multiple roots split in order"
-      (begin
-        (setenv "BADB_GEIS_PATH" (string-append root1 ":" root2 ":/some/other"))
-        (equal? (list root1 root2 "/some/other") (geis-bundle-search-path))))
-    (setenv "BADB_GEIS_PATH" %geis-root)))
+            (let
+                ((root1 (string-append %temp-dir "/root1"))
+                 (root2 (string-append %temp-dir "/root2")))
+              (mkdir root1)
+              (mkdir root2)
+              (make-bundle! root1 "bundle-a")
+              (make-bundle! root2 "bundle-b")
+              (test-assert "bundle in first search root found"
+                           (begin
+                             (setenv "BADB_GEIS_PATH" (string-append root1 ":" root2))
+                             (let ((found (find-geis-bundle "bundle-a")))
+                               (and found (string-prefix? (string-append root1 "/bundle-a") found)))))
+              (test-assert
+                "bundle only in second root found there"
+                (begin
+                  (setenv "BADB_GEIS_PATH" (string-append root1 ":" root2))
+                  (let ((found (find-geis-bundle "bundle-b")))
+                    (and found (string-prefix? (string-append root2 "/bundle-b") found)))))
+              (test-assert "nonexistent feature-id returns #f"
+                           (begin
+                             (setenv "BADB_GEIS_PATH" (string-append root1 ":" root2))
+                             (not (find-geis-bundle "nonexistent"))))
+              (test-assert
+                "empty BADB_GEIS_PATH defaults to src/geasa root"
+                (begin (setenv "BADB_GEIS_PATH" "")
+                       (equal? (quote ("src/geasa")) (geis-bundle-search-path))))
+              (test-assert
+                "unset BADB_GEIS_PATH defaults to src/geasa root"
+                (begin (unsetenv "BADB_GEIS_PATH")
+                       (equal? (quote ("src/geasa")) (geis-bundle-search-path))))
+              (test-assert "multiple roots split in order"
+                           (begin
+                             (setenv "BADB_GEIS_PATH" (string-append root1 ":" root2 ":/some/other"))
+                             (equal? (list root1 root2 "/some/other") (geis-bundle-search-path))))
+              (setenv "BADB_GEIS_PATH" %geis-root)))
 
 ;;;
 ;;; 5. resolve-geis-load-path
 ;;;
-
 (test-group "resolve-geis-load-path"
   (let ((deps-root (string-append %temp-dir "/deps")))
     (mkdir deps-root)
@@ -423,7 +418,6 @@ entries appended.  Returns the bundle directory."
 ;;;
 ;;; 6. pins and file enumeration
 ;;;
-
 (test-group "pins"
   (let ((dir (string-append %geis-root "/pins-test")))
     (mkdir dir)
@@ -451,7 +445,6 @@ entries appended.  Returns the bundle directory."
 ;;;
 ;;; Teardown: restore environment before the suite exits
 ;;;
-
 (if %saved-geis-path
     (setenv "BADB_GEIS_PATH" %saved-geis-path)
     (unsetenv "BADB_GEIS_PATH"))

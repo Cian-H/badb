@@ -1,1 +1,0 @@
-((bundle-version . 1) (feature-id . "surfaces-theme") (version . "1.0.0") (spec . "spec.geis.scm") (depends (guile-modules (srfi srfi-1) (badb spec) (srfi srfi-64) (ice-9 format) (badb surfaces theme)) (badb-version . "0.1.0")) (provenance (origin . "migrated-from-flat-spec")) (sha256 ("spec.geis.scm" . "46784333357b3acb9313ed5e315906db8f425c8981d25d64b10c7bcab3e8a2d1")))

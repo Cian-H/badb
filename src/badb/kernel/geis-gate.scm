@@ -62,7 +62,7 @@
 (define*
   (locked-geis-bundle-path feature-id #:optional (root (geis-gate-root)))
   "Path of the locked copy of bundle FEATURE-ID under the gate store."
-  (string-append root "/geis/" (sanitize-feature-id feature-id)))
+  (string-append root "/geasa/" (sanitize-feature-id feature-id)))
 
 (define (%file-is-dir? path)
         (catch #t

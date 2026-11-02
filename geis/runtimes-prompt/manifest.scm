@@ -1,1 +1,0 @@
-((bundle-version . 1) (feature-id . "runtimes-prompt") (version . "1.0.0") (spec . "spec.geis.scm") (depends (guile-modules (srfi srfi-64) (badb spec) (srfi srfi-1) (badb runtimes prompt)) (badb-version . "0.1.0")) (provenance (origin . "migrated-from-flat-spec")) (sha256 ("spec.geis.scm" . "0a9d61733485a3958307fc64b9a1ba9cca2063772445169338f690937d8aaeb0")))

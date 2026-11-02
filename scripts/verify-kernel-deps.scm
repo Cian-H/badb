@@ -28,20 +28,21 @@
     mcp mcp-server context theme prompt log rollback verify config util spec))
 
 (define (forbidden-module? mod)
-  (cond
-    ;; (badb <subsystem> ...)
-    ((and (list? mod)
-          (>= (length mod) 2)
-          (eq? (car mod) 'badb)
-          (memq (cadr mod) forbidden-subsystems))
-     #t)
-    ;; (badb <legacy-userspace> ...)
-    ((and (list? mod)
-          (>= (length mod) 2)
-          (eq? (car mod) 'badb)
-          (memq (cadr mod) legacy-userspace-modules))
-     #t)
-    (else #f)))
+        (cond
+          ;; (badb <subsystem> ...)
+          ((and (list? mod)
+                (>= (length mod) 2)
+                (eq? (car mod) 'badb)
+                (memq (cadr mod) forbidden-subsystems))
+            #t)
+          ;; (badb <legacy-userspace> ...)
+          ((and (list? mod)
+                (>= (length mod) 2)
+                (eq? (car mod) 'badb)
+                (memq (cadr mod) legacy-userspace-modules))
+            #t)
+          ((and (list? mod) (>= (length mod) 2) (eq? (car mod) 'geasa)) #t)
+          (else #f)))
 
 (define (extract-imports-from-form form)
   (let ((imports '()))
@@ -95,19 +96,23 @@
     violations))
 
 (define (check-file-regex filepath)
-  (let ((violations '())
-        ;; Pattern looks for import/use statements targeting forbidden modules
-        (pattern (make-regexp "use-(module|modules).*\\(badb[ \t]+(providers|runtimes|capabilities|surfaces|policies|model|react|synthesis|filetree-mcp|history-tools|cli|nc|tui|guardrail|mcp|mcp-server|context|theme|prompt|log|rollback|verify|config|util|spec)")))
-    (call-with-input-file filepath
-      (lambda (port)
-        (let loop ((line (read-line port))
-                   (line-num 1))
-          (unless (eof-object? line)
-            (let ((m (regexp-exec pattern line)))
-              (when m
-                (set! violations (cons (format #f "Line ~a: ~a" line-num (string-trim-both line)) violations))))
-            (loop (read-line port) (+ line-num 1))))))
-    violations))
+        (let
+            ((violations '())
+             ;; Pattern looks for import/use statements targeting forbidden modules
+             (pattern
+               (make-regexp
+                 "use-(module|modules).*\\((badb[ \\t]+(providers|runtimes|capabilities|surfaces|policies|model|react|synthesis|filetree-mcp|history-tools|cli|nc|tui|guardrail|mcp|mcp-server|context|theme|prompt|log|rollback|verify|config|util|spec)|geasa[ \\t])")))
+          (call-with-input-file filepath
+                                (lambda (port)
+                                  (let loop
+                                    ((line (read-line port)) (line-num 1))
+                                    (unless (eof-object? line)
+                                      (let ((m (regexp-exec pattern line)))
+                                        (when m
+                                          (set! violations
+                                                (cons (format #f "Line ~a: ~a" line-num (string-trim-both line)) violations))))
+                                      (loop (read-line port) (+ line-num 1))))))
+          violations))
 
 (define (geis-import-feature-id mod)
   "For an import (geis <fid> ...), return <fid> as a string; else #f."

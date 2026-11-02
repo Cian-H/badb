@@ -174,7 +174,7 @@
          (original-mu (read-file-string mu-path))
          (tmp-geis %geis-root)
          (bundle-dir (string-append tmp-geis "/" fid))
-         (repo-pilot "geis/runtimes-synthesis"))
+         (repo-pilot "src/geasa/runtimes-synthesis"))
     (mkdir bundle-dir)
     (system* "cp" (string-append repo-pilot "/workflow.sema")
              (string-append bundle-dir "/workflow.sema"))
