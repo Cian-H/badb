@@ -78,7 +78,11 @@
   (def default-locked-path (format "~a/specs/~a.scm" gate-root (sanitize-feature-id feature-id)))
 
   ;; Ensure locked spec exists: if spec-path was given and locked copy is absent, lock it now
-  (def locked-spec-path
+  ;; DEV-DEBT [shell-interpolation]: lock/commit commands are built with format+shell
+;; from caller-supplied paths. feature-id is sanitized, but spec/target paths are
+;; trusted CLI input only — do not feed this workflow untrusted paths.
+
+(def locked-spec-path
     (cond
       ((file/exists? default-locked-path) default-locked-path)
       ((and spec-path (file/exists? spec-path))

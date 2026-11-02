@@ -95,6 +95,10 @@ then inspects GNU Guix store profiles."
              (string-append "/gnu/store/" (car profile-matches) "/bin/sema")))
       "sema"))
 
+;; DEV-DEBT [fragile-fallback]: the "src/badb/synthesis.scm" anchor no longer exists;
+;; it is pure dirname math (and always fires: current-filename is #f when this module
+;; loads via -L src). Works only when cwd is the repo root — resolve via module path
+;; or an env override instead.
 (define (default-workflow-path)
   "Return the default path to the plugin synthesis workflow file."
   (let ((env-path (getenv "BADB_SYNTHESIS_WORKFLOW")))
@@ -341,6 +345,8 @@ Options:
 
 (define synthesis-assemble-hook (make-parameter #f))
 
+;; DEV-DEBT [complexity]: cyclomatic ~43 / nesting 14 (ast_complexity_metrics);
+;; the CLI arg loop wants splitting into per-option handlers.
 (define (run-synthesis-cli args)
         "CLI dispatcher for `badb synthesize`."
         (if

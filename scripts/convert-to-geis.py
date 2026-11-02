@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# DEV-DEBT [legacy]: flat-spec-to-bundle migration helper from the geis
+# relocation; no longer referenced anywhere. Candidate for removal.
 import os
 import re
 

@@ -114,6 +114,9 @@
                                       (loop (read-line port) (+ line-num 1))))))
           violations))
 
+;; DEV-DEBT [dead-code]: the (geis <fid> ...) builtin-bundle allowance is inert —
+;; (geasa ...) imports are now fully forbidden in kernel code above. Remove this
+;; check or repurpose it once a (geis ...) namespace actually exists again.
 (define (geis-import-feature-id mod)
   "For an import (geis <fid> ...), return <fid> as a string; else #f."
   (and (list? mod)

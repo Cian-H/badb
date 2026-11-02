@@ -1667,6 +1667,9 @@ constrains the copy to (spec-gate-root)/specs/."
           (lambda (key . args)
             (format #f "Error locking spec (~a): ~s" key args))))
 
+;; DEV-DEBT [ux-gap]: verifies only the locked FLAT spec (.badb/specs/<fid>.scm);
+;; 'badb geis verify <bundle-fid>' never falls back to verify-locked-geis-bundle and
+;; can replay a stale flat lock. Use 'geis verify --all' for bundle contracts.
 (define (spec-tool-verify feature-id)
         "Kernel tool 'spec.verify': replay the LOCKED spec copy for
 FEATURE-ID in a disposable kernel subprocess and return the verdict,
@@ -2079,6 +2082,7 @@ tools on REG."
         (badb-config-mcp-servers cfg)))
     (lambda _ #f)))
 
+;; DEV-DEBT [complexity]: cyclomatic ~41 / nesting 18 (ast_complexity_metrics).
 (define (execute-mcp-subcommand! mcp-mgr arg add-sys-msg! add-err-msg!)
   "Dispatch /mcp subcommands (list, start, stop, restart, add, remove, tools)."
   (let* ((tokens (split-words arg))
@@ -2448,6 +2452,9 @@ a manual entry item."
                  "  /sh <cmd>         Alias for shell command\n"
                  "  /eval <expr>      Alias for Scheme eval"))
 
+;; DEV-DEBT [complexity]: run-tui is the largest form in the repo (9209 AST nodes,
+;; cyclomatic ~447 per ast_complexity_metrics). Covered by the 582-assertion bundle
+;; spec, but the prime candidate for decomposition into smaller units.
 (define*
   (run-tui #:key
            (endpoint #f)

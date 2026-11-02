@@ -17,7 +17,9 @@
                (ice-9 textual-ports)
                #:use-module
                (srfi srfi-1)
-               #:use-module
+               ;; DEV-DEBT [accepted-layering]: bundle tooling imports the synthesis plugin for
+;; replay; the reverse direction is broken via synthesis-assemble-hook in the plugin.
+#:use-module
                (geasa runtimes-synthesis plugin)
                #:use-module
                (json)
@@ -143,6 +145,9 @@ missing file, unreadable content, or a non-list result.  Never evaluates."
 ;;;
 ;;; Manifest validation
 ;;;
+;; DEV-DEBT [manual-repin]: pins cover every bundle file, so ANY content edit
+;; (even a comment) invalidates the manifest until pins are recomputed. No automated
+;; check exists — add one to CI before ./scripts/test.
 (define (%validate-sha256-pins! errors-cell bundle-dir pins)
   (define (add! reason)
     (set-car! errors-cell (cons reason (car errors-cell))))
@@ -169,6 +174,8 @@ missing file, unreadable content, or a non-list result.  Never evaluates."
            (lambda _ #f))))))
    pins))
 
+;; DEV-DEBT [complexity]: cyclomatic ~41 — each manifest field is a hand-rolled
+;; check; a declarative field schema would shrink this.
 (define (geis-manifest-valid? bundle-dir)
   "Validate the bundle at BUNDLE-DIR.  Return '() when the manifest is valid,
 otherwise a non-empty list of human-readable reason strings."

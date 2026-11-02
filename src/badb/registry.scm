@@ -1,4 +1,6 @@
 ;;; badb — Registry compatibility shim
+;;; DEV-DEBT [shim]: re-export of (badb kernel registry) kept for older callers
+;;; (same for journal/digest/transaction.scm). Remove once no callers remain.
 (define-module (badb registry)
   #:use-module (badb kernel registry)
   #:re-export (<registry>

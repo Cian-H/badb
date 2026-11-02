@@ -1,4 +1,7 @@
 (define-module (badb main) #:use-module
+;; DEV-DEBT [accepted-layering]: harness shell (not kernel) intentionally autoloads
+;; geasa plugins; kernel boundary src/badb/kernel/ stays geasa-free (see
+;; scripts/verify-kernel-deps.scm).
                (ice-9 format)
                #:use-module
                (badb surfaces cli)

@@ -667,7 +667,9 @@
                   (lambda (th ct)
                     (and (not th) (string=? ct ""))))))
             (test-assert
-              "nc-module-fails-gracefully-with-devenv-hint-when-libnotcurses-absent"
+              ;; DEV-DEBT [env-dependent]: assumes libnotcurses is ABSENT; fails in any env where
+;; guile-ncurses is installed (pre-existing). Should skip when the module loads.
+"nc-module-fails-gracefully-with-devenv-hint-when-libnotcurses-absent"
               (catch #t
                 (lambda ()
                   (resolve-module '(geasa surfaces-tui nc))

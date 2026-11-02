@@ -7,6 +7,10 @@
 # Both are replayed in a disposable kernel subprocess and must emit the
 # gate's JSON diagnostics contract with verdict "pass".
 set -e
+# DEV-DEBT [silent-failure]: set -e + '>/dev/null 2>&1' on the lock loops means a
+# stale sha256 pin or failed lock kills the script with ZERO output (stage 2 then
+# reports '0 passed, 0 failed'). Validate all manifests up front and keep the
+# failure output. Re-pin bundles with compute-geis-sha256-pins after any edit.
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT_DIR"
