@@ -5,7 +5,7 @@
 (add-to-load-path
  (canonicalize-path
   (string-append (dirname (current-filename)) "/../src")))
-(use-modules (badb filetree-mcp))
+(use-modules (badb capabilities filetree-mcp))
 
 (define (main args)
   (run-filetree-mcp))

@@ -359,10 +359,7 @@ Options:
              (commit-only? #f))
             (cond
               ((null? rest)
-                (if (not feature-id)
-                  (begin
-                    (format (current-error-port) "Error: missing required feature-id argument.~%")
-                    (exit 1))
+                (if feature-id
                   (if commit-only?
                     (commit-synthesized-module-cli feature-id
                                                    (or target-path (format #f "src/badb/~a.scm" feature-id)))
@@ -400,7 +397,10 @@ Options:
                       (exit
                         (if (string=? (or status "") "success")
                           0
-                          1))))))
+                          1))))
+                  (begin
+                    (format (current-error-port) "Error: missing required feature-id argument.~%")
+                    (exit 1))))
               ((equal? (car rest) "--commit-only")
                 (loop (cdr rest) feature-id spec-path target-path model budget-tokens
                       budget-usd cassette cassette-mode max-turns #t))

@@ -279,16 +279,32 @@ otherwise a non-empty list of human-readable reason strings."
     (reverse result)))
 
 (define (%delete-tree! path)
-  "Recursively delete the file or directory tree at PATH (best effort)."
-  (let ((entries (catch #t
-                   (lambda () (scandir path (lambda (n) (not (member n '("." ".."))))))
-                   (lambda _ #f))))
-    (if (not entries)
-        (catch 'system-error (lambda () (delete-file path)) (lambda _ #f))
-        (begin
-          (for-each (lambda (e) (%delete-tree! (string-append path "/" e)))
-                    (or entries '()))
-          (catch 'system-error (lambda () (rmdir path)) (lambda _ #f))))))
+        "Recursively delete the file or directory tree at PATH (best effort)."
+        (let
+            ((entries
+               (catch #t
+                 (lambda ()
+                   (scandir path
+                            (lambda (n)
+                              (not (member n '("." ".."))))))
+                 (lambda _
+                   #f))))
+          (if entries
+            (begin
+              (for-each
+                (lambda (e)
+                  (%delete-tree! (string-append path "/" e)))
+                (or entries '()))
+              (catch 'system-error
+                (lambda ()
+                  (rmdir path))
+                (lambda _
+                  #f)))
+            (catch 'system-error
+              (lambda ()
+                (delete-file path))
+              (lambda _
+                #f)))))
 
 (define (%mkdir-p path)
   "Create directory PATH and any missing parents."
@@ -336,25 +352,34 @@ sorted \"<file> <hash>\\n\" lines for every pinned file."
         '())))
 
 (define (%verify-dep-edge! dep-fid spec)
-  "Verify that dependency DEP-FID (with pinned SPEC) exists with the pinned
+        "Verify that dependency DEP-FID (with pinned SPEC) exists with the pinned
 version and bundle hash; throw 'geis-bundle-error otherwise."
-  (let ((want-ver (manifest-field spec 'version))
-        (want-hash (manifest-field spec 'bundle-sha256)))
-    (let ((dep-dir (find-geis-bundle dep-fid)))
-      (unless dep-dir
-        (throw 'geis-bundle-error (format #f "missing dependency '~a'" dep-fid)))
-      (let ((dep-manifest (read-geis-manifest (string-append dep-dir "/manifest.scm"))))
-        (unless dep-manifest
-          (throw 'geis-bundle-error (format #f "invalid manifest for bundle '~a'" dep-fid)))
-        (let ((have-ver (manifest-field dep-manifest 'version)))
-          (unless (and (string? want-ver) (string? have-ver) (string= have-ver want-ver))
-            (throw 'geis-bundle-error
-                   (format #f "version mismatch for dependency '~a': want ~s have ~s"
-                           dep-fid want-ver have-ver)))))
-      (let ((actual-hash (geis-bundle-hash dep-dir)))
-        (unless (and (string? want-hash) (string= actual-hash want-hash))
-          (throw 'geis-bundle-error
-                 (format #f "bundle-sha256 mismatch for dependency '~a'" dep-fid)))))))
+        (let*
+            ((want-ver (manifest-field spec 'version))
+             (want-hash (manifest-field spec 'bundle-sha256))
+             (dep-dir (find-geis-bundle dep-fid)))
+          (unless dep-dir
+            (throw 'geis-bundle-error (format #f "missing dependency '~a'" dep-fid)))
+          (let
+              ((dep-manifest (read-geis-manifest (string-append dep-dir "/manifest.scm"))))
+            (unless dep-manifest
+              (throw 'geis-bundle-error
+                     (format #f "invalid manifest for bundle '~a'" dep-fid)))
+            (let
+                ((have-ver (manifest-field dep-manifest 'version)))
+              (unless
+                  (and (string? want-ver) (string? have-ver) (string= have-ver want-ver))
+                (throw 'geis-bundle-error
+                       (format #f
+                               "version mismatch for dependency '~a': want ~s have ~s"
+                               dep-fid
+                               want-ver
+                               have-ver)))))
+          (let ((actual-hash (geis-bundle-hash dep-dir)))
+            (unless
+                (and (string? want-hash) (string= actual-hash want-hash))
+              (throw 'geis-bundle-error
+                     (format #f "bundle-sha256 mismatch for dependency '~a'" dep-fid))))))
 
 (define (resolve-geis-load-path feature-id)
   "Return the absolute bundle directories FEATURE-ID needs, dependencies
@@ -698,22 +723,14 @@ content against the pinned plugin.  Returns a report alist:
 modified by the replay (cassette mode re-runs the edits)."
   (let*
       ((fid (%fid->string feature-id)) (dir (find-geis-bundle fid)))
-    (if (not dir)
-      (throw 'geis-bundle-error
-             (format #f "bundle not found for feature-id '~a'" fid))
+    (if dir
       (let*
           ((manifest (read-geis-manifest (string-append dir "/manifest.scm")))
            (wf (manifest-field manifest 'workflow))
            (cass-dir (manifest-field manifest 'cassettes))
            (prov (manifest-field manifest 'provenance))
            (recorded-target (and (list? prov) (manifest-field prov 'target-path))))
-        (if (not (and (string? wf) (string? cass-dir)))
-          (list (cons 'feature-id fid)
-                (cons 'workflow-verdict "fail")
-                (cons 'plugin-match "n/a")
-                (cons 'pinned-hash #f)
-                (cons 'replayed-hash #f)
-                (cons 'reason "bundle records no workflow or cassettes"))
+        (if (and (string? wf) (string? cass-dir))
           (let*
               ((cass-files (%list-dir (string-append dir "/" cass-dir)))
                (cassette
@@ -725,21 +742,13 @@ modified by the replay (cassette mode re-runs the edits)."
                  (or target-path
                      recorded-target
                      (and has-plugin?
-                          (let ((tmp (mkdtemp "/tmp/badb-replay-XXXXXX")))
-                            (let ((dst (string-append tmp "/plugin.scm")))
-                              (%copy-into! plugin-path dst)
-                              dst)))))
+                          (let*
+                              ((tmp (mkdtemp "/tmp/badb-replay-XXXXXX"))
+                               (dst (string-append tmp "/plugin.scm")))
+                            (%copy-into! plugin-path dst)
+                            dst))))
                (run-dir (mkdtemp "/tmp/badb-replay-run-XXXXXX")))
-            (if (not (and cassette target))
-              (list (cons 'feature-id fid)
-                    (cons 'workflow-verdict "fail")
-                    (cons 'plugin-match "n/a")
-                    (cons 'pinned-hash #f)
-                    (cons 'replayed-hash #f)
-                    (cons 'reason
-                          (if cassette
-                            "no synthesis target recorded"
-                            "no cassette recorded")))
+            (if (and cassette target)
               (let*
                   ((res
                      (run-synthesis-workflow fid
@@ -774,4 +783,21 @@ modified by the replay (cassette mode re-runs the edits)."
                       (cons 'workflow-verdict verdict)
                       (cons 'plugin-match match)
                       (cons 'pinned-hash pinned-hash)
-                      (cons 'replayed-hash replayed-hash))))))))))
+                      (cons 'replayed-hash replayed-hash)))
+              (list (cons 'feature-id fid)
+                    (cons 'workflow-verdict "fail")
+                    (cons 'plugin-match "n/a")
+                    (cons 'pinned-hash #f)
+                    (cons 'replayed-hash #f)
+                    (cons 'reason
+                          (if cassette
+                            "no synthesis target recorded"
+                            "no cassette recorded")))))
+          (list (cons 'feature-id fid)
+                (cons 'workflow-verdict "fail")
+                (cons 'plugin-match "n/a")
+                (cons 'pinned-hash #f)
+                (cons 'replayed-hash #f)
+                (cons 'reason "bundle records no workflow or cassettes"))))
+      (throw 'geis-bundle-error
+             (format #f "bundle not found for feature-id '~a'" fid)))))

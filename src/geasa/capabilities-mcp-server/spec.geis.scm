@@ -1,4 +1,4 @@
-;;; test-mcp-server.scm — Tests for (geasa capabilities-mcp-server plugin) and (badb filetree-mcp)
+;;; test-mcp-server.scm — Tests for (geasa capabilities-mcp-server plugin) and (badb capabilities filetree-mcp)
 ;;;
 ;;; Drives the stdio MCP core from string ports, asserting the
 ;;; initialize handshake, tools/list, tools/call dispatch, and the

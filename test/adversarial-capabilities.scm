@@ -4,7 +4,7 @@
 ;;; 1. JSON-RPC Protocol Framing & Transport Resilience ((badb kernel ipc) & (geasa capabilities-mcp-server plugin))
 ;;; 2. Filetree MCP Security, Limits & Traversal ((badb capabilities filetree-mcp))
 ;;; 3. History Tools Summarization & Context Compactor Integration ((geasa capabilities-history-tools plugin))
-;;; 4. Backwards Compatibility Facade Parity & Record Descriptors
+;;; 4. Record Type Descriptors
 
 (use-modules (srfi srfi-64)
              (srfi srfi-1)
@@ -20,12 +20,7 @@
              (geasa capabilities-mcp-server plugin)
              (badb capabilities filetree-mcp)
              (geasa capabilities-history-tools plugin)
-             (geasa runtimes-context plugin)
-             ;; Backwards-compatibility Facades
-             (geasa capabilities-mcp plugin)
-             (geasa capabilities-mcp-server plugin)
-             (badb filetree-mcp)
-             (geasa capabilities-history-tools plugin))
+             (geasa runtimes-context plugin))
 
 (define (non-blank-lines str)
   (filter (lambda (s) (not (string-null? (string-trim-both s))))
@@ -514,9 +509,9 @@
 )
 
 ;;; =========================================================================
-;;; 4. FACADE BACKWARDS COMPATIBILITY & RECORD TYPE DESCRIPTORS
+;;; 4. RECORD TYPE DESCRIPTORS
 ;;; =========================================================================
-(test-group "facade-compatibility-and-records"
+(test-group "record-descriptors"
 
   ;; --- 4.1 Record Type Descriptors Defined & Predicates Functional ---
   (test-assert "record-type-descriptors-functional"
@@ -537,21 +532,6 @@
            (string=? (mcp-server-name srv) "srv")
            (string=? (mcp-tool-name tool) "tool1")
            (string=? (mcp-prompt-name prompt) "p1")
-           (string=? (mcp-resource-uri res) "uri://test"))))
-
-  ;; --- 4.2 Module Export Parity Check ---
-  (test-assert "module-export-parity-check"
-    (letrec ((parity-check
-               (lambda (can leg)
-                 (let* ((c-mod (resolve-module can))
-                        (l-mod (resolve-module leg))
-                        (c-exp (module-map (lambda (s v) s) (module-public-interface c-mod)))
-                        (l-exp (module-map (lambda (s v) s) (module-public-interface l-mod))))
-                   (and (= (length c-exp) (length l-exp))
-                        (every (lambda (s) (memq s l-exp)) c-exp))))))
-      (and (parity-check '(badb capabilities filetree-mcp) '(badb filetree-mcp))
-           (parity-check '(geasa capabilities-history-tools plugin) '(geasa capabilities-history-tools plugin))
-           (parity-check '(geasa capabilities-mcp-server plugin) '(geasa capabilities-mcp-server plugin))
-           (parity-check '(geasa capabilities-mcp plugin) '(geasa capabilities-mcp plugin))))))
+           (string=? (mcp-resource-uri res) "uri://test")))))
 
 (test-end "adversarial-capabilities")

@@ -101,7 +101,7 @@
              ;; Pattern looks for import/use statements targeting forbidden modules
              (pattern
                (make-regexp
-                 "use-(module|modules).*\\((badb[ \\t]+(providers|runtimes|capabilities|surfaces|policies|model|react|synthesis|filetree-mcp|history-tools|cli|nc|tui|guardrail|mcp|mcp-server|context|theme|prompt|log|rollback|verify|config|util|spec)|geasa[ \\t])")))
+                 "use-(module|modules).*\\((badb[ \t]+(providers|runtimes|capabilities|surfaces|policies|model|react|synthesis|filetree-mcp|history-tools|cli|nc|tui|guardrail|mcp|mcp-server|context|theme|prompt|log|rollback|verify|config|util|spec)|geasa[ \t])")))
           (call-with-input-file filepath
                                 (lambda (port)
                                   (let loop

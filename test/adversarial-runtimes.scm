@@ -1,10 +1,10 @@
 ;;; test/adversarial-runtimes.scm — Empirical Challenger Stress Harness for M3 Runtimes
 ;;;
 ;;; Validates hostile inputs, failure modes, boundary conditions, and stress limits across:
-;;; 1. (geasa runtimes-react plugin) & facade (geasa runtimes-react plugin)
-;;; 2. (geasa runtimes-context plugin) & facade (geasa runtimes-context plugin)
-;;; 3. (geasa runtimes-rollback plugin) & facade (geasa runtimes-rollback plugin)
-;;; 4. (geasa runtimes-prompt plugin) & facade (geasa runtimes-prompt plugin)
+;;; 1. (geasa runtimes-react plugin)
+;;; 2. (geasa runtimes-context plugin)
+;;; 3. (geasa runtimes-rollback plugin)
+;;; 4. (geasa runtimes-prompt plugin)
 
 (define-module (test adversarial-runtimes)
   #:use-module (srfi srfi-64)
@@ -21,12 +21,6 @@
   #:use-module (geasa providers-model common)
   #:use-module (geasa providers-model openai)
   #:use-module (geasa providers-model mock)
-  #:use-module (geasa runtimes-react plugin)
-  #:use-module (geasa runtimes-context plugin)
-  #:use-module (geasa runtimes-prompt plugin)
-  #:use-module (geasa runtimes-rollback plugin)
-  #:use-module (geasa policies-guardrail plugin)
-  ;; Compatibility facades
   #:use-module (geasa runtimes-react plugin)
   #:use-module (geasa runtimes-context plugin)
   #:use-module (geasa runtimes-prompt plugin)

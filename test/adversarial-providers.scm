@@ -280,7 +280,7 @@
 )
 
 ;;; =========================================================================
-;;; 3. ERROR CODE PROPAGATION & TIMEOUT HANDLING ((badb providers openai/mock))
+;;; 3. ERROR CODE PROPAGATION & TIMEOUT HANDLING ((geasa providers-model openai/mock))
 ;;; =========================================================================
 (test-group "error-propagation-and-timeouts-adversarial"
 
@@ -451,11 +451,11 @@
 )
 
 ;;; =========================================================================
-;;; 4. BACKWARDS COMPATIBILITY FACADE VERIFICATION ((geasa providers-model plugin))
+;;; 4. PUBLIC EXPORT SURFACE ((geasa providers-model plugin))
 ;;; =========================================================================
-(test-group "facade-equivalence-adversarial"
+(test-group "export-surface-adversarial"
 
-  ;; Verify all 32 symbols exported by (geasa providers-model plugin) match (badb providers *)
+  ;; Verify all 32 public symbols are exported by (geasa providers-model plugin)
   (let ((model-mod (resolve-module '(geasa providers-model plugin)))
         (symbols '(
           <model-client>
@@ -493,12 +493,12 @@
 
     (for-each
       (lambda (sym)
-        (test-assert (format #f "facade exports ~a" sym)
+        (test-assert (format #f "plugin exports ~a" sym)
           (let ((var (module-variable model-mod sym)))
             (and var (variable-bound? var)))))
       symbols)
 
-    (test-equal "facade exports exactly 32 public symbols"
+    (test-equal "plugin exports exactly 32 public symbols"
       32
       (length symbols))))
 

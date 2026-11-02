@@ -1,9 +1,9 @@
 ;;; test/adversarial-surfaces.scm — Adversarial Stress Test Harness for Surfaces Subsystem
 ;;;
 ;;; Validates hostile inputs, failure modes, boundary conditions, and stress limits across:
-;;; 1. Root launcher & CLI parsing: scripts/badb, (badb main), (badb surfaces cli), (badb cli)
-;;; 2. Theme Subsystem: (geasa surfaces-theme plugin) & (geasa surfaces-theme plugin)
-;;; 3. TUI State & Engine: (geasa surfaces-tui plugin), (geasa surfaces-tui plugin), (geasa surfaces-tui nc), (geasa surfaces-tui nc)
+;;; 1. Root launcher & CLI parsing: scripts/badb, (badb main), (badb surfaces cli)
+;;; 2. Theme Subsystem: (geasa surfaces-theme plugin)
+;;; 3. TUI State & Engine: (geasa surfaces-tui plugin), (geasa surfaces-tui nc)
 
 (define-module (test adversarial-surfaces)
   #:use-module (srfi srfi-64)
@@ -15,10 +15,6 @@
   #:use-module (ice-9 optargs)
   #:use-module (badb main)
   #:use-module (geasa foundation-config plugin)
-  #:use-module (badb surfaces cli)
-  #:use-module (geasa surfaces-theme plugin)
-  #:use-module (geasa surfaces-tui plugin)
-  ;; Backward compatibility facades
   #:use-module (badb surfaces cli)
   #:use-module (geasa surfaces-theme plugin)
   #:use-module (geasa surfaces-tui plugin))
@@ -232,7 +228,6 @@
                        (string-contains c "\x1b[36m")
                        (string-contains g "\x1b[32m")
                        (string-contains r "\x1b[31m")))))
-            ;; --- 1.6 Facade compatibility: (badb cli) ---
 )
 
 ;;; =========================================================================
@@ -353,16 +348,6 @@
          (eq? (color-symbol->ncurses-constant 'unknown-color) 'COLOR_WHITE)
          (eq? (color-symbol->ncurses-constant #f) 'COLOR_WHITE)))
 
-  ;; --- 2.5 Facade compatibility: (geasa surfaces-theme plugin) ---
-  (test-assert "theme-facade-re-exports-identical-procedures-and-record"
-    (and (eq? (@@ (geasa surfaces-theme plugin) make-theme) (@@ (geasa surfaces-theme plugin) make-theme))
-         (eq? (@@ (geasa surfaces-theme plugin) theme?) (@@ (geasa surfaces-theme plugin) theme?))
-         (eq? (@@ (geasa surfaces-theme plugin) theme-name) (@@ (geasa surfaces-theme plugin) theme-name))
-         (eq? (@@ (geasa surfaces-theme plugin) theme-roles) (@@ (geasa surfaces-theme plugin) theme-roles))
-         (eq? (@@ (geasa surfaces-theme plugin) theme-ref) (@@ (geasa surfaces-theme plugin) theme-ref))
-         (eq? (@@ (geasa surfaces-theme plugin) all-theme-names) (@@ (geasa surfaces-theme plugin) all-theme-names))
-         (eq? (@@ (geasa surfaces-theme plugin) lookup-theme) (@@ (geasa surfaces-theme plugin) lookup-theme))
-         (eq? (@@ (geasa surfaces-theme plugin) default-theme) (@@ (geasa surfaces-theme plugin) default-theme))))
 )
 
 ;;; =========================================================================
@@ -681,30 +666,6 @@
                     (split-thoughts-and-content ""))
                   (lambda (th ct)
                     (and (not th) (string=? ct ""))))))
-            ;; --- 3.7 Facades compatibility: (geasa surfaces-tui plugin) & (geasa surfaces-tui nc) ---
-            (test-assert
-              "tui-facade-re-exports-identical-procedures"
-              (and
-                (eq? (@@ (geasa surfaces-tui plugin) make-menu)
-                     (@@ (geasa surfaces-tui plugin) make-menu))
-                (eq? (@@ (geasa surfaces-tui plugin) menu-move)
-                     (@@ (geasa surfaces-tui plugin) menu-move))
-                (eq?
-                  (@@ (geasa surfaces-tui plugin) menu-visible-slice)
-                  (@@ (geasa surfaces-tui plugin) menu-visible-slice))
-                (eq?
-                  (@@ (geasa surfaces-tui plugin) classify-input)
-                  (@@ (geasa surfaces-tui plugin) classify-input))
-                (eq?
-                  (@@ (geasa surfaces-tui plugin) steering-key-handle)
-                  (@@ (geasa surfaces-tui plugin) steering-key-handle))
-                (eq? (@@ (geasa surfaces-tui plugin) insert-at)
-                     (@@ (geasa surfaces-tui plugin) insert-at))
-                (eq?
-                  (@@ (geasa surfaces-tui plugin) backspace-at)
-                  (@@ (geasa surfaces-tui plugin) backspace-at))
-                (eq? (@@ (geasa surfaces-tui plugin) delete-at)
-                     (@@ (geasa surfaces-tui plugin) delete-at))))
             (test-assert
               "nc-module-fails-gracefully-with-devenv-hint-when-libnotcurses-absent"
               (catch #t
