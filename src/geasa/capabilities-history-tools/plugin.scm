@@ -3,8 +3,8 @@
 ;;; Pure helpers that summarize a conversation's llm-history turn list and
 ;;; persisted session JSONL files. summarize-turns produces a compact human
 ;;; (and model) readable digest of an in-memory conversation: total turns,
-;;; per-role counts, an approximate token estimate (reusing the (badb runtimes
-;;; context) char heuristic), the most recent user messages truncated for
+;;; per-role counts, an approximate token estimate (reusing the (geasa runtimes-context
+;;; plugin) char heuristic), the most recent user messages truncated for
 ;;; display, and a topic sketch of the top non-stopword words across user
 ;;; messages. summarize-history-file parses a session JSONL file (one
 ;;; {\"role\":...,\"content\":...} object per line, the tui session log shape)

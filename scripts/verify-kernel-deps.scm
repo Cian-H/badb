@@ -123,7 +123,7 @@
 
 (define (check-builtin-geis filepath)
   "Kernel modules may only import (geis ...) modules that ship as builtin
-bundles under ./geis/<fid>/ in the repo - never user-installed ones."
+bundles under ./src/geasa/<fid>/ in the repo - never user-installed ones."
   (let ((violations '()))
     (catch #t
       (lambda ()
@@ -135,9 +135,9 @@ bundles under ./geis/<fid>/ in the repo - never user-installed ones."
                  (lambda (imp)
                    (let ((fid (geis-import-feature-id imp)))
                      (when (and fid (not (file-exists?
-                                          (string-append "geis/" fid "/manifest.scm"))))
+                                          (string-append "src/geasa/" fid "/manifest.scm"))))
                        (set! violations
-                             (cons (format #f "import ~s is not a builtin bundle (no geis/~a/manifest.scm)"
+                             (cons (format #f "import ~s is not a builtin bundle (no src/geasa/~a/manifest.scm)"
                                            imp fid)
                                    violations)))))
                  (extract-imports-from-form form))

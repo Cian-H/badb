@@ -53,53 +53,32 @@ and `FORCE_COLOR` conventions.
 ## Layout
 
 ```text
-├── channels.scm         Guix channel pin (reproducibility)
-├── manifest.scm          Guix package manifest for the dev environment
-├── license.md            LGPLv3
-├── scripts/
-│   ├── badb              CLI launcher (Guile)
-│   ├── devenv            one-command dev environment
-│   ├── test              unit test runner
-│   └── test-e2e          headless TUI end-to-end test runner
+├── channels.scm / manifest.scm / license.md
+├── scripts/             CLI launcher, dev env, test & e2e runners, geis guards
 ├── src/
-│   ├── srfi/
-│   │   └── srfi-253.scm  Data Type-Checking and Contract Helpers (SRFI-253)
-│   └── badb/
-│       ├── cli.scm           CLI presentation helpers & ANSI color support
-│       ├── config.scm        S-expression configuration & provider presets
-│       ├── context.scm       token estimation & conversation compaction
-│       ├── digest.scm        pure-Guile SHA-256 (FIPS 180-4) implementation
-│       ├── eval.scm          golden task evaluation harness
-│       ├── filetree-mcp.scm  built-in filetree & symbol outline MCP server
-│       ├── guardrail.scm     tool-call risk classification & safety policy
-│       ├── history-tools.scm JSONL conversation history search & summarization
-│       ├── journal.scm       append-only provenance journal
-│       ├── log.scm           rotating debug & error logging
-│       ├── main.scm          CLI entry point & mode dispatch
-│       ├── mcp-server.scm    JSON-RPC 2.0 stdio MCP server framework
-│       ├── mcp.scm           MCP client & server lifecycle manager
-│       ├── model.scm         OpenAI-compatible LLM HTTP/SSE client
-│       ├── nc.scm            libnotcurses FFI terminal backend
-│       ├── prompt.scm        system prompt composer & project rule discovery
-│       ├── react.scm         autonomous ReAct tool-calling loop & steering
-│       ├── registry.scm      mutable runtime feature registry
-│       ├── rollback.scm      workspace & registry checkpoint rollback manager
-│       ├── spec-gate.scm     kernel-owned locked-spec verification gate
-│       ├── spec-runner.scm   out-of-process spec execution worker
-│       ├── spec.scm          declarative contract & property-based test engine
-│       ├── theme.scm         semantic color theming & built-in palettes
-│       ├── transaction.scm   contract-gated atomic feature transactions
-│       ├── tui.scm           interactive full-screen terminal UI
-│       ├── util.scm          shared string, alist, filesystem & JSON helpers
-│       └── verify.scm        neuro-symbolic syntax & test verification gate
-└── test/                 unit & end-to-end test suites
+│   ├── srfi/srfi-253.scm          SRFI-253 contract helpers (kernel support)
+│   ├── badb/                      microkernel + harness shell
+│   │   ├── kernel/                digest, geis-gate, ipc, journal, registry, transaction
+│   │   ├── spec.scm               declarative contract & property test engine
+│   │   ├── spec-gate.scm          kernel-owned locked-spec verification gate
+│   │   ├── geis/bundle.scm        geasa bundle discovery, validation, pack/install/replay
+│   │   ├── main.scm               CLI entry point & mode dispatch
+│   │   ├── capabilities/          filetree-mcp (stdio filetree MCP server)
+│   │   ├── surfaces/cli.scm       CLI presentation helpers & ANSI color support
+│   │   └── registry/journal/digest/transaction.scm   compat shims re-exporting kernel/*
+│   └── geasa/<feature-id>/        self-contained contract bundles (the geasa):
+│       manifest.scm + spec.geis.scm + plugin.scm (+ workflow/cassettes/prompts)
+├── workflows/plugin-synthesis.sema   Sema synthesis workflow (kernel-referenced)
+└── test/                unit, adversarial, flat geis specs & end-to-end suites
 ```
 
 ## Development
 
 Everything runs inside the pinned Guix environment via `./scripts/devenv`.
-The harness is written in [GNU Guile]; new modules live under
-`src/badb/` following the `(badb ...)` module naming convention.
+The harness is written in [GNU Guile]. The pure microkernel lives under
+`src/badb/kernel/` (`(badb kernel ...)`); all user-space capability code lives
+in self-contained geasa bundles under `src/geasa/<feature-id>/` as
+`(geasa <feature-id> plugin)`, verified by their `spec.geis.scm` contracts.
 
 ## Testing
 
