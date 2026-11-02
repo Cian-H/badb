@@ -1,7 +1,7 @@
-;;; badb — Model Endpoint API (HTTP + SSE, JSON)
+;;; geasa providers-model — Model Endpoint API (HTTP + SSE, JSON)
 ;;;
-;;; Backwards compatibility facade for (badb model), re-exporting all
-;;; public symbols from unprivileged provider subsystems in (badb providers *).
+;;; Bundle plugin re-exporting all public symbols from the provider
+;;; support modules (geasa providers-model common/openai/anthropic/mock).
 
 (define-module (geasa providers-model plugin)
   #:use-module (geasa providers-model common)
