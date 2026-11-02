@@ -6,10 +6,11 @@ badb is a small harness core designed to grow at runtime rather than
 ship a fixed feature set. The intended workflow: when you need a new
 capability, you ask an agent to
 
-1. design a TDD contract for the feature,
+1. design a TDD contract for the feature (`spec.geis.scm`),
 2. design a workflow that fulfills that contract, and
-3. installs the resulting module into the harness
+3. installs the resulting bundle into the harness
 
+as a self-contained *geasa bundle* (contract spec + plugin + manifest),
 either system-wide or scoped to a single project.
 
 ## About the name
@@ -80,12 +81,51 @@ The harness is written in [GNU Guile]. The pure microkernel lives under
 in self-contained geasa bundles under `src/geasa/<feature-id>/` as
 `(geasa <feature-id> plugin)`, verified by their `spec.geis.scm` contracts.
 
+## Geasa contracts (bundles)
+
+Every capability ships as a bundle under `src/geasa/<feature-id>/`:
+
+```
+<feature-id>/
+├── manifest.scm      feature-id, version, plugin entry, sha256 pins
+├── spec.geis.scm     the contract the kernel replays and enforces
+├── plugin.scm        the implementation module (geasa <feature-id> plugin)
+└── workflow.sema / cassettes/ / prompts/   (synthesized bundles only)
+```
+
+Manage them from the CLI:
+
+```sh
+./scripts/badb geis list                 # show locked + discovered bundles
+./scripts/badb geis verify <fid>         # replay a locked flat spec in a
+                                         # disposable kernel subprocess
+./scripts/badb geis verify --all         # all flat specs + all src/geasa
+                                         # bundles, replayed via the gate
+./scripts/badb geis pack <fid>           # shareable tarball
+./scripts/badb geis install <dir>        # lock + verify into the kernel gate
+./scripts/badb geis replay <fid>         # re-run a synthesized bundle's
+                                         # recorded workflow, check plugin hash
+./scripts/badb synthesize <fid> ...      # run the Sema synthesis workflow
+```
+
+In the TUI, `/geis add <description>` drives the whole loop with an agent.
+Bundles are searched under `src/geasa/` by default; override with
+`BADB_GEIS_PATH` (colon-separated roots).
+
 ## Testing
 
 Unit tests run anywhere guile is available:
 
 ```sh
-./scripts/test
+./scripts/test                 # bootstrap suite + all geasa contracts via the gate
+./scripts/verify-geasa.sh      # geasa contracts only, in parallel
+```
+
+Kernel invariants are guarded separately:
+
+```sh
+./scripts/verify-kernel-size.sh    # kernel LOC budget
+./scripts/verify-kernel-deps.scm   # zero user-space deps in src/badb/kernel/
 ```
 
 The TUI has an end-to-end suite that drives the real interface through
