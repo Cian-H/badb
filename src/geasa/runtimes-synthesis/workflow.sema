@@ -134,7 +134,7 @@
   (def budget-raw (if (and (contains? args :budget) (map? (:budget args))) (:budget args) {}))
   (def budget-tokens (or (if (contains? budget-raw :max-tokens) (:max-tokens budget-raw) #f)
                          (if (contains? budget-raw :max_tokens) (:max_tokens budget-raw) #f)
-                         50000))
+                         200000))
   (def budget-usd (or (if (contains? budget-raw :max-cost-usd) (:max-cost-usd budget-raw) #f)
                       (if (contains? budget-raw :max_cost_usd) (:max_cost_usd budget-raw) #f)
                       1.0))
