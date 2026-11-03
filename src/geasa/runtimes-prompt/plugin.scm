@@ -6,6 +6,7 @@
 
 (define-module (geasa runtimes-prompt plugin)
   #:use-module (geasa foundation-util plugin)
+  #:use-module (geasa persona-badb plugin)
   #:use-module (ice-9 popen)
   #:use-module (ice-9 rdelim)
   #:use-module (ice-9 format)
@@ -298,10 +299,11 @@ STYLE can be 'xml (structured tags) or 'markdown."
                                (custom-rules '())
                                (tool-style 'native)
                                (context-limit-chars 16000))
-  "Construct a <prompt-composer> configuration record."
+  "Construct a <prompt-composer> configuration record.  The default
+system identity comes from the persona-badb geasa bundle; pass
+#:system-identity to override it."
   (%make-prompt-composer
-   (or system-identity
-       "You are badb, an expert autonomous coding agent and interactive harness.\nYou have access to local tools and execute tasks methodically, verifying each step.")
+   (or system-identity (persona-identity))
    include-git-status?
    include-file-tree?
    file-tree-depth

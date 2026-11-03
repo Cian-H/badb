@@ -4,6 +4,7 @@
   #:use-module (srfi srfi-64)
   #:use-module (badb spec)
   #:use-module (srfi srfi-1)
+  #:use-module (geasa persona-badb plugin)
   #:use-module (geasa runtimes-prompt plugin))
 
 (spec-begin "runtimes-prompt")
@@ -16,6 +17,8 @@
   (let ((composer (make-prompt-composer)))
     (test-assert "prompt-composer? recognizes record" (prompt-composer? composer))
     (test-assert "default system identity is string" (string? (prompt-composer-system-identity composer)))
+    (test-equal "default system identity is the persona-badb geis"
+      (persona-identity) (prompt-composer-system-identity composer))
     (test-assert "git status enabled by default" (prompt-composer-include-git-status? composer))
     (test-assert "file tree enabled by default" (prompt-composer-include-file-tree? composer))
     (test-equal "default tree depth is 2" 2 (prompt-composer-file-tree-depth composer))
