@@ -433,11 +433,14 @@ returning FALLBACK when it is neither."
                   (retry-delay-sec #f))
   "Perform a non-streaming chat completion request.
 Returns the response content text string, or parsed JSON alist if raw? is #t."
-  (let* ((endpoint (model-client-endpoint client))
-         (api-key (model-client-api-key client))
-         (model (model-client-model client))
-         (uri (resolve-endpoint-uri endpoint))
-         (payload
+  (let*
+      ((endpoint (model-client-endpoint client))
+       (api-key (model-client-api-key client))
+       (model (model-client-model client))
+       (uri (resolve-endpoint-uri endpoint))
+       (payload
+         (parameterize
+           ((current-send-reasoning? (model-client-allow-missing-thinking? client)))
            (format-chat-request messages
                                 #:model
                                 model
@@ -452,11 +455,16 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
                                 #:tool-choice
                                 tool-choice
                                 #:allow-missing-thinking
-                                (model-client-allow-missing-thinking? client)))
-         (headers (build-headers api-key #f))
-         (poster (or http-poster (current-http-post))))
-    (let loop ((retries (or max-retries (if http-poster 0 2)))
-               (delay-sec (or retry-delay-sec 2)))
+                                (model-client-allow-missing-thinking? client))))
+       (headers (build-headers api-key #f))
+       (poster (or http-poster (current-http-post))))
+    (let loop
+      ((retries
+         (or max-retries
+             (if http-poster
+               0
+               2)))
+       (delay-sec (or retry-delay-sec 2)))
       (call-with-values
         (lambda ()
           (poster uri #:body payload #:headers headers #:streaming? #f))
@@ -464,35 +472,40 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
           (let ((code (response-code response)))
             (cond
               ((and (or (= code 402) (= code 429) (= code 503)) (> retries 0))
-               (when (> delay-sec 0) (sleep delay-sec))
-               (loop (- retries 1) (* delay-sec 2)))
+                (when (> delay-sec 0) (sleep delay-sec))
+                (loop (- retries 1) (* delay-sec 2)))
               ((not (<= 200 code 299))
-               (let* ((body-str (response-body->string body ""))
-                      (parsed-err
-                        (catch #t
-                          (lambda ()
-                            (let ((obj (json-string->scm body-str)))
-                              (and (pair? obj) (json-ref obj "error"))))
-                          (lambda _ #f)))
-                      (err-msg
-                        (cond
-                          ((string? parsed-err) parsed-err)
-                          ((and (pair? parsed-err) (json-ref parsed-err "message"))
+                (let*
+                    ((body-str (response-body->string body ""))
+                     (parsed-err
+                       (catch #t
+                         (lambda ()
+                           (let ((obj (json-string->scm body-str)))
+                             (and (pair? obj) (json-ref obj "error"))))
+                         (lambda _
+                           #f)))
+                     (err-msg
+                       (cond
+                         ((string? parsed-err) parsed-err)
+                         ((and (pair? parsed-err) (json-ref parsed-err "message"))
                            (json-ref parsed-err "message"))
-                          ((not (string-null? body-str)) body-str)
-                          (else (format #f "HTTP ~a error" code)))))
-                 (error "model-complete HTTP request failed" code err-msg)))
+                         ((not (string-null? body-str)) body-str)
+                         (else (format #f "HTTP ~a error" code)))))
+                  (error "model-complete HTTP request failed" code err-msg)))
               (else
-               (let* ((text (response-body->string body body))
-                      (parsed
-                        (if (string? text)
-                            (catch #t
-                              (lambda () (json-string->scm text))
-                              (lambda _ text))
-                            text)))
-                 (if raw?
-                     parsed
-                     (or (extract-chat-content parsed) parsed)))))))))))
+                (let*
+                    ((text (response-body->string body body))
+                     (parsed
+                       (if (string? text)
+                         (catch #t
+                           (lambda ()
+                             (json-string->scm text))
+                           (lambda _
+                             text))
+                         text)))
+                  (if raw?
+                    parsed
+                    (or (extract-chat-content parsed) parsed)))))))))))
 
 (define*
   (model-stream client
@@ -509,11 +522,14 @@ as SSE chunks arrive. PAYLOAD is a text delta string with TYPE 'content or
 'thought, or a raw streamed tool-call fragment alist with TYPE 'tool-call
 (assemble fragments with merge-tool-call-fragment / finalize-tool-call-fragments).
 Returns 'done or 'eof."
-  (let* ((endpoint (model-client-endpoint client))
-         (api-key (model-client-api-key client))
-         (model (model-client-model client))
-         (uri (resolve-endpoint-uri endpoint))
-         (payload
+  (let*
+      ((endpoint (model-client-endpoint client))
+       (api-key (model-client-api-key client))
+       (model (model-client-model client))
+       (uri (resolve-endpoint-uri endpoint))
+       (payload
+         (parameterize
+           ((current-send-reasoning? (model-client-allow-missing-thinking? client)))
            (format-chat-request messages
                                 #:model
                                 model
@@ -528,60 +544,74 @@ Returns 'done or 'eof."
                                 #:stream
                                 #t
                                 #:allow-missing-thinking
-                                (model-client-allow-missing-thinking? client)))
-         (headers (build-headers api-key #t))
-         (poster (or http-poster (current-http-post))))
+                                (model-client-allow-missing-thinking? client))))
+       (headers (build-headers api-key #t))
+       (poster (or http-poster (current-http-post))))
     (call-with-values
       (lambda ()
         (poster uri #:body payload #:headers headers #:streaming? #t))
       (lambda (response body-port)
         ;; Some callers and mock posters deliver the body as a plain
         ;; string; normalize to a port so SSE reading is uniform.
-        (let ((port (if (port? body-port)
-                        body-port
-                        (open-input-string (if (string? body-port) body-port "")))))
+        (let
+            ((port
+               (if (port? body-port)
+                 body-port
+                 (open-input-string
+                   (if (string? body-port)
+                     body-port
+                     "")))))
           (dynamic-wind
-            (lambda () #t)
+            (lambda ()
+              #t)
             (lambda ()
               (let ((code (response-code response)))
                 (unless (<= 200 code 299)
-                  (let ((err-text
-                          (if (port? body-port)
-                              (catch #t
-                                (lambda () (read-delimited "" body-port))
-                                (lambda _ "failed to read error body"))
-                              body-port)))
+                  (let
+                      ((err-text
+                         (if (port? body-port)
+                           (catch #t
+                             (lambda ()
+                               (read-delimited "" body-port))
+                             (lambda _
+                               "failed to read error body"))
+                           body-port)))
                     (error "model-stream HTTP request failed" code err-text)))
-                (let* ((result (read-sse-events port
-                                 (lambda (chunk)
-                                   (let ((fragments (extract-tool-call-deltas chunk)))
-                                     (if (pair? fragments)
-                                         (for-each
-                                           (lambda (frag)
-                                             (catch #t
-                                               (lambda ()
-                                                 (chunk-callback frag 'tool-call))
-                                               (lambda _ #f)))
-                                           fragments)
-                                         (let ((item (extract-chat-delta-item chunk)))
-                                           (when (and (pair? item) (string? (cdr item)) (not (string-null? (cdr item))))
-                                             (catch #t
-                                               (lambda ()
-                                                 (chunk-callback (cdr item) (car item)))
-                                               (lambda _
-                                                 (chunk-callback (cdr item)))))))))))
-                       (complete-res (and (pair? result)
-                                          (json-ref result "choices")
-                                          result)))
+                (let*
+                    ((result
+                       (read-sse-events port
+                                        (lambda (chunk)
+                                          (let
+                                              ((fragments (extract-tool-call-deltas chunk)))
+                                            (if (pair? fragments)
+                                              (for-each
+                                                (lambda (frag)
+                                                  (catch #t
+                                                    (lambda ()
+                                                      (chunk-callback frag 'tool-call))
+                                                    (lambda _
+                                                      #f)))
+                                                fragments)
+                                              (let ((item (extract-chat-delta-item chunk)))
+                                                (when
+                                                    (and (pair? item) (string? (cdr item)) (not (string-null? (cdr item))))
+                                                  (catch #t
+                                                    (lambda ()
+                                                      (chunk-callback (cdr item) (car item)))
+                                                    (lambda _
+                                                      (chunk-callback (cdr item)))))))))))
+                     (complete-res (and (pair? result) (json-ref result "choices") result)))
                   (when complete-res
                     (catch #t
                       (lambda ()
                         (chunk-callback complete-res 'complete-json))
-                      (lambda _ #f)))
-                  (if complete-res 'done result))))
+                      (lambda _
+                        #f)))
+                  (if complete-res
+                    'done
+                    result))))
             (lambda ()
-              (when (and (port? port) (not (port-closed? port)))
-                (close-port port)))))))))
+              (when (and (port? port) (not (port-closed? port))) (close-port port)))))))))
 
 ;;;
 ;;; Model Listing & Auto-Detection

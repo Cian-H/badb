@@ -141,6 +141,57 @@
     (test-assert "stripped tool keeps the function type wrapper"
       (equal? "function" (assoc-ref (vector-ref tools-v 0) "type"))))
 
+  ;; The strict-OpenAI message profile (the dump2 422: assistant tool
+  ;; turns carry a fabricated reasoning_content trace that strict APIs
+  ;; reject; local reasoning-template servers require it).
+  (let* ((history
+           (list
+            (list (cons "role" "user") (cons "content" "hi"))
+            '((role . "assistant")
+              (reasoning_content . "Invoking read_file...")
+              (content . "")
+              (tool_calls . #(((id . "call-1") (type . "function")
+                               (function . ((name . "read_file")
+                                            (arguments . "{}")))))))
+            '((role . "tool") (tool_call_id . "call-1") (content . "result"))))
+         (strict-json
+           (parameterize ((current-send-reasoning? #f))
+             (format-chat-request history #:model "m")))
+         (lenient-json (format-chat-request history #:model "m")))
+    (test-assert "strict profile drops reasoning_content from messages"
+      (not (string-contains strict-json "reasoning_content")))
+    (test-assert "strict profile keeps tool_calls, tool_call_id and names"
+      (and (string-contains strict-json "tool_calls")
+           (string-contains strict-json "tool_call_id")
+           (string-contains strict-json "read_file")))
+    (test-assert "lenient profile keeps the reasoning trace"
+      (string-contains lenient-json "reasoning_content"))
+    (test-assert "lenient profile injects Thinking... when the trace is absent"
+      (string-contains
+       (format-chat-request
+        '((role . "assistant") (content . "")
+          (tool_calls . #(((id . "c") (type . "function")
+                           (function . ((name . "bash") (arguments . "{}")))))))
+        #:model "m")
+       "Thinking..."))
+    ;; model-complete binds the profile from the client's strict flag
+    (let* ((captured #f)
+           (poster
+             (lambda* (uri #:key (body #f) (headers '()) (streaming? #f))
+               (set! captured body)
+               (values (build-response #:code 200)
+                       "{\"choices\": [{\"message\": {\"content\": \"ok\"}}]}")))
+           (strict-client (make-model-client #:endpoint "http://x/v1" #:model "m"
+                                             #:allow-missing-thinking? #f))
+           (lenient-client (make-model-client #:endpoint "http://x/v1" #:model "m")))
+      (model-complete strict-client history #:http-poster poster)
+      (test-assert "strict client sends a clean message array"
+        (not (string-contains captured "reasoning_content")))
+      (set! captured #f)
+      (model-complete lenient-client history #:http-poster poster)
+      (test-assert "lenient client still sends the trace"
+        (string-contains captured "reasoning_content"))))
+
 
   ;; Payload with max-tokens
   (let* ((json-str (format-chat-request "Token test"

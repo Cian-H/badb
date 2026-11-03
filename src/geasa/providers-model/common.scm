@@ -4,22 +4,28 @@
 ;;; and Server-Sent Events (SSE) stream parsing.
 
 (define-module (geasa providers-model common)
-  #:use-module (geasa foundation-util plugin)
-  #:use-module (ice-9 rdelim)
-  #:use-module (json)
-  #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-9)
-  #:export (<model-client>
-            make-model-client
-            model-client?
-            model-client-endpoint
-            model-client-api-key
-            model-client-model
-            model-client-allow-missing-thinking?
-            valid-api-message?
-            normalize-messages
-            parse-sse-line
-            read-sse-events))
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (json)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:export
+               (current-send-reasoning? <model-client>
+                                        make-model-client
+                                        model-client?
+                                        model-client-endpoint
+                                        model-client-api-key
+                                        model-client-model
+                                        model-client-allow-missing-thinking?
+                                        valid-api-message?
+                                        normalize-messages
+                                        parse-sse-line
+                                        read-sse-events))
 
 ;;;
 ;;; Client Record Type
@@ -71,6 +77,14 @@ or with positional arguments:
 ;;;
 ;;; Message Validation & Normalization
 ;;;
+(define current-send-reasoning?
+        ;; Whether outgoing messages may carry non-protocol fields (e.g. the
+        ;; reasoning_content trace).  Local reasoning-model servers want them;
+        ;; strict OpenAI-compatible APIs (api.mistral.ai) reject unknown fields.
+        ;; model-complete/model-stream bind this to the client's
+        ;; allow-missing-thinking? flag: the strict-OpenAI profile.
+        (make-parameter #t))
+
 (define (message-alist? x) (and (pair? x) (pair? (car x))))
 (define (role-content-pair? x) (and (pair? x) (not (pair? (car x)))))
 (define (single-message-alist? x)
@@ -94,28 +108,39 @@ Rejects internal UI logs or tool responses missing required tool_call_id."
    (else #f)))
 
 (define (normalize-message msg)
-  (cond
-   ((message-alist? msg)
-    (let* ((stringified
-            (map (lambda (pair)
-                   (cons (ensure-string (car pair)) (cdr pair)))
-                 msg))
-           (role (assoc-ref stringified "role"))
-           (tc (assoc-ref stringified "tool_calls"))
-           (rc (assoc-ref stringified "reasoning_content")))
-      (if (and role
-               (string=? role "assistant")
-               tc
-               (or (not rc) (and (string? rc) (string-null? (string-trim-both rc)))))
-          (cons (cons "reasoning_content" "Thinking...")
-                (filter (lambda (p)
-                          (not (string=? (car p) "reasoning_content")))
-                        stringified))
-          stringified)))
-   ((role-content-pair? msg)
-    (list (cons "role" (ensure-string (car msg))) (cons "content" (cdr msg))))
-   ((string? msg) (list (cons "role" "user") (cons "content" msg)))
-   (else msg)))
+        (cond
+          ((message-alist? msg)
+            (let*
+                ((stringified
+                   (map
+                     (lambda (pair)
+                       (cons (ensure-string (car pair)) (cdr pair)))
+                     msg))
+                 (role (assoc-ref stringified "role"))
+                 (tc (assoc-ref stringified "tool_calls"))
+                 (rc (assoc-ref stringified "reasoning_content")))
+              (cond
+                ((not (current-send-reasoning?))
+                  ;; Strict OpenAI-compatible profile: only protocol fields go on
+                  ;; the wire; reasoning traces stay internal to the harness.
+                  (filter
+                    (lambda (p)
+                      (member (car p) (quote ("role" "content" "tool_calls" "tool_call_id"))))
+                    stringified))
+                ((and role
+                      (string=? role "assistant")
+                      tc
+                      (or (not rc) (and (string? rc) (string-null? (string-trim-both rc)))))
+                  (cons (cons "reasoning_content" "Thinking...")
+                        (filter
+                          (lambda (p)
+                            (not (string=? (car p) "reasoning_content")))
+                          stringified)))
+                (else stringified))))
+          ((role-content-pair? msg)
+            (list (cons "role" (ensure-string (car msg))) (cons "content" (cdr msg))))
+          ((string? msg) (list (cons "role" "user") (cons "content" msg)))
+          (else msg)))
 
 (define (normalize-messages msgs)
   (cond
