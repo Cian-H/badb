@@ -29,10 +29,18 @@
       (not (char=? #\newline (string-ref identity (- (string-length identity) 1)))))
     (test-assert "identity names the harness"
       (string-contains identity "You are badb"))
-    (test-assert "identity declares tool access"
-      (string-contains identity "local tools"))
-    (test-assert "identity commits to methodical verification"
-      (string-contains identity "verifying each step"))))
+    (test-assert "identity demands read-before-edit discipline"
+      (string-contains identity "read before editing"))
+    (test-assert "identity commits to verification"
+      (string-contains identity "verify each step"))
+    (test-assert "identity advertises the tool set"
+      (string-contains identity "run_tests"))
+    (test-assert "identity advertises checkpoint/rollback safety nets"
+      (string-contains identity "checkpoint_rollback"))
+    (test-assert "identity explains the geasa bundle model"
+      (string-contains identity "geasa"))
+    (test-assert "identity states the error posture"
+      (string-contains identity "admit uncertainty"))))
 
 ;;;
 ;;; 2. The pinned-file contract
