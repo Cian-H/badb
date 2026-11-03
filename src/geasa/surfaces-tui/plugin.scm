@@ -1830,12 +1830,21 @@ that verdicts come only from kernel subprocess replay."
                           (lambda* (feature-id #:optional target-path spec-path)
                             (catch #t
                               (lambda ()
-                                (let* ((synth-fn (module-ref (or (false-if-exception (resolve-module '(geasa runtimes-synthesis plugin)))
-                                                                   (resolve-module '(geasa runtimes-synthesis plugin)))
-                                                             'run-synthesis-workflow))
+                                (let* ((synth-mod (or (false-if-exception (resolve-module '(geasa runtimes-synthesis plugin)))
+                                                       (resolve-module '(geasa runtimes-synthesis plugin))))
+                                       (resolve-role (module-ref synth-mod 'resolve-synthesis-role))
+                                       (synth-fn (module-ref synth-mod 'run-synthesis-workflow))
+                                       ;; The synthesis agent role (model + persona
+                                       ;; from the persona geasa) resolved from the
+                                       ;; project config at call time.
+                                       (role (catch #t
+                                               (lambda () (resolve-role (load-config)))
+                                               (lambda _ #f)))
                                        (res (synth-fn feature-id
                                                       #:target-path target-path
-                                                      #:spec-path spec-path))
+                                                      #:spec-path spec-path
+                                                      #:model (and role (assoc-ref role 'model))
+                                                      #:persona (and role (assoc-ref role 'persona-text))))
                                        (status (assoc-ref res 'status))
                                        (wf-result (assoc-ref res 'result)))
                                   (format #f "Sema plugin synthesis ~a for feature '~a'.\n~a"

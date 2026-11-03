@@ -7,6 +7,7 @@
   #:use-module (srfi srfi-1)
   #:use-module (badb spec)
   #:use-module (srfi srfi-64)
+  #:use-module (geasa foundation-util plugin)
   #:use-module (geasa foundation-config plugin))
 
 (spec-begin "foundation-config")
@@ -265,6 +266,48 @@
               (test-assert "active mistral endpoint is strict"
                 (not (badb-config-allow-missing-thinking?
                       cfg (badb-config-model-endpoint cfg))))))
+
+(test-group "config-agent-roles"
+            (let*
+                ((sexp
+                   '(badb-config
+                     (model (name "default-model") (endpoint "http://localhost:8000"))
+                     (options
+                      (agents
+                       (synthesis
+                        (provider "mistral")
+                        (model "mistral-large-latest")
+                        (persona "persona-synthesizer")))
+                      (providers
+                       (mistral (endpoint "https://api.mistral.ai/v1")
+                        (api-key "mstrl-test")
+                        (models ("mistral-large-latest")))))))
+                 (cfg (parse-config-sexp sexp)))
+              (test-assert "agents catalog present"
+                (pair? (badb-config-agents cfg)))
+              (test-assert "synthesis role found by symbol"
+                (badb-config-get-agent cfg 'synthesis))
+              (test-assert "synthesis role found by string"
+                (badb-config-get-agent cfg "synthesis"))
+              (test-assert "unknown role returns #f"
+                (not (badb-config-get-agent cfg "reviewer")))
+              (let ((role (badb-config-get-agent cfg "synthesis")))
+                (test-equal "role provider field"
+                  "mistral" (get-prop role 'provider #f))
+                (test-equal "role model field"
+                  "mistral-large-latest" (get-prop role 'model #f))
+                (test-equal "role persona field"
+                  "persona-synthesizer" (get-prop role 'persona #f)))
+              ;; The role's provider names a real preset in the catalog.
+              (test-assert "role provider resolves against provider presets"
+                (badb-config-get-provider cfg
+                  (get-prop (badb-config-get-agent cfg "synthesis") 'provider #f)))
+              ;; No agents section: empty catalog, no roles.
+              (let ((bare (make-badb-config)))
+                (test-equal "no agents section yields empty catalog"
+                  '() (badb-config-agents bare))
+                (test-assert "no roles on bare config"
+                  (not (badb-config-get-agent bare "synthesis"))))))
 
 ;;;
 ;;; 6. UI Theme Configuration

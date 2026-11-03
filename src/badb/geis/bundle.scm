@@ -765,6 +765,15 @@ modified by the replay (cassette mode re-runs the edits)."
                                              target
                                              #:workflow-path
                                              (string-append dir "/" wf)
+                                             ;; Replay reproduces the pinned
+                                             ;; synthesis with the DEFAULT
+                                             ;; synthesis persona (identity +
+                                             ;; directives from the
+                                             ;; persona-synthesizer geasa),
+                                             ;; independent of local config.
+                                             #:persona
+                                             (persona-prompt-text
+                                              "persona-synthesizer")
                                              #:cassette
                                              cassette
                                              #:cassette-mode

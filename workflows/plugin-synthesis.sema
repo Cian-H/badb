@@ -137,13 +137,22 @@
   (def cassette-mode (if (= (str cassette-mode-raw) "replay") :replay
                          (if (= (str cassette-mode-raw) "record") :record :auto)))
 
-  (defagent synthesizer
-    {:system (format "You are an expert GNU Guile Scheme software engineer.
-Your task is to synthesize the Guile module at '~a' to satisfy the contract specification at '~a' for feature '~a'.
+  ;; The synthesizer persona: composed persona prompt (identity +
+  ;; directives) from the persona-synthesizer geasa bundle, resolved by
+  ;; badb (resolve-synthesis-role) and passed via args.  The fallback is
+  ;; for direct workflow runs without badb's role resolution.
+  (def persona-text
+    (or (if (contains? args :persona) (:persona args) #f)
+        "You are the badb synthesizer, an expert GNU Guile Scheme software engineer."))
 
-Available tools:
-- AST MCP tools and file tools: read_file, write_file, and structural editing tools if active.
-- spec_runner: runs the contract specification and returns structured verdict and counterexamples.
+  (defagent synthesizer
+    {:system persona-text
+     :model model-name
+     :tools tools
+     :max-turns max-turns})
+
+  (def synthesis-prompt
+    (format "Please synthesize the Guile module at '~a' to satisfy the locked contract spec '~a' for feature '~a'.
 
 Process:
 1. First, call 'spec_runner' to see the current contract status and counterexamples.
@@ -152,14 +161,7 @@ Process:
 4. Call 'spec_runner' to verify the implementation.
 5. If contracts fail, analyze the counterexample inputs, arity mismatches, or exception messages, and refine the code.
 6. Once 'spec_runner' returns verdict 'pass' with 0 failures, conclude your answer."
-                     target-path locked-spec-path feature-id target-path)
-     :model model-name
-     :tools tools
-     :max-turns max-turns})
-
-  (def synthesis-prompt
-    (format "Please synthesize the Guile module at '~a' to satisfy the locked contract spec '~a' for feature '~a'."
-            target-path locked-spec-path feature-id))
+            target-path locked-spec-path feature-id target-path))
 
   (def synthesis-output
     (llm/with-budget {:max-tokens budget-tokens :max-cost-usd budget-usd}

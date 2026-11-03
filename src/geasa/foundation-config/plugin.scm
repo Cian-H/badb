@@ -59,6 +59,8 @@
                                  badb-config-get-provider
                                  badb-config-provider-for-endpoint
                                  badb-config-allow-missing-thinking?
+                                 badb-config-agents
+                                 badb-config-get-agent
                                  badb-config-switch-provider!
                                  parse-config-sexp
                                  config->sexp
@@ -226,9 +228,11 @@
   config)
 
 (define (badb-config-providers config)
-        "Extract the providers alist from CONFIG options, or '()."
+        "Extract the providers alist from CONFIG options, or '().
+Uses a raw alist lookup: GET-PROP unwraps single-provider catalogs,
+which would break badb-config-get-provider on them."
         (let ((opts (badb-config-options config)))
-          (or (get-prop opts 'providers #f) '())))
+          (or (assq-ref opts 'providers) '())))
 
 (define (badb-config-get-provider config name)
         "Retrieve provider entry for NAME (symbol or string) from CONFIG options, or #f."
@@ -283,6 +287,24 @@ matching ENDPOINT sets (allow-missing-thinking #f)."
   (let* ((prov (badb-config-provider-for-endpoint config endpoint))
          (flag (if prov (get-prop prov 'allow-missing-thinking #t) #t)))
     (not (eq? flag #f))))
+
+(define
+  (badb-config-agents config)
+  "Extract the agent-role catalog from CONFIG options — the value of
+(options (agents (role ...) ...)) — or '().  Uses a raw alist lookup:
+GET-PROP unwraps single-entry catalogs ((one-role ...)) into the role
+form itself, which would corrupt single-role configurations."
+  (let ((opts (badb-config-options config)))
+    (or (assq-ref opts 'agents) '())))
+
+(define
+  (badb-config-get-agent config name)
+  "Retrieve the role entry for NAME (symbol or string) — e.g.
+'synthesis — from the agents catalog, or #f."
+  (let* ((name-sym (ensure-symbol name))
+         (name-str (symbol->string name-sym))
+         (roles (badb-config-agents config)))
+    (or (assq-ref roles name-sym) (assoc-ref roles name-str))))
 
 ;;;
 ;;; S-Expression Parsing and Serialization

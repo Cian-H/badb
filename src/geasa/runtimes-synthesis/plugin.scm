@@ -38,6 +38,8 @@
                #:use-module
                (geasa foundation-util plugin)
                #:use-module
+               (geasa foundation-config plugin)
+               #:use-module
                (ice-9 format)
                #:use-module
                (ice-9 ftw)
@@ -56,6 +58,8 @@
                                      commit-synthesized-module!
                                      commit-synthesized-module-cli
                                      default-workflow-path
+                                     persona-prompt-text
+                                     resolve-synthesis-role
                                      run-synthesis-workflow
                                      synthesize-feature!
                                      run-synthesis-cli
@@ -197,6 +201,37 @@ commit or 1 on revert/error."
     (list exit-code (or out "") "")))
 
 ;;;
+;;; Synthesis agent role resolution
+;;;
+
+(define (persona-prompt-text persona-id)
+  "Serve the composed persona prompt of the PERSONA-ID geasa bundle
+(identity plus its declared directives), falling back to the bare
+identity when the bundle exports no persona-prompt.  Throws when the
+bundle is not resolvable."
+  (let* ((mod (resolve-interface `(geasa ,(string->symbol persona-id) plugin)))
+         (prompt-fn (module-ref mod 'persona-prompt #f))
+         (identity-fn (module-ref mod 'persona-identity)))
+    (if prompt-fn (prompt-fn) (identity-fn))))
+
+(define (resolve-synthesis-role config)
+  "Resolve the 'synthesis' agent role from CONFIG into an alist:
+((persona-id . id) (persona-text . composed-prompt) (provider . name)
+ (endpoint . url) (api-key . key) (model . name)).  Defaults: persona
+persona-synthesizer; provider/model from the role entry; endpoint and
+api-key from the named provider preset when it exists."
+  (let* ((role (or (badb-config-get-agent config "synthesis") '()))
+         (persona-id (or (get-prop role 'persona #f) "persona-synthesizer"))
+         (provider-name (get-prop role 'provider #f))
+         (preset (and provider-name (badb-config-get-provider config provider-name))))
+    `((persona-id . ,persona-id)
+      (persona-text . ,(persona-prompt-text persona-id))
+      (provider . ,provider-name)
+      (endpoint . ,(and preset (get-prop preset 'endpoint #f)))
+      (api-key . ,(and preset (get-prop preset 'api-key #f)))
+      (model . ,(get-prop role 'model #f)))))
+
+;;;
 ;;; Sema synthesis workflow runner
 ;;;
 (define* (run-synthesis-workflow feature-id
@@ -205,6 +240,7 @@ commit or 1 on revert/error."
                                 (target-path #f)
                                 (workflow-path #f)
                                 (model #f)
+                                (persona #f)
                                 (budget #f)
                                 (cassette #f)
                                 (cassette-mode #f)
@@ -235,6 +271,7 @@ with the parsed result from the workflow execution."
                     (target-path . ,actual-target)
                     (spec-path . ,actual-spec)
                     (model . ,model)
+                    (persona . ,persona)
                     (budget . ,budget)
                     (cassette . ,cassette)
                     (cassette-mode . ,(and cassette-mode (ensure-string cassette-mode)))
@@ -289,6 +326,7 @@ with the parsed result from the workflow execution."
                              (mgr #f)
                              (workflow-path #f)
                              (model #f)
+                             (persona #f)
                              (budget #f)
                              (cassette #f)
                              (cassette-mode #f)
@@ -303,6 +341,7 @@ hot-attached to MGR's registry on completion."
                                      #:target-path target-path
                                      #:workflow-path workflow-path
                                      #:model model
+                                     #:persona persona
                                      #:budget budget
                                      #:cassette cassette
                                      #:cassette-mode cassette-mode
@@ -370,7 +409,14 @@ Options:
                     (commit-synthesized-module-cli feature-id
                                                    (or target-path (format #f "src/badb/~a.scm" feature-id)))
                     (let*
-                        ((budget
+                        ((role
+                           ;; Best-effort role resolution: the synthesis
+                           ;; agent role (model + persona) from the local
+                           ;; config, when one exists.
+                           (catch #t
+                             (lambda () (resolve-synthesis-role (load-config)))
+                             (lambda _ #f)))
+                         (budget
                            (if (or budget-tokens budget-usd)
                              `((max-tokens . ,budget-tokens) (max-cost-usd . ,budget-usd))
                              #f))
@@ -381,7 +427,12 @@ Options:
                                                    #:target-path
                                                    target-path
                                                    #:model
-                                                   model
+                                                   (or model
+                                                       (and role
+                                                            (assoc-ref role 'model)))
+                                                   #:persona
+                                                   (and role
+                                                        (assoc-ref role 'persona-text))
                                                    #:budget
                                                    budget
                                                    #:cassette

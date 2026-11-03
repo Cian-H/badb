@@ -13,6 +13,7 @@
   #:use-module (badb kernel registry)
   #:use-module (badb kernel geis-gate)
   #:use-module (geasa runtimes-synthesis plugin)
+  #:use-module (geasa foundation-config plugin)
   #:use-module (badb kernel transaction)
   #:use-module (geasa surfaces-tui plugin)
   #:use-module (ice-9 textual-ports)
@@ -26,6 +27,7 @@
 (define %spec-source (spec-bundle-ref "fixtures/spec-pass.scm"))
 (define %feature-id "math-utils-synthesized")
 (define %cassette (spec-bundle-ref "cassettes/synthesis-fixture.jsonl"))
+(define %persona (persona-prompt-text "persona-synthesizer"))
 
 (define %original-target-content
   (call-with-input-file %target-path get-string-all))
@@ -64,6 +66,59 @@
       (file-exists? (locked-spec-path "synth-lock-helper-test")))))
 
 ;;;
+;;; 2b. Synthesis agent role resolution
+;;;
+(test-group "synthesis-role-resolution"
+  (let ((text (persona-prompt-text "persona-synthesizer")))
+    (test-assert "persona-prompt-text serves the composed persona"
+      (string-contains text "badb synthesizer"))
+    (test-assert "composed persona carries the structural-editing directive"
+      (string-contains text "AST MCP structural-editing tools"))
+    (test-equal "persona text matches the spec fixture persona"
+      %persona text))
+
+  ;; Bare identity fallback: persona-badb exports no persona-prompt, so
+  ;; persona-prompt-text falls back to persona-identity.
+  (test-assert "persona-prompt-text falls back to the bare identity"
+    (string-contains (persona-prompt-text "persona-badb") "You are badb"))
+
+  ;; Role resolution against a fixture config.
+  (let* ((cfg (parse-config-sexp
+                '(badb-config
+                  (options
+                   (agents
+                    (synthesis
+                     (provider "mistral")
+                     (model "mistral-large-latest")
+                     (persona "persona-synthesizer")))
+                   (providers
+                    (mistral (endpoint "https://api.mistral.ai/v1")
+                     (api-key "mstrl-test")
+                     (models ("mistral-large-latest"))))))))
+         (role (resolve-synthesis-role cfg)))
+    (test-equal "role resolves the persona id"
+      "persona-synthesizer" (assoc-ref role 'persona-id))
+    (test-equal "role resolves the composed persona text"
+      %persona (assoc-ref role 'persona-text))
+    (test-equal "role resolves the model"
+      "mistral-large-latest" (assoc-ref role 'model))
+    (test-equal "role resolves the provider"
+      "mistral" (assoc-ref role 'provider))
+    (test-equal "role resolves the provider endpoint"
+      "https://api.mistral.ai/v1" (assoc-ref role 'endpoint))
+    (test-equal "role resolves the provider api key"
+      "mstrl-test" (assoc-ref role 'api-key)))
+
+  ;; Defaults: no config -> persona-synthesizer, no provider/model.
+  (let ((role (resolve-synthesis-role (make-badb-config))))
+    (test-equal "default persona is persona-synthesizer"
+      "persona-synthesizer" (assoc-ref role 'persona-id))
+    (test-assert "default persona text still resolves"
+      (string-contains (assoc-ref role 'persona-text) "badb synthesizer"))
+    (test-assert "no provider by default" (not (assoc-ref role 'provider)))
+    (test-assert "no model by default" (not (assoc-ref role 'model)))))
+
+;;;
 ;;; 3. Deterministic cassette-backed synthesis workflow
 ;;;
 (test-group "cassette-backed-synthesis"
@@ -82,6 +137,7 @@
       (let* ((res (run-synthesis-workflow %feature-id
                                          #:spec-path (locked-spec-path %feature-id)
                                          #:target-path %target-path
+                                         #:persona %persona
                                          #:cassette %cassette
                                          #:cassette-mode "replay"
                                          #:run-dir (string-append %temp-dir "/runs")))
@@ -137,7 +193,8 @@
                                       #:spec-path (locked-spec-path %feature-id)
                                       #:target-path %target-path
                                       #:mgr mgr
-                                      #:cassette %cassette
+                                      #:persona %persona
+                                         #:cassette %cassette
                                       #:cassette-mode "replay"
                                       #:run-dir (string-append %temp-dir "/attach-runs"))))
         (test-equal "synthesize-feature! reports success"
@@ -166,7 +223,8 @@
                                      #:spec-path (locked-spec-path %feature-id)
                                      #:target-path %target-path
                                      #:budget '((max-tokens . 1))
-                                     #:cassette %cassette
+                                     #:persona %persona
+                                         #:cassette %cassette
                                      #:cassette-mode "replay"
                                      #:run-dir (string-append %temp-dir "/budget-runs")))
          (wf-result (assoc-ref res 'result)))
