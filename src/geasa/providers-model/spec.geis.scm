@@ -106,6 +106,41 @@
                                           #:allow-missing-thinking #f))
                     "allow_missing_thinking")))
 
+  ;; Harness-internal _badb_* provenance keys must never reach the wire:
+  ;; strict APIs (api.mistral.ai) reject unknown body fields.  Tool specs
+  ;; reach the formatter with either symbol or string keys.
+  (let* ((sym-tool
+           '((type . "function")
+             (function . ((name . "bash")
+                          (description . "Run a command")
+                          (parameters . ((type . "object")
+                                        (properties . ((command . ((type . "string")))))
+                                        (required . #("command"))))
+                          (_badb_source . "registry")
+                          (_badb_original_id . "bash")))))
+         (str-tool
+           '(("type" . "function")
+             ("function" . (("name" . "checkpoint_create")
+                            ("_badb_source" . "registry")))))
+         (payload (json-string->scm
+                   (format-chat-request "x" #:model "m"
+                                        #:tools (list sym-tool str-tool))))
+         (payload-json (scm->json-string payload))
+         (tools-v (assoc-ref payload "tools")))
+    (test-assert "no _badb keys leak into the request payload"
+      (not (string-contains payload-json "_badb")))
+    (test-equal "both tools survive the strip" 2 (vector-length tools-v))
+    (test-assert "symbol-keyed tool keeps name and parameters"
+      (let ((fn (assoc-ref (vector-ref tools-v 0) "function")))
+        (and fn
+             (equal? "bash" (assoc-ref fn "name"))
+             (assoc-ref fn "parameters"))))
+    (test-assert "string-keyed tool keeps name"
+      (equal? "checkpoint_create"
+              (assoc-ref (assoc-ref (vector-ref tools-v 1) "function") "name")))
+    (test-assert "stripped tool keeps the function type wrapper"
+      (equal? "function" (assoc-ref (vector-ref tools-v 0) "type"))))
+
 
   ;; Payload with max-tokens
   (let* ((json-str (format-chat-request "Token test"

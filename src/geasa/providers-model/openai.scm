@@ -4,52 +4,104 @@
 ;;; and GET /models auto-detection.
 
 (define-module (geasa providers-model openai)
-  #:use-module (geasa foundation-util plugin)
-  #:use-module (geasa providers-model common)
-  #:use-module (geasa providers-model anthropic)
-  #:use-module (geasa providers-model mock)
-  #:use-module (web uri)
-  #:use-module (web response)
-  #:use-module (web http)
-  #:use-module (ice-9 format)
-  #:use-module (ice-9 rdelim)
-  #:use-module (ice-9 optargs)
-  #:use-module (rnrs bytevectors)
-  #:use-module (json)
-  #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-9)
-  #:export (format-chat-request
-            extract-chat-delta
-            extract-chat-delta-item
-            extract-chat-content
-            extract-chat-tool-calls
-            extract-usage
-            extract-tool-call-deltas
-            merge-tool-call-fragment
-            finalize-tool-call-fragments
-            parse-models-response
-            generic-model?
-            generic-model-name?
-            choose-model
-            list-models
-            model-available?
-            auto-detect-model
-            model-complete
-            model-stream))
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (geasa providers-model common)
+               #:use-module
+               (geasa providers-model anthropic)
+               #:use-module
+               (geasa providers-model mock)
+               #:use-module
+               (web uri)
+               #:use-module
+               (web response)
+               #:use-module
+               (web http)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 optargs)
+               #:use-module
+               (rnrs bytevectors)
+               #:use-module
+               (json)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:export
+               (strip-internal-tool-keys format-chat-request
+                                         extract-chat-delta
+                                         extract-chat-delta-item
+                                         extract-chat-content
+                                         extract-chat-tool-calls
+                                         extract-usage
+                                         extract-tool-call-deltas
+                                         merge-tool-call-fragment
+                                         finalize-tool-call-fragments
+                                         parse-models-response
+                                         generic-model?
+                                         generic-model-name?
+                                         choose-model
+                                         list-models
+                                         model-available?
+                                         auto-detect-model
+                                         model-complete
+                                         model-stream))
 
 ;;;
 ;;; Chat Request Formatting
 ;;;
-(define* (format-chat-request messages
-                              #:key
-                              (model #f)
-                              (temperature #f)
-                              (stream #f)
-                              (tools #f)
-                              (tool-choice #f)
-                              (max-tokens #f)
-                              (as-alist #f)
-                              (allow-missing-thinking #t))
+(define (strip-internal-tool-keys tool)
+        "Strip badb-internal _badb_* provenance keys from a TOOL spec (top
+level and its function object).  The harness carries them for tool-call
+dispatch routing, but strict OpenAI-compatible APIs (e.g.
+api.mistral.ai) reject unknown body fields with 422 extra_forbidden.
+Tool specs carry the function entry under either a string or symbol
+key, so both spellings are handled."
+        (define (badb-internal-key? key)
+                (and (or (symbol? key) (string? key))
+                     (string-prefix? "_badb_"
+                                     (if (symbol? key)
+                                       (symbol->string key)
+                                       key))))
+        (define (strip-level alist)
+                (filter
+                  (lambda (pair)
+                    (not (and (pair? pair) (badb-internal-key? (car pair)))))
+                  (if (list? alist)
+                    alist
+                    '())))
+        (define (function-entry? pair)
+                (and (pair? pair)
+                     (or (eq? (car pair) (quote function)) (equal? (car pair) "function"))))
+        (let*
+            ((tool* (strip-level tool))
+             (fn (or (assoc-ref tool* "function") (assq-ref tool* (quote function)))))
+          (if (pair? fn)
+            (let ((fn* (strip-level fn)))
+              (map
+                (lambda (pair)
+                  (if (function-entry? pair)
+                    (cons (car pair) fn*)
+                    pair))
+                tool*))
+            tool*)))
+
+(define*
+  (format-chat-request messages
+                       #:key
+                       (model #f)
+                       (temperature #f)
+                       (stream #f)
+                       (tools #f)
+                       (tool-choice #f)
+                       (max-tokens #f)
+                       (as-alist #f)
+                       (allow-missing-thinking #t))
   "Format a chat completion request payload.
 MESSAGES can be a string prompt, a list of message alists, a single message alist,
 a list of (role . text) pairs, or a vector of messages.
@@ -61,22 +113,33 @@ Optional keyword arguments:
   #:tool-choice - Tool choice policy string or object (e.g. \"auto\")
   #:max-tokens  - Integer maximum tokens to generate
   #:as-alist    - When true, returns the Scheme alist instead of JSON string."
-  (let* ((msgs (normalize-messages messages))
-         (alist (filter pair?
-                        (list
-                         (cons "messages" msgs)
-                         (and model (cons "model" model))
-                         (and (number? temperature) (cons "temperature" temperature))
-                         (and (number? max-tokens) (cons "max_tokens" max-tokens))
-                         (and (and tools (or (pair? tools) (vector? tools)))
-                              (cons "tools" (if (list? tools) (list->vector tools) tools)))
-                         (and tool-choice (cons "tool_choice" tool-choice))
-                         (and allow-missing-thinking
-                              (cons "allow_missing_thinking" #t))
-                         (cons "stream" (if stream #t #f))))))
+  (let*
+      ((msgs (normalize-messages messages))
+       (alist
+         (filter pair?
+                 (list (cons "messages" msgs)
+                       (and model (cons "model" model))
+                       (and (number? temperature) (cons "temperature" temperature))
+                       (and (number? max-tokens) (cons "max_tokens" max-tokens))
+                       (and
+                         (and tools (or (pair? tools) (vector? tools)))
+                         (cons "tools"
+                               (list->vector
+                                 (map strip-internal-tool-keys
+                                      (filter pair?
+                                              (cond
+                                                ((vector? tools) (vector->list tools))
+                                                ((list? tools) tools)
+                                                (else '())))))))
+                       (and tool-choice (cons "tool_choice" tool-choice))
+                       (and allow-missing-thinking (cons "allow_missing_thinking" #t))
+                       (cons "stream"
+                             (if stream
+                               #t
+                               #f))))))
     (if as-alist
-        alist
-        (scm->json-string alist))))
+      alist
+      (scm->json-string alist))))
 
 ;;;
 ;;; Content and Delta Extractors
