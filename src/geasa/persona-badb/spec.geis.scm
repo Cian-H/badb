@@ -30,15 +30,25 @@
     (test-assert "identity names the harness"
       (string-contains identity "You are badb"))
     (test-assert "identity demands read-before-edit discipline"
-      (string-contains identity "read before editing"))
+      (string-contains identity "Read before editing"))
     (test-assert "identity commits to verification"
-      (string-contains identity "verify each step"))
+      (string-contains identity "verify every step"))
     (test-assert "identity advertises the tool set"
       (string-contains identity "run_tests"))
     (test-assert "identity advertises checkpoint/rollback safety nets"
       (string-contains identity "checkpoint_rollback"))
-    (test-assert "identity explains the geasa bundle model"
-      (string-contains identity "geasa"))
+    (test-assert "identity mandates the triage-first delegation loop"
+      (string-contains identity "DO NOT brute-force it in context"))
+    (test-assert "identity teaches the agent-side synthesis path"
+      (and (string-contains identity "spec.lock")
+           (string-contains identity "spec.synthesize")
+           (string-contains identity "spec.verify")))
+    (test-assert "identity forbids hand-writing plugin implementations"
+      (string-contains identity "Do not hand-write the plugin implementation"))
+    (test-assert "identity forbids bypassing the synthesis workflow"
+      (string-contains identity "do not bypass the workflow"))
+    (test-assert "identity trusts only the kernel gate's verdict"
+      (string-contains identity "never self-assessment"))
     (test-assert "identity states the error posture"
       (string-contains identity "admit uncertainty"))))
 
