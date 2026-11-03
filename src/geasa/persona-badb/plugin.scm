@@ -1,47 +1,28 @@
-;;; badb — Default Harness Persona
+;;; badb — Main-Agent Harness Persona
 ;;;
-;;; The harness persona (the identity string the system prompt opens
-;;; with) as pinned bundle data: prompts/identity.md is the canonical
-;;; text, and PERSONA-IDENTITY serves exactly that file, so the persona
-;;; is content the kernel gate hashes and replays — not code.  Swap the
-;;; harness persona by installing a different persona bundle.
+;;; The main agent's identity, as pinned bundle data: prompts/identity.md
+;;; is the canonical persona text, served through the generic persona
+;;; service from the persona-base geasa bundle (a hash-pinned geis
+;;; dependency).  The kernel gate hashes and replays both the text and
+;;; the loader.  Swap the harness persona by installing a different
+;;; persona bundle and repointing the dependents.
 
 (define-module (geasa persona-badb plugin)
-  #:use-module (ice-9 textual-ports)
+  #:use-module (geasa persona-base plugin)
   #:export (persona-id
             persona-identity
             persona-identity-file))
 
-(define %identity-rel-path "geasa/persona-badb/prompts/identity.md")
-
-(define %identity-file-cache #f)
-(define %identity-cache #f)
+(define %service (make-persona-service "badb"))
 
 (define (persona-id)
   "Identifier of this persona."
-  "badb")
+  (persona-service-id %service))
 
 (define (persona-identity-file)
-  "Path of the canonical persona text: the prompts/identity.md of this
-bundle, resolved against the load path exactly as the module itself
-was.  Throws when not found."
-  (or %identity-file-cache
-      (begin
-        (set! %identity-file-cache
-              (or (search-path %load-path %identity-rel-path)
-                  (error (format #f "persona-badb: ~a not found on the load path"
-                                 %identity-rel-path))))
-        %identity-file-cache)))
+  "Path of the canonical persona text within this bundle."
+  (persona-service-identity-file %service))
 
 (define (persona-identity)
-  "The harness persona: the content of the bundle's prompts/identity.md
-with any trailing newline trimmed.  Throws when the file is unreadable."
-  (unless %identity-cache
-    (set! %identity-cache
-          (string-trim-right
-           (call-with-input-file (persona-identity-file)
-             (lambda (port)
-               (set-port-encoding! port "UTF-8")
-               (get-string-all port)))
-           #\newline)))
-  %identity-cache)
+  "The harness persona: the content of the bundle's prompts/identity.md."
+  (persona-service-identity %service))

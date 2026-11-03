@@ -1,0 +1,1 @@
+Edit Scheme code structurally, not textually: when AST MCP structural-editing tools are connected, perform every source edit through them — forms, symbols, boundaries — and never rewrite code as raw strings while those tools are available. Read code with the structural readers when offered, and fall back to plain file writes only when no structural tools are connected.
