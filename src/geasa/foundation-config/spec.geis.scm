@@ -230,6 +230,42 @@
                 "switch to unknown provider returns #f"
                 (not (badb-config-switch-provider! cfg "unknown")))))
 
+(test-group "config-provider-endpoint-lookup"
+            (let*
+                ((sexp
+                   '(badb-config
+                     (model (name "default-model") (endpoint "http://localhost:8000"))
+                     (options
+                      (providers
+                       (lmstudio (endpoint "http://127.0.0.1:1234/v1")
+                        (api-key "lm-studio")
+                        (models ("qwen3")))
+                       (mistral (endpoint "https://api.mistral.ai/v1")
+                        (api-key "mstrl-test")
+                        (allow-missing-thinking #f)
+                        (models ("mistral-large-latest")))))))
+                 (cfg (parse-config-sexp sexp)))
+              (test-assert "preset found by endpoint"
+                (badb-config-provider-for-endpoint cfg "https://api.mistral.ai/v1"))
+              (test-assert "preset lookup by lmstudio endpoint"
+                (badb-config-provider-for-endpoint cfg "http://127.0.0.1:1234/v1"))
+              (test-assert "unknown endpoint returns #f"
+                (not (badb-config-provider-for-endpoint cfg "http://nowhere:9/v1")))
+              (test-assert "non-string endpoint returns #f"
+                (not (badb-config-provider-for-endpoint cfg 42)))
+              (test-assert "mistral preset disables allow-missing-thinking"
+                (not (badb-config-allow-missing-thinking? cfg "https://api.mistral.ai/v1")))
+              (test-assert "lmstudio preset keeps the default flag"
+                (badb-config-allow-missing-thinking? cfg "http://127.0.0.1:1234/v1"))
+              (test-assert "endpoints without a preset default to the flag on"
+                (badb-config-allow-missing-thinking? cfg "http://localhost:8000"))
+              ;; Switching to mistral and asking about the active endpoint
+              ;; yields the strict profile.
+              (badb-config-switch-provider! cfg 'mistral)
+              (test-assert "active mistral endpoint is strict"
+                (not (badb-config-allow-missing-thinking?
+                      cfg (badb-config-model-endpoint cfg))))))
+
 ;;;
 ;;; 6. UI Theme Configuration
 ;;;

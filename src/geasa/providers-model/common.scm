@@ -15,6 +15,7 @@
             model-client-endpoint
             model-client-api-key
             model-client-model
+            model-client-allow-missing-thinking?
             valid-api-message?
             normalize-messages
             parse-sse-line
@@ -24,11 +25,12 @@
 ;;; Client Record Type
 ;;;
 (define-record-type <model-client>
-  (%make-model-client endpoint api-key model)
+  (%make-model-client endpoint api-key model allow-missing-thinking?)
   model-client?
   (endpoint model-client-endpoint)
   (api-key  model-client-api-key)
-  (model    model-client-model))
+  (model    model-client-model)
+  (allow-missing-thinking? model-client-allow-missing-thinking?))
 
 (define (make-model-client . args)
   "Create a model client record.
@@ -36,29 +38,35 @@ Can be invoked with keyword arguments:
   #:endpoint - HTTP(S) endpoint URL (string)
   #:api-key  - Optional API key string (or #f)
   #:model    - Optional model name string (or #f)
+  #:allow-missing-thinking? - Send the Qwen3-style chat-template
+    flag allow_missing_thinking (default #t).  Disable it for strict
+    OpenAI-compatible APIs (e.g. api.mistral.ai) that reject extra
+    body fields.
 or with positional arguments:
   (make-model-client endpoint [api-key [model]])"
   (let loop ((rest args)
              (endpoint "http://localhost:11434/v1/chat/completions")
              (api-key #f)
-             (model "default"))
+             (model "default")
+             (amt? #t))
     (cond
      ((null? rest)
-      (%make-model-client endpoint api-key model))
+      (%make-model-client endpoint api-key model amt?))
      ((keyword? (car rest))
       (let ((k (car rest))
             (v (if (pair? (cdr rest)) (cadr rest) #f))
             (tail (if (pair? (cdr rest)) (cddr rest) '())))
         (case k
-          ((#:endpoint) (loop tail v api-key model))
-          ((#:api-key)  (loop tail endpoint v model))
-          ((#:model)    (loop tail endpoint api-key v))
-          (else (loop tail endpoint api-key model)))))
+          ((#:endpoint) (loop tail v api-key model amt?))
+          ((#:api-key)  (loop tail endpoint v model amt?))
+          ((#:model)    (loop tail endpoint api-key v amt?))
+          ((#:allow-missing-thinking?) (loop tail endpoint api-key model (and v #t)))
+          (else (loop tail endpoint api-key model amt?)))))
      (else
       (let ((ep (car args))
             (ak (if (pair? (cdr args)) (cadr args) #f))
             (md (if (and (pair? (cdr args)) (pair? (cddr args))) (caddr args) "default")))
-        (%make-model-client ep ak md))))))
+        (%make-model-client ep ak md #t))))))
 
 ;;;
 ;;; Message Validation & Normalization

@@ -48,7 +48,8 @@
                               (tools #f)
                               (tool-choice #f)
                               (max-tokens #f)
-                              (as-alist #f))
+                              (as-alist #f)
+                              (allow-missing-thinking #t))
   "Format a chat completion request payload.
 MESSAGES can be a string prompt, a list of message alists, a single message alist,
 a list of (role . text) pairs, or a vector of messages.
@@ -70,7 +71,8 @@ Optional keyword arguments:
                          (and (and tools (or (pair? tools) (vector? tools)))
                               (cons "tools" (if (list? tools) (list->vector tools) tools)))
                          (and tool-choice (cons "tool_choice" tool-choice))
-                         (cons "allow_missing_thinking" #t)
+                         (and allow-missing-thinking
+                              (cons "allow_missing_thinking" #t))
                          (cons "stream" (if stream #t #f))))))
     (if as-alist
         alist
@@ -385,7 +387,9 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
                                 #:tools
                                 tools
                                 #:tool-choice
-                                tool-choice))
+                                tool-choice
+                                #:allow-missing-thinking
+                                (model-client-allow-missing-thinking? client)))
          (headers (build-headers api-key #f))
          (poster (or http-poster (current-http-post))))
     (let loop ((retries (or max-retries (if http-poster 0 2)))
@@ -459,7 +463,9 @@ Returns 'done or 'eof."
                                 #:tool-choice
                                 tool-choice
                                 #:stream
-                                #t))
+                                #t
+                                #:allow-missing-thinking
+                                (model-client-allow-missing-thinking? client)))
          (headers (build-headers api-key #t))
          (poster (or http-poster (current-http-post))))
     (call-with-values

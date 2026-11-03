@@ -2594,7 +2594,10 @@ a manual entry item."
                                #:api-key
                                cur-api-key
                                #:model
-                               cur-model))
+                               cur-model
+                               #:allow-missing-thinking?
+                               (badb-config-allow-missing-thinking? cfg
+                                                                    cur-endpoint)))
     (define repl-mod
             (make-repl-mod reg
                            jrn
@@ -2788,7 +2791,10 @@ and append it to the persistent history journal file."
                                      #:api-key
                                      cur-api-key
                                      #:model
-                                     cur-model))
+                                     cur-model
+                                     #:allow-missing-thinking?
+                                     (badb-config-allow-missing-thinking? cfg
+                                                                          cur-endpoint)))
             (module-define! repl-mod 'client client))
     ;; Startup model auto-detection: when the active model is a generic
     ;; placeholder (#f, empty or "default"), ask the endpoint's /models

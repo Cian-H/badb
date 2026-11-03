@@ -14,6 +14,7 @@
                model-client-endpoint
                model-client-api-key
                model-client-model
+               model-client-allow-missing-thinking?
                valid-api-message?
                normalize-messages
                format-chat-request

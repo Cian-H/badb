@@ -57,6 +57,8 @@
                                  badb-config-remove-mcp-server!
                                  badb-config-providers
                                  badb-config-get-provider
+                                 badb-config-provider-for-endpoint
+                                 badb-config-allow-missing-thinking?
                                  badb-config-switch-provider!
                                  parse-config-sexp
                                  config->sexp
@@ -259,6 +261,28 @@ Returns #t on success, or #f if provider NAME was not found."
         (when m (set-badb-config-model-name! config m))
         #t)
       #f)))
+
+(define
+  (badb-config-provider-for-endpoint config endpoint)
+  "Return the provider preset entry (its field alist) whose endpoint
+matches ENDPOINT, or #f.  The first matching preset wins."
+  (let ((ep (and (string? endpoint) endpoint)))
+    (and ep
+         (let loop ((provs (badb-config-providers config)))
+           (cond
+             ((null? provs) #f)
+             ((equal? (get-prop (cdar provs) 'endpoint #f) ep)
+              (cdar provs))
+             (else (loop (cdr provs))))))))
+
+(define
+  (badb-config-allow-missing-thinking? config endpoint)
+  "Whether a chat request to ENDPOINT should carry the Qwen3-style
+allow_missing_thinking flag: #t by default, #f when the provider preset
+matching ENDPOINT sets (allow-missing-thinking #f)."
+  (let* ((prov (badb-config-provider-for-endpoint config endpoint))
+         (flag (if prov (get-prop prov 'allow-missing-thinking #t) #t)))
+    (not (eq? flag #f))))
 
 ;;;
 ;;; S-Expression Parsing and Serialization

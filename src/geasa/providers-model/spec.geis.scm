@@ -44,7 +44,19 @@
     (test-equal "default endpoint is localhost ollama"
       "http://localhost:11434/v1/chat/completions" (model-client-endpoint default-client))
     (test-equal "default api-key is #f" #f (model-client-api-key default-client))
-    (test-equal "default model is 'default'" "default" (model-client-model default-client)))
+    (test-equal "default model is 'default'" "default" (model-client-model default-client))
+    (test-assert "allow-missing-thinking defaults to #t"
+      (model-client-allow-missing-thinking? default-client)))
+
+  ;; Strict OpenAI-compatible APIs (e.g. api.mistral.ai) reject extra body fields.
+  (let ((strict-client (make-model-client #:endpoint "https://api.mistral.ai/v1"
+                                          #:api-key "mstrl-test"
+                                          #:model "mistral-large-latest"
+                                          #:allow-missing-thinking? #f)))
+    (test-assert "allow-missing-thinking? can be disabled per client"
+      (not (model-client-allow-missing-thinking? strict-client)))
+    (test-assert "flag does not affect the model field"
+      (string=? "mistral-large-latest" (model-client-model strict-client))))
 
   ;; Positional arguments
   (let ((pos-client (make-model-client "http://custom:8000/v1" "pos-key" "llama3")))
@@ -80,6 +92,20 @@
     (test-equal "stream is true for streaming" #t (assoc-ref parsed "stream"))
     (test-equal "model matches" "llama3" (assoc-ref parsed "model"))
     (test-assert "temperature omitted when #f" (not (assoc-ref parsed "temperature"))))
+
+  ;; allow_missing_thinking is a Qwen3-style chat-template flag: sent by
+  ;; default (local reasoning-model servers need it) but omittable for
+  ;; strict OpenAI-compatible APIs.
+  (test-assert "allow_missing_thinking sent by default"
+    (assoc-ref (json-string->scm
+                (format-chat-request "x" #:model "qwen3"))
+               "allow_missing_thinking"))
+  (test-assert "allow_missing_thinking omitted when disabled"
+    (not (assoc-ref (json-string->scm
+                     (format-chat-request "x" #:model "mistral-large-latest"
+                                          #:allow-missing-thinking #f))
+                    "allow_missing_thinking")))
+
 
   ;; Payload with max-tokens
   (let* ((json-str (format-chat-request "Token test"
@@ -367,6 +393,33 @@
                     "captured request body stream is false"
                     #f
                     (assoc-ref body-json "stream")))))
+
+            ;; The client-level allow-missing-thinking flag flows into
+            ;; the request body built by model-complete.
+            (let*
+                ((strict (make-model-client #:endpoint "https://api.mistral.ai/v1"
+                                            #:api-key "mstrl-test"
+                                            #:model "mistral-large-latest"
+                                            #:allow-missing-thinking? #f))
+                 (lenient (make-model-client #:endpoint "http://127.0.0.1:1234/v1"
+                                             #:model "qwen3.6-35b-a3b"))
+                 (seen '())
+                 (poster
+                   (lambda*
+                     (uri #:key (body #f) (headers '()) (streaming? #f))
+                     (set! seen (cons (assoc-ref (json-string->scm body)
+                                                 "allow_missing_thinking")
+                                      seen))
+                     (values
+                       (build-response #:code
+                                       200
+                                       #:headers
+                                       '((content-type application/json (charset . "utf-8"))))
+                       "{\"choices\": [{\"message\": {\"content\": \"ok\"}}]}")))
+                 (%strict-call (model-complete strict "hi" #:http-poster poster))
+                 (%lenient-call (model-complete lenient "hi" #:http-poster poster)))
+              (test-equal "strict client request omits allow_missing_thinking"
+                '(#t #f) seen))
             ;; model-complete with raw? #t returns parsed JSON
             (let*
                 ((client (make-model-client #:endpoint "http://test-server/v1" #:model "m"))
