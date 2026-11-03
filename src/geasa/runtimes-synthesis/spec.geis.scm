@@ -109,6 +109,28 @@
     (test-equal "role resolves the provider api key"
       "mstrl-test" (assoc-ref role 'api-key)))
 
+  ;; The provider-credential bridge: a mistral role exports
+  ;; MISTRAL_API_KEY to the sema subprocess when the env lacks it.
+  (let ((role (resolve-synthesis-role
+                (parse-config-sexp
+                  '(badb-config
+                    (options
+                     (agents (synthesis (provider "mistral")))
+                     (providers
+                      (mistral (endpoint "https://api.mistral.ai/v1")
+                       (api-key "mstrl-secret")
+                       (models ("mistral-large-latest"))))))))))
+    (test-equal "mistral role exports MISTRAL_API_KEY"
+      '(("MISTRAL_API_KEY" . "mstrl-secret"))
+      (synthesis-env-alist role)))
+  (let ((role (resolve-synthesis-role (make-badb-config))))
+    (test-equal "no provider -> no env exports"
+      '() (synthesis-env-alist role)))
+  (let ((role `((endpoint . "http://127.0.0.1:1234/v1")
+                (api-key . "local"))))
+    (test-equal "non-mistral endpoint -> no env exports"
+      '() (synthesis-env-alist role)))
+
   ;; Defaults: no config -> persona-synthesizer, no provider/model.
   (let ((role (resolve-synthesis-role (make-badb-config))))
     (test-equal "default persona is persona-synthesizer"

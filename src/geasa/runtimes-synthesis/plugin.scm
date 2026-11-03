@@ -60,6 +60,7 @@
                                      default-workflow-path
                                      persona-prompt-text
                                      resolve-synthesis-role
+                                     synthesis-env-alist
                                      run-synthesis-workflow
                                      synthesize-feature!
                                      run-synthesis-cli
@@ -231,6 +232,20 @@ api-key from the named provider preset when it exists."
       (api-key . ,(and preset (get-prop preset 'api-key #f)))
       (model . ,(get-prop role 'model #f)))))
 
+(define (synthesis-env-alist role)
+  "Environment variables to export for the sema subprocess, derived from
+the resolved ROLE: when the role's provider endpoint is Mistral's API
+and MISTRAL_API_KEY is not already set in the environment, provide it
+from the preset's api-key (sema reads provider credentials from its own
+environment).  Returns an alist ((NAME . VALUE) ...)."
+  (let ((ep (assoc-ref role 'endpoint))
+        (key (assoc-ref role 'api-key)))
+    (if (and (string? ep) (string? key)
+             (string-contains ep "api.mistral.ai")
+             (not (getenv "MISTRAL_API_KEY")))
+        `(("MISTRAL_API_KEY" . ,key))
+        '())))
+
 ;;;
 ;;; Sema synthesis workflow runner
 ;;;
@@ -246,9 +261,14 @@ api-key from the named provider preset when it exists."
                                 (cassette-mode #f)
                                 (max-turns #f)
                                 (ast-mcp-command #f)
+                                (env '())
                                 (run-dir #f))
   "Run the Sema plugin synthesis workflow for FEATURE-ID. Returns an alist
-with the parsed result from the workflow execution."
+with the parsed result from the workflow execution.  PERSONA is the
+composed persona prompt for the synthesizer agent (from a persona
+geasa bundle via resolve-synthesis-role).  ENV is an alist of
+((NAME . VALUE) ...) exported to the sema subprocess before spawning
+(e.g. via synthesis-env-alist) — the provider-credential bridge."
   (let* ((feature-str (ensure-string feature-id))
          (actual-wf (or workflow-path (default-workflow-path)))
          (sema-bin (find-sema-executable))
@@ -283,7 +303,15 @@ with the parsed result from the workflow execution."
                                                     (number->string (current-time)))))
          (cmd (format #f "~a workflow run ~s --args ~s --run-dir ~s"
                       sema-bin actual-wf args-json actual-run-dir))
-         (proc-res (run-command-capture cmd))
+         ;; Export the subprocess environment (provider credentials)
+         ;; before spawning: open-pipe inherits the current environ.
+         (proc-res (begin
+                     (for-each (lambda (pair)
+                                 (when (and (string? (car pair))
+                                            (string? (cdr pair)))
+                                   (setenv (car pair) (cdr pair))))
+                               env)
+                     (run-command-capture cmd)))
          (exit-code (list-ref proc-res 0))
          (stdout-str (list-ref proc-res 1))
          ;; Look for result.json in the run directory first
@@ -332,6 +360,7 @@ with the parsed result from the workflow execution."
                              (cassette-mode #f)
                              (max-turns #f)
                              (ast-mcp-command #f)
+                             (env '())
                              (run-dir #f))
   "Synthesize FEATURE-ID against its contract specification using the Sema
 workflow engine. When MGR is provided, also verifies that the feature is
@@ -342,6 +371,7 @@ hot-attached to MGR's registry on completion."
                                      #:workflow-path workflow-path
                                      #:model model
                                      #:persona persona
+                                     #:env env
                                      #:budget budget
                                      #:cassette cassette
                                      #:cassette-mode cassette-mode
@@ -433,6 +463,10 @@ Options:
                                                    #:persona
                                                    (and role
                                                         (assoc-ref role 'persona-text))
+                                                   #:env
+                                                   (if role
+                                                       (synthesis-env-alist role)
+                                                       '())
                                                    #:budget
                                                    budget
                                                    #:cassette

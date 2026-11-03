@@ -1844,7 +1844,10 @@ that verdicts come only from kernel subprocess replay."
                                                       #:target-path target-path
                                                       #:spec-path spec-path
                                                       #:model (and role (assoc-ref role 'model))
-                                                      #:persona (and role (assoc-ref role 'persona-text))))
+                                                      #:persona (and role (assoc-ref role 'persona-text))
+                                                      #:env (if role
+                                                                ((module-ref synth-mod 'synthesis-env-alist) role)
+                                                                '())))
                                        (status (assoc-ref res 'status))
                                        (wf-result (assoc-ref res 'result)))
                                   (format #f "Sema plugin synthesis ~a for feature '~a'.\n~a"
