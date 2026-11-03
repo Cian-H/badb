@@ -1990,10 +1990,11 @@ tools on REG."
                     "checkpoint_create"
                     (lambda (description)
                       (let ((c (create-checkpoint! rollback-mgr (or description "agent-checkpoint"))))
-                        (format #f "Created checkpoint: ~a (~a)"
+                        (format #f "Created checkpoint: ~a (~a) covering ~a workspace file(s) and the registry. Files outside the workspace directory are NOT captured."
                                 (checkpoint-id c)
-                                (checkpoint-description c))))
-                    '((description . "Create a rollback checkpoint for current workspace files and registry")
+                                (checkpoint-description c)
+                                (length (checkpoint-files c)))))
+                    '((description . "Create a rollback checkpoint for current workspace files and registry. Only files under the workspace directory are captured; paths outside it are silently left out of the checkpoint.")
                       (parameters .
                        ((type . "object")
                         (properties .
@@ -2004,8 +2005,11 @@ tools on REG."
                       (let ((res (if (and id (not (string-null? id)))
                                      (rollback-to-checkpoint! rollback-mgr id)
                                      (rollback-latest! rollback-mgr))))
-                        (format #f "Rollback: ~a" (assoc-ref res 'status))))
-                    '((description . "Rollback to specified or latest checkpoint")
+                        (format #f "Rollback: ~a (restored ~a file(s), removed ~a file(s)). Only files captured by the checkpoint are restored; files outside the workspace were never captured."
+                                (assoc-ref res 'status)
+                                (length (or (assoc-ref res 'restored-files) '()))
+                                (length (or (assoc-ref res 'removed-files) '())))))
+                    '((description . "Rollback to specified or latest checkpoint. Only files captured by the checkpoint (workspace files at creation time) are restored.")
                       (parameters .
                        ((type . "object")
                         (properties . ((id . ((type . "string") (description . "Checkpoint ID")))))))))
