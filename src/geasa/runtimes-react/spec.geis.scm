@@ -256,6 +256,46 @@
 ;;;
 ;;; 6. Safety Bound: Max Iterations Reached
 ;;;
+(test-group "react-unlimited-by-default"
+  ;; No explicit #:max-iterations -> no cap: the loop keeps stepping
+  ;; past the old default of 10 instead of tripping max-iterations.
+  (let* ((client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "looping-llm"))
+         (mock-poster
+          (lambda* (uri #:key body headers streaming?)
+            (let ((resp-body (scm->json-string
+                              '((choices . #(((message . ((role . "assistant")
+                                                          (content . "Looping...")
+                                                          (tool_calls . #(((id . "call_loop")
+                                                                           (type . "function")
+                                                                           (function . ((name . "ping")
+                                                                                        (arguments . "{}")))))))))))))) )
+              (values (build-response #:code 200) resp-body))))
+         (reg (make-registry))
+         (_ (registry-attach! reg "ping" (lambda () "pong"))))
+    (test-assert "default session carries no iteration cap"
+      (not (react-session-max-iterations
+            (make-react-session client #:reg reg))))
+    (parameterize ((current-http-post mock-poster))
+      (let* ((session (make-react-session client
+                                          #:initial-messages '(((role . "user") (content . "infinite loop")))
+                                          #:reg reg)))
+        (let loop ((n 0) (ever-reached? #f))
+          (if (>= n 12)
+              (begin
+                (test-assert "12 steps never trip max-iterations-reached"
+                  (not ever-reached?))
+                (test-equal "session iteration counted past the old default"
+                  12 (react-session-iteration session)))
+              (let ((verdict (catch #t
+                               (lambda ()
+                                 (call-with-values
+                                   (lambda () (react-step! session))
+                                   (lambda (v . _) v)))
+                               (lambda args 'error))))
+                (loop (+ n 1)
+                      (or ever-reached?
+                          (eq? verdict 'max-iterations-reached))))))))))
+
 (test-group "react-max-iterations"
   (let* ((client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "looping-llm"))
          (mock-poster

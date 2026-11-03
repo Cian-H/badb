@@ -491,7 +491,7 @@ and pure keyword style: (make-react-session #:client client #:messages ... #:reg
              (mcp-mgr (get-kw '(#:mcp-mgr #:mcp-manager) #f))
              (jrn (get-kw '(#:jrn #:journal) #f))
              (mgr (get-kw '(#:mgr #:transaction-manager) #f))
-             (max-iter (get-kw '(#:max-iterations) 10))
+             (max-iter (get-kw '(#:max-iterations) #f))
              (max-tokens (get-kw '(#:max-tokens) 4096))
              (compactor
                (or (get-kw '(#:compactor) #f) (make-context-compactor #:max-tokens max-tokens)))
@@ -646,7 +646,7 @@ Returns:
              (on-tool-call-fn (assoc-ref hooks 'on-tool-call))
              (on-tool-result-fn (assoc-ref hooks 'on-tool-result))
              (on-delta-fn (assoc-ref hooks 'on-delta)))
-          (if (>= iter max-iter)
+          (if (and (number? max-iter) (>= iter max-iter))
             (begin
               (set-react-session-status! session 'max-iterations-reached)
               (values 'max-iterations-reached #f))

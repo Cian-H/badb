@@ -3487,7 +3487,7 @@ placeholder flag, so the next streamed call starts a fresh card."
                     (catch #t
                       (lambda ()
                         (let*
-                            ((max-react-iters 15)
+                            ((max-react-iters (badb-config-react-max-iterations cfg))
                              (session
                                (make-react-session #:client
                                                    client

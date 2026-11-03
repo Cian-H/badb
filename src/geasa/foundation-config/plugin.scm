@@ -6,7 +6,8 @@
 ;;; declarations, checkpoint journal paths, UI theme selection, and custom
 ;;; options.
 
-(define-module (geasa foundation-config plugin) #:use-module
+(define-module (geasa foundation-config plugin)
+               #:use-module
                (geasa foundation-util plugin)
                #:use-module
                (srfi srfi-1)
@@ -17,59 +18,61 @@
                #:use-module
                (ice-9 pretty-print)
                #:export
-               (make-badb-config badb-config?
-                                 badb-config-model-name
-                                 badb-config-model-endpoint
-                                 badb-config-model-api-key
-                                 badb-config-model-temperature
-                                 badb-config-model-max-tokens
-                                 badb-config-journal-path
-                                 badb-config-ui-theme
-                                 badb-config-mcp-servers
-                                 badb-config-options
-                                 badb-config-source-path
-                                 set-badb-config-model-name!
-                                 set-badb-config-model-endpoint!
-                                 set-badb-config-model-api-key!
-                                 set-badb-config-model-temperature!
-                                 set-badb-config-model-max-tokens!
-                                 set-badb-config-journal-path!
-                                 set-badb-config-ui-theme!
-                                 set-badb-config-mcp-servers!
-                                 set-badb-config-options!
-                                 set-badb-config-source-path!
-                                 badb-config-set-model-name!
-                                 badb-config-set-model-endpoint!
-                                 badb-config-set-model-api-key!
-                                 badb-config-set-model-temperature!
-                                 badb-config-set-model-max-tokens!
-                                 badb-config-set-journal-path!
-                                 badb-config-set-ui-theme!
-                                 badb-config-set-mcp-servers!
-                                 badb-config-set-options!
-                                 badb-config-set-source-path!
-                                 default-global-config-path
-                                 default-local-config-path
-                                 make-mcp-server-spec
-                                 badb-config-get-mcp-server
-                                 badb-config-add-mcp-server!
-                                 badb-config-merge-mcp-servers!
-                                 badb-config-remove-mcp-server!
-                                 badb-config-providers
-                                 badb-config-get-provider
-                                 badb-config-provider-for-endpoint
-                                 badb-config-allow-missing-thinking?
-                                 badb-config-agents
-                                 badb-config-get-agent
-                                 badb-config-switch-provider!
-                                 parse-config-sexp
-                                 config->sexp
-                                 read-config-file
-                                 write-config-file
-                                 merge-configs
-                                 load-config
-                                 save-local-config!
-                                 save-global-config!))
+               (badb-config-react-max-iterations
+                 make-badb-config
+                 badb-config?
+                 badb-config-model-name
+                 badb-config-model-endpoint
+                 badb-config-model-api-key
+                 badb-config-model-temperature
+                 badb-config-model-max-tokens
+                 badb-config-journal-path
+                 badb-config-ui-theme
+                 badb-config-mcp-servers
+                 badb-config-options
+                 badb-config-source-path
+                 set-badb-config-model-name!
+                 set-badb-config-model-endpoint!
+                 set-badb-config-model-api-key!
+                 set-badb-config-model-temperature!
+                 set-badb-config-model-max-tokens!
+                 set-badb-config-journal-path!
+                 set-badb-config-ui-theme!
+                 set-badb-config-mcp-servers!
+                 set-badb-config-options!
+                 set-badb-config-source-path!
+                 badb-config-set-model-name!
+                 badb-config-set-model-endpoint!
+                 badb-config-set-model-api-key!
+                 badb-config-set-model-temperature!
+                 badb-config-set-model-max-tokens!
+                 badb-config-set-journal-path!
+                 badb-config-set-ui-theme!
+                 badb-config-set-mcp-servers!
+                 badb-config-set-options!
+                 badb-config-set-source-path!
+                 default-global-config-path
+                 default-local-config-path
+                 make-mcp-server-spec
+                 badb-config-get-mcp-server
+                 badb-config-add-mcp-server!
+                 badb-config-merge-mcp-servers!
+                 badb-config-remove-mcp-server!
+                 badb-config-providers
+                 badb-config-get-provider
+                 badb-config-provider-for-endpoint
+                 badb-config-allow-missing-thinking?
+                 badb-config-agents
+                 badb-config-get-agent
+                 badb-config-switch-provider!
+                 parse-config-sexp
+                 config->sexp
+                 read-config-file
+                 write-config-file
+                 merge-configs
+                 load-config
+                 save-local-config!
+                 save-global-config!))
 
 ;;;
 ;;; Configuration Record Definition
@@ -305,6 +308,18 @@ form itself, which would corrupt single-role configurations."
          (name-str (symbol->string name-sym))
          (roles (badb-config-agents config)))
     (or (assq-ref roles name-sym) (assoc-ref roles name-str))))
+
+(define (badb-config-react-max-iterations config)
+        "Optional ReAct loop iteration cap from (options (react (max-iterations N))):
+a positive integer, or #f (the default) for an unlimited loop."
+        (let*
+            ((opts (badb-config-options config))
+             (react (and (pair? opts) (assq-ref opts (quote react))))
+             (limit (and (pair? react) (get-prop react (quote max-iterations) #f))))
+          (if
+              (and (number? limit) (integer? limit) (> limit 0))
+            limit
+            #f)))
 
 ;;;
 ;;; S-Expression Parsing and Serialization

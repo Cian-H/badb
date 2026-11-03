@@ -309,6 +309,28 @@
                 (test-assert "no roles on bare config"
                   (not (badb-config-get-agent bare "synthesis"))))))
 
+(test-group "config-react-iterations"
+  (let ((cfg (parse-config-sexp
+               '(badb-config
+                 (options
+                  (react (max-iterations 50)))))))
+    (test-equal "react max-iterations read from options"
+      50 (badb-config-react-max-iterations cfg)))
+  (test-assert "no react section -> unlimited (#f)"
+    (not (badb-config-react-max-iterations (make-badb-config))))
+  (let ((cfg (parse-config-sexp
+               '(badb-config
+                 (options
+                  (react (max-iterations "lots")))))))
+    (test-assert "non-numeric cap ignored -> unlimited"
+      (not (badb-config-react-max-iterations cfg))))
+  (let ((cfg (parse-config-sexp
+               '(badb-config
+                 (options
+                  (react (max-iterations 0)))))))
+    (test-assert "non-positive cap ignored -> unlimited"
+      (not (badb-config-react-max-iterations cfg)))))
+
 ;;;
 ;;; 6. UI Theme Configuration
 ;;;
