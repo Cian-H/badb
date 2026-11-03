@@ -131,6 +131,35 @@
     (test-equal "non-mistral endpoint -> no env exports"
       '() (synthesis-env-alist role)))
 
+  ;; The provider hop: non-native OpenAI-compatible endpoints thread
+  ;; through to the workflow for llm/configure; native ones (mistral)
+  ;; stay with sema's own providers via the env bridge.
+  (let ((lm-role (resolve-synthesis-role
+                   (parse-config-sexp
+                     '(badb-config
+                       (options
+                        (agents (synthesis (provider "lmstudio")))
+                        (providers
+                         (lmstudio (endpoint "http://127.0.0.1:1234/v1")
+                          (api-key "lm-studio")
+                          (models ("minicpm5-2b"))))))))))
+    (test-equal "lmstudio endpoint threads to the workflow"
+      '((llm-endpoint . "http://127.0.0.1:1234/v1") (llm-api-key . "lm-studio"))
+      (synthesis-llm-args lm-role)))
+  (let ((ms-role (resolve-synthesis-role
+                   (parse-config-sexp
+                     '(badb-config
+                       (options
+                        (agents (synthesis (provider "mistral")))
+                        (providers
+                         (mistral (endpoint "https://api.mistral.ai/v1")
+                          (api-key "mstrl-x")
+                          (models ("mistral-large-latest"))))))))))
+    (test-equal "mistral stays with sema's native provider (env bridge)"
+      '() (synthesis-llm-args ms-role)))
+  (test-equal "no provider -> no llm args"
+    '() (synthesis-llm-args (resolve-synthesis-role (make-badb-config))))
+
   ;; Defaults: no config -> persona-synthesizer, no provider/model.
   (let ((role (resolve-synthesis-role (make-badb-config))))
     (test-equal "default persona is persona-synthesizer"

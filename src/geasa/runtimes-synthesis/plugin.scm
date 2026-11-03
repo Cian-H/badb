@@ -61,6 +61,7 @@
                                      persona-prompt-text
                                      resolve-synthesis-role
                                      synthesis-env-alist
+                                     synthesis-llm-args
                                      run-synthesis-workflow
                                      synthesize-feature!
                                      run-synthesis-cli
@@ -246,6 +247,27 @@ environment).  Returns an alist ((NAME . VALUE) ...)."
         `(("MISTRAL_API_KEY" . ,key))
         '())))
 
+;; Hosts sema routes natively; everything else is OpenAI-compatible and
+;; must be passed to the workflow for llm/configure.
+(define %sema-native-endpoints
+  (list "api.mistral.ai" "api.openai.com" "api.anthropic.com"
+        "generativelanguage.googleapis.com" "api.groq.com" "api.x.ai"
+        "api.moonshot.ai" "localhost:11434" "127.0.0.1:11434"))
+
+(define (synthesis-llm-args role)
+  "Workflow args threading the resolved ROLE's provider endpoint to
+the sema engine: ((llm-endpoint . URL) (llm-api-key . KEY)) when the
+endpoint is an OpenAI-compatible server sema does not route natively
+(local servers like LM Studio), or '() when sema's own providers cover
+it (e.g. api.mistral.ai via the MISTRAL_API_KEY env bridge)."
+  (let ((ep (assoc-ref role 'endpoint))
+        (key (assoc-ref role 'api-key)))
+    (if (and (string? ep) (string? key)
+             (not (any (lambda (host) (string-contains ep host))
+                       %sema-native-endpoints)))
+        `((llm-endpoint . ,ep) (llm-api-key . ,key))
+        '())))
+
 ;;;
 ;;; Sema synthesis workflow runner
 ;;;
@@ -262,6 +284,8 @@ environment).  Returns an alist ((NAME . VALUE) ...)."
                                 (max-turns #f)
                                 (ast-mcp-command #f)
                                 (env '())
+                                (llm-endpoint #f)
+                                (llm-api-key #f)
                                 (run-dir #f))
   "Run the Sema plugin synthesis workflow for FEATURE-ID. Returns an alist
 with the parsed result from the workflow execution.  PERSONA is the
@@ -296,7 +320,9 @@ geasa bundle via resolve-synthesis-role).  ENV is an alist of
                     (cassette . ,cassette)
                     (cassette-mode . ,(and cassette-mode (ensure-string cassette-mode)))
                     (max-turns . ,max-turns)
-                    (ast-mcp-command . ,ast-mcp-command))))
+                    (ast-mcp-command . ,ast-mcp-command)
+                    (llm-endpoint . ,llm-endpoint)
+                    (llm-api-key . ,llm-api-key))))
          (args-json (scm->json-string args-alist))
          (actual-run-dir (or run-dir (string-append (or (getenv "TMPDIR") "/tmp")
                                                     "/badb-sema-runs-"
@@ -361,6 +387,8 @@ geasa bundle via resolve-synthesis-role).  ENV is an alist of
                              (max-turns #f)
                              (ast-mcp-command #f)
                              (env '())
+                             (llm-endpoint #f)
+                             (llm-api-key #f)
                              (run-dir #f))
   "Synthesize FEATURE-ID against its contract specification using the Sema
 workflow engine. When MGR is provided, also verifies that the feature is
@@ -372,6 +400,8 @@ hot-attached to MGR's registry on completion."
                                      #:model model
                                      #:persona persona
                                      #:env env
+                                     #:llm-endpoint llm-endpoint
+                                     #:llm-api-key llm-api-key
                                      #:budget budget
                                      #:cassette cassette
                                      #:cassette-mode cassette-mode
@@ -467,6 +497,14 @@ Options:
                                                    (if role
                                                        (synthesis-env-alist role)
                                                        '())
+                                                   #:llm-endpoint
+                                                   (if role
+                                                       (assoc-ref (synthesis-llm-args role) 'llm-endpoint)
+                                                       #f)
+                                                   #:llm-api-key
+                                                   (if role
+                                                       (assoc-ref (synthesis-llm-args role) 'llm-api-key)
+                                                       #f)
                                                    #:budget
                                                    budget
                                                    #:cassette

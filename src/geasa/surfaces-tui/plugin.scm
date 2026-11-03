@@ -1847,7 +1847,19 @@ that verdicts come only from kernel subprocess replay."
                                                       #:persona (and role (assoc-ref role 'persona-text))
                                                       #:env (if role
                                                                 ((module-ref synth-mod 'synthesis-env-alist) role)
-                                                                '())))
+                                                                '())
+                                                      #:llm-endpoint
+                                                      (if role
+                                                          (assoc-ref
+                                                           ((module-ref synth-mod 'synthesis-llm-args) role)
+                                                           'llm-endpoint)
+                                                          #f)
+                                                      #:llm-api-key
+                                                      (if role
+                                                          (assoc-ref
+                                                           ((module-ref synth-mod 'synthesis-llm-args) role)
+                                                           'llm-api-key)
+                                                          #f)))
                                        (status (assoc-ref res 'status))
                                        (wf-result (assoc-ref res 'result)))
                                   (format #f "Sema plugin synthesis ~a for feature '~a'.\n~a"

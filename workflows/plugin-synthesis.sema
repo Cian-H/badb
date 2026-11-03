@@ -119,6 +119,18 @@
 
   (phase "Synthesis")
   (def model-name (or (if (contains? args :model) (:model args) #f) "qwen3.6-35b-a3b"))
+  ;; Route the synthesis model through the provider preset badb resolved
+  ;; when the endpoint is one sema does not serve natively: any unknown
+  ;; provider name is treated as OpenAI-compatible.
+  (def llm-ep (if (contains? args :llm-endpoint) (:llm-endpoint args) #f))
+  (def llm-key (if (contains? args :llm-api-key) (:llm-api-key args) #f))
+  (def llm-configured
+    (if llm-ep
+      (llm/configure :badb-synthesis
+                      {:base-url llm-ep
+                       :api-key (or llm-key "none")
+                       :default-model model-name})
+      #f))
   (def budget-raw (if (and (contains? args :budget) (map? (:budget args))) (:budget args) {}))
   (def budget-tokens (or (if (contains? budget-raw :max-tokens) (:max-tokens budget-raw) #f)
                          (if (contains? budget-raw :max_tokens) (:max_tokens budget-raw) #f)
