@@ -2747,6 +2747,7 @@ a manual entry item."
     (define history-draft "")
     (define history-draft-pos 0)
     (define scroll-offset 0)
+    (define max-scroll-seen 0)
     (define status-text "READY")
     (define selector-index 0)
     ;; Active interactive menu (a <menu> record or #f). While set it renders
@@ -3272,7 +3273,9 @@ and append it to the persistent history journal file."
                        (total-lines (length formatted-lines))
                        (max-scroll (max 0 (- total-lines view-height))))
                     ;; Clamp scroll after collapse state changed line counts
-                    (set! scroll-offset (min scroll-offset max-scroll))
+                    (begin
+                      (set! scroll-offset (min scroll-offset max-scroll))
+                      (set! max-scroll-seen max-scroll))
                     ;; Keep the selected message inside the visible window
                     (when sel-idx
                       (let*
@@ -4038,8 +4041,17 @@ any open menu first; submenu actions open the next menu in its place."
     (define (handle-mouse-event! ev)
             (let ((button (car ev)) (y (cadr ev)))
               (cond
-                ((= button 4) (set! scroll-offset (+ scroll-offset 3)))
-                ((= button 5) (set! scroll-offset (max 0 (- scroll-offset 3))))
+                ((= button 4)
+                  (let
+                      ((new (min max-scroll-seen (+ scroll-offset 3))))
+                    (if (= new scroll-offset)
+                      #f
+                      (begin (set! scroll-offset new) #t))))
+                ((= button 5)
+                  (let ((new (max 0 (- scroll-offset 3))))
+                    (if (= new scroll-offset)
+                      #f
+                      (begin (set! scroll-offset new) #t))))
                 ((= button 1)
                   (let ((target (hashq-ref %click-targets y)))
                     (cond
@@ -4047,13 +4059,19 @@ any open menu first; submenu actions open the next menu in its place."
                         (set! active-menu
                               (menu-move active-menu (- (cdr target) (menu-selected-index active-menu))))
                         (let ((item (menu-selected-item active-menu)))
-                          (when item (apply-menu-selection! item))))
+                          (when item (apply-menu-selection! item)))
+                        #t)
                       ((and (selector-active? input-buffer)
                             (pair? target)
                             (eq? (car target) 'palette-item))
-                        (set! selector-index (cdr target)))
-                      ((integer? target) (set! msgsel-index target))
-                      (else (set! msgsel-index #f))))))))
+                        (set! selector-index (cdr target))
+                        #t)
+                      ((integer? target) (set! msgsel-index target) #t)
+                      (else
+                        (if msgsel-index
+                          (begin (set! msgsel-index #f) #t)
+                          #f)))))
+                (else #f))))
     ;; Handle context compaction command
     (define (handle-compact-cmd! _arg)
             (let*
@@ -4461,11 +4479,15 @@ one edit and renders once, instead of submitting on the first newline."
                          ;; Drain mouse events BEFORE rendering so a click's effects
                          ;; draw in this same iteration (the click map is rebuilt by
                          ;; every render; handlers act on the displayed frame).
-                         (for-each handle-mouse-event! (drain-mouse-events))
+                         (define mouse-dirty?
+                                 (let ((events (drain-mouse-events)))
+                                   (if (null? events)
+                                     #f
+                                     (any identity (map handle-mouse-event! events)))))
                          ;; Rendering is skipped only for no-op scroll keys in a key
                          ;; burst: a held or pasted run of scroll keys must not trigger
                          ;; a full-transcript render per key.
-                         (when needs-render? (render!))
+                         (when (or needs-render? mouse-dirty?) (render!))
                          (let ((ch (key->code (getch stdscr))))
                            (unless (or (eqv? ch KEY_UP) (eqv? ch KEY_DOWN))
                              (history-reset-nav input-history))
@@ -4669,13 +4691,19 @@ one edit and renders once, instead of submitting on the first newline."
                                (loop))
                              ;; Page Up / Page Down: half-viewport jumps
                              ((eqv? ch KEY_PPAGE)
-                               (set! scroll-offset
-                                     (+ scroll-offset (max 1 (quotient (- (getmaxy stdscr) 6) 2))))
-                               (loop))
+                               (let
+                                   ((new
+                                      (min max-scroll-seen
+                                           (+ scroll-offset (max 1 (quotient (- (getmaxy stdscr) 6) 2))))))
+                                 (if (= new scroll-offset)
+                                   (loop #f)
+                                   (begin (set! scroll-offset new) (loop)))))
                              ((eqv? ch KEY_NPAGE)
-                               (set! scroll-offset
-                                     (max 0 (- scroll-offset (max 1 (quotient (- (getmaxy stdscr) 6) 2)))))
-                               (loop))
+                               (let
+                                   ((new (max 0 (- scroll-offset (max 1 (quotient (- (getmaxy stdscr) 6) 2))))))
+                                 (if (= new scroll-offset)
+                                   (loop #f)
+                                   (begin (set! scroll-offset new) (loop)))))
                              ;; Ctrl+Up: select the previous message card, starting from
                              ;; the newest message (code resolved at startup)
                              ((eqv? ch ctrl-up-key)
