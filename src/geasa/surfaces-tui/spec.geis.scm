@@ -93,14 +93,16 @@
                         '(shell . "make test")
                         (classify-input "  ! make test   "))
             (test-equal "classify bare !" '(shell . "") (classify-input "!"))
-            ;; Scheme expressions with ',' or '('
-            (test-equal "classify ,(+ 1 2)"
-                        '(scheme . "(+ 1 2)")
+            ;; Commas are plain chat text (the old "," scheme trigger
+            ;; is gone); '(' still classifies as scheme.
+            (test-equal "classify ,(+ 1 2) as chat"
+                        '(chat . ",(+ 1 2)")
                         (classify-input ",(+ 1 2)"))
-            (test-equal "classify , (+ 1 2) with space"
-                        '(scheme . "(+ 1 2)")
+            (test-equal "classify , (+ 1 2) with space as chat"
+                        '(chat . ", (+ 1 2)")
                         (classify-input ", (+ 1 2)"))
-            (test-equal "classify bare ," '(scheme . "") (classify-input ","))
+            (test-equal "classify bare , as chat"
+                        '(chat . ",") (classify-input ","))
             (test-equal "classify direct s-expression"
                         '(scheme . "(define x 42)")
                         (classify-input "(define x 42)"))
@@ -433,22 +435,26 @@
       (test-equal "shell prompt uses the shell role" 'shell role)
       (test-assert "shell prompt is bold" bold?)))
 
-  ;; Scheme mode: single-character λ
-  (call-with-values (lambda () (get-prompt-indicator ",(+ 1 2)" "READY"))
+  ;; Scheme mode: single-character λ (sexp buffers; comma buffers are chat)
+  (call-with-values (lambda () (get-prompt-indicator "(+ 1 2)" "READY"))
     (lambda (glyph role bold?)
       (test-equal "scheme prompt is single char λ" "λ" glyph)
       (test-equal "scheme prompt uses the scheme role" 'scheme role)
       (test-assert "scheme prompt is bold" bold?)))
+  (call-with-values (lambda () (get-prompt-indicator ",(+ 1 2)" "READY"))
+    (lambda (glyph role bold?)
+      (test-equal "comma buffer shows the chat glyph" "❯" glyph)))
 
   (call-with-values (lambda () (get-prompt-indicator "(define x 42)" "READY"))
     (lambda (glyph role bold?)
       (test-equal "s-expr prompt is single char λ" "λ" glyph)
       (test-equal "s-expr prompt uses the scheme role" 'scheme role)))
 
-  ;; Slash command mode: single-character /
+  ;; Slash command mode: the slash stays in the entry field; the
+  ;; indicator glyph must not duplicate it.
   (call-with-values (lambda () (get-prompt-indicator "/model" "READY"))
     (lambda (glyph role bold?)
-      (test-equal "slash prompt is single char /" "/" glyph)
+      (test-equal "slash prompt keeps the chat glyph" "❯" glyph)
       (test-equal "slash prompt uses the accent role" 'accent role)))
 
   ;; Task-based morphing indicators

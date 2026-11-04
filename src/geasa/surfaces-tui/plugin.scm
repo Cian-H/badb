@@ -2609,11 +2609,23 @@ a manual entry item."
        ;; without them input-pending? is always #f and paste bursts are
        ;; simply not collected — typing still works).
        (input-pending?
-         (or (catch #t (lambda () (nref 'input-pending?)) (lambda _ #f))
-             (lambda _ #f)))
+         (or
+           (catch #t
+             (lambda ()
+               (nref 'input-pending?))
+             (lambda _
+               #f))
+           (lambda _
+             #f)))
        (drain-input-burst!
-         (or (catch #t (lambda () (nref 'drain-input-burst!)) (lambda _ #f))
-             (lambda () '())))
+         (or
+           (catch #t
+             (lambda ()
+               (nref 'drain-input-burst!))
+             (lambda _
+               #f))
+           (lambda ()
+             '())))
        (KEY_FIND (nref 'KEY_FIND))
        (KEY_OPEN (nref 'KEY_OPEN))
        ;; Non-blocking input support: the (geasa surfaces-tui nc) backend exports nodelay!
@@ -2686,8 +2698,7 @@ a manual entry item."
                                #:model
                                cur-model
                                #:allow-missing-thinking?
-                               (badb-config-allow-missing-thinking? cfg
-                                                                    cur-endpoint)))
+                               (badb-config-allow-missing-thinking? cfg cur-endpoint)))
     (define repl-mod
             (make-repl-mod reg
                            jrn
@@ -2710,11 +2721,11 @@ a manual entry item."
     ;; The system prompt stays in llm-history for the model but is not
     ;; displayed as a transcript card.
     (define messages
-            (list `((role . "notice")
-                    (content .
-                             ,(string-append
-                                "badb microharness\n"
-                                "• ! shell · ( scheme · / commands · /help for keys")))))
+            (list
+              `((role . "notice")
+                (content .
+                         ,(string-append "badb microharness\n"
+                                         "• ! shell · ( scheme · / commands · /help for keys")))))
     (set! llm-history (list (make-system-turn)))
     ;; Session log for /resume: the whole llm-history is rewritten to
     ;; this JSONL file after every chat turn (system prompt first).
@@ -2881,8 +2892,7 @@ and append it to the persistent history journal file."
                                      #:model
                                      cur-model
                                      #:allow-missing-thinking?
-                                     (badb-config-allow-missing-thinking? cfg
-                                                                          cur-endpoint)))
+                                     (badb-config-allow-missing-thinking? cfg cur-endpoint)))
             (module-define! repl-mod 'client client))
     ;; Startup model auto-detection: when the active model is a generic
     ;; placeholder (#f, empty or "default"), ask the endpoint's /models
@@ -4422,316 +4432,347 @@ any open menu first; submenu actions open the next menu in its place."
                      (let
                          ((safe-idx (max 0 (min selector-index (- (length matches) 1)))))
                        (car (list-ref matches safe-idx)))))
-        (let loop
-          ((needs-render? #t))
-          ;; Drain mouse events BEFORE rendering so a click's effects
-          ;; draw in this same iteration (the click map is rebuilt by
-          ;; every render; handlers act on the displayed frame).
-          (for-each handle-mouse-event! (drain-mouse-events))
-          ;; Rendering is skipped only for no-op scroll keys in a key
-          ;; burst: a held or pasted run of scroll keys must not trigger
-          ;; a full-transcript render per key.
-          (when needs-render? (render!))
-          (let ((ch (key->code (getch stdscr))))
-            (unless (or (eqv? ch KEY_UP) (eqv? ch KEY_DOWN))
-              (history-reset-nav input-history))
-            (cond
-              ;; Active menu popup: takes priority over the selector, input
-              ;; and scroll keys. Up/Down move the selection, Enter applies
-              ;; it, Esc closes; other keys are swallowed while the menu is
-              ;; open, except Ctrl+C / Ctrl+D which still exit below.
-              ((and active-menu (not (or (eqv? ch 3) (eqv? ch 4))))
-                (cond
-                  ((eqv? ch KEY_UP) (set! active-menu (menu-move active-menu -1)))
-                  ((eqv? ch KEY_DOWN) (set! active-menu (menu-move active-menu 1)))
-                  ((eqv? ch 27) (set! active-menu #f))
-                  ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
-                    (let ((item (menu-selected-item active-menu)))
-                      (when item (apply-menu-selection! item))))
-                  (else #f))
-                (loop))
-              ;; Enter key: process buffer, execute modal command, or
-              ;; complete selector. Under cbreak the tty's ICRNL maps the
-              ;; Enter key to 10, so 10 must submit (Ctrl+N is select-next)
-              ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
-                (if (selector-active? input-buffer)
-                  (let
-                      ((matches (matching-slash-commands input-buffer)))
-                    (if (null? matches)
-                      (let ((trimmed (string-trim-both input-buffer)))
-                        (set! input-buffer "")
-                        (set! cursor-pos 0)
-                        (set! selector-index 0)
-                        (if (string-null? trimmed)
-                          (loop)
-                          (let*
-                              ((action (classify-input trimmed))
-                               (res
-                                 (if (and action (eq? (car action) 'slash))
-                                   (handle-command! (cons (cadr action) (caddr action)))
-                                   #f)))
-                            (unless (eq? res 'exit) (loop)))))
-                      (let ((chosen (selected-command-name matches)))
-                        (cond
-                          ;; Commands that still need a typed argument get
-                          ;; prefilled; model/endpoint/config now open their
-                          ;; interactive menus via the no-argument flow.
-                          ((member chosen '("provider" "sh" "eval" "steer" "geis"))
-                            (set! input-buffer (string-append "/" chosen " "))
-                            (set! cursor-pos (string-length input-buffer))
-                            (set! selector-index 0)
-                            (loop))
-                          (else (set! input-buffer "")
-                                (set! cursor-pos 0)
-                                (set! selector-index 0)
-                                (let ((res (handle-command! (cons chosen "")))) (unless (eq? res 'exit) (loop))))))))
-                  (let ((trimmed (string-trim-both input-buffer)))
-                    (set! input-buffer "")
-                    (set! cursor-pos 0)
-                    (set! selector-index 0)
-                    (cond
-                      ((string-null? trimmed) (loop))
-                      ((eq? prompt-mode 'shell)
-                        (record-history! trimmed 'shell)
-                        (add-cmd-msg! trimmed)
-                        (execute-shell! trimmed)
-                        (loop))
-                      ((eq? prompt-mode 'scheme)
-                        (record-history! trimmed 'scheme)
-                        (add-scm-msg! trimmed)
-                        (execute-scheme! trimmed)
-                        (loop))
-                      (else
-                        (let ((action (classify-input trimmed)))
-                          (case (car action)
-                            ((slash)
-                              (let*
-                                  ((cmd (cadr action)) (arg (caddr action))
-                                   (res (handle-command! (cons cmd arg))))
-                                (unless (eq? res 'exit) (loop))))
-                            ((shell)
-                              (let ((shell-cmd (cdr action)))
-                                (record-history! shell-cmd 'shell)
-                                (add-cmd-msg! shell-cmd)
-                                (execute-shell! shell-cmd)
-                                (loop)))
-                            ((scheme)
-                              (let ((code-str (cdr action)))
-                                (record-history! code-str 'scheme)
-                                (add-scm-msg! code-str)
-                                (execute-scheme! code-str)
-                                (loop)))
-                            ((chat)
-                              (let ((user-text (cdr action)))
-                                (record-history! user-text 'chat)
-                                (add-user-msg! user-text)
-                                (catch #t
-                                  (lambda ()
-                                    (execute-chat-stream! user-text)
-                                    ;; The ReAct loop ran for a while:
-                                    ;; ring the terminal bell so an
-                                    ;; away-from-keyboard user knows badb
-                                    ;; is waiting for them again.
-                                    (beep))
-                                  (lambda (key . args)
-                                    (add-err-msg! (format #f "Chat error (~a): ~s" key args))
-                                    (set! status-text "READY")
-                                    (render!)))
-                                (loop))))))))))
-              ;; Tab key: autocomplete selected slash command
-              ((eqv? ch 9)
-                (when (selector-active? input-buffer)
-                  (let*
-                      ((matches (matching-slash-commands input-buffer))
-                       (chosen (selected-command-name matches)))
-                    (when chosen
-                      (if
-                          (member chosen
-                                  '("model" "endpoint" "provider" "mcp" "config" "sh" "eval" "steer"))
-                        (set! input-buffer (string-append "/" chosen " "))
-                        (set! input-buffer (string-append "/" chosen)))
-                      (set! cursor-pos (string-length input-buffer))
-                      (set! selector-index 0))))
-                (loop))
-              ;; Escape key: close selector palette, return to normal chat
-              ;; mode, or clear the message selection on an empty buffer
-              ((eqv? ch 27)
-                (cond
-                  ((selector-active? input-buffer)
-                    (set! input-buffer "")
-                    (set! cursor-pos 0)
-                    (set! selector-index 0))
-                  ((not (eq? prompt-mode 'chat))
-                    (set! prompt-mode 'chat)
-                    (set! input-buffer "")
-                    (set! cursor-pos 0))
-                  ((and (integer? msgsel-index) (string-null? input-buffer))
-                    (set! msgsel-index #f)))
-                (loop))
-              ;; Up Arrow: selector navigation or input history recall.
-              ;; Arrows no longer scroll the transcript — history cycling
-              ;; is their job; scrolling stays on PageUp/PageDown and the
-              ;; mouse wheel.
-              ((eqv? ch KEY_UP)
-                (cond
-                  ((selector-active? input-buffer)
+        (define (insert-burst! ids)
+                "Insert a burst of input codepoint ids into the buffer at the
+cursor, newlines (10/13) as literal line breaks: pasted text lands as
+one edit and renders once, instead of submitting on the first newline."
+                (for-each
+                  (lambda (id)
                     (let
-                        ((matches (matching-slash-commands input-buffer)))
-                      (unless (null? matches)
-                        (let*
-                            ((count (length matches)) (cur (max 0 (min selector-index (- count 1)))))
-                          (set! selector-index
-                                (if (<= cur 0)
-                                  (- count 1)
-                                  (- cur 1)))))))
-                  (else
-                    (unless (history-recall-position input-history)
-                      (set! history-draft input-buffer)
-                      (set! history-draft-pos cursor-pos))
-                    (let ((entry (history-recall input-history -1)))
-                      (when entry
-                        (set! input-buffer entry)
-                        (set! cursor-pos (string-length entry))))))
-                (loop))
-              ;; Down Arrow: selector navigation or history recall
-              ;; forward; at the newest entry the draft is restored.
-              ((eqv? ch KEY_DOWN)
-                (cond
-                  ((selector-active? input-buffer)
-                    (let
-                        ((matches (matching-slash-commands input-buffer)))
-                      (unless (null? matches)
-                        (let*
-                            ((count (length matches)) (cur (max 0 (min selector-index (- count 1)))))
-                          (set! selector-index (remainder (+ cur 1) count))))))
-                  (else
-                    (let*
-                        ((was-recalling? (history-recall-position input-history))
-                         (entry (history-recall input-history 1)))
-                      (if entry
-                        (begin (set! input-buffer entry) (set! cursor-pos (string-length entry)))
-                        (when was-recalling?
-                          (set! input-buffer history-draft)
-                          (set! cursor-pos history-draft-pos))))))
-                (loop))
-              ;; Backspace: delete character or return to normal mode if
-              ;; prompt is empty (127 on modern terminals, 8 on older ones)
-              ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 127) (eqv? ch 8))
-                (cond
-                  ((> (string-length input-buffer) 0)
-                    (call-with-values
-                      (lambda ()
-                        (backspace-at input-buffer cursor-pos))
-                      (lambda (new-buffer new-pos)
-                        (set! input-buffer new-buffer)
-                        (set! cursor-pos new-pos)))
-                    (clamp-selector-index!))
-                  ((not (eq? prompt-mode 'chat)) (set! prompt-mode 'chat)))
-                (loop))
-              ;; Page Up / Page Down: half-viewport jumps
-              ((eqv? ch KEY_PPAGE)
-                (set! scroll-offset
-                      (+ scroll-offset (max 1 (quotient (- (getmaxy stdscr) 6) 2))))
-                (loop))
-              ((eqv? ch KEY_NPAGE)
-                (set! scroll-offset
-                      (max 0 (- scroll-offset (max 1 (quotient (- (getmaxy stdscr) 6) 2)))))
-                (loop))
-              ;; Ctrl+Up: select the previous message card, starting from
-              ;; the newest message (code resolved at startup)
-              ((eqv? ch ctrl-up-key)
-                (unless (null? messages)
-                  (set! msgsel-index
-                        (if (integer? msgsel-index)
-                          (max 0 (- msgsel-index 1))
-                          (- (length messages) 1))))
-                (loop))
-              ;; Ctrl+Down: advance the message selection to the next
-              ;; card (no-op without selection; code resolved at startup)
-              ((eqv? ch ctrl-down-key)
-                (when
-                    (and (integer? msgsel-index) (pair? messages))
-                  (set! msgsel-index (min (- (length messages) 1) (+ msgsel-index 1))))
-                (loop))
-              ;; Left Arrow: move editing cursor left
-              ((eqv? ch KEY_LEFT)
-                (set! cursor-pos (clamp-cursor (- cursor-pos 1) input-buffer))
-                (loop))
-              ;; Right Arrow: move editing cursor right
-              ((eqv? ch KEY_RIGHT)
-                (set! cursor-pos (clamp-cursor (+ cursor-pos 1) input-buffer))
-                (loop))
-              ;; Home or Ctrl+A: move editing cursor to start of input
-              ((or (eqv? ch KEY_HOME) (eqv? ch 1)) (set! cursor-pos 0) (loop))
-              ;; End: move editing cursor to end of input
-              ((eqv? ch KEY_END) (set! cursor-pos (string-length input-buffer)) (loop))
-              ;; Ctrl+E (control char 5): toggle collapse of the selected
-              ;; message card, or move editing cursor to end of input when
-              ;; no message is selected (pre-existing binding)
-              ((eqv? ch 5)
-                (if
-                    (and (integer? msgsel-index)
-                         (pair? messages)
-                         (< msgsel-index (length messages)))
-                  (toggle-selected-collapse!)
-                  (set! cursor-pos (string-length input-buffer)))
-                (loop))
-              ;; Delete: delete character at editing cursor
-              ((eqv? ch KEY_DC)
-                (call-with-values
-                  (lambda ()
-                    (delete-at input-buffer cursor-pos))
-                  (lambda (new-buffer new-pos)
-                    (set! input-buffer new-buffer)
-                    (set! cursor-pos new-pos)))
-                (clamp-selector-index!)
-                (loop))
-              ;; Ctrl+C or Ctrl+D: exit
-              ((or (eqv? ch 3) (eqv? ch 4)) 'done)
-              ;; Window resize: ncurses reports the new size as the
-              ;; synthetic KEY_RESIZE code (410). Consume it and redraw
-              ;; at the top of the loop; it must never reach the
-              ;; printable clause below, where it would insert the
-              ;; character U+019A into the input buffer.
-              ((eqv? ch KEY_RESIZE) (loop))
-              ;; Printable character input (codepoints >= 32). Unbound
-              ;; control codes fall through to the else branch and are
-              ;; discarded rather than inserted into the buffer.
-              ;; A run of pending input following the key means a paste:
-              ;; the whole burst is inserted in one pass (one render, no
-              ;; per-character latency, newlines preserved as data).
-              ((and (integer? ch) (>= ch 32))
-                (let ((burst (if (input-pending?)
-                               (cons ch (drain-input-burst!))
-                               (list ch))))
-                  (if (> (length burst) 1)
-                    (begin (insert-burst! burst) (loop))
-                    (let ((c (integer->char ch)))
-                      (cond
-                    ((and (string-null? input-buffer) (eq? prompt-mode 'chat))
-                      (cond
-                        ((eqv? c #\!) (set! prompt-mode 'shell) (loop))
-                        ;; "(" enters scheme mode and STAYS in the entry
-                        ;; field: it is the opening paren of the sexp being
-                        ;; typed, so dropping it (like the old "," trigger)
-                        ;; would corrupt the code under evaluation.
-                        ((eqv? c #\()
-                          (set! prompt-mode 'scheme)
-                          (set! input-buffer "(")
-                          (set! cursor-pos 1)
-                          (loop))
-                        (else (set! input-buffer (string c))
-                              (set! cursor-pos (string-length input-buffer))
-                              (loop))))
-                    (else
+                        ((text
+                           (if
+                               (or (eqv? id 10) (eqv? id 13) (eqv? id KEY_ENTER))
+                             (string #\newline)
+                             (string (integer->char id)))))
                       (call-with-values
                         (lambda ()
-                          (insert-at input-buffer cursor-pos (string c)))
+                          (insert-at input-buffer cursor-pos text))
                         (lambda (new-buffer new-pos)
                           (set! input-buffer new-buffer)
-                          (set! cursor-pos new-pos)))
-                      (clamp-selector-index!)
-                      (loop)))))))
-              (else (loop))))))
+                          (set! cursor-pos new-pos)))))
+                  ids)
+                (clamp-selector-index!))
+        ;; The input loop as an internal define: needs-render? defaults
+        ;; to #t, so every plain (loop) call site keeps rendering. A
+        ;; named let would give the recursion a fixed arity and break
+        ;; them all.
+        (define loop
+                (lambda* (#:optional (needs-render? #t))
+                         ;; Drain mouse events BEFORE rendering so a click's effects
+                         ;; draw in this same iteration (the click map is rebuilt by
+                         ;; every render; handlers act on the displayed frame).
+                         (for-each handle-mouse-event! (drain-mouse-events))
+                         ;; Rendering is skipped only for no-op scroll keys in a key
+                         ;; burst: a held or pasted run of scroll keys must not trigger
+                         ;; a full-transcript render per key.
+                         (when needs-render? (render!))
+                         (let ((ch (key->code (getch stdscr))))
+                           (unless (or (eqv? ch KEY_UP) (eqv? ch KEY_DOWN))
+                             (history-reset-nav input-history))
+                           (cond
+                             ;; Active menu popup: takes priority over the selector, input
+                             ;; and scroll keys. Up/Down move the selection, Enter applies
+                             ;; it, Esc closes; other keys are swallowed while the menu is
+                             ;; open, except Ctrl+C / Ctrl+D which still exit below.
+                             ((and active-menu (not (or (eqv? ch 3) (eqv? ch 4))))
+                               (cond
+                                 ((eqv? ch KEY_UP) (set! active-menu (menu-move active-menu -1)))
+                                 ((eqv? ch KEY_DOWN) (set! active-menu (menu-move active-menu 1)))
+                                 ((eqv? ch 27) (set! active-menu #f))
+                                 ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
+                                   (let ((item (menu-selected-item active-menu)))
+                                     (when item (apply-menu-selection! item))))
+                                 (else #f))
+                               (loop))
+                             ;; Enter key: process buffer, execute modal command, or
+                             ;; complete selector. Under cbreak the tty's ICRNL maps the
+                             ;; Enter key to 10, so 10 must submit (Ctrl+N is select-next)
+                             ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
+                               (if (input-pending?)
+                                 ;; Enter with input still queued is a pasted newline,
+                                 ;; not a submit: collect the burst and insert it as
+                                 ;; multiline text.
+                                 (begin (insert-burst! (cons ch (drain-input-burst!))) (loop))
+                                 (if (selector-active? input-buffer)
+                                   (let
+                                       ((matches (matching-slash-commands input-buffer)))
+                                     (if (null? matches)
+                                       (let ((trimmed (string-trim-both input-buffer)))
+                                         (set! input-buffer "")
+                                         (set! cursor-pos 0)
+                                         (set! selector-index 0)
+                                         (if (string-null? trimmed)
+                                           (loop)
+                                           (let*
+                                               ((action (classify-input trimmed))
+                                                (res
+                                                  (if (and action (eq? (car action) 'slash))
+                                                    (handle-command! (cons (cadr action) (caddr action)))
+                                                    #f)))
+                                             (unless (eq? res 'exit) (loop)))))
+                                       (let ((chosen (selected-command-name matches)))
+                                         (cond
+                                           ;; Commands that still need a typed argument get
+                                           ;; prefilled; model/endpoint/config now open their
+                                           ;; interactive menus via the no-argument flow.
+                                           ((member chosen '("provider" "sh" "eval" "steer" "geis"))
+                                             (set! input-buffer (string-append "/" chosen " "))
+                                             (set! cursor-pos (string-length input-buffer))
+                                             (set! selector-index 0)
+                                             (loop))
+                                           (else (set! input-buffer "")
+                                                 (set! cursor-pos 0)
+                                                 (set! selector-index 0)
+                                                 (let ((res (handle-command! (cons chosen "")))) (unless (eq? res 'exit) (loop))))))))
+                                   (let ((trimmed (string-trim-both input-buffer)))
+                                     (set! input-buffer "")
+                                     (set! cursor-pos 0)
+                                     (set! selector-index 0)
+                                     (cond
+                                       ((string-null? trimmed) (loop))
+                                       ((eq? prompt-mode 'shell)
+                                         (record-history! trimmed 'shell)
+                                         (add-cmd-msg! trimmed)
+                                         (execute-shell! trimmed)
+                                         (loop))
+                                       ((eq? prompt-mode 'scheme)
+                                         (record-history! trimmed 'scheme)
+                                         (add-scm-msg! trimmed)
+                                         (execute-scheme! trimmed)
+                                         (loop))
+                                       (else
+                                         (let ((action (classify-input trimmed)))
+                                           (case (car action)
+                                             ((slash)
+                                               (let*
+                                                   ((cmd (cadr action)) (arg (caddr action))
+                                                    (res (handle-command! (cons cmd arg))))
+                                                 (unless (eq? res 'exit) (loop))))
+                                             ((shell)
+                                               (let ((shell-cmd (cdr action)))
+                                                 (record-history! shell-cmd 'shell)
+                                                 (add-cmd-msg! shell-cmd)
+                                                 (execute-shell! shell-cmd)
+                                                 (loop)))
+                                             ((scheme)
+                                               (let ((code-str (cdr action)))
+                                                 (record-history! code-str 'scheme)
+                                                 (add-scm-msg! code-str)
+                                                 (execute-scheme! code-str)
+                                                 (loop)))
+                                             ((chat)
+                                               (let ((user-text (cdr action)))
+                                                 (record-history! user-text 'chat)
+                                                 (add-user-msg! user-text)
+                                                 (catch #t
+                                                   (lambda ()
+                                                     (execute-chat-stream! user-text)
+                                                     ;; The ReAct loop ran for a while:
+                                                     ;; ring the terminal bell so an
+                                                     ;; away-from-keyboard user knows badb
+                                                     ;; is waiting for them again.
+                                                     (beep))
+                                                   (lambda (key . args)
+                                                     (add-err-msg! (format #f "Chat error (~a): ~s" key args))
+                                                     (set! status-text "READY")
+                                                     (render!)))
+                                                 (loop)))))))))))
+                             ;; Tab key: autocomplete selected slash command
+                             ((eqv? ch 9)
+                               (when (selector-active? input-buffer)
+                                 (let*
+                                     ((matches (matching-slash-commands input-buffer))
+                                      (chosen (selected-command-name matches)))
+                                   (when chosen
+                                     (if
+                                         (member chosen
+                                                 '("model" "endpoint" "provider" "mcp" "config" "sh" "eval" "steer"))
+                                       (set! input-buffer (string-append "/" chosen " "))
+                                       (set! input-buffer (string-append "/" chosen)))
+                                     (set! cursor-pos (string-length input-buffer))
+                                     (set! selector-index 0))))
+                               (loop))
+                             ;; Escape key: close selector palette, return to normal chat
+                             ;; mode, or clear the message selection on an empty buffer
+                             ((eqv? ch 27)
+                               (cond
+                                 ((selector-active? input-buffer)
+                                   (set! input-buffer "")
+                                   (set! cursor-pos 0)
+                                   (set! selector-index 0))
+                                 ((not (eq? prompt-mode 'chat))
+                                   (set! prompt-mode 'chat)
+                                   (set! input-buffer "")
+                                   (set! cursor-pos 0))
+                                 ((and (integer? msgsel-index) (string-null? input-buffer))
+                                   (set! msgsel-index #f)))
+                               (loop))
+                             ;; Up Arrow: selector navigation or input history recall.
+                             ;; Arrows no longer scroll the transcript — history cycling
+                             ;; is their job; scrolling stays on PageUp/PageDown and the
+                             ;; mouse wheel.
+                             ((eqv? ch KEY_UP)
+                               (cond
+                                 ((selector-active? input-buffer)
+                                   (let
+                                       ((matches (matching-slash-commands input-buffer)))
+                                     (unless (null? matches)
+                                       (let*
+                                           ((count (length matches)) (cur (max 0 (min selector-index (- count 1)))))
+                                         (set! selector-index
+                                               (if (<= cur 0)
+                                                 (- count 1)
+                                                 (- cur 1)))))))
+                                 (else
+                                   (unless (history-recall-position input-history)
+                                     (set! history-draft input-buffer)
+                                     (set! history-draft-pos cursor-pos))
+                                   (let ((entry (history-recall input-history -1)))
+                                     (when entry
+                                       (set! input-buffer entry)
+                                       (set! cursor-pos (string-length entry))))))
+                               (loop))
+                             ;; Down Arrow: selector navigation or history recall
+                             ;; forward; at the newest entry the draft is restored.
+                             ((eqv? ch KEY_DOWN)
+                               (cond
+                                 ((selector-active? input-buffer)
+                                   (let
+                                       ((matches (matching-slash-commands input-buffer)))
+                                     (unless (null? matches)
+                                       (let*
+                                           ((count (length matches)) (cur (max 0 (min selector-index (- count 1)))))
+                                         (set! selector-index (remainder (+ cur 1) count))))))
+                                 (else
+                                   (let*
+                                       ((was-recalling? (history-recall-position input-history))
+                                        (entry (history-recall input-history 1)))
+                                     (if entry
+                                       (begin (set! input-buffer entry) (set! cursor-pos (string-length entry)))
+                                       (when was-recalling?
+                                         (set! input-buffer history-draft)
+                                         (set! cursor-pos history-draft-pos))))))
+                               (loop))
+                             ;; Backspace: delete character or return to normal mode if
+                             ;; prompt is empty (127 on modern terminals, 8 on older ones)
+                             ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 127) (eqv? ch 8))
+                               (cond
+                                 ((> (string-length input-buffer) 0)
+                                   (call-with-values
+                                     (lambda ()
+                                       (backspace-at input-buffer cursor-pos))
+                                     (lambda (new-buffer new-pos)
+                                       (set! input-buffer new-buffer)
+                                       (set! cursor-pos new-pos)))
+                                   (clamp-selector-index!))
+                                 ((not (eq? prompt-mode 'chat)) (set! prompt-mode 'chat)))
+                               (loop))
+                             ;; Page Up / Page Down: half-viewport jumps
+                             ((eqv? ch KEY_PPAGE)
+                               (set! scroll-offset
+                                     (+ scroll-offset (max 1 (quotient (- (getmaxy stdscr) 6) 2))))
+                               (loop))
+                             ((eqv? ch KEY_NPAGE)
+                               (set! scroll-offset
+                                     (max 0 (- scroll-offset (max 1 (quotient (- (getmaxy stdscr) 6) 2)))))
+                               (loop))
+                             ;; Ctrl+Up: select the previous message card, starting from
+                             ;; the newest message (code resolved at startup)
+                             ((eqv? ch ctrl-up-key)
+                               (unless (null? messages)
+                                 (set! msgsel-index
+                                       (if (integer? msgsel-index)
+                                         (max 0 (- msgsel-index 1))
+                                         (- (length messages) 1))))
+                               (loop))
+                             ;; Ctrl+Down: advance the message selection to the next
+                             ;; card (no-op without selection; code resolved at startup)
+                             ((eqv? ch ctrl-down-key)
+                               (when
+                                   (and (integer? msgsel-index) (pair? messages))
+                                 (set! msgsel-index (min (- (length messages) 1) (+ msgsel-index 1))))
+                               (loop))
+                             ;; Left Arrow: move editing cursor left
+                             ((eqv? ch KEY_LEFT)
+                               (set! cursor-pos (clamp-cursor (- cursor-pos 1) input-buffer))
+                               (loop))
+                             ;; Right Arrow: move editing cursor right
+                             ((eqv? ch KEY_RIGHT)
+                               (set! cursor-pos (clamp-cursor (+ cursor-pos 1) input-buffer))
+                               (loop))
+                             ;; Home or Ctrl+A: move editing cursor to start of input
+                             ((or (eqv? ch KEY_HOME) (eqv? ch 1)) (set! cursor-pos 0) (loop))
+                             ;; End: move editing cursor to end of input
+                             ((eqv? ch KEY_END) (set! cursor-pos (string-length input-buffer)) (loop))
+                             ;; Ctrl+E (control char 5): toggle collapse of the selected
+                             ;; message card, or move editing cursor to end of input when
+                             ;; no message is selected (pre-existing binding)
+                             ((eqv? ch 5)
+                               (if
+                                   (and (integer? msgsel-index)
+                                        (pair? messages)
+                                        (< msgsel-index (length messages)))
+                                 (toggle-selected-collapse!)
+                                 (set! cursor-pos (string-length input-buffer)))
+                               (loop))
+                             ;; Delete: delete character at editing cursor
+                             ((eqv? ch KEY_DC)
+                               (call-with-values
+                                 (lambda ()
+                                   (delete-at input-buffer cursor-pos))
+                                 (lambda (new-buffer new-pos)
+                                   (set! input-buffer new-buffer)
+                                   (set! cursor-pos new-pos)))
+                               (clamp-selector-index!)
+                               (loop))
+                             ;; Ctrl+C or Ctrl+D: exit
+                             ((or (eqv? ch 3) (eqv? ch 4)) 'done)
+                             ;; Window resize: ncurses reports the new size as the
+                             ;; synthetic KEY_RESIZE code (410). Consume it and redraw
+                             ;; at the top of the loop; it must never reach the
+                             ;; printable clause below, where it would insert the
+                             ;; character U+019A into the input buffer.
+                             ((eqv? ch KEY_RESIZE) (loop))
+                             ;; Printable character input (codepoints >= 32). Unbound
+                             ;; control codes fall through to the else branch and are
+                             ;; discarded rather than inserted into the buffer.
+                             ;; A run of pending input following the key means a paste:
+                             ;; the whole burst is inserted in one pass (one render, no
+                             ;; per-character latency, newlines preserved as data).
+                             ((and (integer? ch) (>= ch 32))
+                               (let
+                                   ((burst
+                                      (if (input-pending?)
+                                        (cons ch (drain-input-burst!))
+                                        (list ch))))
+                                 (if (> (length burst) 1)
+                                   (begin (insert-burst! burst) (loop))
+                                   (let ((c (integer->char ch)))
+                                     (cond
+                                       ((and (string-null? input-buffer) (eq? prompt-mode 'chat))
+                                         (cond
+                                           ((eqv? c #\!) (set! prompt-mode 'shell) (loop))
+                                           ;; "(" enters scheme mode and STAYS in the entry
+                                           ;; field: it is the opening paren of the sexp being
+                                           ;; typed, so dropping it (like the old "," trigger)
+                                           ;; would corrupt the code under evaluation.
+                                           ((eqv? c #\() (set! prompt-mode 'scheme)
+                                                         (set! input-buffer "(")
+                                                         (set! cursor-pos 1)
+                                                         (loop))
+                                           (else (set! input-buffer (string c))
+                                                 (set! cursor-pos (string-length input-buffer))
+                                                 (loop))))
+                                       (else
+                                         (call-with-values
+                                           (lambda ()
+                                             (insert-at input-buffer cursor-pos (string c)))
+                                           (lambda (new-buffer new-pos)
+                                             (set! input-buffer new-buffer)
+                                             (set! cursor-pos new-pos)))
+                                         (clamp-selector-index!)
+                                         (loop)))))))
+                             (else (loop))))))
+        (loop))
       (lambda ()
         (shutdown!)))))
