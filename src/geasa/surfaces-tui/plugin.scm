@@ -2778,6 +2778,12 @@ a manual entry item."
     ;; Incremental rendering: formatted block rows are memoized per
     ;; message object so each frame only formats new messages.
     (define row-cache (make-row-cache))
+    (define asm-messages #f)
+    (define asm-width #f)
+    (define asm-lines '())
+    (define asm-counts '())
+    (define asm-total 0)
+    (define asm-msg-count 0)
     ;; Mouse hit map: screen row -> click target, rebuilt by every
     ;; render. Transcript rows map to their owning message index;
     ;; popup rows map to ('menu-item . ABS-INDEX) or
@@ -3256,60 +3262,75 @@ and append it to the persistent history journal file."
                   ;; not screen lines. Formatted rows come from the
                   ;; per-message cache: unchanged messages are never
                   ;; re-wrapped, so frames are O(new messages).
-                  (row-cache-prune! row-cache messages)
                   (let*
-                      ((msg-count (length messages))
-                       (sel-idx (and (integer? msgsel-index) (< msgsel-index msg-count) msgsel-index))
-                       (indexed-rows
-                         (map
-                           (lambda (idx msg)
-                             (map
-                               (lambda (entry)
-                                 (cons idx entry))
-                               (row-cache-rows row-cache msg content-width)))
-                           (iota msg-count)
-                           messages))
-                       (formatted-lines (apply append indexed-rows))
-                       (total-lines (length formatted-lines))
-                       (max-scroll (max 0 (- total-lines view-height))))
-                    ;; Clamp scroll after collapse state changed line counts
-                    (begin
-                      (set! scroll-offset (min scroll-offset max-scroll))
-                      (set! max-scroll-seen max-scroll))
-                    ;; Keep the selected message inside the visible window
-                    (when sel-idx
+                      ((asm-valid? (and (eq? asm-messages messages) (eqv? asm-width content-width)))
+                       (msg-count
+                         (if asm-valid?
+                           asm-msg-count
+                           (length messages)))
+                       (sel-idx (and (integer? msgsel-index) (< msgsel-index msg-count) msgsel-index)))
+                    ;; Rebuild the assembled transcript view only when the messages list
+                    ;; or the content width changed — every mutation installs a fresh
+                    ;; list, so list identity is a sound cache key. Scrolling renders
+                    ;; reuse the cached rows, per-message counts, and total instead of
+                    ;; re-walking the whole transcript every frame.
+                    (unless asm-valid?
+                      (row-cache-prune! row-cache messages)
                       (let*
-                          ((row-counts (map length indexed-rows))
-                           (starts
-                             (let loop
-                               ((counts row-counts) (pos 0))
-                               (if (null? counts)
-                                 '()
-                                 (cons pos (loop (cdr counts) (+ pos (car counts)))))))
-                           (sel-start (list-ref starts sel-idx))
-                           (sel-end (+ sel-start (list-ref row-counts sel-idx)))
-                           (base-start (max 0 (- total-lines view-height scroll-offset)))
-                           (win-end (+ base-start view-height)))
-                        (cond
-                          ((< sel-start base-start)
-                            (set! scroll-offset (min max-scroll (+ scroll-offset (- base-start sel-start)))))
-                          ((> sel-end win-end)
-                            (set! scroll-offset (max 0 (- scroll-offset (- sel-end win-end))))))))
+                          ((indexed-rows
+                             (map
+                               (lambda (idx msg)
+                                 (map
+                                   (lambda (entry)
+                                     (cons idx entry))
+                                   (row-cache-rows row-cache msg content-width)))
+                               (iota msg-count)
+                               messages)))
+                        (set! asm-lines (apply append indexed-rows))
+                        (set! asm-counts (map length indexed-rows))
+                        (set! asm-total (length asm-lines))
+                        (set! asm-msg-count msg-count)
+                        (set! asm-messages messages)
+                        (set! asm-width content-width)))
                     (let*
-                        ((start-line (max 0 (- total-lines view-height scroll-offset)))
-                         (visible-lines
-                           (take (drop formatted-lines start-line)
-                                 (min view-height (- total-lines start-line)))))
-                      (let loop
-                        ((lines visible-lines) (y view-top))
-                        (unless (or (null? lines) (>= y view-bottom))
-                          (let ((tagged (car lines)))
-                            (hashq-set! %click-targets y (car tagged))
-                            (draw-block-line y
-                                             (cdr tagged)
-                                             content-width
-                                             (and sel-idx (= (car tagged) sel-idx))))
-                          (loop (cdr lines) (+ y 1))))))
+                        ((total-lines asm-total) (max-scroll (max 0 (- total-lines view-height))))
+                      ;; Clamp scroll after collapse state changed line counts
+                      (begin
+                        (set! scroll-offset (min scroll-offset max-scroll))
+                        (set! max-scroll-seen max-scroll))
+                      ;; Keep the selected message inside the visible window
+                      (when sel-idx
+                        (let*
+                            ((row-counts asm-counts)
+                             (starts
+                               (let loop
+                                 ((counts row-counts) (pos 0))
+                                 (if (null? counts)
+                                   '()
+                                   (cons pos (loop (cdr counts) (+ pos (car counts)))))))
+                             (sel-start (list-ref starts sel-idx))
+                             (sel-end (+ sel-start (list-ref row-counts sel-idx)))
+                             (base-start (max 0 (- total-lines view-height scroll-offset)))
+                             (win-end (+ base-start view-height)))
+                          (cond
+                            ((< sel-start base-start)
+                              (set! scroll-offset (min max-scroll (+ scroll-offset (- base-start sel-start)))))
+                            ((> sel-end win-end)
+                              (set! scroll-offset (max 0 (- scroll-offset (- sel-end win-end))))))))
+                      (let*
+                          ((start-line (max 0 (- total-lines view-height scroll-offset)))
+                           (visible-lines
+                             (take (drop asm-lines start-line) (min view-height (- total-lines start-line)))))
+                        (let loop
+                          ((lines visible-lines) (y view-top))
+                          (unless (or (null? lines) (>= y view-bottom))
+                            (let ((tagged (car lines)))
+                              (hashq-set! %click-targets y (car tagged))
+                              (draw-block-line y
+                                               (cdr tagged)
+                                               content-width
+                                               (and sel-idx (= (car tagged) sel-idx))))
+                            (loop (cdr lines) (+ y 1)))))))
                   ;; Pending steering line: dim feedback above the prompt
                   ;; for text being typed mid-run, queued steering
                   ;; entries, and pending interrupt requests
