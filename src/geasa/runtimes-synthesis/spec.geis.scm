@@ -160,6 +160,33 @@
   (test-equal "no provider -> no llm args"
     '() (synthesis-llm-args (resolve-synthesis-role (make-badb-config))))
 
+  ;; Project-local synthesis landing: synthesized geasa default to the
+  ;; project's geis/ root (BADB_GEIS_PATH-overridable), never the
+  ;; harness source tree, and installs report errors instead of throwing.
+  (test-group "project-local-synthesis-targets"
+    (test-equal "default root is the project-local geis/ directory"
+      "geis" (default-synthesis-root))
+    (test-equal "default target under the project geis root"
+      "geis/greeter/plugin.scm" (default-synthesis-target "greeter"))
+    (test-equal "BADB_GEIS_PATH overrides the root"
+      "/custom/root"
+      (begin (setenv "BADB_GEIS_PATH" "/custom/root:/other")
+             (let ((r (default-synthesis-root)))
+               (unsetenv "BADB_GEIS_PATH")
+               r)))
+    (test-equal "feature-id is sanitized in the target"
+      "geis/weird_id/plugin.scm" (default-synthesis-target "weird id"))
+    (test-equal "bundle dir follows an explicit plugin target"
+      "geis/greeter" (synthesis-bundle-dir "greeter" "geis/greeter/plugin.scm"))
+    (test-equal "bundle dir defaults to the project geis root"
+      "geis/greeter" (synthesis-bundle-dir "greeter" #f))
+    (test-assert "bundle dir never lands in the harness source tree"
+      (not (string-prefix? "src/" (synthesis-bundle-dir "greeter" #f))))
+    (let ((report (install-synthesized-bundle!
+                    "no-such-fid" "/dev/null/impossible/plugin.scm")))
+      (test-equal "failed install reports an error status, never throws"
+        "error" (assoc-ref report 'install-status))))
+
   ;; Defaults: no config -> persona-synthesizer, no provider/model.
   (let ((role (resolve-synthesis-role (make-badb-config))))
     (test-equal "default persona is persona-synthesizer"

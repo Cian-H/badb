@@ -24,9 +24,12 @@
   "Sanitize FID into a filename component."
   (regex/replace-all #"[^a-zA-Z0-9_\-\.]" "_" (str fid)))
 
-(define (run-spec-subprocess spec-file)
-  "Run SPEC-FILE through guile --no-auto-compile and extract structured JSON diagnostics."
-  (let* ((cmd (format "guile --no-auto-compile -L src -L . ~a" spec-file))
+(define (run-spec-subprocess spec-file geis-root)
+  "Run SPEC-FILE through guile --no-auto-compile (with the project geis
+root GEIS-ROOT on the load path) and extract structured JSON diagnostics."
+  (let* ((cmd (format "guile --no-auto-compile -L src -L . -L ~a ~a"
+                     (or geis-root "geis")
+                     spec-file))
          (out (shell cmd))
          (stdout-str (or (:stdout out) ""))
          (stderr-str (or (:stderr out) ""))
@@ -113,12 +116,15 @@
     "Run the locked contract specification against the implementation on disk and return structured pass/fail verdict and counterexample diagnostics."
     {:target_path {:type :string :description "Optional path to implementation file" :optional #t}}
     (fn (target_path)
-      (run-spec-subprocess locked-spec-path)))
+      (run-spec-subprocess locked-spec-path geis-root)))
 
   (def tools (append ast-tools (list read_file write_file spec_runner)))
 
   (phase "Synthesis")
   (def model-name (or (if (contains? args :model) (:model args) #f) "qwen3.6-35b-a3b"))
+  ;; Project-local geis root for resolving synthesized modules in the
+  ;; spec subprocess; passed by badb from the resolved synthesis target.
+  (def geis-root (if (contains? args :geis-load-path) (:geis-load-path args) "geis"))
   ;; Route the synthesis model through the provider preset badb resolved
   ;; when the endpoint is one sema does not serve natively: any unknown
   ;; provider name is treated as OpenAI-compatible.
@@ -188,7 +194,7 @@ Process:
 
   (phase "Commit")
   ;; Final deterministic check of the locked spec by the workflow itself (never trust agent self-report)
-  (def final-spec-result (run-spec-subprocess locked-spec-path))
+  (def final-spec-result (run-spec-subprocess locked-spec-path geis-root))
   (def summary-map (if (and (map? final-spec-result) (contains? final-spec-result :summary) (map? (:summary final-spec-result)))
                        (:summary final-spec-result)
                        {}))

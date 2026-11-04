@@ -182,7 +182,7 @@ the gate store read-only and return the bundle content hash."
                              #:key
                              (root (geis-gate-root))
                              (timeout 60)
-                             (load-paths '("src" ".")))
+                             (load-paths '("src" "." "geis")))
   "Replay the LOCKED copy of bundle FEATURE-ID's spec in a disposable
 subprocess, with the locked bundle directory first on the load path so
 the locked plugin resolves to the locked copy.  Return shape matches
@@ -392,7 +392,7 @@ verify-locked-geis."
     (summary-failed . #f) (failures . ())))
 
 (define* (verify-locked-geis feature-id
-                             #:key (root (geis-gate-root)) (timeout 60) (load-paths '("src" ".")))
+                             #:key (root (geis-gate-root)) (timeout 60) (load-paths '("src" "." "geis")))
   (let ((locked (locked-geis-path feature-id root)))
     (catch #t
       (lambda ()
@@ -448,7 +448,7 @@ verify-locked-geis."
         (%make-fail-verdict (format #f "spec subprocess spawn failed: ~a: ~s" key args))))))
 
 (define* (geis-gate-transaction-pins feature-id forms metadata
-                                     #:key (timeout 60) (load-paths '("src" ".")))
+                                     #:key (timeout 60) (load-paths '("src" "." "geis")))
   (let* ((root (geis-gate-root))
          (locked (locked-geis-path feature-id root))
          (override-timeout (prop-ref metadata 'spec-timeout #f))

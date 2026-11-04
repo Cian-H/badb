@@ -105,7 +105,7 @@
 '(\"src/geasa\") when unset or empty."
   (let ((path (getenv "BADB_GEIS_PATH")))
     (if (or (not path) (string-null? path))
-        '("src/geasa")
+        '("src/geasa" "geis")
         (%string-split-char path #\:))))
 
 (define (%fid->string fid)

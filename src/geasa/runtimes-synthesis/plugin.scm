@@ -62,6 +62,10 @@
                                      resolve-synthesis-role
                                      synthesis-env-alist
                                      synthesis-llm-args
+                                     default-synthesis-root
+                                     default-synthesis-target
+                                     synthesis-bundle-dir
+                                     install-synthesized-bundle!
                                      run-synthesis-workflow
                                      synthesize-feature!
                                      run-synthesis-cli
@@ -268,6 +272,63 @@ it (e.g. api.mistral.ai via the MISTRAL_API_KEY env bridge)."
         `((llm-endpoint . ,ep) (llm-api-key . ,key))
         '())))
 
+(define (default-synthesis-root)
+  "Directory where synthesized geasa land for the CURRENT PROJECT: the
+first BADB_GEIS_PATH root when set, else the project-local geis/
+directory (never the harness's own source tree)."
+  (let ((path (getenv "BADB_GEIS_PATH")))
+    (if (and (string? path) (not (string-null? path)))
+        (car (string-split path #\:))
+        "geis")))
+
+(define (default-synthesis-target feature-id)
+  "Default target path for a synthesized module: <project geis
+root>/<sanitized feature-id>/plugin.scm."
+  (format #f "~a/~a/plugin.scm"
+          (default-synthesis-root)
+          (sanitize-feature-id (ensure-string feature-id))))
+
+(define (synthesis-bundle-dir feature-id target-path)
+  "Project-local bundle directory for a synthesized FEATURE-ID: the
+directory of TARGET-PATH when it is a plugin module, else the default
+synthesis target's directory (or <geis root>/<fid> for non-plugin
+targets).  Never lands in the harness's own source tree."
+  (let* ((fid (ensure-string feature-id))
+         (target (or (and (string? target-path) target-path)
+                     (default-synthesis-target fid))))
+    (if (string-suffix? "/plugin.scm" target)
+        (dirname target)
+        (string-append (default-synthesis-root) "/"
+                       (sanitize-feature-id fid)))))
+
+(define (install-synthesized-bundle! feature-id target-path)
+  "Add the synthesized bundle for FEATURE-ID to the CURRENT PROJECT:
+assemble its provenance (locked spec copy, synthesis workflow, manifest
+pins) into the project-local bundle directory derived from
+TARGET-PATH, then lock and verify it into the project's kernel gate
+(geis install semantics: dependencies first, verify against the locked
+copy).  Returns the install report alist, or
+((feature-id . fid) (install-status . error) (error . msg)) on
+failure — never throws."
+  (let* ((fid (ensure-string feature-id))
+         (bundle-dir (synthesis-bundle-dir fid target-path))
+         (bundle (resolve-interface '(badb geis bundle))))
+    (catch #t
+      (lambda ()
+        ((module-ref bundle 'geis-bundle-assemble!)
+         fid
+         #:target-path target-path
+         #:bundle-dir bundle-dir
+         #:workflow-path (default-workflow-path))
+        (let ((report ((module-ref bundle 'geis-bundle-install) bundle-dir)))
+          (cons (cons 'feature-id fid) report)))
+      (lambda (key . args)
+        `((feature-id . ,fid)
+          (install-status . "error")
+          (error . ,(if (and (pair? args) (string? (car args)))
+                        (car args)
+                        "bundle assembly or install failed")))))))
+
 ;;;
 ;;; Sema synthesis workflow runner
 ;;;
@@ -296,7 +357,10 @@ geasa bundle via resolve-synthesis-role).  ENV is an alist of
   (let* ((feature-str (ensure-string feature-id))
          (actual-wf (or workflow-path (default-workflow-path)))
          (sema-bin (find-sema-executable))
-         (actual-target (or target-path (format #f "src/badb/~a.scm" (sanitize-feature-id feature-str))))
+         (actual-target (or target-path (default-synthesis-target feature-str)))
+         ;; The project-local landing directory may not exist yet; the
+         ;; workflow's write_file tool does not create parents.
+         (%target-dir (ensure-parent-directory! actual-target))
          (gate-root (spec-gate-root))
          (default-locked (locked-spec-path feature-str gate-root))
          ;; Lock spec if provided and not yet locked
@@ -322,7 +386,8 @@ geasa bundle via resolve-synthesis-role).  ENV is an alist of
                     (max-turns . ,max-turns)
                     (ast-mcp-command . ,ast-mcp-command)
                     (llm-endpoint . ,llm-endpoint)
-                    (llm-api-key . ,llm-api-key))))
+                    (llm-api-key . ,llm-api-key)
+                    (geis-load-path . ,(dirname (dirname actual-target))))))
          (args-json (scm->json-string args-alist))
          (actual-run-dir (or run-dir (string-append (or (getenv "TMPDIR") "/tmp")
                                                     "/badb-sema-runs-"
@@ -410,7 +475,7 @@ hot-attached to MGR's registry on completion."
                                      #:run-dir run-dir))
          (success? (string=? (or (assoc-ref res 'status) "") "success"))
          (wf-result (assoc-ref res 'result))
-         (actual-target (or target-path (format #f "src/badb/~a.scm" (sanitize-feature-id (ensure-string feature-id))))))
+         (actual-target (or target-path (default-synthesis-target feature-id))))
     (when (and success? (transaction-manager? mgr) (file-exists? actual-target))
       ;; Hot-attach in the provided manager's registry if not already attached
       (catch #t
@@ -467,7 +532,7 @@ Options:
                 (if feature-id
                   (if commit-only?
                     (commit-synthesized-module-cli feature-id
-                                                   (or target-path (format #f "src/badb/~a.scm" feature-id)))
+                                                   (or target-path (default-synthesis-target feature-id)))
                     (let*
                         ((role
                            ;; Best-effort role resolution: the synthesis
@@ -523,6 +588,15 @@ Options:
                             (when hook (hook feature-id cassette target-path))))
                         (lambda _
                           #f))
+                      (when (string=? (or status "") "success")
+                        (let ((report (install-synthesized-bundle!
+                                       feature-id
+                                       (or target-path (default-synthesis-target feature-id)))))
+                          (format #t "Installed geis for project: ~a verdict: ~a~%"
+                                  (assoc-ref report 'feature-id)
+                                  (or (assoc-ref report 'verify-verdict)
+                                      (assoc-ref report 'install-status)
+                                      "?"))))
                       (exit
                         (if (string=? (or status "") "success")
                           0

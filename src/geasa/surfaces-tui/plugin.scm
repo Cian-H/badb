@@ -1862,12 +1862,26 @@ that verdicts come only from kernel subprocess replay."
                                                           #f)))
                                        (status (assoc-ref res 'status))
                                        (wf-result (assoc-ref res 'result)))
-                                  (format #f "Sema plugin synthesis ~a for feature '~a'.\n~a"
-                                          status
-                                          feature-id
-                                          (if wf-result
-                                              (scm->json-string wf-result)
-                                              (or (assoc-ref res 'stdout) "")))))
+                                  (let* ((target (or target-path
+                                                      ((module-ref synth-mod 'default-synthesis-target) feature-id)))
+                                         (install-report
+                                           (if (string=? (or status "") "success")
+                                               ((module-ref synth-mod 'install-synthesized-bundle!)
+                                                feature-id target)
+                                               #f)))
+                                    (format #f "Sema plugin synthesis ~a for feature '~a'.\n~a~a"
+                                            status
+                                            feature-id
+                                            (if wf-result
+                                                (scm->json-string wf-result)
+                                                (or (assoc-ref res 'stdout) ""))
+                                            (if install-report
+                                                (format #f "\nInstalled geis for project: ~a verdict: ~a"
+                                                        (or (assoc-ref install-report 'feature-id) feature-id)
+                                                        (or (assoc-ref install-report 'verify-verdict)
+                                                            (assoc-ref install-report 'install-status)
+                                                            "?"))
+                                                "")))))
                               (lambda (k . a)
                                 (format #f "Error during synthesis (~a): ~s" k a))))
                           '((description .

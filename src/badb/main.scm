@@ -13,7 +13,8 @@
                (run-filetree-mcp)
                #:autoload
                (geasa runtimes-synthesis plugin)
-               (run-synthesis-cli synthesis-assemble-hook default-workflow-path)
+               (run-synthesis-cli synthesis-assemble-hook default-workflow-path
+                 synthesis-bundle-dir)
                #:export
                (%program-name %version main))
 
@@ -43,6 +44,8 @@
                  (pending ((module-ref bundle 'geis-take-pending-prompt))))
               ((module-ref bundle 'geis-bundle-assemble!)
                feature-id
+               #:bundle-dir
+               (synthesis-bundle-dir feature-id target-path)
                #:workflow-path
                (default-workflow-path)
                #:cassette-path
