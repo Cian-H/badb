@@ -419,6 +419,49 @@
     (test-assert "client closed cleanly" #t)))
 
 ;;;
+;;; 9b. Debug-gated mcp.log stderr redirect
+;;;
+
+;; Run in a scratch cwd so the real .badb/ is never touched: with
+;; BADB_DEBUG unset the subprocess stderr goes to /dev/null and no
+;; mcp.log appears; with BADB_DEBUG set it lands in .badb/mcp.log.
+
+(test-group "mcp-log-debug-gating"
+  (let* ((here (getcwd))
+         (saved-debug (getenv "BADB_DEBUG"))
+         (tmp-dir "/tmp/badb-mcp-log-gating"))
+    (catch #t (lambda () (system* "rm" "-rf" tmp-dir)) (lambda _ #f))
+    (mkdir tmp-dir)
+    (dynamic-wind
+      (lambda () (chdir tmp-dir))
+      (lambda ()
+        (mkdir ".badb")
+        (dynamic-wind
+          (lambda () (unsetenv "BADB_DEBUG"))
+          (lambda ()
+            (let ((client (mcp-spawn-client '("true"))))
+              (test-assert "spawn without BADB_DEBUG returns a client"
+                (mcp-client? client))
+              (mcp-close-client client))
+            (test-assert "no mcp.log without BADB_DEBUG"
+              (not (file-exists? ".badb/mcp.log"))))
+          (lambda () #f))
+        (dynamic-wind
+          (lambda () (setenv "BADB_DEBUG" "1"))
+          (lambda ()
+            (let ((client (mcp-spawn-client '("true"))))
+              (mcp-close-client client))
+            (test-assert "mcp.log written with BADB_DEBUG"
+              (file-exists? ".badb/mcp.log")))
+          (lambda ()
+            (if saved-debug
+                (setenv "BADB_DEBUG" saved-debug)
+                (unsetenv "BADB_DEBUG")))))
+      (lambda ()
+        (chdir here)
+        (catch #t (lambda () (system* "rm" "-rf" tmp-dir)) (lambda _ #f))))))
+
+;;;
 ;;; 10. MCP Manager Lifecycle and Operations
 ;;;
 
