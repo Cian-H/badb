@@ -209,7 +209,6 @@ commit or 1 on revert/error."
 ;;;
 ;;; Synthesis agent role resolution
 ;;;
-
 (define (persona-prompt-text persona-id)
   "Serve the composed persona prompt of the PERSONA-ID geasa bundle
 (identity plus its declared directives), falling back to the bare
@@ -332,104 +331,133 @@ failure — never throws."
 ;;;
 ;;; Sema synthesis workflow runner
 ;;;
-(define* (run-synthesis-workflow feature-id
-                                #:key
-                                (spec-path #f)
-                                (target-path #f)
-                                (workflow-path #f)
-                                (model #f)
-                                (persona #f)
-                                (budget #f)
-                                (cassette #f)
-                                (cassette-mode #f)
-                                (max-turns #f)
-                                (ast-mcp-command #f)
-                                (env '())
-                                (llm-endpoint #f)
-                                (llm-api-key #f)
-                                (run-dir #f))
+(define*
+  (run-synthesis-workflow feature-id
+                          #:key
+                          (spec-path #f)
+                          (target-path #f)
+                          (workflow-path #f)
+                          (model #f)
+                          (persona #f)
+                          (budget #f)
+                          (cassette #f)
+                          (cassette-mode #f)
+                          (max-turns #f)
+                          (ast-mcp-command #f)
+                          (env '())
+                          (llm-endpoint #f)
+                          (llm-api-key #f)
+                          (run-dir #f))
   "Run the Sema plugin synthesis workflow for FEATURE-ID. Returns an alist
 with the parsed result from the workflow execution.  PERSONA is the
 composed persona prompt for the synthesizer agent (from a persona
 geasa bundle via resolve-synthesis-role).  ENV is an alist of
 ((NAME . VALUE) ...) exported to the sema subprocess before spawning
 (e.g. via synthesis-env-alist) — the provider-credential bridge."
-  (let* ((feature-str (ensure-string feature-id))
-         (actual-wf (or workflow-path (default-workflow-path)))
-         (sema-bin (find-sema-executable))
-         (actual-target (or target-path (default-synthesis-target feature-str)))
-         ;; The project-local landing directory may not exist yet; the
-         ;; workflow's write_file tool does not create parents.
-         (%target-dir (ensure-parent-directory! actual-target))
-         (gate-root (spec-gate-root))
-         (default-locked (locked-spec-path feature-str gate-root))
-         ;; Lock spec if provided and not yet locked
-         (actual-spec
-          (cond
+  (let*
+      ((feature-str (ensure-string feature-id))
+       (actual-wf (or workflow-path (default-workflow-path)))
+       (sema-bin (find-sema-executable))
+       (actual-target
+         (let
+             ((target (or target-path (default-synthesis-target feature-str))))
+           ;; The project-local landing directory may not exist yet; the
+           ;; workflow's write_file tool does not create parents.
+           (ensure-parent-directory! target)
+           target))
+       (gate-root (spec-gate-root))
+       (default-locked (locked-spec-path feature-str gate-root))
+       ;; Lock spec if provided and not yet locked
+       (actual-spec
+         (cond
            ((file-exists? default-locked) default-locked)
            ((and spec-path (file-exists? spec-path))
-            (lock-spec spec-path feature-str)
-            default-locked)
+             (lock-spec spec-path feature-str)
+             default-locked)
            (spec-path spec-path)
            (else default-locked)))
-         ;; Prepare arguments map
-         (args-alist
-          (filter (lambda (p) (cdr p))
-                  `((feature-id . ,feature-str)
-                    (target-path . ,actual-target)
-                    (spec-path . ,actual-spec)
-                    (model . ,model)
-                    (persona . ,persona)
-                    (budget . ,budget)
-                    (cassette . ,cassette)
-                    (cassette-mode . ,(and cassette-mode (ensure-string cassette-mode)))
-                    (max-turns . ,max-turns)
-                    (ast-mcp-command . ,ast-mcp-command)
-                    (llm-endpoint . ,llm-endpoint)
-                    (llm-api-key . ,llm-api-key)
-                    (geis-load-path . ,(dirname (dirname actual-target))))))
-         (args-json (scm->json-string args-alist))
-         (actual-run-dir (or run-dir (string-append (or (getenv "TMPDIR") "/tmp")
-                                                    "/badb-sema-runs-"
-                                                    (number->string (current-time)))))
-         (cmd (format #f "~a workflow run ~s --args ~s --run-dir ~s"
-                      sema-bin actual-wf args-json actual-run-dir))
-         ;; Export the subprocess environment (provider credentials)
-         ;; before spawning: open-pipe inherits the current environ.
-         (proc-res (begin
-                     (for-each (lambda (pair)
-                                 (when (and (string? (car pair))
-                                            (string? (cdr pair)))
-                                   (setenv (car pair) (cdr pair))))
-                               env)
-                     (run-command-capture cmd)))
-         (exit-code (list-ref proc-res 0))
-         (stdout-str (list-ref proc-res 1))
-         ;; Look for result.json in the run directory first
-         (result-file
-          (catch #t
-            (lambda ()
-              (and (file-exists? actual-run-dir)
-                   (let ((runs (scandir actual-run-dir (lambda (d) (not (member d '("." "..")))))))
-                     (and (pair? runs)
-                          (let ((rf (string-append actual-run-dir "/" (car runs) "/result.json")))
-                            (and (file-exists? rf) rf))))))
-            (lambda _ #f)))
-         (parsed-result
-          (cond
+       ;; Prepare arguments map
+       (args-alist
+         (filter
+           (lambda (p)
+             (cdr p))
+           `((feature-id . ,feature-str)
+             (target-path . ,actual-target)
+             (spec-path . ,actual-spec)
+             (model . ,model)
+             (persona . ,persona)
+             (budget . ,budget)
+             (cassette . ,cassette)
+             (cassette-mode . ,(and cassette-mode (ensure-string cassette-mode)))
+             (max-turns . ,max-turns)
+             (ast-mcp-command . ,ast-mcp-command)
+             (llm-endpoint . ,llm-endpoint)
+             (llm-api-key . ,llm-api-key)
+             (geis-load-path . ,(dirname (dirname actual-target))))))
+       (args-json (scm->json-string args-alist))
+       (actual-run-dir
+         (or run-dir
+             (string-append (or (getenv "TMPDIR") "/tmp")
+                            "/badb-sema-runs-"
+                            (number->string (current-time)))))
+       (cmd
+         (format #f
+                 "~a workflow run ~s --args ~s --run-dir ~s"
+                 sema-bin
+                 actual-wf
+                 args-json
+                 actual-run-dir))
+       ;; Export the subprocess environment (provider credentials)
+       ;; before spawning: open-pipe inherits the current environ.
+       (proc-res
+         (begin
+           (for-each
+             (lambda (pair)
+               (when
+                   (and (string? (car pair)) (string? (cdr pair)))
+                 (setenv (car pair) (cdr pair))))
+             env)
+           (run-command-capture cmd)))
+       (exit-code (list-ref proc-res 0))
+       (stdout-str (list-ref proc-res 1))
+       ;; Look for result.json in the run directory first
+       (result-file
+         (catch #t
+           (lambda ()
+             (and (file-exists? actual-run-dir)
+                  (let
+                      ((runs
+                         (scandir actual-run-dir
+                                  (lambda (d)
+                                    (not (member d '("." "..")))))))
+                    (and (pair? runs)
+                         (let
+                             ((rf (string-append actual-run-dir "/" (car runs) "/result.json")))
+                           (and (file-exists? rf) rf))))))
+           (lambda _
+             #f)))
+       (parsed-result
+         (cond
            (result-file
-            (catch #t
-              (lambda ()
-                (call-with-input-file result-file
-                  (lambda (port)
-                    (json-string->scm (get-string-all port)))))
-              (lambda _ #f)))
+             (catch #t
+               (lambda ()
+                 (call-with-input-file result-file
+                                       (lambda (port)
+                                         (json-string->scm (get-string-all port)))))
+               (lambda _
+                 #f)))
            (else
-            (let ((last-line (extract-last-nonempty-line stdout-str)))
-              (catch #t
-                (lambda () (json-string->scm last-line))
-                (lambda _ #f)))))))
-    `((status . ,(if (= exit-code 0) "success" "failed"))
+             (let
+                 ((last-line (extract-last-nonempty-line stdout-str)))
+               (catch #t
+                 (lambda ()
+                   (json-string->scm last-line))
+                 (lambda _
+                   #f)))))))
+    `((status .
+              ,(if (= exit-code 0)
+                 "success"
+                 "failed"))
       (exit-code . ,exit-code)
       (feature-id . ,feature-str)
       (result . ,parsed-result)
@@ -438,50 +466,68 @@ geasa bundle via resolve-synthesis-role).  ENV is an alist of
 ;;;
 ;;; High-level feature synthesis with optional transaction manager integration
 ;;;
-(define* (synthesize-feature! feature-id
-                             #:key
-                             (spec-path #f)
-                             (target-path #f)
-                             (mgr #f)
-                             (workflow-path #f)
-                             (model #f)
-                             (persona #f)
-                             (budget #f)
-                             (cassette #f)
-                             (cassette-mode #f)
-                             (max-turns #f)
-                             (ast-mcp-command #f)
-                             (env '())
-                             (llm-endpoint #f)
-                             (llm-api-key #f)
-                             (run-dir #f))
+(define*
+  (synthesize-feature! feature-id
+                       #:key
+                       (spec-path #f)
+                       (target-path #f)
+                       (mgr #f)
+                       (workflow-path #f)
+                       (model #f)
+                       (persona #f)
+                       (budget #f)
+                       (cassette #f)
+                       (cassette-mode #f)
+                       (max-turns #f)
+                       (ast-mcp-command #f)
+                       (env '())
+                       (llm-endpoint #f)
+                       (llm-api-key #f)
+                       (run-dir #f))
   "Synthesize FEATURE-ID against its contract specification using the Sema
 workflow engine. When MGR is provided, also verifies that the feature is
 hot-attached to MGR's registry on completion."
-  (let* ((res (run-synthesis-workflow feature-id
-                                     #:spec-path spec-path
-                                     #:target-path target-path
-                                     #:workflow-path workflow-path
-                                     #:model model
-                                     #:persona persona
-                                     #:env env
-                                     #:llm-endpoint llm-endpoint
-                                     #:llm-api-key llm-api-key
-                                     #:budget budget
-                                     #:cassette cassette
-                                     #:cassette-mode cassette-mode
-                                     #:max-turns max-turns
-                                     #:ast-mcp-command ast-mcp-command
-                                     #:run-dir run-dir))
-         (success? (string=? (or (assoc-ref res 'status) "") "success"))
-         (wf-result (assoc-ref res 'result))
-         (actual-target (or target-path (default-synthesis-target feature-id))))
-    (when (and success? (transaction-manager? mgr) (file-exists? actual-target))
+  (let*
+      ((res
+         (run-synthesis-workflow feature-id
+                                 #:spec-path
+                                 spec-path
+                                 #:target-path
+                                 target-path
+                                 #:workflow-path
+                                 workflow-path
+                                 #:model
+                                 model
+                                 #:persona
+                                 persona
+                                 #:env
+                                 env
+                                 #:llm-endpoint
+                                 llm-endpoint
+                                 #:llm-api-key
+                                 llm-api-key
+                                 #:budget
+                                 budget
+                                 #:cassette
+                                 cassette
+                                 #:cassette-mode
+                                 cassette-mode
+                                 #:max-turns
+                                 max-turns
+                                 #:ast-mcp-command
+                                 ast-mcp-command
+                                 #:run-dir
+                                 run-dir))
+       (success? (string=? (or (assoc-ref res 'status) "") "success"))
+       (actual-target (or target-path (default-synthesis-target feature-id))))
+    (when
+        (and success? (transaction-manager? mgr) (file-exists? actual-target))
       ;; Hot-attach in the provided manager's registry if not already attached
       (catch #t
         (lambda ()
           (commit-synthesized-module! mgr feature-id actual-target))
-        (lambda _ #f)))
+        (lambda _
+          #f)))
     res))
 
 ;;;

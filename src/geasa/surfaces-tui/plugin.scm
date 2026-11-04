@@ -1866,61 +1866,70 @@ that verdicts come only from kernel subprocess replay."
                               (required . #())))))
         (registry-attach! reg
                           "spec.synthesize"
-                          (lambda* (feature-id #:optional target-path spec-path)
+                          (lambda*
+                            (feature-id #:optional target-path spec-path)
                             (catch #t
                               (lambda ()
-                                (let* ((synth-mod (or (false-if-exception (resolve-module '(geasa runtimes-synthesis plugin)))
-                                                       (resolve-module '(geasa runtimes-synthesis plugin))))
-                                       (resolve-role (module-ref synth-mod 'resolve-synthesis-role))
-                                       (synth-fn (module-ref synth-mod 'run-synthesis-workflow))
-                                       ;; The synthesis agent role (model + persona
-                                       ;; from the persona geasa) resolved from the
-                                       ;; project config at call time.
-                                       (role (catch #t
-                                               (lambda () (resolve-role (load-config)))
-                                               (lambda _ #f)))
-                                       (res (synth-fn feature-id
-                                                      #:target-path target-path
-                                                      #:spec-path spec-path
-                                                      #:model (and role (assoc-ref role 'model))
-                                                      #:persona (and role (assoc-ref role 'persona-text))
-                                                      #:env (if role
-                                                                ((module-ref synth-mod 'synthesis-env-alist) role)
-                                                                '())
-                                                      #:llm-endpoint
-                                                      (if role
-                                                          (assoc-ref
-                                                           ((module-ref synth-mod 'synthesis-llm-args) role)
-                                                           'llm-endpoint)
-                                                          #f)
-                                                      #:llm-api-key
-                                                      (if role
-                                                          (assoc-ref
-                                                           ((module-ref synth-mod 'synthesis-llm-args) role)
-                                                           'llm-api-key)
-                                                          #f)))
-                                       (status (assoc-ref res 'status))
-                                       (wf-result (assoc-ref res 'result)))
-                                  (let* ((target (or target-path
-                                                      ((module-ref synth-mod 'default-synthesis-target) feature-id)))
-                                         (install-report
-                                           (if (string=? (or status "") "success")
-                                               ((module-ref synth-mod 'install-synthesized-bundle!)
-                                                feature-id target)
-                                               #f)))
-                                    (format #f "Sema plugin synthesis ~a for feature '~a'.\n~a~a"
+                                (let*
+                                    ((synth-mod
+                                       (false-if-exception (resolve-module '(geasa runtimes-synthesis plugin))))
+                                     (resolve-role (module-ref synth-mod 'resolve-synthesis-role))
+                                     (synth-fn (module-ref synth-mod 'run-synthesis-workflow))
+                                     ;; The synthesis agent role (model + persona
+                                     ;; from the persona geasa) resolved from the
+                                     ;; project config at call time.
+                                     (role
+                                       (catch #t
+                                         (lambda ()
+                                           (resolve-role (load-config)))
+                                         (lambda _
+                                           #f)))
+                                     (res
+                                       (synth-fn feature-id
+                                                 #:target-path
+                                                 target-path
+                                                 #:spec-path
+                                                 spec-path
+                                                 #:model
+                                                 (and role (assoc-ref role 'model))
+                                                 #:persona
+                                                 (and role (assoc-ref role 'persona-text))
+                                                 #:env
+                                                 (if role
+                                                   ((module-ref synth-mod 'synthesis-env-alist) role)
+                                                   '())
+                                                 #:llm-endpoint
+                                                 (if role
+                                                   (assoc-ref ((module-ref synth-mod 'synthesis-llm-args) role) 'llm-endpoint)
+                                                   #f)
+                                                 #:llm-api-key
+                                                 (if role
+                                                   (assoc-ref ((module-ref synth-mod 'synthesis-llm-args) role) 'llm-api-key)
+                                                   #f)))
+                                     (status (assoc-ref res 'status))
+                                     (wf-result (assoc-ref res 'result)))
+                                  (let*
+                                      ((target
+                                         (or target-path ((module-ref synth-mod 'default-synthesis-target) feature-id)))
+                                       (install-report
+                                         (if (string=? (or status "") "success")
+                                           ((module-ref synth-mod 'install-synthesized-bundle!) feature-id target)
+                                           #f)))
+                                    (format #f
+                                            "Sema plugin synthesis ~a for feature '~a'.\n~a~a"
                                             status
                                             feature-id
                                             (if wf-result
-                                                (scm->json-string wf-result)
-                                                (or (assoc-ref res 'stdout) ""))
+                                              (scm->json-string wf-result)
+                                              (or (assoc-ref res 'stdout) ""))
                                             (if install-report
-                                                (format #f "\nInstalled geis for project: ~a verdict: ~a"
-                                                        (or (assoc-ref install-report 'feature-id) feature-id)
-                                                        (or (assoc-ref install-report 'verify-verdict)
-                                                            (assoc-ref install-report 'install-status)
-                                                            "?"))
-                                                "")))))
+                                              (format #f
+                                                      "\nInstalled geis for project: ~a verdict: ~a"
+                                                      (or (assoc-ref install-report 'feature-id) feature-id)
+                                                      (or (assoc-ref install-report 'verify-verdict)
+                                                          (assoc-ref install-report 'install-status)
+                                                          "?"))
+                                              "")))))
                               (lambda (k . a)
                                 (format #f "Error during synthesis (~a): ~s" k a))))
                           '((description .
@@ -1929,8 +1938,7 @@ that verdicts come only from kernel subprocess replay."
                              ((type . "object")
                               (properties .
                                ((feature-id .
-                                 ((type . "string")
-                                  (description . "Feature identifier to synthesize")))
+                                 ((type . "string") (description . "Feature identifier to synthesize")))
                                 (target-path .
                                  ((type . "string")
                                   (description . "Optional path to target Guile module implementation file")))
@@ -2547,9 +2555,7 @@ a manual entry item."
   (unless
       (catch #t
         (lambda ()
-          (or
-            (false-if-exception (resolve-interface '(geasa surfaces-tui nc)))
-            (resolve-interface '(geasa surfaces-tui nc)))
+          (false-if-exception (resolve-interface '(geasa surfaces-tui nc)))
           #t)
         (lambda _
           #f))
@@ -4259,12 +4265,11 @@ any open menu first; submenu actions open the next menu in its place."
                   (if (string-null? rest-arg)
                     (add-sys-msg! "Usage: /geis synthesize <feature-id> [target-path] [spec-path]")
                     (let*
-                        ((parts (string-split rest-arg #\space))
-                         (parts
+                        ((parts
                            (filter
                              (lambda (s)
                                (not (string-null? s)))
-                             parts))
+                             (string-split rest-arg #\space)))
                          (fid (car parts))
                          (target-p (and (pair? (cdr parts)) (cadr parts)))
                          (spec-p (and (pair? (cdr parts)) (pair? (cddr parts)) (caddr parts))))
@@ -4275,9 +4280,7 @@ any open menu first; submenu actions open the next menu in its place."
                           (let*
                               ((synth-fn
                                  (module-ref
-                                   (or
-                                     (false-if-exception (resolve-module '(geasa runtimes-synthesis plugin)))
-                                     (resolve-module '(geasa runtimes-synthesis plugin)))
+                                   (false-if-exception (resolve-module '(geasa runtimes-synthesis plugin)))
                                    'run-synthesis-workflow))
                                (res (synth-fn fid #:target-path target-p #:spec-path spec-p))
                                (status (assoc-ref res 'status))
@@ -4486,11 +4489,14 @@ one edit and renders once, instead of submitting on the first newline."
                       (call-with-values
                         (lambda ()
                           (insert-at input-buffer cursor-pos text))
-                        (lambda (new-buffer new-pos)
-                          (set! input-buffer new-buffer)
-                          (set! cursor-pos new-pos)))))
+                        apply-edit!)))
                   ids)
                 (clamp-selector-index!))
+        (define (apply-edit! new-buffer new-pos)
+                "Commit an edit result (NEW-BUFFER NEW-POS) from any of the pure
+buffer-editing helpers: replace the input buffer and move the cursor."
+                (set! input-buffer new-buffer)
+                (set! cursor-pos new-pos))
         ;; The input loop as an internal define: needs-render? defaults
         ;; to #t, so every plain (loop) call site keeps rendering. A
         ;; named let would give the recursion a fixed arity and break
@@ -4704,9 +4710,7 @@ one edit and renders once, instead of submitting on the first newline."
                                    (call-with-values
                                      (lambda ()
                                        (backspace-at input-buffer cursor-pos))
-                                     (lambda (new-buffer new-pos)
-                                       (set! input-buffer new-buffer)
-                                       (set! cursor-pos new-pos)))
+                                     apply-edit!)
                                    (clamp-selector-index!))
                                  ((not (eq? prompt-mode 'chat)) (set! prompt-mode 'chat)))
                                (loop))
@@ -4769,9 +4773,7 @@ one edit and renders once, instead of submitting on the first newline."
                                (call-with-values
                                  (lambda ()
                                    (delete-at input-buffer cursor-pos))
-                                 (lambda (new-buffer new-pos)
-                                   (set! input-buffer new-buffer)
-                                   (set! cursor-pos new-pos)))
+                                 apply-edit!)
                                (clamp-selector-index!)
                                (loop))
                              ;; Ctrl+C or Ctrl+D: exit
@@ -4816,9 +4818,7 @@ one edit and renders once, instead of submitting on the first newline."
                                          (call-with-values
                                            (lambda ()
                                              (insert-at input-buffer cursor-pos (string c)))
-                                           (lambda (new-buffer new-pos)
-                                             (set! input-buffer new-buffer)
-                                             (set! cursor-pos new-pos)))
+                                           apply-edit!)
                                          (clamp-selector-index!)
                                          (loop)))))))
                              (else (loop))))))

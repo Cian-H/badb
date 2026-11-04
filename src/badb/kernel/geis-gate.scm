@@ -138,12 +138,9 @@ excluding manifest.scm."
         "Lock the bundle at BUNDLE-DIR for FEATURE-ID: copy the whole tree into
 the gate store read-only and return the bundle content hash."
         (let*
-            ((root
-               (let ((r (geis-gate-root)))
-                 (mkdir-p r)
-                 (canonicalize-path r)))
-             (target (locked-geis-bundle-path feature-id))
+            ((target (locked-geis-bundle-path feature-id))
              (files (%collect-bundle-files bundle-dir)))
+          (mkdir-p (geis-gate-root))
           (when (file-exists? target) (%delete-tree! target))
           (mkdir-p target)
           (for-each
