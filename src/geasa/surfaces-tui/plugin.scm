@@ -402,10 +402,8 @@ based on current input mode, execution status, and active prompt mode."
     (values "λ" 'scheme #t))    ; Scheme-role bold scheme mode
    ((string-prefix? "!" input-buffer)
     (values "$" 'shell #t))     ; Shell-role bold shell prefix
-   ((or (string-prefix? "," input-buffer) (string-prefix? "(" input-buffer))
+   ((string-prefix? "(" input-buffer)
     (values "λ" 'scheme #t))    ; Scheme-role bold lambda prefix
-   ((string-prefix? "/" input-buffer)
-    (values "/" 'accent #t))    ; Accent-role bold slash prefix
    (else
     (values "❯" 'accent #t))))   ; Accent-role bold chat
 
@@ -499,7 +497,7 @@ MODE (a symbol: chat, shell, scheme, selector, menu or steering)."
     ((selector) "↑↓:choose · tab:complete · enter:run · esc:dismiss")
     ((menu) "↑↓:move · enter:apply · esc:close")
     ((steering) "type:steer · enter:send · ^i:interrupt · bs:edit · esc:clear")
-    (else "! shell · , scheme · / cmds · ^↑/^↓ select · ^e collapse · ↑↓ scroll")))
+    (else "! shell · ( scheme · / cmds · ↑↓ history · PgUp/PgDn scroll · ^↑/^↓ select · ^e collapse")))
 
 ;;;
 ;;; Agent Steering Helpers
@@ -589,8 +587,8 @@ currently executing (a REACT iteration or TOOL status)."
       #f)
      ((string-prefix? "!" trimmed)
       (cons 'shell (string-trim-both (substring trimmed 1))))
-     ((string-prefix? "," trimmed)
-      (cons 'scheme (string-trim-both (substring trimmed 1))))
+
+
      ((string-prefix? "(" trimmed)
       (cons 'scheme trimmed))
      ((string-prefix? "/" trimmed)
@@ -643,6 +641,13 @@ and core badb modules for interactive evaluation."
     (catch #t (lambda () (module-use! mod (resolve-interface '(geasa runtimes-react plugin)))) (lambda _ #f))
     (module-use! mod (resolve-interface '(ice-9 format)))
     (module-use! mod (resolve-interface '(ice-9 rdelim)))
+    (module-use! mod (resolve-interface '(ice-9 pretty-print)))
+    ;; (ice-9 session) carries the REPL introspection toolkit (apropos,
+    ;; module-inspect helpers) so the scheme prompt can explore the
+    ;; harness beyond plain eval.
+    (catch #t
+      (lambda () (module-use! mod (resolve-interface '(ice-9 session))))
+      (lambda _ #f))
     (module-use! mod (resolve-interface '(srfi srfi-1)))
     (module-define! mod 'reg reg)
     (module-define! mod 'jrn jrn)
@@ -2600,6 +2605,15 @@ a manual entry item."
        (beep (nref 'beep))
        (cursor-shape (nref 'cursor-shape))
        (drain-mouse-events (nref 'drain-mouse-events))
+       ;; Paste-burst API from the nc backend (with graceful fallbacks:
+       ;; without them input-pending? is always #f and paste bursts are
+       ;; simply not collected — typing still works).
+       (input-pending?
+         (or (catch #t (lambda () (nref 'input-pending?)) (lambda _ #f))
+             (lambda _ #f)))
+       (drain-input-burst!
+         (or (catch #t (lambda () (nref 'drain-input-burst!)) (lambda _ #f))
+             (lambda () '())))
        (KEY_FIND (nref 'KEY_FIND))
        (KEY_OPEN (nref 'KEY_OPEN))
        ;; Non-blocking input support: the (geasa surfaces-tui nc) backend exports nodelay!
@@ -2693,16 +2707,14 @@ a manual entry item."
                        ,(default-system-prompt #:workspace-dir (getcwd)
                                                #:tools
                                                (collect-available-tools reg mcp-mgr)))))
+    ;; The system prompt stays in llm-history for the model but is not
+    ;; displayed as a transcript card.
     (define messages
-            (list (make-system-turn)
-                  `((role . "notice")
+            (list `((role . "notice")
                     (content .
                              ,(string-append
-                                "Welcome to badb microharness TUI!\n"
-                                "• Type a message to chat with the model (autonomous ReAct loop active)\n"
-                                "• While the agent runs, type to steer it: enter sends · ctrl+i interrupts (applied at the next iteration)\n"
-                                "• ! shell · , scheme · / command palette · ctrl+↑/↓ select a block · ctrl+e collapse it\n"
-                                "• The status line up top and the keymap below stay live; /help for details")))))
+                                "badb microharness\n"
+                                "• ! shell · ( scheme · / commands · /help for keys")))))
     (set! llm-history (list (make-system-turn)))
     ;; Session log for /resume: the whole llm-history is rewritten to
     ;; this JSONL file after every chat turn (system prompt first).
@@ -4411,12 +4423,15 @@ any open menu first; submenu actions open the next menu in its place."
                          ((safe-idx (max 0 (min selector-index (- (length matches) 1)))))
                        (car (list-ref matches safe-idx)))))
         (let loop
-          ()
+          ((needs-render? #t))
           ;; Drain mouse events BEFORE rendering so a click's effects
           ;; draw in this same iteration (the click map is rebuilt by
           ;; every render; handlers act on the displayed frame).
           (for-each handle-mouse-event! (drain-mouse-events))
-          (render!)
+          ;; Rendering is skipped only for no-op scroll keys in a key
+          ;; burst: a held or pasted run of scroll keys must not trigger
+          ;; a full-transcript render per key.
+          (when needs-render? (render!))
           (let ((ch (key->code (getch stdscr))))
             (unless (or (eqv? ch KEY_UP) (eqv? ch KEY_DOWN))
               (history-reset-nav input-history))
@@ -4553,9 +4568,10 @@ any open menu first; submenu actions open the next menu in its place."
                   ((and (integer? msgsel-index) (string-null? input-buffer))
                     (set! msgsel-index #f)))
                 (loop))
-              ;; Up Arrow: selector navigation, input history recall while
-              ;; typing, or scrolling back through the transcript on an
-              ;; empty prompt
+              ;; Up Arrow: selector navigation or input history recall.
+              ;; Arrows no longer scroll the transcript — history cycling
+              ;; is their job; scrolling stays on PageUp/PageDown and the
+              ;; mouse wheel.
               ((eqv? ch KEY_UP)
                 (cond
                   ((selector-active? input-buffer)
@@ -4568,18 +4584,17 @@ any open menu first; submenu actions open the next menu in its place."
                                 (if (<= cur 0)
                                   (- count 1)
                                   (- cur 1)))))))
-                  ((or (> (string-length input-buffer) 0) (history-recall-position input-history))
+                  (else
                     (unless (history-recall-position input-history)
                       (set! history-draft input-buffer)
                       (set! history-draft-pos cursor-pos))
                     (let ((entry (history-recall input-history -1)))
                       (when entry
                         (set! input-buffer entry)
-                        (set! cursor-pos (string-length entry)))))
-                  (else (set! scroll-offset (+ scroll-offset 1))))
+                        (set! cursor-pos (string-length entry))))))
                 (loop))
-              ;; Down Arrow: selector navigation, history recall while
-              ;; typing, or scrolling forward through the transcript
+              ;; Down Arrow: selector navigation or history recall
+              ;; forward; at the newest entry the draft is restored.
               ((eqv? ch KEY_DOWN)
                 (cond
                   ((selector-active? input-buffer)
@@ -4589,7 +4604,7 @@ any open menu first; submenu actions open the next menu in its place."
                         (let*
                             ((count (length matches)) (cur (max 0 (min selector-index (- count 1)))))
                           (set! selector-index (remainder (+ cur 1) count))))))
-                  ((or (> (string-length input-buffer) 0) (history-recall-position input-history))
+                  (else
                     (let*
                         ((was-recalling? (history-recall-position input-history))
                          (entry (history-recall input-history 1)))
@@ -4597,8 +4612,7 @@ any open menu first; submenu actions open the next menu in its place."
                         (begin (set! input-buffer entry) (set! cursor-pos (string-length entry)))
                         (when was-recalling?
                           (set! input-buffer history-draft)
-                          (set! cursor-pos history-draft-pos)))))
-                  (else (set! scroll-offset (max 0 (- scroll-offset 1)))))
+                          (set! cursor-pos history-draft-pos))))))
                 (loop))
               ;; Backspace: delete character or return to normal mode if
               ;; prompt is empty (127 on modern terminals, 8 on older ones)
@@ -4683,13 +4697,29 @@ any open menu first; submenu actions open the next menu in its place."
               ;; Printable character input (codepoints >= 32). Unbound
               ;; control codes fall through to the else branch and are
               ;; discarded rather than inserted into the buffer.
+              ;; A run of pending input following the key means a paste:
+              ;; the whole burst is inserted in one pass (one render, no
+              ;; per-character latency, newlines preserved as data).
               ((and (integer? ch) (>= ch 32))
-                (let ((c (integer->char ch)))
-                  (cond
+                (let ((burst (if (input-pending?)
+                               (cons ch (drain-input-burst!))
+                               (list ch))))
+                  (if (> (length burst) 1)
+                    (begin (insert-burst! burst) (loop))
+                    (let ((c (integer->char ch)))
+                      (cond
                     ((and (string-null? input-buffer) (eq? prompt-mode 'chat))
                       (cond
                         ((eqv? c #\!) (set! prompt-mode 'shell) (loop))
-                        ((or (eqv? c #\() (eqv? c #\,)) (set! prompt-mode 'scheme) (loop))
+                        ;; "(" enters scheme mode and STAYS in the entry
+                        ;; field: it is the opening paren of the sexp being
+                        ;; typed, so dropping it (like the old "," trigger)
+                        ;; would corrupt the code under evaluation.
+                        ((eqv? c #\()
+                          (set! prompt-mode 'scheme)
+                          (set! input-buffer "(")
+                          (set! cursor-pos 1)
+                          (loop))
                         (else (set! input-buffer (string c))
                               (set! cursor-pos (string-length input-buffer))
                               (loop))))
@@ -4701,7 +4731,7 @@ any open menu first; submenu actions open the next menu in its place."
                           (set! input-buffer new-buffer)
                           (set! cursor-pos new-pos)))
                       (clamp-selector-index!)
-                      (loop)))))
+                      (loop)))))))
               (else (loop))))))
       (lambda ()
         (shutdown!)))))

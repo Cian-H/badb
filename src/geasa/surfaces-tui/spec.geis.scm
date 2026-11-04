@@ -203,6 +203,31 @@
       (test-assert "stderr captured" (string-contains out "oops")))))
 
 ;;;
+;;; 5a. Input classification & prompt indicator contract
+;;;
+(test-group "tui-input-classification"
+  ;; Commas are plain chat text now; only "(" enters scheme.
+  (test-equal "comma-prefixed input is chat"
+    '(chat . ",hello world") (classify-input ",hello world"))
+  (test-equal "paren-prefixed input is scheme"
+    '(scheme . "(+ 1 2)") (classify-input "(+ 1 2)"))
+  (test-equal "bang-prefixed input is shell"
+    '(shell . "ls -la") (classify-input "!ls -la"))
+  (test-equal "slash command with argument parses"
+    '(slash "model" "mistral") (classify-input "/model mistral"))
+  ;; Prompt indicator: typing "/" must not double-display — the slash
+  ;; stays in the entry field and the indicator glyph stays the chat one.
+  (call-with-values
+    (lambda () (get-prompt-indicator "/help" "READY"))
+    (lambda (glyph role bold?)
+      (test-equal "slash input shows the chat glyph, not a second slash"
+        "❯" glyph)))
+  (call-with-values
+    (lambda () (get-prompt-indicator "(apropos \"hi\")" "READY"))
+    (lambda (glyph role bold?)
+      (test-equal "scheme sexp input shows the lambda glyph" "λ" glyph))))
+
+;;;
 ;;; 5b. Byte-exact exec log (.badb/exec-log.jsonl, BADB_EXEC_LOG override)
 ;;;
 (test-group "tui-shell-exec-log"
