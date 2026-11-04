@@ -167,14 +167,20 @@ string or symbol keys, or #f when absent."
 (define (mcp-spawn-client command-args)
   "Spawn an MCP server subprocess for COMMAND-ARGS (a string or list of strings)
 and return a new <mcp-client> connected to its stdio. Stderr is redirected to
-.badb/mcp.log so that server logs and warnings do not corrupt the TUI screen."
+.badb/mcp.log so that server logs and warnings do not corrupt the TUI screen,
+but only while the BADB_DEBUG environment variable is non-empty; otherwise
+stderr is redirected to /dev/null and no log file is written."
   (let* ((args (cond
                 ((string? command-args) (list command-args))
                 ((list? command-args) command-args)
                 (else (error "mcp-spawn-client: command-args must be a list of strings or string"
                              command-args))))
-         (log-dir (if (file-exists? ".badb") ".badb" "/tmp"))
-         (log-file (string-append log-dir "/mcp.log"))
+         (debug-on (let ((value (getenv "BADB_DEBUG")))
+                     (and (string? value) (> (string-length value) 0))))
+         (log-file (if debug-on
+                       (string-append (if (file-exists? ".badb") ".badb" "/tmp")
+                                      "/mcp.log")
+                       "/dev/null"))
          (wrapper (list "sh" "-c" "log=\"$1\"; shift; exec \"$@\" 2>>\"$log\"" "sh" log-file))
          (wrapped-args (append wrapper args))
          (pipe-port (apply open-pipe* OPEN_BOTH wrapped-args))

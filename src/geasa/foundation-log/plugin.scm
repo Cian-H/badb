@@ -46,22 +46,34 @@
   "Format one log line from TIMESTAMP, CONTEXT and MESSAGE strings."
   (format #f "[~a] [~a] ~a" timestamp context message))
 
+(define (debug-logging-enabled?)
+  "Return #t when the BADB_DEBUG environment variable is set to any
+non-empty value. Checked on every write so callers and tests can toggle
+debug logging at runtime."
+  (let ((value (getenv "BADB_DEBUG")))
+    (and (string? value) (> (string-length value) 0))))
+
 (define*
   (log-error! message #:optional (context "badb") (path (default-error-log-path)))
   "Append a timestamped MESSAGE line for CONTEXT to the log at PATH,
-creating the parent directory when needed. Never throws: returns #t on
-success and #f on any failure (unwritable path, encoding error, ...)."
-  (catch #t
-    (lambda ()
-      (let ((dir (dirname path)))
-        (ensure-directory! dir))
-      (let ((port (open-file path "a")))
-        (display (format-error-entry (current-iso8601-timestamp) context message) port)
-        (newline port)
-        (close-port port))
-      #t)
-    (lambda _
-      #f)))
+creating the parent directory when needed. Writes are gated behind the
+BADB_DEBUG environment variable: when it is unset or empty the call is a
+successful no-op that never touches the filesystem. Never throws:
+returns #t on success and #f on any failure (unwritable path, encoding
+error, ...)."
+  (if (debug-logging-enabled?)
+      (catch #t
+        (lambda ()
+          (let ((dir (dirname path)))
+            (ensure-directory! dir))
+          (let ((port (open-file path "a")))
+            (display (format-error-entry (current-iso8601-timestamp) context message) port)
+            (newline port)
+            (close-port port))
+          #t)
+        (lambda _
+          #f))
+      #t))
 
 (define*
   (log-exception! key
