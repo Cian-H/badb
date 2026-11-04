@@ -682,8 +682,42 @@ and core badb modules for interactive evaluation."
       (lambda (key . args)
         (values #f (format #f "Scheme error (~a): ~s" key args))))))
 
+(define (%exec-log-path)
+  "Exec log destination: BADB_EXEC_LOG when set (empty string disables
+logging), else .badb/exec-log.jsonl."
+  (let ((env (getenv "BADB_EXEC_LOG")))
+    (cond
+      ((and (string? env) (string-null? env)) #f)
+      ((string? env) env)
+      (else ".badb/exec-log.jsonl"))))
+
+(define (%append-exec-log! cmd)
+  "Append a byte-exact record of CMD to the exec log just before spawn,
+best effort: never throws, silently skips when the log is disabled or
+unwritable.  The cmd field is the exact string handed to the shell —
+the transcript's post-decode alist views are re-escaped renders, so
+this file is the ground truth when diagnosing quoting-layer corruption
+(a lost paren, a stripped escape, a truncated quote).
+Format: one JSON object per line: {ts, us, len, cmd}."
+  (catch #t
+    (lambda ()
+      (let ((path (%exec-log-path)))
+        (when path
+          (let ((dir (dirname path)))
+            (unless (file-exists? dir) (ensure-directory! dir)))
+          (let* ((tv (gettimeofday))
+                 (port (open-file path "a")))
+            (format port "{\"ts\":~a,\"us\":~a,\"len\":~a,\"cmd\":~a}\n"
+                    (car tv) (cdr tv) (string-length cmd) (scm->json-string cmd))
+            (close-port port)))))
+    (lambda _ #f)))
+
 (define (execute-shell-command cmd)
-  "Execute shell CMD and return (values output-string exit-code error-or-#f)."
+  "Execute shell CMD and return (values output-string exit-code
+error-or-#f).  Records the byte-exact command to the exec log
+(.badb/exec-log.jsonl, BADB_EXEC_LOG override; empty disables) just
+before spawn."
+  (%append-exec-log! cmd)
   (catch #t
     (lambda ()
       (let* ((pipe (open-pipe (string-append cmd " 2>&1") OPEN_READ))

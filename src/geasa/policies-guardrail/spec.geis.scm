@@ -149,6 +149,66 @@
 ;;; 6. Audit Logging & Journal Provenance
 ;;;
 
+(test-group "guardrail-guile-c-paren"
+  ;; Balanced payloads pass (the dump4 self-check command shape)
+  (define balanced-cmd
+    "guile --no-auto-compile -L src -L . -c '(display (map f (g (h \"x\"))))'")
+  (define unbalanced-cmd
+    "guile --no-auto-compile -L src -L . -c '(display (map f (g (h \"x\")))'")
+  (define cmd-args (lambda (c) `(("command" . ,c))))
+
+  (test-assert "balanced guile -c command passes"
+    (not (guile-c-paren-imbalance "bash" balanced-cmd)))
+  (test-assert "alist command argument passes through"
+    (not (guile-c-paren-imbalance "bash" (cmd-args balanced-cmd))))
+  (test-assert "payload with char literal paren passes"
+    (not (guile-c-paren-imbalance "bash" (cmd-args "guile -c '(display #\\()')"))))
+  (test-assert "payload with escaped quote paren passes"
+    (not (guile-c-paren-imbalance "bash" (cmd-args "guile -c '(display \"a)b\")'"))))
+  (test-assert "payload with line comment parens passes"
+    (not (guile-c-paren-imbalance "bash" (cmd-args "guile -c '(display 1) ; ((('"))))
+  (test-assert "guile file run without -c is not checked"
+    (not (guile-c-paren-imbalance "bash" (cmd-args "guile --no-auto-compile -L src script.scm"))))
+  (test-assert "write_file carrying guile -c text is not checked"
+    (not (guile-c-paren-imbalance "write_file" '((content . "guile -c '(unbalanced")))))
+  (test-assert "command without guile is not checked"
+    (not (guile-c-paren-imbalance "bash" (cmd-args "ls -la"))))
+
+  (test-assert "missing close paren detected"
+    (string-contains (or (guile-c-paren-imbalance "bash" unbalanced-cmd) "")
+                     "1 unclosed opening paren"))
+  (test-assert "extra close paren detected"
+    (string-contains
+      (or (guile-c-paren-imbalance "bash" (cmd-args "guile -c '(+ 1 2))'")) "")
+      "extra closing paren"))
+  (test-assert "double-quoted payload checked"
+    (string-contains
+      (or (guile-c-paren-imbalance "bash" "guile -c \"(display (+ 1 2)\")")
+          "")
+      "unclosed opening paren"))
+  (test-assert "unterminated payload quoting detected"
+    (string-contains
+      (or (guile-c-paren-imbalance "bash" (cmd-args "guile -c '(display 1")) "")
+      "unterminated"))
+  (test-assert "second payload in a compound command is checked"
+    (string-contains
+      (or (guile-c-paren-imbalance "bash"
+            "guile -c '(+ 1 2)' && guile -c '(display \"x\")")
+          "")
+      "unterminated"))
+
+  ;; Default evaluator integration: deny precedes level verdicts
+  (let ((policy (make-guardrail-policy #:level 'cautious)))
+    (test-assert "cautious evaluator denies unbalanced guile -c"
+      (guardrail-deny? (evaluate-guardrail policy "bash" unbalanced-cmd)))
+    (test-assert "cautious evaluator still asks on balanced mutation"
+      (guardrail-ask?
+        (evaluate-guardrail policy "bash" (cmd-args "touch foo.txt"))))
+    (test-assert "disabled level still allows unbalanced guile -c"
+      (guardrail-allow?
+        (evaluate-guardrail (make-guardrail-policy #:level 'disabled)
+                            "bash" unbalanced-cmd)))))
+
 (test-group "guardrail-journal-audit"
   (let* ((jrn-path "/tmp/badb-test-guardrail-jrn.jsonl")
          (_ (when (file-exists? jrn-path) (delete-file jrn-path)))

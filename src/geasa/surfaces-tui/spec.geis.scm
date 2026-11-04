@@ -13,7 +13,9 @@
   #:use-module (badb kernel journal)
   #:use-module (geasa foundation-config plugin)
   #:use-module (geasa capabilities-mcp plugin)
-  #:use-module (geasa surfaces-tui plugin))
+  #:use-module (geasa surfaces-tui plugin)
+  #:use-module (json)
+  #:use-module (ice-9 textual-ports))
 
 (spec-begin "surfaces-tui")
 
@@ -199,6 +201,52 @@
       (test-assert "shell exec captures exit" (not err))
       (test-equal "exit code is 42" 42 exit-val)
       (test-assert "stderr captured" (string-contains out "oops")))))
+
+;;;
+;;; 5b. Byte-exact exec log (.badb/exec-log.jsonl, BADB_EXEC_LOG override)
+;;;
+(test-group "tui-shell-exec-log"
+  (let ((log-path "/tmp/badb-execlog-test.jsonl"))
+    (dynamic-wind
+      (lambda ()
+        (setenv "BADB_EXEC_LOG" log-path)
+        (catch #t (lambda () (delete-file log-path)) (lambda _ #f)))
+      (lambda ()
+        (call-with-values
+          (lambda () (execute-shell-command "echo 'log me'"))
+          (lambda args #f))
+        (test-assert "exec log written after a command"
+          (file-exists? log-path))
+        (test-assert "exec log line is the byte-exact command"
+          (string-contains
+            (call-with-input-file log-path get-string-all)
+            "\"cmd\":\"echo 'log me'\""))
+        (test-assert "exec log parses as JSON"
+          (let ((line (car (string-split
+                            (call-with-input-file log-path get-string-all)
+                            #\newline))))
+            (catch #t
+              (lambda () (json-string->scm line) #t)
+              (lambda _ #f)))))
+      (lambda ()
+        (unsetenv "BADB_EXEC_LOG")
+        (catch #t (lambda () (delete-file log-path)) (lambda _ #f)))))
+  ;; Empty BADB_EXEC_LOG disables logging
+  (let ((log-path "/tmp/badb-execlog-disabled.jsonl"))
+    (dynamic-wind
+      (lambda ()
+        (setenv "BADB_EXEC_LOG" log-path)
+        (catch #t (lambda () (delete-file log-path)) (lambda _ #f)))
+      (lambda ()
+        (setenv "BADB_EXEC_LOG" "")
+        (call-with-values
+          (lambda () (execute-shell-command "echo 'not logged'"))
+          (lambda args #f))
+        (test-assert "empty BADB_EXEC_LOG disables the exec log"
+          (not (file-exists? log-path))))
+      (lambda ()
+        (unsetenv "BADB_EXEC_LOG")
+        (catch #t (lambda () (delete-file log-path)) (lambda _ #f))))))
 
 ;;;
 ;;; 6. Model Thoughts and Reasoning Separation (split-thoughts-and-content)
