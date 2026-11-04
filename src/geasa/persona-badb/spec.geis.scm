@@ -43,6 +43,10 @@
       (and (string-contains identity "spec.lock")
            (string-contains identity "spec.synthesize")
            (string-contains identity "spec.verify")))
+    (test-assert "identity teaches the project-local landing convention"
+      (and (string-contains identity "geis/<feature-id>/")
+           (string-contains identity "(geis <feature-id> plugin)")
+           (string-contains identity "(geasa <feature-id> plugin)")))
     (test-assert "identity forbids hand-writing plugin implementations"
       (string-contains identity "Do not hand-write the plugin implementation"))
     (test-assert "identity forbids bypassing the synthesis workflow"
