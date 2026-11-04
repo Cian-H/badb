@@ -25,6 +25,14 @@
 ;;;     Kitty-keyboard release events (delivered after each press when
 ;;;     the terminal negotiates that protocol) are consumed, so getch
 ;;;     reports presses only, exactly like curses.
+;;;   - Terminal pastes arrive as a dense run of individual key
+;;;     events, and notcurses 3.0.16 has no bracketed paste, so a
+;;;     paste-burst API batches them instead: input-pending? peeks
+;;;     without consuming (lookahead requeues through the pushback
+;;;     queue), and drain-input-burst! collects the contiguous
+;;;     payload run - pasted newlines count as data, not Enter -
+;;;     until a 4ms quiescence re-check, pushing back the first real
+;;;     key it meets so getch delivers it intact.
 ;;;
 ;;; Library discovery mirrors how the TUI is deployed: the current
 ;;; guix environment (GUIX_ENVIRONMENT), the user's profile, then the
@@ -49,6 +57,7 @@
               beep
               cursor-shape
               drain-mouse-events
+              input-pending? drain-input-burst! pushback-count
               COLOR_BLACK COLOR_RED COLOR_GREEN COLOR_YELLOW
               COLOR_BLUE COLOR_MAGENTA COLOR_CYAN COLOR_WHITE))
 
@@ -525,21 +534,68 @@ reversed cards) and stays opaque."
 (define %ncinput (make-bytevector 128 0))
 (define %ncinput-ptr (bytevector->pointer %ncinput))
 
+;; Pushback queue: events read for lookahead (input-pending? peeks,
+;; drain-input-burst! stops on the first non-payload key) are requeued
+;; here as (id . copy) pairs, the copy taken at push time so a later
+;; read restores the full ncinput struct - y/x, evtype, modifiers and
+;; eff_text all keep answering for a pushed-back event.
+(define %pushback '())
+
+(define (%ncinput-restore! copy)
+  (let loop ((i 0))
+    (when (< i 128)
+      (bytevector-u8-set! %ncinput i (bytevector-u8-ref copy i))
+      (loop (+ i 1)))))
+
+(define (push-back-event! id)
+  (set! %pushback
+        (append %pushback
+                (list (cons id (bytevector-copy %ncinput))))))
+
+(define (pushback-count)
+  "Number of events currently held in the pushback queue. The queue
+drains as reads pop from it and drain-input! discards it wholesale;
+tests use this to probe that no event was lost or duplicated."
+  (length %pushback))
+
 (define (input-pending?)
-  ;; notcurses reports "no input available" as 0 and errors as
-  ;; (uint32)-1; anything else is a queued event.
-  (let ((id (%get-nblock %nc %ncinput-ptr)))
-    (not (or (= id 0) (= id %u32-err)))))
+  "Return #t when another input event is immediately available,
+WITHOUT consuming it: a non-empty pushback queue counts, and one
+non-blocking peek is made otherwise - a real event found by the peek
+is pushed back so the next read delivers it intact. #f when nothing
+is queued (or outside a session, before initscr). notcurses reports
+\"no input available\" as 0 and errors as (uint32)-1."
+  (cond
+    ((pair? %pushback) #t)
+    ((null-pointer? %nc) #f)
+    (else
+      (let ((id (%get-nblock %nc %ncinput-ptr)))
+        (if (or (= id 0) (= id %u32-err))
+          #f
+          (begin (push-back-event! id) #t))))))
+
+;; Consume and discard one event if one is immediately available,
+;; pushback first: drain-input! must throw input away, unlike the
+;; non-consuming input-pending?.
+(define (%discard-input-event?)
+  (cond
+    ((pair? %pushback)
+      (set! %pushback (cdr %pushback))
+      #t)
+    ((null-pointer? %nc) #f)
+    (else
+      (let ((r (%get-nblock %nc %ncinput-ptr)))
+        (not (or (= r 0) (= r %u32-err)))))))
 
 ;; Consume everything currently queued, then require two consecutive
 ;; 50ms windows with no input so replies still in flight are caught.
 (define (drain-input!)
   (let drain ((quiet 0))
     (let flush ()
-      (when (input-pending?) (flush)))
+      (when (%discard-input-event?) (flush)))
     (%sleep-ms 50)
     (cond
-      ((input-pending?) (drain 0))
+      ((%discard-input-event?) (drain 0))
       ((< quiet 1) (drain (+ quiet 1)))
       (else #t))))
 
@@ -552,20 +608,35 @@ reversed cards) and stays opaque."
 (define (input-ctrl?)
   (= (logand (input-modifiers) %nckey-mod-ctrl) %nckey-mod-ctrl))
 
+(define (read-raw-id-nblock)
+  "One non-blocking raw event read: a pushed-back event is popped
+first, restoring %ncinput from its saved copy so release, modifier
+and eff_text queries answer for it, before notcurses is polled. #f
+when no event is available or no session is open."
+  (cond
+    ((pair? %pushback)
+      (let ((front (car %pushback)))
+        (set! %pushback (cdr %pushback))
+        (%ncinput-restore! (cdr front))
+        (car front)))
+    ((null-pointer? %nc) #f)
+    (else
+      (let ((r (%get-nblock %nc %ncinput-ptr)))
+        (if (or (= r 0) (= r %u32-err)) #f r)))))
+
 (define (read-raw-id)
   (if %nodelay?
-    (let ((r (%get-nblock %nc %ncinput-ptr)))
-      (if (or (= r 0) (= r %u32-err)) #f r))
+    (read-raw-id-nblock)
     ;; Blocking read, emulated as a poll loop: SIGWINCH may be swallowed
     ;; by a non-main thread (see terminal-size-changed?), so an
     ;; unbounded notcurses_get would miss resizes until the next
     ;; keypress. Poll every 20ms: sub-perceptual input latency, and a
     ;; resize is reported within one poll.
-    (let poll ((r (%get-nblock %nc %ncinput-ptr)))
+    (let poll ()
       (cond
-        ((and (not (= r 0)) (not (= r %u32-err))) r)
+        ((read-raw-id-nblock))
         ((terminal-size-changed?) KEY_RESIZE)
-        (else (%sleep-ms 20) (poll (%get-nblock %nc %ncinput-ptr)))))))
+        (else (%sleep-ms 20) (poll))))))
 
 (define (input-eff-text)  ;; ncinput.eff_text[0] (uint32 at offset 36): the composed codepoint
   ;; taking modifiers into account (shift+1 -> '!', ctrl+d -> 0x04).
@@ -668,6 +739,65 @@ and clear the queue."
             (not (memv id %delivered-keys)))
         (loop (read-raw-id)))
       (else id))))
+
+;;;
+;;; Paste bursts
+;;;
+
+;; A terminal paste arrives as a dense run of individual key events;
+;; rendering once per event shows one-by-one latency, and a pasted
+;; newline (id 10 or 13) is indistinguishable from Enter, so multiline
+;; paste would submit mid-paste. notcurses 3.0.16 has no
+;; bracketed-paste support, so the burst is bounded by quiescence:
+;; drain-input-burst! collects the contiguous run of payload
+;; codepoints and pushes back the first real key it meets.
+
+(define (%burst-payload-codepoint id)
+  "The paste-payload codepoint for the raw event id ID, or #f when
+the event is a real key that must end the burst. Payload: printables
+(id 32..preterunicode, normalized through eff_text exactly like
+getch, never under ctrl - a ctrl-modified key composes to a control
+code in getch and is a real key) plus pasted newlines 10 and 13,
+which are collected as data so a multiline paste stays one burst
+instead of submitting on its first line."
+  (cond
+    ((or (= id 10) (= id 13)) id)
+    ((and (>= id 32)
+          (< id %preterunicode-base)
+          (not (input-ctrl?)))
+      (let ((eff (input-eff-text)))
+        (if (> eff 0) eff id)))
+    (else #f)))
+
+(define (drain-input-burst!)
+  "Collect the contiguous burst of paste-payload input currently
+queued, as codepoint ids in arrival order. Release events are
+skipped and interleaved mouse events are queued (as getch would)
+without ending the burst; the first event getch would deliver as a
+real key - arrows, escape, KEY_ENTER, specials, ctrl compositions -
+is pushed back for the next read and ends the burst. An emptied
+queue does not end the burst outright: one 4ms quiescence re-check
+catches a paste still in flight across two reads, and quiet ends the
+burst. Returns '() without waiting when nothing is queued and
+nothing has been collected, so a consumer that calls this on regular
+typing never blocks."
+  (let loop ((acc '()) (slept? #f))
+    (let ((id (read-raw-id-nblock)))
+      (cond
+        ((not id)
+          (if (or slept? (null? acc))
+            (reverse! acc)
+            (begin (%sleep-ms 4) (loop acc #t))))
+        ((input-release?) (loop acc #f))
+        ((and (>= id (+ %preterunicode-base 201))
+              (<= id (+ %preterunicode-base 210)))
+          (queue-mouse-event! id)
+          (loop acc #f))
+        (else
+          (let ((cp (%burst-payload-codepoint id)))
+            (if cp
+              (loop (cons cp acc) #f)
+              (begin (push-back-event! id) (reverse! acc)))))))))
 
 (define (nodelay! win enabled?)
   (set! %nodelay? (if enabled? #t #f))
