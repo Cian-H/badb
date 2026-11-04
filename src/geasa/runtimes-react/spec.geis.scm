@@ -736,5 +736,176 @@
         ;; Release the spawned server process in every outcome.
         (mcp-manager-stop-all! mgr)))))
 
+(test-group "react-loop-detector"
+            ;; Regression (dogfood round 1): a live agent re-issued one identical
+            ;; tool call dozens of times after compaction evicted its own memory;
+            ;; the opt-in detector warns once, then halts the run.
+            (let*
+                ((client
+                   (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "looping-llm"))
+                 (mock-poster
+                   (lambda* (uri #:key body headers streaming?)
+                            (let
+                                ((resp-body
+                                   (scm->json-string
+                                     '((choices .
+                                        #(((message .
+                                            ((role . "assistant") (content . "Looping...")
+                                             (tool_calls .
+                                              #(((id . "call_loop") (type . "function")
+                                                 (function . ((name . "ping") (arguments . "{}")))))))))))))))
+                              (values (build-response #:code 200) resp-body))))
+                 (reg (make-registry))
+                 (_
+                   (registry-attach! reg
+                                     "ping"
+                                     (lambda ()
+                                       "pong"))))
+              (test-assert
+                "default session carries no loop detector"
+                (not (react-session-loop-detector (make-react-session client #:reg reg))))
+              (parameterize ((current-http-post mock-poster))
+                            (let*
+                                ((session
+                                   (make-react-session client
+                                                       #:initial-messages
+                                                       '(((role . "user") (content . "infinite loop")))
+                                                       #:reg
+                                                       reg
+                                                       #:loop-detector
+                                                       (make-loop-detector #:window 10 #:warn-after 3 #:halt-after 5))))
+                              (call-with-values
+                                (lambda ()
+                                  (react-run! session))
+                                (lambda (verdict payload sess)
+                                  (test-equal "verdict is loop-detected" 'loop-detected verdict)
+                                  (test-equal "session status is loop-detected"
+                                              'loop-detected
+                                              (react-session-status sess))
+                                  (test-equal "halted on the 5th identical call" 5 (react-session-iteration sess))
+                                  (test-assert
+                                    "warning message was injected before the halt"
+                                    (any
+                                      (lambda (m)
+                                        (string-contains (or (assoc-ref m 'content) "") "[badb loop-detector]"))
+                                      (react-session-messages sess)))))))))
+
+(test-group "react-result-offloading"
+            (let*
+                ((large-content (make-string 2500 #\a))
+                 (result
+                   (offload-tool-result!
+                     "/tmp/badb-react-offload-test"
+                     "registry"
+                     large-content
+                     2000)))
+              (test-assert "result is shorter" (< (string-length result) 1500))
+              (test-assert "contains offloaded" (string-contains result "offloaded to")))
+            (let
+                ((result
+                   (offload-tool-result!
+                     "/tmp/badb-react-offload-test"
+                     "small"
+                     "small result"
+                     2000)))
+              (test-equal "small result unchanged" "small result" result))
+            (let*
+                ((large-content (make-string 2500 #\a))
+                 (result (offload-tool-result! #f "test" large-content 2000)))
+              (test-equal "large result unchanged when dir is #f" large-content result))
+            (let*
+                ((large-content (make-string 2500 #\a))
+                 (result
+                   (offload-tool-result! "/tmp/badb-react-offload-test" "test" large-content 3000)))
+              (test-equal "large result unchanged when below threshold" large-content result)))
+
+(test-group "react-recitation"
+            (let*
+                ((session
+                   (make-react-session #:recitation?
+                                       #t
+                                       #:initial-messages
+                                       '(((role . "user") (content . "What is the weather today?")))
+                                       #:iteration
+                                       5))
+                 (text (react-recitation-text session)))
+              (test-assert "contains recitation header"
+                           (string-contains text "[badb task recitation]"))
+              (test-assert "contains iteration number 5"
+                           (string-contains text "ReAct iteration 5"))
+              (test-assert "contains primary task"
+                           (string-contains text "Primary task: What is the weather today?"))))
+
+(test-group "react-recitation-no-msgs"
+            (let*
+                ((session (make-react-session #:recitation? #t #:iteration 3))
+                 (text (react-recitation-text session)))
+              (test-assert "contains recitation header"
+                           (string-contains text "[badb task recitation]"))
+              (test-assert "contains iteration number 3"
+                           (string-contains text "ReAct iteration 3"))
+              (test-assert "contains none for primary task"
+                           (string-contains text "Primary task: (none)"))))
+
+(test-group "react-recitation-integration"
+            ;; Regression: the recitation refresh inside react-step! threw
+            ;; unbound-variable m; unit tests alone did not exercise it.
+            ;; Drive the live path end to end here.
+            (let*
+                ((client
+                   (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "looping-llm"))
+                 (mock-poster
+                   (lambda* (uri #:key body headers streaming?)
+                            (let
+                                ((resp-body
+                                   (scm->json-string
+                                     '((choices .
+                                        #(((message .
+                                            ((role . "assistant") (content . "Looping...")
+                                             (tool_calls .
+                                              #(((id . "call_loop") (type . "function")
+                                                 (function . ((name . "ping") (arguments . "{}")))))))))))))))
+                              (values (build-response #:code 200) resp-body))))
+                 (reg (make-registry))
+                 (_
+                   (registry-attach! reg
+                                     "ping"
+                                     (lambda ()
+                                       "pong"))))
+              (test-assert
+                "default session carries no recitation"
+                (not (react-session-recitation? (make-react-session client #:reg reg))))
+              (parameterize ((current-http-post mock-poster))
+                            (let*
+                                ((session
+                                   (make-react-session client
+                                                       #:initial-messages
+                                                       '(((role "fresh task" "user") (content . "infinite loop")))
+                                                       #:reg
+                                                       reg
+                                                       #:recitation?
+                                                       #t)))
+                              (call-with-values
+                                (lambda ()
+                                  (react-step! session))
+                                (lambda (status _results)
+                                  (test-equal "step 1 stays continue" 'continue status)
+                                  (let ((msgs (react-session-messages session)))
+                                    (test-assert
+                                      "recitation present in messages after step 1"
+                                      (any
+                                        (lambda (m)
+                                          (and (equal? (assoc-ref m 'role) "user")
+                                               (string-prefix? "[badb task recitation]" (assoc-ref m 'content))
+                                               (string-contains (assoc-ref m 'content) "ReAct iteration 1")))
+                                        msgs))
+                                    (test-equal "exactly one recitation after step 1"
+                                                1
+                                                (count
+                                                  (lambda (m)
+                                                    (and (equal? (assoc-ref m 'role) "user")
+                                                         (string-prefix? "[badb task recitation]" (assoc-ref m 'content))))
+                                                  msgs)))))))))
+
 (spec-end)
 (spec-exit)

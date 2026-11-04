@@ -27,7 +27,9 @@
                                     context-compactor-estimator
                                     context-compactor-strategy
                                     context-compactor-pinned-roles
+                                    context-compactor-watermark
                                     context-compactor-effective-ceiling
+                                    context-compactor-effective-trigger
                                     set-context-compactor-max-tokens!
                                     set-context-compactor-reserve-tokens!
                                     set-context-compactor-estimator!
@@ -43,6 +45,7 @@
                                     strategy-pipeline
                                     strategy-cascading
                                     latest-user-message
+                                    first-user-message
                                     compaction-needed?
                                     compact-messages))
 
@@ -211,24 +214,43 @@ exists. MSGS is in chronological order."
       ((string=? (message-role (car rest)) "user") (car rest))
       (else (loop (cdr rest))))))
 
-(define (finish-sliding-window sys-msg acc pool)
-        "Attach SYS-MSG to the kept window ACC, guaranteeing the newest user
-message from POOL survives even when it fell outside the token budget."
-        (attach-system
-          sys-msg
-          (if (any (lambda (m) (string=? (message-role m) "user")) acc)
-            acc
-            (let ((newest-user (latest-user-message pool)))
-              (if newest-user
-                (cons newest-user acc)
-                acc)))))
+(define (first-user-message msgs)
+  "Return the first message with role 'user' in MSGS (chronological
+order), or #f when none exists. In an agent session this is typically
+the original task assignment."
+  (find (lambda (m) (string=? (message-role m) "user")) msgs))
 
-(define* (strategy-sliding-window #:key (keep-system-prompt #t))
+(define* (finish-sliding-window sys-msg acc pool #:optional (pin-first-user #f))
+        "Attach SYS-MSG to the kept window ACC, guaranteeing the newest user
+message from POOL survives even when it fell outside the token budget.
+When PIN-FIRST-USER is #t, also reinsert the first user message of POOL —
+the session's original task — so compaction can never evict the
+assignment, only middle-of-history working turns."
+        (let*
+          ((acc-user
+             (if (any (lambda (m) (string=? (message-role m) "user")) acc)
+               acc
+               (let ((newest-user (latest-user-message pool)))
+                 (if newest-user
+                   (cons newest-user acc)
+                   acc))))
+           (first-user (and pin-first-user (first-user-message pool)))
+           (first-user-kept?
+             (and first-user (any (lambda (m) (eq? m first-user)) acc-user)))
+           (acc-pinned
+             (if (and first-user (not first-user-kept?))
+               (cons first-user acc-user)
+               acc-user)))
+          (attach-system sys-msg acc-pinned)))
+
+(define* (strategy-sliding-window #:key (keep-system-prompt #t) (pin-first-user #f))
   "Compaction strategy that keeps the newest turns fitting within target tokens,
 optionally pinning the system prompt at position 0. The newest user message
 always survives compaction even when it falls outside the token budget:
 tool-heavy turns otherwise evict every user query and endpoints reject the
-resulting transcript."
+resulting transcript. With PIN-FIRST-USER #t the first user message (the
+session's original task) is additionally reinserted when the window evicted
+it, so the loop never loses sight of its assignment."
   (lambda (messages target-tokens estimator)
     (if (null? messages)
       '()
@@ -244,19 +266,21 @@ resulting transcript."
         (let loop
           ((rest (reverse pool)) (acc '()) (cur-tokens 0))
           (if (null? rest)
-            (finish-sliding-window sys-msg acc pool)
+            (finish-sliding-window sys-msg acc pool pin-first-user)
             (let*
                 ((msg (car rest)) (cost (estimate-message-tokens msg estimator)))
               (if
                   (and (> cur-tokens 0) (> (+ cur-tokens cost) avail-tokens))
-                (finish-sliding-window sys-msg acc pool)
+                (finish-sliding-window sys-msg acc pool pin-first-user)
                 (loop (cdr rest)
                       (cons msg acc)
                       (+ cur-tokens cost))))))))))
 
 (define* (strategy-summarize-older-turns summarize-fn #:key (keep-recent-turns 3))
   "Compaction strategy that summarizes older conversation turns using SUMMARIZE-FN.
-SUMMARIZE-FN receives a list of older messages and returns a summary string."
+SUMMARIZE-FN receives a list of older messages and returns a summary string.
+Messages whose content starts with '[Context Summary of preceding turns]' are
+excluded from the older-msgs passed to summarize-fn and dropped from the output."
   (lambda (messages _target-tokens _estimator)
     (let*
         ((partition (partition-system-prompt messages #t))
@@ -269,14 +293,21 @@ SUMMARIZE-FN receives a list of older messages and returns a summary string."
         (receive (older-msgs recent-msgs)
                  (split-at pool split-point)
                  (let*
-                     ((summary-text (summarize-fn older-msgs))
+                     ((summary-prefix "[Context Summary of preceding turns]")
+                      (is-summary? (lambda (msg)
+                                     (let ((content (or (assoc-ref msg 'content) (assoc-ref msg "content") "")))
+                                       (and (string? content)
+                                            (string-prefix? summary-prefix content)))))
+                      (filtered-older (filter (lambda (msg) (not (is-summary? msg))) older-msgs))
+                      (filtered-recent (filter (lambda (msg) (not (is-summary? msg))) recent-msgs))
+                      (summary-text (summarize-fn filtered-older))
                       (summary-msg `((role . "system")
                                      (content .
                                               ,(format #f
                                                        "[Context Summary of preceding turns]:
 ~a"
                                                        summary-text)))))
-                   (attach-system sys-msg (cons summary-msg recent-msgs))))))))
+                   (attach-system sys-msg (cons summary-msg filtered-recent))))))))
 
 (define* (strategy-journal-offload jrn #:key (keep-recent-turns 2))
   "Compaction strategy that logs pruned conversation blocks to JRN and replaces
@@ -319,6 +350,7 @@ them with audit trail checkpoint pointers."
                       (keep-recent-turns 2)
                       (max-tool-chars 300)
                       (keep-system-prompt #t)
+                      (pin-first-user #f)
                       (placeholder-generator #f))
   "Cascading compaction pipeline: pruning -> summarization -> journal-offload -> sliding-window.
 Executes each configured strategy in order until the token ceiling is satisfied."
@@ -338,20 +370,22 @@ Executes each configured strategy in order until the token ceiling is satisfied.
                                                         keep-recent-turns))
                    (and journal
                         (strategy-journal-offload journal #:keep-recent-turns keep-recent-turns))
-                   (strategy-sliding-window #:keep-system-prompt keep-system-prompt)))))
+                   (strategy-sliding-window #:keep-system-prompt keep-system-prompt
+                                            #:pin-first-user pin-first-user)))))
     (apply strategy-pipeline stages)))
 
 ;;;
 ;;; Context Compactor Record
 ;;;
 (define-record-type <context-compactor>
-  (%make-context-compactor max-tokens reserve-tokens estimator strategy pinned-roles)
+  (%make-context-compactor max-tokens reserve-tokens estimator strategy pinned-roles watermark)
   context-compactor?
   (max-tokens context-compactor-max-tokens set-context-compactor-max-tokens!)
   (reserve-tokens context-compactor-reserve-tokens set-context-compactor-reserve-tokens!)
   (estimator context-compactor-estimator set-context-compactor-estimator!)
   (strategy context-compactor-strategy set-context-compactor-strategy!)
-  (pinned-roles context-compactor-pinned-roles))
+  (pinned-roles context-compactor-pinned-roles)
+  (watermark context-compactor-watermark))
 
 (define*
   (make-context-compactor #:key
@@ -359,13 +393,15 @@ Executes each configured strategy in order until the token ceiling is satisfied.
                           (reserve-tokens 1024)
                           (estimator char-heuristic-estimator)
                           (strategy (strategy-cascading))
-                          (pinned-roles '("system")))
+                          (pinned-roles '("system"))
+                          (watermark 1.0))
   "Construct a new <context-compactor> instance."
   (%make-context-compactor max-tokens
                            reserve-tokens
                            estimator
                            strategy
-                           pinned-roles))
+                           pinned-roles
+                           watermark))
 
 ;;;
 ;;; Compaction Application
@@ -376,12 +412,17 @@ Executes each configured strategy in order until the token ceiling is satisfied.
        (- (context-compactor-max-tokens compactor)
           (context-compactor-reserve-tokens compactor))))
 
+(define (context-compactor-effective-trigger compactor)
+  "Calculate effective compaction trigger as ceiling * watermark, floored and at least 1."
+  (max 1 (inexact->exact (floor (* (context-compactor-effective-ceiling compactor)
+                                   (context-compactor-watermark compactor))))))
+
 (define (compaction-needed? compactor messages)
-        "Return #t if MESSAGES exceed the effective token ceiling of COMPACTOR."
+        "Return #t if MESSAGES exceed the effective trigger of COMPACTOR."
         (let
-            ((ceiling (context-compactor-effective-ceiling compactor))
+            ((trigger (context-compactor-effective-trigger compactor))
              (estimator (context-compactor-estimator compactor)))
-          (> (estimate-conversation-tokens messages estimator) ceiling)))
+          (> (estimate-conversation-tokens messages estimator) trigger)))
 
 (define* (compact-messages compactor messages #:key (force #f))
   "Apply the configured strategy to MESSAGES if token count exceeds ceiling or FORCE is #t."

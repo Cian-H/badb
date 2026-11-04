@@ -316,87 +316,104 @@ system identity comes from the persona-badb geasa bundle; pass
 ;;;
 ;;; Prompt Assembly
 ;;;
-(define* (assemble-system-prompt composer
-                                #:key
-                                (workspace-dir (getcwd))
-                                (tools '())
-                                (mode 'code))
+(define*
+  (assemble-system-prompt composer
+                          #:key
+                          (workspace-dir (getcwd))
+                          (tools '())
+                          (mode 'code))
   "Assemble a unified, structured markdown system prompt incorporating persona,
 workspace state, project guidelines, and tool instructions."
-  (let* ((sections '())
-         (add-sec! (lambda (header content)
-                     (when (non-empty-string? content)
-                       (set! sections (cons (format #f "## ~a\n~a" header (string-trim-both content))
-                                            sections))))))
-
+  (let*
+      ((sections '())
+       (add-sec!
+         (lambda (header content)
+           (when (non-empty-string? content)
+             (set! sections
+                   (cons (format #f "## ~a\n~a" header (string-trim-both content)) sections))))))
     ;; 1. Base Identity
     (set! sections (cons (prompt-composer-system-identity composer) sections))
-
     ;; 2. Mode Guidance
     (case mode
       ((code)
-       (add-sec! "Operational Directives"
-                 "Maintain code integrity. Inspect files before editing. Run tests after changes.
+        (add-sec! "Operational Directives"
+                  "Maintain code integrity. Inspect files before editing. Run tests after changes.
 Never commit untracked roadmap files or temporary scratch files."))
       ((plan)
-       (add-sec! "Operational Directives"
-                 "Analyze the problem statement, identify dependencies, and outline a step-by-step
+        (add-sec! "Operational Directives"
+                  "Analyze the problem statement, identify dependencies, and outline a step-by-step
 execution plan. Do not perform write operations."))
       ((fast)
-       (add-sec! "Operational Directives"
-                 "Provide direct, concise assessments with minimal preamble.")))
-
+        (add-sec! "Operational Directives"
+                  "Provide direct, concise assessments with minimal preamble.")))
+    ;; 2b. Tool Usage Guidance
+    (add-sec! "Tool Usage"
+              "Prefer the read_file tool (path, offset, limit) to inspect files rather than
+shelling out with cat/sed. read_file reports the file's total line count in its
+header; when you need more than the default window, plan a few windowed reads
+(explicit offset/limit) in advance instead of many tiny ones. Avoid re-reading
+a file you have already read in this session — retain what you learned and
+move forward.")
     ;; 3. Environment & Workspace
-    (let* ((env (collect-environment-info))
-           (env-str (format #f "- OS: ~a\n- Guile: ~a\n- Directory: ~a"
-                            (assoc-ref env 'os)
-                            (assoc-ref env 'guile-version)
-                            workspace-dir)))
+    (let*
+        ((env (collect-environment-info))
+         (env-str
+           (format #f
+                   "- OS: ~a\n- Guile: ~a\n- Directory: ~a"
+                   (assoc-ref env 'os)
+                   (assoc-ref env 'guile-version)
+                   workspace-dir)))
       (add-sec! "Environment" env-str))
-
     ;; 4. Git State
-    (when (prompt-composer-include-git-status? composer)
-      (let ((branch (get-git-branch workspace-dir))
-            (status (get-git-status-summary workspace-dir)))
+    (when
+        (prompt-composer-include-git-status? composer)
+      (let
+          ((branch (get-git-branch workspace-dir))
+           (status (get-git-status-summary workspace-dir)))
         (when (or branch status)
-          (let ((git-str (format #f "- Branch: ~a\n- Status: ~a"
-                                 (or branch "unknown")
-                                 (or status "clean"))))
+          (let
+              ((git-str
+                 (format #f
+                         "- Branch: ~a\n- Status: ~a"
+                         (or branch "unknown")
+                         (or status "clean"))))
             (add-sec! "Git State" git-str)))))
-
     ;; 5. File Tree
-    (when (prompt-composer-include-file-tree? composer)
-      (let ((tree (build-workspace-file-tree
-                   workspace-dir
-                   #:max-depth (prompt-composer-file-tree-depth composer)
-                   #:max-files (prompt-composer-file-tree-max-files composer))))
-        (when tree
-          (add-sec! "Workspace Outline" (format #f "```\n~a\n```" tree)))))
-
+    (when
+        (prompt-composer-include-file-tree? composer)
+      (let
+          ((tree
+             (build-workspace-file-tree workspace-dir
+                                        #:max-depth
+                                        (prompt-composer-file-tree-depth composer)
+                                        #:max-files
+                                        (prompt-composer-file-tree-max-files composer))))
+        (when tree (add-sec! "Workspace Outline" (format #f "```\n~a\n```" tree)))))
     ;; 6. Discovered Project Rules
-    (let ((discovered (discover-project-rules
-                       workspace-dir
-                       #:candidates (prompt-composer-rule-files composer))))
-      (for-each (lambda (rule-entry)
-                  (let ((path (assoc-ref rule-entry 'path))
-                        (content (assoc-ref rule-entry 'content)))
-                    (add-sec! (format #f "Project Rule: ~a" path) content)))
-                discovered))
-
+    (let
+        ((discovered
+           (discover-project-rules workspace-dir
+                                   #:candidates
+                                   (prompt-composer-rule-files composer))))
+      (for-each
+        (lambda (rule-entry)
+          (let
+              ((path (assoc-ref rule-entry 'path)) (content (assoc-ref rule-entry 'content)))
+            (add-sec! (format #f "Project Rule: ~a" path) content)))
+        discovered))
     ;; 7. Custom Rules
-    (let ((custom (prompt-composer-custom-rules composer)))
-      (for-each (lambda (cr)
-                  (if (string? cr)
-                      (add-sec! "Instruction" cr)
-                      (when (pair? cr)
-                        (add-sec! (format #f "Rule: ~a" (car cr)) (cdr cr)))))
-                custom))
-
+    (let
+        ((custom (prompt-composer-custom-rules composer)))
+      (for-each
+        (lambda (cr)
+          (if (string? cr)
+            (add-sec! "Instruction" cr)
+            (when (pair? cr) (add-sec! (format #f "Rule: ~a" (car cr)) (cdr cr)))))
+        custom))
     ;; 8. Tool Instructions (if non-native XML tool style)
-    (when (and (eq? (prompt-composer-tool-style composer) 'xml)
-               (pair? tools))
+    (when
+        (and (eq? (prompt-composer-tool-style composer) 'xml) (pair? tools))
       (set! sections (cons (format-tools-for-prompt tools #:style 'xml) sections)))
-
     (string-join (reverse sections) "\n\n")))
 
 (define* (default-system-prompt #:key

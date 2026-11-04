@@ -1931,5 +1931,46 @@
                       (registry-lookup reg "spec.status")
                       (registry-lookup reg "spec.synthesize")))))
 
+(test-group "tui-builtin-read-file"
+            (let*
+                ((path "/tmp/badb-tui-readfile-spec.txt")
+                 (_
+                   (call-with-output-file path
+                                          (lambda (p)
+                                            (display "alpha\n" p)
+                                            (display (make-string 500 #\x) p)
+                                            (display "\ngamma\ndelta\n" p))))
+                 (default-res (builtin-read-file path))
+                 (slice-res (builtin-read-file path 2 1))
+                 (past-res (builtin-read-file path 40 5)))
+              (test-assert
+                "default read reports the total line count"
+                (string-contains default-res
+                                 "[file /tmp/badb-tui-readfile-spec.txt - 4 total lines"))
+              (test-assert
+                "default read includes the final line"
+                (string-contains default-res "delta"))
+              (test-assert
+                "default read truncates overlong lines"
+                (and
+                  (string-contains default-res "truncated: 500 of 500 chars")
+                  (< (string-length default-res) 2000)))
+              (test-assert
+                "offset+limit slice shows only the requested window"
+                (and (string-contains slice-res "gamma")
+                     (not (string-contains slice-res "delta"))
+                     (string-contains slice-res "showing lines 2..2")))
+              (test-assert
+                "slice footer reports elided remainder and total"
+                (string-contains slice-res
+                                 "[1 more lines elided - call read_file with offset=3 to continue (total 4 lines)]"))
+              (test-assert "offset past end reports cleanly"
+                           (string-contains past-res "at or past end of file"))
+              (test-assert
+                "missing file returns an inline error"
+                (string-contains
+                  (builtin-read-file "/tmp/badb-nonexistent-definitely.txt")
+                  "does not exist"))))
+
 (spec-end)
 (spec-exit)

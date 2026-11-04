@@ -19,7 +19,9 @@
                #:use-module
                (rnrs bytevectors)
                #:use-module
-               (geasa providers-model plugin))
+               (geasa providers-model plugin)
+               #:use-module
+               (geasa providers-model openai))
 
 (spec-begin "providers-model")
 
@@ -977,6 +979,54 @@
     #f (extract-usage (json-string->scm "{\"usage\":{}}")))
   (test-equal "non-alist response yields #f" #f (extract-usage "not json"))
   (test-equal "raw string response yields #f" #f (extract-usage "plain text")))
+
+(test-group "model-entry-context-limit"
+  (let ((entry (json-string->scm "{\"id\":\"gpt-4\",\"max_context_length\":131072}")))
+    (test-equal "max_context_length 131072 -> 131072"
+      131072 (model-entry-context-limit entry)))
+  (let ((entry (json-string->scm "{\"id\":\"gpt-4\",\"context_window\":8192}")))
+    (test-equal "only context_window -> that value"
+      8192 (model-entry-context-limit entry)))
+  (let ((entry (json-string->scm "{\"id\":\"gpt-4\",\"max_model_context_length\":16384,\"context_length\":4096}")))
+    (test-equal "priority order: max_model_context_length before context_length"
+      16384 (model-entry-context-limit entry)))
+  (let ((entry (json-string->scm "{\"id\":\"gpt-4\"}")))
+    (test-equal "no known keys -> #f" #f (model-entry-context-limit entry)))
+  (let ((entry (json-string->scm "{\"id\":\"gpt-4\",\"max_context_length\":131072.5}")))
+    (test-equal "float floors to exact int"
+      131072 (model-entry-context-limit entry)))
+  (test-equal "non-pair entry -> #f" #f (model-entry-context-limit "not an alist"))
+  (test-equal "null entry -> #f" #f (model-entry-context-limit '())))
+
+(test-group "parse-models-context-limits"
+  (let ((response "{\"data\":[{\"id\":\"a\",\"max_context_length\":131072},{\"id\":\"b\"}]}"))
+    (test-equal "two models (one with limit one without) -> alist with #f for missing"
+      '(("a" . 131072) ("b" . #f)) (parse-models-context-limits response)))
+  (test-equal "malformed -> '()" '() (parse-models-context-limits "not json"))
+  (test-equal "empty data -> '()" '() (parse-models-context-limits "{\"data\":[]}"))
+  (test-equal "parsed alist equals raw string input"
+    '(("a" . 131072))
+    (parse-models-context-limits (json-string->scm "{\"data\":[{\"id\":\"a\",\"max_context_length\":131072}]}"))))
+
+(test-group "fetch-model-context-limit"
+  (let* ((canned-response "{\"data\":[{\"id\":\"gpt-4\",\"max_context_length\":131072},{\"id\":\"gpt-3\",\"context_length\":4096}]}")
+         (fake-getter
+           (lambda* (uri #:key (headers '()))
+             (values (build-response #:code 200)
+                     canned-response)))
+         (client (make-model-client #:endpoint "https://api.example.com" #:api-key "test-key" #:model "gpt-4"))
+         (throwing-getter (lambda* (uri #:key (headers '())) (error "network error")))
+         (malformed-getter (lambda* (uri #:key (headers '())) (values (build-response #:code 200) "not json"))))
+    (test-equal "canned response returns matching limit for explicit model"
+      131072 (fetch-model-context-limit client #:model "gpt-4" #:http-getter fake-getter))
+    (test-equal "canned response returns matching limit for client model"
+      131072 (fetch-model-context-limit client #:http-getter fake-getter))
+    (test-equal "unknown model -> #f"
+      #f (fetch-model-context-limit client #:model "unknown" #:http-getter fake-getter))
+    (test-equal "getter that throws -> #f (no escape)"
+      #f (fetch-model-context-limit client #:http-getter throwing-getter))
+    (test-equal "malformed response -> #f"
+      #f (fetch-model-context-limit client #:http-getter malformed-getter))))
 
 (spec-end)
 (spec-exit)

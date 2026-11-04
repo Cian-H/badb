@@ -15,7 +15,6 @@
 ;;;
 ;;; 1. Token Estimators
 ;;;
-
 (test-group "context-token-estimators"
   (test-equal "empty string has 0 tokens" 0 (char-heuristic-estimator ""))
   (test-assert "16-char string estimated as ~4 tokens" (= 4 (char-heuristic-estimator "1234567890123456")))
@@ -36,7 +35,6 @@
 ;;;
 ;;; 2. Strategy: Prune Tool Results
 ;;;
-
 (test-group "context-prune-tool-results"
   (let* ((verbose-output (make-string 500 #\x))
          (messages (list
@@ -64,7 +62,6 @@
 ;;;
 ;;; 3. Strategy: Sliding Window with System Pinning
 ;;;
-
 (test-group "context-sliding-window"
   (let* ((sys-msg '((role . "system") (content . "Always be concise.")))
          (m1 '((role . "user") (content . "Message 1")))
@@ -89,7 +86,6 @@
 ;;;
 ;;; 4. Strategy: Summarize Older Turns
 ;;;
-
 (test-group "context-summarize-older-turns"
   (let* ((messages (list
                     '((role . "system") (content . "Base prompt"))
@@ -117,7 +113,6 @@
 ;;;
 ;;; 5. Strategy: Journal Checkpoint Offloading
 ;;;
-
 (test-group "context-journal-offload"
   (let* ((jrn-path "/tmp/badb-test-context-jrn.jsonl")
          (_ (when (file-exists? jrn-path) (delete-file jrn-path)))
@@ -144,7 +139,6 @@
 ;;;
 ;;; 6. Compactor Controller & Pipeline
 ;;;
-
 (test-group "context-compactor-controller"
   (let* ((compactor (make-context-compactor #:max-tokens 100
                                            #:reserve-tokens 20
@@ -207,6 +201,132 @@
       (not (latest-user-message
              (list '((role . "assistant") (content . "hi"))
                    '((role . "tool") (content . "result"))))))))
+
+(test-group
+  "context-sliding-window-pin-first-user"
+  ;; Regression (dogfood round 1): once steering messages arrive, the
+  ;; sliding window could evict the ORIGINAL task message, leaving the
+  ;; agent without its assignment. The observed failure mode was the
+  ;; agent endlessly re-reading its task file.
+  (let*
+      ((sys '((role . "system") (content . "You are the badb kernel agent.")))
+       (task `((role . "user") (content . ,(make-string 200 #\t))))
+       (chatter
+         (append-map
+           (lambda (i)
+             (list
+               `((role . "assistant")
+                 (content .
+                          ,(format #f
+                                   "verbose working turn ~a with filler text padding its token cost well past the window budget"
+                                   i)))
+               `((role . "tool")
+                 (tool_call_id . ,(format #f "c~a" i))
+                 (name . "inspect")
+                 (content . ,(make-string 90 #\x)))))
+           (iota 8)))
+       (steer '((role . "user") (content . "steer now")))
+       (messages (append (list sys task) chatter (list steer)))
+       (budget 120)
+       (pin-fn (strategy-sliding-window #:pin-first-user #t))
+       (plain-fn (strategy-sliding-window))
+       (pinned (pin-fn messages budget char-heuristic-estimator))
+       (plain (plain-fn messages budget char-heuristic-estimator)))
+    (test-assert
+      "pinned window retains the original task message"
+      (any
+        (lambda (m)
+          (equal? (assoc-ref m 'content) (make-string 200 #\t)))
+        pinned))
+    (test-assert
+      "pinned window retains the newest user message too"
+      (equal? "steer now" (assoc-ref (latest-user-message pinned) 'content)))
+    (test-assert
+      "plain window drops the original task (old behavior)"
+      (not
+        (any
+          (lambda (m)
+            (equal? (assoc-ref m 'content) (make-string 200 #\t)))
+          plain)))
+    (test-assert "cascading strategy threads the pin"
+                 (let*
+                     ((casc
+                        (make-context-compactor #:max-tokens
+                                                140
+                                                #:reserve-tokens
+                                                20
+                                                #:strategy
+                                                (strategy-cascading #:pin-first-user #t))))
+                   (any
+                     (lambda (m)
+                       (equal? (assoc-ref m 'content) (make-string 200 #\t)))
+                     (compact-messages casc messages))))))
+
+;;;
+;;; 7. Watermark Compaction Trigger
+;;;
+(test-group "context-watermark-trigger"
+  (let* ((comp75 (make-context-compactor #:max-tokens 100
+                                          #:reserve-tokens 20
+                                          #:watermark 0.75))
+         (comp100 (make-context-compactor #:max-tokens 100
+                                           #:reserve-tokens 20
+                                           #:watermark 1.0))
+         ;; Create messages that estimate to ~70 tokens (between 61 and 80)
+         (messages (list
+                    '((role . "system") (content . "System"))
+                    '((role . "user") (content . "A user message with some content here"))
+                    '((role . "assistant") (content . "Assistant response with more text"))
+                    '((role . "user") (content . "Another user query"))
+                    '((role . "assistant") (content . "Another assistant response")))))
+
+    (test-equal "effective trigger at 0.75 watermark with ceiling 80" 60
+      (context-compactor-effective-trigger comp75))
+
+    (test-assert "compaction NOT needed at watermark 1.0 for ~70 tokens"
+      (not (compaction-needed? comp100 messages)))
+
+    (test-assert "compaction IS needed at watermark 0.75 for ~70 tokens"
+      (compaction-needed? comp75 messages))))
+
+;;;
+;;; 8. Summary-of-Summaries Protection
+;;;
+(test-group "context-summary-exclusion"
+  (let* ((summarize-calls '())
+         (summarizer (lambda (older-msgs)
+                       (set! summarize-calls (cons older-msgs summarize-calls))
+                       (format #f "Summarized ~a messages" (length older-msgs))))
+         (strategy (strategy-summarize-older-turns summarizer #:keep-recent-turns 1))
+         (prior-summary '((role . "system")
+                          (content . "[Context Summary of preceding turns]: Previous discussion about X")))
+         (messages (list
+                    '((role . "system") (content . "Base prompt"))
+                    '((role . "user") (content . "First turn"))
+                    '((role . "assistant") (content . "First answer"))
+                    prior-summary
+                    '((role . "user") (content . "Second turn"))
+                    '((role . "assistant") (content . "Second answer"))
+                    '((role . "user") (content . "Third turn"))
+                    '((role . "assistant") (content . "Third answer"))))
+         (compacted (strategy messages 1000 char-heuristic-estimator)))
+
+    (test-assert "prior summary was NOT passed to summarize-fn"
+      (not (any (lambda (call)
+                  (any (lambda (msg)
+                         (let ((content (or (assoc-ref msg 'content) (assoc-ref msg "content") "")))
+                           (string-prefix? "[Context Summary of preceding turns]" content)))
+                       call))
+                summarize-calls)))
+
+    (test-assert "compacted output contains exactly one summary message"
+      (= 1 (count (lambda (msg)
+                    (let ((content (or (assoc-ref msg 'content) (assoc-ref msg "content") "")))
+                      (string-prefix? "[Context Summary of preceding turns]" content)))
+                  compacted)))
+
+    (test-equal "system message stays at index 0"
+      "Base prompt" (assoc-ref (car compacted) 'content))))
 
 (spec-end)
 (spec-exit)

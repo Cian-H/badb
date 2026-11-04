@@ -41,6 +41,10 @@
             react-session-steering-queue
             react-session-max-tokens
             react-session-compactor
+            react-session-loop-detector
+            react-session-result-offload-dir
+            react-session-result-offload-chars
+            react-session-recitation?
             set-react-session-messages!
             set-react-session-status!
             set-react-session-iteration!
@@ -57,12 +61,22 @@
             registry-feature->tool-spec
             mcp-tool->tool-spec
             sanitize-tool-parameters
+            offload-tool-result!
+            react-recitation-text
             parse-tool-calls
             determine-step-content
             reasoning-fallback-content
             stream-model-completion
             parse-xml-tool-calls
             execute-tool-call
+            make-loop-detector
+            loop-detector?
+            loop-detector-window
+            loop-detector-warn-after
+            loop-detector-halt-after
+            tool-call-signature
+            loop-detector-observe!
+            detect-step-loops!
             react-step!
             react-run!))
 
@@ -422,6 +436,107 @@ ENTRY is either a steering instruction string or the symbol 'interrupt."
         (length (steering-queue-entries queue)))
 
 ;;;
+;;; Loop Detector (opt-in)
+;;;
+;;; Amnesia-induced tool loops — a model re-issuing the identical tool
+;;; call dozens of times after context eviction dropped its own earlier
+;;; observations — are the failure mode observed in the first dogfood
+;;; round: a session burned 400+ turns re-reading one 4-line file
+;;; slice without ever converging. The detector observes executed
+;;; tool-call signatures; a repeated signature crosses the warn
+;;; threshold once (injecting a corrective user message into the
+;;; session) and the halt threshold afterwards (stopping the run).
+(define-record-type <loop-detector>
+  (%make-loop-detector window warn-after halt-after history warned)
+  loop-detector?
+  (window loop-detector-window)
+  (warn-after loop-detector-warn-after)
+  (halt-after loop-detector-halt-after)
+  (history loop-detector-history set-loop-detector-history!)
+  (warned loop-detector-warned set-loop-detector-warned!))
+
+(define*
+  (make-loop-detector #:key (window 12) (warn-after 3) (halt-after 5))
+  "Create a loop detector watching the last WINDOW executed tool calls,
+warning on the first signature repeated WARN-AFTER times and halting on
+HALT-AFTER repeats."
+  (%make-loop-detector window warn-after halt-after '() '()))
+
+(define (tool-call-signature tc)
+  "Return a canonical identity string for TOOL-CALL: name plus a
+sorted rendering of its arguments, so argument order never changes the
+identity."
+  (let* ((name (or (assoc-ref tc 'name) ""))
+         (raw-args (or (assoc-ref tc 'arguments) '()))
+         (args (if (list? raw-args)
+                 (sort raw-args
+                       (lambda (a b)
+                         (string<=? (format #f "~s" a)
+                                    (format #f "~s" b))))
+                 raw-args)))
+    (format #f "~a|~s" name args)))
+
+(define (loop-detector-observe! det sig)
+        "Record SIG in DET's rolling history. Return (verdict . count):
+'ok for fresh signatures, '(warn . count) on the first threshold
+crossing (the signature is marked warned, subsequent equal counts stay
+'ok), and '(halt . count) once the halt threshold is reached."
+        (let*
+          ((hist (cons sig (loop-detector-history det)))
+           (window-len (min (loop-detector-window det) (length hist)))
+           (windowed (take hist window-len))
+           (count (count (lambda (s) (string= s sig)) windowed)))
+          (set-loop-detector-history! det hist)
+          (cond
+            ((>= count (loop-detector-halt-after det)) (cons 'halt count))
+            ((and (>= count (loop-detector-warn-after det))
+                  (not (member sig (loop-detector-warned det))))
+             (set-loop-detector-warned! det (cons sig (loop-detector-warned det)))
+             (cons 'warn count))
+            (else (cons 'ok count)))))
+
+(define (loop-detector-warn-text sig count window)
+  "Render the corrective message injected into the session when SIG
+repeated COUNT times within WINDOW observed calls."
+  (let ((display-sig (if (> (string-length sig) 160)
+                        (string-append (substring sig 0 160) "...")
+                        sig)))
+    (format #f
+            "[badb loop-detector] The identical tool call \"~a\" has now been made ~a times within the last ~a tool calls. You appear to be repeating yourself, possibly because earlier results were compacted away. Change your approach now: call a different tool or use different arguments, summarize what you already know from memory, or give your final answer. Further identical repetition will halt the run."
+            display-sig count window)))
+
+(define* (offload-tool-result! dir tc-name content-str threshold)
+  "When content-str length exceeds threshold and dir is non-#f:
+ensure dir exists (mkdir unless present), write the FULL raw content
+to dir/<sanitized-tc-name>-<microsecond-stamp>.txt, return first 800 chars +
+pointer line: [<N> chars elided. Full output offloaded to '<file>' —
+re-read via read_file with (path <file>, offset 0, limit <lines>) as needed] +
+last 400 chars. At/below threshold, dir #f, or any filesystem error:
+return content-str unchanged (fail-open)."
+  (if (and dir
+           (string? dir)
+           (not (string-null? dir))
+           content-str
+           (string? content-str)
+           (> (string-length content-str) threshold))
+      (catch #t
+        (lambda ()
+          (unless (file-exists? dir) (mkdir dir))
+          (let* ((sanitized-name (string-map (lambda (c) (if (or (char=? c #\/) (char=? c #\\)) #\_ c)) tc-name))
+                 (stamp (let ((t (gettimeofday))) (format #f "~a-~a" (car t) (cdr t))))
+                 (filename (string-append dir "/" sanitized-name "-" stamp ".txt"))
+                 (first-part (substring content-str 0 (min 800 (string-length content-str))))
+                 (last-part (substring content-str (max 0 (- (string-length content-str) 400))))
+                 (elided-chars (- (string-length content-str) 800 400))
+                 (pointer-line (format #f "[~a chars elided. Full output offloaded to '~a' — re-read via read_file with (path <file>, offset 0, limit <lines>) as needed]" elided-chars filename)))
+            (call-with-output-file filename
+              (lambda (port) (display content-str port)))
+            (string-append first-part pointer-line last-part)))
+        (lambda (key . args)
+          content-str))
+      content-str))
+
+;;;
 ;;; ReAct Session Record
 ;;;
 (define-record-type <react-session>
@@ -437,7 +552,11 @@ ENTRY is either a steering instruction string or the symbol 'interrupt."
                                          mgr
                                          max-tokens
                                          compactor
-                                         steering-queue)
+                                         steering-queue
+                                         loop-detector
+                                         result-offload-dir
+                                         result-offload-chars
+                                         recitation?)
                     react-session?
                     (messages react-session-messages set-react-session-messages!)
                     (status react-session-status set-react-session-status!)
@@ -451,7 +570,37 @@ ENTRY is either a steering instruction string or the symbol 'interrupt."
                     (mgr react-session-mgr)
                     (max-tokens react-session-max-tokens set-react-session-max-tokens!)
                     (compactor react-session-compactor set-react-session-compactor!)
-                    (steering-queue react-session-steering-queue set-react-session-steering-queue!))
+                    (steering-queue react-session-steering-queue set-react-session-steering-queue!)
+                    (loop-detector react-session-loop-detector)
+                    (result-offload-dir react-session-result-offload-dir)
+                    (result-offload-chars react-session-result-offload-chars)
+                    (recitation? react-session-recitation?))
+
+(define* (detect-step-loops! session tool-calls #:key (jrn #f))
+  "Observe TOOL-CALLS signatures against SESSION's loop detector (a
+no-op without one). Returns 'halt once the halt threshold trips, 'warn
+when a corrective user message was injected this step, else #f."
+  (let ((det (react-session-loop-detector session)))
+    (if (loop-detector? det)
+      (let loop ((rest tool-calls) (outcome #f))
+        (if (null? rest)
+          outcome
+          (let ((verdict (loop-detector-observe! det (tool-call-signature (car rest)))))
+            (cond
+              ((eq? (car verdict) 'halt) 'halt)
+              ((eq? (car verdict) 'warn)
+               (set-react-session-messages!
+                 session
+                 (append
+                   (react-session-messages session)
+                   (list `((role . "user")
+                           (content . ,(loop-detector-warn-text
+                                         (tool-call-signature (car rest))
+                                         (cdr verdict)
+                                         (loop-detector-window det)))))))
+               (loop (cdr rest) 'warn))
+              (else (loop (cdr rest) outcome))))))
+      #f)))
 
 (define (make-react-session . args)
         "Construct a new <react-session> record.
@@ -502,13 +651,18 @@ and pure keyword style: (make-react-session #:client client #:messages ... #:reg
                    (and guardrail-fn (not (assoc-ref raw-hooks 'guardrail)))
                  (cons (cons 'guardrail guardrail-fn) raw-hooks)
                  raw-hooks))
-             (steering-queue (get-kw '(#:steering-queue) #f)))
+             (steering-queue (get-kw '(#:steering-queue) #f))
+             (loop-detector (get-kw '(#:loop-detector) #f))
+             (result-offload-dir (get-kw '(#:result-offload-dir) ".badb/ctx"))
+             (result-offload-chars (get-kw '(#:result-offload-chars) 2000))
+             (recitation? (get-kw '(#:recitation?) #f))
+             (iteration (get-kw '(#:iteration) 0)))
           (%make-react-session
             (if (list? msgs)
               msgs
               (list msgs))
             'idle
-            0
+            iteration
             max-iter
             hooks
             client
@@ -518,7 +672,23 @@ and pure keyword style: (make-react-session #:client client #:messages ... #:reg
             mgr
             max-tokens
             compactor
-            steering-queue)))
+            steering-queue
+            loop-detector
+            result-offload-dir
+            result-offload-chars
+            recitation?)))
+
+(define (react-recitation-text session)
+  "Return the recitation text for SESSION: '[badb task recitation] ReAct iteration <N>. Primary task: <first 200 chars of the FIRST user message content in (react-session-messages session), or (none)>.' with N = (react-session-iteration session)."
+  (let* ((msgs (react-session-messages session))
+         (user-msgs (filter (lambda (m) (equal? (assoc-ref m 'role) "user")) msgs))
+         (first-user-msg (and (pair? user-msgs) (car user-msgs)))
+         (first-user-content (and first-user-msg (assoc-ref first-user-msg 'content)))
+         (primary-task (if (and first-user-content (string? first-user-content))
+                         (substring first-user-content 0 (min 200 (string-length first-user-content)))
+                         "(none)"))
+         (iteration (react-session-iteration session)))
+    (format #f "[badb task recitation] ReAct iteration ~a. Primary task: ~a" iteration primary-task)))
 
 ;;;
 ;;; Step & Run Cycle
@@ -593,7 +763,7 @@ stderr as a warning instead of letting it abort the caller."
       (format (current-error-port)
               "warning: ~a hook failed (~a): ~s~%" label key err-args))))
 
-(define
+(define*
   (execute-step-tools tool-calls
                       reg
                       mcp-mgr
@@ -601,10 +771,14 @@ stderr as a warning instead of letting it abort the caller."
                       mgr
                       guardrail-fn
                       on-tool-call-fn
-                      on-tool-result-fn)
+                      on-tool-result-fn
+                      #:key (result-offload-dir #f) (result-offload-chars 2000))
   "Execute TOOL-CALLS sequentially, invoking callbacks and returning pairs of (tool-call . tool-msg).
 Hook exceptions are isolated: a failing on-tool-call or on-tool-result
-callback is reported on stderr and skipped, never aborting the loop."
+callback is reported on stderr and skipped, never aborting the loop.
+When the tool message's content exceeds the threshold and dir is set,
+its content becomes (offload-tool-result! dir name content-str threshold) —
+applied AFTER log-tool-execution!."
   (map
     (lambda (tc)
       (run-isolated-hook! on-tool-call-fn "on-tool-call" tc)
@@ -617,9 +791,10 @@ callback is reported on stderr and skipped, never aborting the loop."
               ((content-str (safe-json-string res))
                (tc-id (or (prop-ref tc 'id) "call_0"))
                (tc-name (or (prop-ref tc 'name) ""))
+               (final-content (offload-tool-result! result-offload-dir tc-name content-str result-offload-chars))
                (tool-msg `((role . "tool") (tool_call_id . ,tc-id)
                            (name . ,tc-name)
-                           (content . ,content-str))))
+                           (content . ,final-content))))
             (cons tc tool-msg)))))
     tool-calls))
 
@@ -628,6 +803,7 @@ callback is reported on stderr and skipped, never aborting the loop."
 Returns:
   (values 'completed content-string)
   (values 'continue list-of-tool-results)
+  (values 'loop-detected description-string)
   (values 'max-iterations-reached #f)
   (values 'error error-message)"
         (let*
@@ -666,37 +842,78 @@ Returns:
                                ((compacted (compact-messages compactor raw-msgs)))
                              (set-react-session-messages! session compacted)
                              compacted)
-                           raw-msgs)))
+                           raw-msgs))
+                       ;; Add recitation message if enabled
+                       (msgs-with-recitation
+                         (if (react-session-recitation? session)
+                           (let*
+                               ((reversed-msgs (reverse msgs))
+                                (cleaned-reversed
+                                  (let loop
+                                    ((ms reversed-msgs) (acc '()))
+                                    (if (null? ms)
+                                      acc
+                                      (let*
+                                          ((m (car ms))
+                                           (is-recitation
+                                             (and (equal? (assoc-ref m 'role) "user")
+                                                  (string? (assoc-ref m 'content))
+                                                  (string-prefix? "[badb task recitation]" (assoc-ref m 'content)))))
+                                        (if is-recitation
+                                          (loop (cdr ms) acc)
+                                          (loop (cdr ms) (cons m acc)))))))
+                                (recitation-msg `((role . "user") (content . ,(react-recitation-text session)))))
+                             (append cleaned-reversed (list recitation-msg)))
+                           msgs)))
                     (call-with-values
                       (lambda ()
-                        (stream-model-completion client msgs tools max-tokens on-delta-fn))
+                        (stream-model-completion client
+                                                 msgs-with-recitation
+                                                 tools
+                                                 max-tokens
+                                                 on-delta-fn))
                       (lambda (content reasoning tool-calls)
                         (if (null? tool-calls)
-                            (let
-                                ((final-msg ` ((role . "assistant") (content . ,content))))
-                              (set-react-session-messages! session (append msgs (list final-msg)))
-                              (set-react-session-status! session 'completed)
-                              (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'completed))
-                              (values 'completed content))
-                            (begin
-                              (set-react-session-status! session 'awaiting-tool)
-                              (let*
-                                  ((asst-msg (build-assistant-tool-turn tool-calls content reasoning))
-                                   (results
-                                     (execute-step-tools tool-calls
-                                                         reg
-                                                         mcp-mgr
-                                                         jrn
-                                                         mgr
-                                                         guardrail-fn
-                                                         on-tool-call-fn
-                                                         on-tool-result-fn))
-                                   (tool-msgs (map cdr results))
-                                   (new-turn (cons asst-msg tool-msgs)))
-                                (set-react-session-messages! session (append msgs new-turn))
-                                (set-react-session-status! session 'running)
-                                (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'tools-executed))
-                                (values 'continue results))))))))
+                          (let
+                              ((final-msg `((role . "assistant") (content . ,content))))
+                            (set-react-session-messages! session (append msgs-with-recitation (list final-msg)))
+                            (set-react-session-status! session 'completed)
+                            (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'completed))
+                            (values 'completed content))
+                          (begin
+                            (set-react-session-status! session 'awaiting-tool)
+                            (let*
+                                ((asst-msg (build-assistant-tool-turn tool-calls content reasoning))
+                                 (results
+                                   (execute-step-tools tool-calls
+                                                       reg
+                                                       mcp-mgr
+                                                       jrn
+                                                       mgr
+                                                       guardrail-fn
+                                                       on-tool-call-fn
+                                                       on-tool-result-fn
+                                                       #:result-offload-dir
+                                                       (react-session-result-offload-dir session)
+                                                       #:result-offload-chars
+                                                       (react-session-result-offload-chars session)))
+                                 (tool-msgs (map cdr results))
+                                 (new-turn (cons asst-msg tool-msgs)))
+                              (set-react-session-messages! session (append msgs-with-recitation new-turn))
+                              (let
+                                  ((loop-outcome (detect-step-loops! session tool-calls #:jrn jrn)))
+                                (cond
+                                  ((eq? loop-outcome 'halt)
+                                    (set-react-session-status! session 'loop-detected)
+                                    (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'loop-detected))
+                                    (values 'loop-detected
+                                            (format #f
+                                                    "identical tool calls repeated ~a+ times within the detector window"
+                                                    (loop-detector-halt-after (react-session-loop-detector session)))))
+                                  (else
+                                    (set-react-session-status! session 'running)
+                                    (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'tools-executed))
+                                    (values 'continue results)))))))))))
                 (lambda (key . args)
                   (let
                       ((err-msg (format #f "ReAct loop error (~a): ~s" key args)))
@@ -757,6 +974,10 @@ injected as user messages, and a queued 'interrupt halts the loop with verdict
            (values 'completed payload session))
           ((continue)
            (loop))
+          ((loop-detected)
+           (when (procedure? on-finish)
+             (on-finish 'loop-detected payload))
+           (values 'loop-detected payload session))
           ((max-iterations-reached)
            (when (procedure? on-finish)
              (on-finish 'max-iterations-reached #f))

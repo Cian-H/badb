@@ -16,7 +16,8 @@
 ;;; user can type steering messages (Enter sends, Ctrl+I interrupts) that
 ;;; the running agent sees at the next iteration boundary.
 
-(define-module (geasa surfaces-tui plugin) #:use-module
+(define-module (geasa surfaces-tui plugin)
+               #:use-module
                (geasa providers-model common)
                #:use-module
                (geasa providers-model openai)
@@ -170,7 +171,8 @@
                         format-message-entry
                         <input-history>
                         <row-cache>
-                        <menu>)
+                        <menu>
+                        builtin-read-file)
                #:re-export
                (jsonl-line->turn truncate-string))
 
@@ -1916,7 +1918,7 @@ that verdicts come only from kernel subprocess replay."
                                            ((module-ref synth-mod 'install-synthesized-bundle!) feature-id target)
                                            #f)))
                                     (format #f
-                                            "Sema plugin synthesis ~a for feature '~a'.\n~a~a"
+                                            "Sema plugin synthesis ~a for feature '~a'.\n~a~a~a"
                                             status
                                             feature-id
                                             (if wf-result
@@ -1929,7 +1931,11 @@ that verdicts come only from kernel subprocess replay."
                                                       (or (assoc-ref install-report 'verify-verdict)
                                                           (assoc-ref install-report 'install-status)
                                                           "?"))
-                                              "")))))
+                                              "")
+                                            (if (string=? (or status "") "success")
+                                              ""
+                                              (format #f
+                                                      "\n[guidance] synthesis did not converge. Do NOT keep re-running synthesize: after at most ONE more attempt, write the plugin directly with write_file (the contract stays locked), then verify with the spec gates. Re-running synthesize repeatedly burns budget without progress."))))))
                               (lambda (k . a)
                                 (format #f "Error during synthesis (~a): ~s" k a))))
                           '((description .
@@ -1983,24 +1989,112 @@ Follow the contract-gated dynamic synthesis workflow:
             (format #f "Error: ~a" err)
             (format #f "[exit ~a]\n~a" exit-val out))))))
 
-(define (register-builtin-tui-tools! reg rollback-mgr verifier mcp-mgr get-llm-history)
+(define %read-file-default-limit 800)
+
+(define %read-file-max-chars-per-line 400)
+
+(define %read-file-max-chars 16000)
+
+(define*
+  (builtin-read-file path #:optional (offset 0) (limit #f))
+  "Read a bounded, line-based slice of the file at PATH. OFFSET is a 0-based
+line number (default 0) and LIMIT caps the number of lines returned
+(default 800). Returns a header reporting the total line count, the
+requested slice with long lines truncated to ~400 chars, and a footer
+showing what was elided so the model can continue with a further offset.
+Module-level so the contract spec can exercise it without booting the TUI."
+  (catch #t
+    (lambda ()
+      (if (not (file-exists? path))
+        (format #f "Error: file '~a' does not exist" path)
+        (let*
+            ((text (call-with-input-file path read-string))
+             (raw-lines (string-split text #\newline))
+             (trailing-newline? (and (pair? raw-lines) (string-null? (last raw-lines))))
+             (total
+               (- (length raw-lines)
+                  (if trailing-newline?
+                    1
+                    0)))
+             (start
+               (max 0
+                    (if (number? offset)
+                      (inexact->exact (floor offset))
+                      0)))
+             (lim
+               (if (and (number? limit) (> limit 0))
+                 (inexact->exact (floor limit))
+                 %read-file-default-limit))
+             (end (min total (+ start lim))))
+          (if (>= start total)
+            (format #f
+                    "[file ~a - ~a total lines - offset ~a is at or past end of file]"
+                    path
+                    total
+                    start)
+            (let loop
+              ((i start) (acc '()) (chars 0))
+              (cond
+                ((or (>= i end) (>= chars %read-file-max-chars))
+                  (let*
+                      ((shown (reverse acc))
+                       (last-shown
+                         (if (null? shown)
+                           start
+                           (+ i -1))))
+                    (string-append
+                      (format #f
+                              "[file ~a - ~a total lines - showing lines ~a..~a]~%"
+                              path
+                              total
+                              start
+                              last-shown)
+                      (string-join shown "\n")
+                      (if (>= end total)
+                        (format #f "~%[end of file at line ~a of ~a]" total total)
+                        (format #f
+                                "~%[~a more lines elided - call read_file with offset=~a to continue (total ~a lines)]"
+                                (- total i)
+                                i
+                                total)))))
+                (else
+                  (let*
+                      ((line (list-ref raw-lines i))
+                       (trim
+                         (if
+                             (> (string-length line) %read-file-max-chars-per-line)
+                           (string-append
+                             (substring line 0 %read-file-max-chars-per-line)
+                             (format #f
+                                     "... [line ~a truncated: ~a of ~a chars]"
+                                     i
+                                     (string-length line)
+                                     (string-length line)))
+                           line)))
+                    (loop (+ i 1) (cons trim acc) (+ chars (string-length trim)))))))))))
+    (lambda (_k . a)
+      (format #f "Error reading file: ~s" a))))
+
+(define
+  (register-builtin-tui-tools! reg rollback-mgr verifier mcp-mgr get-llm-history)
   "Register built-in autonomous agent tools, MCP kernel tools, and spec gate
 tools on REG."
   (registry-attach! reg
                     "read_file"
-                    (lambda (path)
-                      (catch #t
-                        (lambda ()
-                          (if (file-exists? path)
-                              (call-with-input-file path read-string)
-                              (format #f "Error: file '~a' does not exist" path)))
-                        (lambda (_k . a)
-                          (format #f "Error reading file: ~s" a))))
-                    '((description . "Read the complete contents of a file at PATH")
+                    (lambda (path offset limit)
+                      (builtin-read-file path offset limit))
+                    '((description .
+                       "Read a bounded slice of the file at PATH (line-based OFFSET and LIMIT; header shows the total line count; call again with a new offset to continue)")
                       (parameters .
                        ((type . "object")
                         (properties .
-                         ((path . ((type . "string") (description . "Path to the file to read")))))
+                         ((path . ((type . "string") (description . "Path to the file to read")))
+                          (offset .
+                           ((type . "integer")
+                            (description . "0-based line number to start from (default 0)")))
+                          (limit .
+                           ((type . "integer")
+                            (description . "Maximum number of lines to return (default 800)")))))
                         (required . #("path"))))))
   (registry-attach! reg
                     "write_file"
@@ -2009,20 +2103,21 @@ tools on REG."
                         (lambda ()
                           (create-checkpoint! rollback-mgr
                                               (format #f "pre-write: ~a" path)
-                                              #:files (list path))
-                          (let ((v-res (verify-action verifier #:code content #:file path)))
+                                              #:files
+                                              (list path))
+                          (let
+                              ((v-res (verify-action verifier #:code content #:file path)))
                             (if (assoc-ref v-res 'passed?)
-                                (begin
-                                  (call-with-output-file path
-                                    (lambda (p) (display content p)))
-                                  (format #f
-                                          "Successfully wrote ~a characters to '~a'"
-                                          (string-length content)
-                                          path))
-                                (begin
-                                  (rollback-latest! rollback-mgr)
-                                  (format #f "Write aborted: verification failed: ~s"
-                                          (assoc-ref v-res 'failures))))))
+                              (begin
+                                (call-with-output-file path
+                                                       (lambda (p)
+                                                         (display content p)))
+                                (format #f
+                                        "Successfully wrote ~a characters to '~a'"
+                                        (string-length content)
+                                        path))
+                              (begin (rollback-latest! rollback-mgr)
+                                     (format #f "Write aborted: verification failed: ~s" (assoc-ref v-res 'failures))))))
                         (lambda (_k . a)
                           (format #f "Error writing file: ~s" a))))
                     '((description . "Write CONTENT to a file at PATH")
@@ -2044,7 +2139,8 @@ tools on REG."
   (registry-attach! reg
                     "bash"
                     exec-shell-tool-impl
-                    '((description . "Execute a bash shell command and return stdout/stderr and exit code")
+                    '((description .
+                       "Execute a bash shell command and return stdout/stderr and exit code")
                       (parameters .
                        ((type . "object")
                         (properties .
@@ -2062,12 +2158,15 @@ tools on REG."
   (registry-attach! reg
                     "checkpoint_create"
                     (lambda (description)
-                      (let ((c (create-checkpoint! rollback-mgr (or description "agent-checkpoint"))))
-                        (format #f "Created checkpoint: ~a (~a) covering ~a workspace file(s) and the registry. Files outside the workspace directory are NOT captured."
+                      (let
+                          ((c (create-checkpoint! rollback-mgr (or description "agent-checkpoint"))))
+                        (format #f
+                                "Created checkpoint: ~a (~a) covering ~a workspace file(s) and the registry. Files outside the workspace directory are NOT captured."
                                 (checkpoint-id c)
                                 (checkpoint-description c)
                                 (length (checkpoint-files c)))))
-                    '((description . "Create a rollback checkpoint for current workspace files and registry. Only files under the workspace directory are captured; paths outside it are silently left out of the checkpoint.")
+                    '((description .
+                       "Create a rollback checkpoint for current workspace files and registry. Only files under the workspace directory are captured; paths outside it are silently left out of the checkpoint.")
                       (parameters .
                        ((type . "object")
                         (properties .
@@ -2075,25 +2174,33 @@ tools on REG."
   (registry-attach! reg
                     "checkpoint_rollback"
                     (lambda* (#:optional id)
-                      (let ((res (if (and id (not (string-null? id)))
-                                     (rollback-to-checkpoint! rollback-mgr id)
-                                     (rollback-latest! rollback-mgr))))
-                        (format #f "Rollback: ~a (restored ~a file(s), removed ~a file(s)). Only files captured by the checkpoint are restored; files outside the workspace were never captured."
-                                (assoc-ref res 'status)
-                                (length (or (assoc-ref res 'restored-files) '()))
-                                (length (or (assoc-ref res 'removed-files) '())))))
-                    '((description . "Rollback to specified or latest checkpoint. Only files captured by the checkpoint (workspace files at creation time) are restored.")
+                             (let
+                                 ((res
+                                    (if (and id (not (string-null? id)))
+                                      (rollback-to-checkpoint! rollback-mgr id)
+                                      (rollback-latest! rollback-mgr))))
+                               (format #f
+                                       "Rollback: ~a (restored ~a file(s), removed ~a file(s)). Only files captured by the checkpoint are restored; files outside the workspace were never captured."
+                                       (assoc-ref res 'status)
+                                       (length (or (assoc-ref res 'restored-files) '()))
+                                       (length (or (assoc-ref res 'removed-files) '())))))
+                    '((description .
+                       "Rollback to specified or latest checkpoint. Only files captured by the checkpoint (workspace files at creation time) are restored.")
                       (parameters .
                        ((type . "object")
                         (properties . ((id . ((type . "string") (description . "Checkpoint ID")))))))))
   (registry-attach! reg
                     "run_tests"
                     (lambda* (#:optional (cmd "./scripts/test"))
-                      (let ((res (verify-test-suite #:command (or cmd "./scripts/test"))))
-                        (format #f "Tests: ~a (exit ~a)\n~a"
-                                (if (assoc-ref res 'passed?) "PASS" "FAIL")
-                                (assoc-ref res 'exit-code)
-                                (assoc-ref res 'output))))
+                             (let
+                                 ((res (verify-test-suite #:command (or cmd "./scripts/test"))))
+                               (format #f
+                                       "Tests: ~a (exit ~a)\n~a"
+                                       (if (assoc-ref res 'passed?)
+                                         "PASS"
+                                         "FAIL")
+                                       (assoc-ref res 'exit-code)
+                                       (assoc-ref res 'output))))
                     '((description . "Run project test suite and return verdict")
                       (parameters .
                        ((type . "object")
@@ -2101,28 +2208,35 @@ tools on REG."
   (registry-attach! reg
                     "history/summarize"
                     (lambda ()
-                      (let ((summary (summarize-turns (get-llm-history)))
-                            (hist-file (getenv "BADB_HISTORY_FILE")))
-                        (if (and hist-file (not (string-null? hist-file)))
-                            (let ((file-summary (summarize-history-file hist-file)))
-                              (if file-summary
-                                  (string-append summary "\n\n--- " hist-file " ---\n" file-summary)
-                                  summary))
-                            summary)))
-                    '((description . "Summarize the current conversation: turn counts, token estimate, recent topics")
+                      (let
+                          ((summary (summarize-turns (get-llm-history)))
+                           (hist-file (getenv "BADB_HISTORY_FILE")))
+                        (if
+                            (and hist-file (not (string-null? hist-file)))
+                          (let
+                              ((file-summary (summarize-history-file hist-file)))
+                            (if file-summary
+                              (string-append summary "\n\n--- " hist-file " ---\n" file-summary)
+                              summary))
+                          summary)))
+                    '((description .
+                       "Summarize the current conversation: turn counts, token estimate, recent topics")
                       (parameters . ((type . "object") (properties . ()) (required . #())))))
   ;; Register MCP Kernel Features
   (registry-attach! reg
                     "mcp.list"
-                    (lambda () (mcp-manager-list-servers mcp-mgr))
+                    (lambda ()
+                      (mcp-manager-list-servers mcp-mgr))
                     '((description . "List all configured MCP servers and their status")))
   (registry-attach! reg
                     "mcp.start"
-                    (lambda (name) (mcp-manager-start-server! mcp-mgr name))
+                    (lambda (name)
+                      (mcp-manager-start-server! mcp-mgr name))
                     '((description . "Start a configured MCP server by name")))
   (registry-attach! reg
                     "mcp.stop"
-                    (lambda (name) (mcp-manager-stop-server! mcp-mgr name))
+                    (lambda (name)
+                      (mcp-manager-stop-server! mcp-mgr name))
                     '((description . "Stop a running MCP server by name")))
   (registry-attach! reg
                     "mcp.add"
@@ -2131,7 +2245,8 @@ tools on REG."
                     '((description . "Add a new MCP server specification and persist to config")))
   (registry-attach! reg
                     "mcp.remove"
-                    (lambda (name) (mcp-manager-remove-server! mcp-mgr name))
+                    (lambda (name)
+                      (mcp-manager-remove-server! mcp-mgr name))
                     '((description . "Remove an MCP server from configuration and stop it")))
   (registry-attach! reg
                     "mcp.tools"
@@ -2139,10 +2254,11 @@ tools on REG."
                     '((description . "List available tools discovered from running MCP servers")))
   (registry-attach! reg
                     "mcp.call"
-                    (lambda (name-or-server tool-or-args . maybe-args)
+                    (lambda
+                        (name-or-server tool-or-args . maybe-args)
                       (if (pair? maybe-args)
-                          (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args (car maybe-args))
-                          (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args)))
+                        (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args (car maybe-args))
+                        (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args)))
                     '((description . "Call a tool on an MCP server")))
   ;; Register kernel-owned spec gate tools (Phase 2 dogfood)
   (register-spec-tools! reg))
@@ -2682,7 +2798,19 @@ a manual entry item."
     (define mcp-mgr (make-mcp-manager cfg))
     (define policy (make-guardrail-policy #:level 'cautious))
     (define compactor
-            (make-context-compactor #:max-tokens 16384 #:reserve-tokens 2048))
+            (make-context-compactor #:max-tokens
+                                    16384
+                                    #:reserve-tokens
+                                    2048
+                                    #:strategy
+                                    (strategy-cascading #:keep-recent-turns
+                                                        6
+                                                        #:max-tool-chars
+                                                        1200
+                                                        #:pin-first-user
+                                                        #t)
+                                    #:watermark
+                                    0.75))
     (define rollback-mgr
             (make-rollback-manager #:workspace-dir (getcwd) #:registry reg #:journal jrn))
     (define verifier (make-verifier #:check-syntax? #t #:run-tests? #f))
@@ -2705,6 +2833,66 @@ a manual entry item."
                                cur-model
                                #:allow-missing-thinking?
                                (badb-config-allow-missing-thinking? cfg cur-endpoint)))
+    (define (semantic-summarize-fn older-msgs)
+            "Summarize OLDER-MSGS into the pinned schema state block via the
+configured model client. Derives only from raw turns, keeps identifiers
+verbatim, and fails open to a verbatim truncation."
+            (let*
+                ((rendered
+                   (string-join
+                     (map
+                       (lambda (m)
+                         (format #f "~a: ~a" (or (assoc-ref m 'role) "?") (or (assoc-ref m 'content) "")))
+                       older-msgs)
+                     "\n"))
+                 (truncate-to
+                   (lambda (s n)
+                     (if (> (string-length s) n)
+                       (string-append (substring s 0 n) "\n[...verbatim fallback truncated...]")
+                       s))))
+              (catch #t
+                (lambda ()
+                  (let*
+                      ((sys-msg
+                         `((role . "system")
+                           (content .
+                                    "You are a context-compaction engine. Produce a state block with EXACTLY these sections: Pinned Constraints; Verified State / File Map; Rejected Approaches; Exact Identifiers. Keep identifiers, file paths, hashes and error codes verbatim. Never claim work completed without evidence.")))
+                       (req-msg
+                         `((role . "user")
+                           (content .
+                                    ,(format #f
+                                             "Summarize the following ~a conversation turns into the schema state block:\n\n~a"
+                                             (length older-msgs)
+                                             rendered))))
+                       (resp (model-complete client (list sys-msg req-msg) #:max-tokens 1024)))
+                    (if
+                        (and (string? resp) (not (string-null? (string-trim-both resp))))
+                      (format #f "[Context Summary of preceding turns]:\n~a" resp)
+                      (truncate-to
+                        (format #f "[Context Summary of preceding turns]:\n~a" rendered)
+                        3000))))
+                (lambda (k . a)
+                  (truncate-to
+                    (format #f "[Context Summary of preceding turns]:\n~a" rendered)
+                    3000)))))
+    (set-context-compactor-strategy! compactor
+                                     (strategy-cascading #:keep-recent-turns
+                                                         6
+                                                         #:max-tool-chars
+                                                         1200
+                                                         #:pin-first-user
+                                                         #t
+                                                         #:summarize-fn
+                                                         semantic-summarize-fn))
+    (define discovered-context-limit
+            (catch #t
+              (lambda ()
+                (fetch-model-context-limit client))
+              (lambda _
+                #f)))
+    (when
+        (and (integer? discovered-context-limit) (> discovered-context-limit 4096))
+      (set-context-compactor-max-tokens! compactor discovered-context-limit))
     (define repl-mod
             (make-repl-mod reg
                            jrn
@@ -3674,7 +3862,13 @@ grown journal), which the per-frame header render must not pay."
                                                            (lambda (delta type)
                                                              (update-react-stream-message! delta type)
                                                              (poll-steering-input!)
-                                                             (throttled-stream-render!)))))))
+                                                             (throttled-stream-render!))))
+                                                   #:compactor
+                                                   compactor
+                                                   #:loop-detector
+                                                   (make-loop-detector)
+                                                   #:recitation?
+                                                   #t)))
                           (call-with-values
                             (lambda ()
                               ;; Non-blocking key capture spans the whole
@@ -3721,6 +3915,10 @@ grown journal), which the per-frame header render must not pay."
                                   (commit-react-stream-message!)
                                   (add-sys-msg!
                                     "Agent run interrupted — the loop halted at the current iteration boundary. Type a message to continue."))
+                                ((eq? verdict 'loop-detected)
+                                  (commit-react-stream-message!)
+                                  (add-sys-msg!
+                                    "Loop detected: the identical tool call was repeated too many times, so the agent run halted. Check the loop-detector warning in the transcript, then steer the agent with a follow-up message."))
                                 ((eq? verdict 'error)
                                   (commit-react-stream-message!)
                                   (add-err-msg! (format #f "ReAct error: ~a" final-content))))))))

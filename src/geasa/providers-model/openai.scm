@@ -50,7 +50,10 @@
                                          model-available?
                                          auto-detect-model
                                          model-complete
-                                         model-stream))
+                                         model-stream
+                                         model-entry-context-limit
+                                         parse-models-context-limits
+                                         fetch-model-context-limit))
 
 ;;;
 ;;; Chat Request Formatting
@@ -703,6 +706,65 @@ of available model id strings, or #f on failure."
         (values #f (format #f "list-models request failed: ~a"
                            (format-exception key args)))))))
 
+(define (model-entry-context-limit entry)
+  (let ((keys '("max_context_length" "max_model_context_length" "context_length" "context_window" "max_completion_tokens")))
+    (let loop ((keys keys))
+      (cond
+       ((null? keys) #f)
+       ((and (pair? entry)
+             (let ((val (json-ref entry (car keys))))
+               (and (number? val) (positive? val))))
+        (inexact->exact (floor (json-ref entry (car keys)))))
+       (else (loop (cdr keys)))))))
+
+(define (parse-models-context-limits response)
+  (let ((obj (if (string? response) (safe-json-parse response #f) response)))
+    (if (pair? obj)
+        (let ((data (json-ref obj "data")))
+          (cond
+           ((vector? data)
+            (filter-map
+             (lambda (entry)
+               (let ((id (model-entry-id entry)))
+                 (and id (cons id (model-entry-context-limit entry)))))
+             (vector->list data)))
+           ((list? data)
+            (filter-map
+             (lambda (entry)
+               (let ((id (model-entry-id entry)))
+                 (and id (cons id (model-entry-context-limit entry)))))
+             data))
+           (else '())))
+        '())))
+
+(define* (fetch-model-context-limit client #:key (model #f) (http-getter #f))
+  "Query GET /models exactly like list-models does (resolve-models-uri
+on (model-client-endpoint client), same http-getter/default request
+pattern and auth header). Return the integer context limit for the
+entry whose id equals MODEL, or — when MODEL is #f or generic
+(generic-model?) — for (model-client-model client). #f when the entry
+is missing, metadata absent, or the request/parse fails. MUST catch
+all errors, return #f instead of throwing."
+  (let* ((target-model (or (and model (not (generic-model? model)) model)
+                           (model-client-model client)))
+         (uri (resolve-models-uri (model-client-endpoint client)))
+         (headers (build-headers (model-client-api-key client) #f))
+         (getter (or http-getter (current-http-get))))
+    (catch #t
+      (lambda ()
+        (call-with-values
+            (lambda () (getter uri #:headers headers))
+          (lambda (response body)
+            (let* ((code (response-code response))
+                   (body-str (response-body->string body "")))
+              (if (<= 200 code 299)
+                  (let ((limits (parse-models-context-limits body-str)))
+                    (and target-model
+                         (let ((entry (assoc target-model limits)))
+                           (and entry (cdr entry)))))
+                  #f)))))
+      (lambda (key . args)
+        #f))))
 (define* (model-available? client id #:key (http-getter #f))
   "Return #t when model ID is listed by CLIENT's /models endpoint.
 Issues a live HTTP request; returns #f on error or when ID is not found."
