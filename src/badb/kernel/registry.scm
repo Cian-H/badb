@@ -1,13 +1,25 @@
 ;;; (badb kernel registry) — Module System & Indirection Registry
 (define-module (badb kernel registry)
-  #:use-module (srfi srfi-9)
-  #:use-module (ice-9 threads)
-  #:use-module (ice-9 format)
-  #:export (<registry>
-            make-registry registry? registry-attach! registry-detach!
-            registry-lookup registry-metadata registry-list registry-dispatch
-            make-fresh-feature-module eval-in-feature-module
-            feature-module-define! feature-module-ref))
+               #:use-module
+               (srfi srfi-9)
+               #:use-module
+               (ice-9 threads)
+               #:use-module
+               (ice-9 format)
+               #:export
+               (<registry> make-registry
+                           registry?
+                           registry-attach!
+                           registry-detach!
+                           registry-lookup
+                           registry-metadata
+                           registry-list
+                           registry-count
+                           registry-dispatch
+                           make-fresh-feature-module
+                           eval-in-feature-module
+                           feature-module-define!
+                           feature-module-ref))
 
 (define-record-type <feature-entry>
   (make-feature-entry id implementation metadata)
@@ -74,6 +86,17 @@
                (lambda (a b)
                  (string<? (entry-id->string (entry-id a))
                            (entry-id->string (entry-id b))))))))
+
+(define (registry-count reg)
+        "Number of attached features: a direct hash count without building
+or sorting the entry list (the header renders per frame)."
+        (unless (registry? reg) (error "registry-count: expected <registry>" reg))
+        (with-mutex (registry-mutex reg)
+                    (hash-fold
+                      (lambda (_key _value count)
+                        (+ count 1))
+                      0
+                      (registry-table reg))))
 
 (define (registry-dispatch reg feature-id . args)
   (let ((impl (registry-lookup reg feature-id)))

@@ -219,6 +219,10 @@
       (for-each join-thread threads)
       (test-equal "concurrency produced no errors" '() errors)
       (test-equal "all concurrent registrations present"
-        (* num-threads ops-per-thread) (length (registry-list reg))))))
+        (* num-threads ops-per-thread) (length (registry-list reg))))
+      (test-equal "registry-count agrees with registry-list length"
+        (* num-threads ops-per-thread) (registry-count reg))
+      (test-equal "registry-count of an empty registry is zero"
+        0 (registry-count (make-registry)))))
 
 (test-end "badb-registry")

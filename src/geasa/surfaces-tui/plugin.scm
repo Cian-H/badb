@@ -3255,8 +3255,8 @@ and append it to the persistent history journal file."
                       (format-header-segments maxx
                                               status-text
                                               cur-model
-                                              (length (registry-list reg))
-                                              (journal-count jrn)
+                                              (registry-count reg)
+                                              (journal-count-cached)
                                               mcp-info
                                               (context-gauge-info)))
                     (draw-role! 'dim #t)
@@ -3553,6 +3553,18 @@ placeholder flag, so the next streamed call starts a fresh card."
     ;; compute per frame; tells the user when /compact is due.
     (define %ctx-cache-tokens #f)
     (define %ctx-cache-key #f)
+    (define %jrn-count-cache -1)
+    (define %jrn-count-time 0)
+    (define (journal-count-cached)
+            "Journal entry count for the header, refreshed at most every two
+seconds: journal-count re-reads the whole journal file (~150ms on a
+grown journal), which the per-frame header render must not pay."
+            (let ((now (get-internal-run-time)))
+              (when
+                  (>= (- now %jrn-count-time) (* 2 internal-time-units-per-second))
+                (set! %jrn-count-time now)
+                (set! %jrn-count-cache (journal-count jrn)))
+              %jrn-count-cache))
     (define (context-gauge-info)
             (let ((key (length llm-history)))
               ;; The estimate only changes when history grows; cache it.
