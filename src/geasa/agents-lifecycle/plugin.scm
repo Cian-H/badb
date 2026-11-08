@@ -194,15 +194,15 @@ agent has been attempted."
           (begin
             (when failure (apply throw (car failure) (cdr failure)))
             (reverse stopped))
-          (let ((id (car remaining)))
-            (let ((res (catch #t
-                         (lambda ()
-                           (agent-stop! manager id)
-                           #f)
-                         (lambda args args))))
-              (loop (cdr remaining)
-                    (if res stopped (cons id stopped))
-                    (or failure res))))))))
+          (let* ((id (car remaining))
+                 (res (catch #t
+                        (lambda ()
+                          (agent-stop! manager id)
+                          #f)
+                        (lambda args args))))
+            (loop (cdr remaining)
+                  (if res stopped (cons id stopped))
+                  (or failure res)))))))
 
 (define* (with-agent manager agent thunk)
   "Register AGENT, start it, run THUNK, and stop it on any exit path.

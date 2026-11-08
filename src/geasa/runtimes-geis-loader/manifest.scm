@@ -1,0 +1,1 @@
+((bundle-version . 1) (feature-id . "runtimes-geis-loader") (version . "1.0.0") (spec . "spec.geis.scm") (plugin (module geasa runtimes-geis-loader plugin) (file . "plugin.scm")) (sha256 ("plugin.scm" . "34732796eecbff1795598190e574d93b9b0645ff506d858c5cb0aedadc2b8170") ("spec.geis.scm" . "b500070e3e32d5ddfa1865eda50d4aed058ec939428030be4ad9d6fffd095914")))

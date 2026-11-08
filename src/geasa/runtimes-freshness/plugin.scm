@@ -195,11 +195,10 @@ Returns a freshness-result alist."
 (define (freshness-cache-entry cache bundle-dir)
   "Return the cached alist entry for BUNDLE-DIR, or #f if not cached."
   (let ((pins (freshness-bundle-pins bundle-dir)))
-    (if (not pins)
-        #f
-        (find (lambda (entry)
-                (equal? pins (assoc-ref entry 'pins)))
-              (freshness-cache-entries cache)))))
+    (and pins
+         (find (lambda (entry)
+                 (equal? pins (assoc-ref entry 'pins)))
+               (freshness-cache-entries cache)))))
 
 (define (freshness-verify cache bundle-dir thunk)
   "Return cached verdict for BUNDLE-DIR, or call THUNK and cache result.
@@ -229,16 +228,13 @@ If pins cannot be read, THUNK is called every time (never cached)."
 (define (freshness-cache-invalidate! cache bundle-dir)
   "Remove cached entry for BUNDLE-DIR. Return the removed entry or #f."
   (let ((pins (freshness-bundle-pins bundle-dir)))
-    (if (not pins)
-        #f
-        (let* ((entries (freshness-cache-entries cache))
-               (matching (filter (lambda (entry)
-                                   (equal? pins (assoc-ref entry 'pins)))
-                                 entries))
-               (new-entries (filter (lambda (entry)
-                                      (not (equal? pins (assoc-ref entry 'pins))))
-                                    entries)))
-          (set-cdr! cache new-entries)
-          (if (null? matching)
-              #f
-              (car matching))))))
+    (and pins
+         (let* ((entries (freshness-cache-entries cache))
+                (matching (filter (lambda (entry)
+                                    (equal? pins (assoc-ref entry 'pins)))
+                                  entries))
+                (new-entries (filter (lambda (entry)
+                                       (not (equal? pins (assoc-ref entry 'pins))))
+                                     entries)))
+           (set-cdr! cache new-entries)
+           (and (pair? matching) (car matching))))))

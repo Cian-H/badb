@@ -17,6 +17,14 @@
                (ice-9 textual-ports)
                #:use-module
                (srfi srfi-1)
+               #:use-module
+               (srfi srfi-234)
+               #:use-module
+               (srfi srfi-11)
+               #:use-module
+               (semver)
+               #:use-module
+               (semver ranges)
                ;; DEV-DEBT [accepted-layering]: bundle tooling imports the synthesis plugin for
 ;; replay; the reverse direction is broken via synthesis-assemble-hook in the plugin.
 #:use-module
@@ -246,6 +254,19 @@ otherwise a non-empty list of human-readable reason strings."
             (add! (format #f "cassettes path '~a' is not a safe relative path" cassettes)))
           (unless (%bundle-member-exists? bundle-dir cassettes)
             (add! (format #f "cassettes directory '~a' does not exist in bundle" cassettes)))))
+      (let ((tools (manifest-field manifest 'tools)))
+        (when tools
+          (unless (and (list? tools)
+                       (every (lambda (t)
+                                (or (string? t)
+                                    (symbol? t)
+                                    (and (pair? t) (or (symbol? (car t)) (string? (car t))))))
+                              tools))
+            (add! "tools field must be a list of tool names or specifications"))))
+      (let ((wf-exports (manifest-field manifest 'workflow-exports)))
+        (when wf-exports
+          (unless (and (list? wf-exports) (every string? wf-exports))
+            (add! "workflow-exports field must be a list of workflow name strings"))))
       (let ((pins (manifest-field manifest 'sha256)))
         (when pins
           (unless (list? pins)
@@ -375,7 +396,7 @@ version and bundle hash; throw 'geis-bundle-error otherwise."
             (let
                 ((have-ver (manifest-field dep-manifest 'version)))
               (unless
-                  (and (string? want-ver) (string? have-ver) (string= have-ver want-ver))
+                  (and (string? want-ver) (string? have-ver) (%semver-match? have-ver want-ver))
                 (throw 'geis-bundle-error
                        (format #f
                                "version mismatch for dependency '~a': want ~s have ~s"
@@ -388,35 +409,75 @@ version and bundle hash; throw 'geis-bundle-error otherwise."
               (throw 'geis-bundle-error
                      (format #f "bundle-sha256 mismatch for dependency '~a'" dep-fid))))))
 
+(define (%semver-match? have want)
+  "Return #t if version HAVE satisfies version constraint WANT using semver."
+  (catch #t
+    (lambda ()
+      (let ((have-sv (string->semver have)))
+        (or (and (semver? have-sv)
+                 (let ((want-sv (catch #t (lambda () (string->semver want)) (lambda _ #f))))
+                   (and want-sv (semver=? have-sv want-sv))))
+            (let ((range (string->semver-range want)))
+              (semver-range-contains? range have-sv)))))
+    (lambda _
+      (and (string? have) (string? want) (string= have want)))))
+
 (define (resolve-geis-load-path feature-id)
   "Return the absolute bundle directories FEATURE-ID needs, dependencies
 first and the target bundle last.  Throw 'geis-bundle-error on missing
 bundles, invalid manifests, version mismatches, bundle-sha256 mismatches,
 or dependency cycles.  Shared dependencies appear exactly once."
-  (let ((order '()))
-    (let visit! ((raw-fid feature-id) (stack '()))
-      (let ((fid (%fid->string raw-fid)))
-        (when (member fid stack)
-          (throw 'geis-bundle-error (format #f "dependency cycle detected at '~a'" fid)))
-        (let ((dir (find-geis-bundle fid)))
-          (unless dir
-            (throw 'geis-bundle-error
-                   (format #f "missing ~a bundle '~a'" (if (null? stack) "" "dependency") fid)))
-          (let ((manifest (read-geis-manifest (string-append dir "/manifest.scm"))))
-            (unless manifest
-              (throw 'geis-bundle-error (format #f "invalid manifest for bundle '~a'" fid)))
-            (for-each
-             (lambda (dep)
-               (let ((dep-fid (and (pair? dep) (car dep)))
-                     (spec (and (pair? dep) (cdr dep))))
-                 (%verify-dep-edge! dep-fid spec)
-                 (unless (assoc (%fid->string dep-fid) order string=)
-                   (visit! dep-fid (cons fid stack)))))
-             (%geis-deps manifest))
-            (unless (assoc fid order string=)
-              (set! order (append order
-                                  (list (cons fid (canonicalize-path dir))))))))))
-    (map cdr order)))
+  (let* ((fid (%fid->string feature-id))
+         (dir (find-geis-bundle fid)))
+    (unless dir
+      (throw 'geis-bundle-error (format #f "missing bundle '~a'" fid)))
+    (let ((manifest (read-geis-manifest (string-append dir "/manifest.scm"))))
+      (unless manifest
+        (throw 'geis-bundle-error (format #f "invalid manifest for bundle '~a'" fid)))
+      
+      ;; Build dependency graph in SRFI-234 format: ((node (dep1 dep2 ...)) ...)
+      (let ((graph '()))
+        (letrec ((collect! (lambda (current-fid)
+                             (let* ((current-str (%fid->string current-fid))
+                                    (current-dir (find-geis-bundle current-str)))
+                               (unless current-dir
+                                 (throw 'geis-bundle-error
+                                        (format #f "missing dependency bundle '~a'" current-str)))
+                               (let ((current-manifest (read-geis-manifest (string-append current-dir "/manifest.scm"))))
+                                 (unless current-manifest
+                                   (throw 'geis-bundle-error (format #f "invalid manifest for bundle '~a'" current-str)))
+                                 
+                                 ;; Add current node to graph if not already present
+                                 (unless (assoc current-str graph)
+                                   (set! graph (cons (list current-str) graph)))
+                                 
+                                 ;; Process dependencies
+                                 (for-each
+                                  (lambda (dep)
+                                    (let* ((dep-fid (and (pair? dep) (car dep)))
+                                           (spec (and (pair? dep) (cdr dep)))
+                                           (dep-str (%fid->string dep-fid)))
+                                      (%verify-dep-edge! dep-fid spec)
+                                      (unless (assoc dep-str graph)
+                                        (collect! dep-fid))
+                                      ;; Add dependency to current node's neighbor list
+                                      (let ((node-entry (assoc current-str graph)))
+                                        (unless (member dep-str (cdr node-entry))
+                                          (set-cdr! node-entry (cons dep-str (cdr node-entry)))))))
+                                  (%geis-deps current-manifest)))))))
+          
+          (collect! fid)
+        
+        ;; Perform topological sort
+        (let-values (((result cycle? cycle-nodes) (topological-sort/details graph)))
+          (if cycle?
+              ;; Map cycle detection to existing error format
+              (let ((cycle-fid (car cycle-nodes)))
+                (throw 'geis-bundle-error (format #f "dependency cycle detected at '~a'" cycle-fid)))
+              ;; Success: reverse to get dependencies first, then map to directories
+              (map (lambda (node-fid)
+                     (canonicalize-path (find-geis-bundle node-fid)))
+                   (reverse result)))))))))
 
 ;;;
 ;;; Bundle packing

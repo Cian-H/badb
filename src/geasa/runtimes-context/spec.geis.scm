@@ -328,5 +328,49 @@
     (test-equal "system message stays at index 0"
       "Base prompt" (assoc-ref (car compacted) 'content))))
 
+(test-group "tool-token-estimate"
+  (test-equal "empty string has 0 tokens" 0 (tool-token-estimate ""))
+  (test-equal "100 chars has ~26 tokens" 26 (tool-token-estimate (make-string 100 #\x)))
+  (test-assert "tool schema object estimates non-zero tokens"
+    (> (tool-token-estimate (quote ((name . "read_file") (description . "Read file contents")))) 5)))
+
+(test-group "strategy-prune-reasoning"
+  (let* ((msgs (list
+                (quote ((role . "system") (content . "sys")))
+                (quote ((role . "user") (content . "q1")))
+                (quote ((role . "assistant") (reasoning_content . "think 1") (content . "a1")))
+                (quote ((role . "user") (content . "q2")))
+                (quote ((role . "assistant") (reasoning_content . "think 2") (content . "a2")))
+                (quote ((role . "user") (content . "q3")))
+                (quote ((role . "assistant") (reasoning_content . "think 3") (content . "a3")))))
+         (pruned-k1 (strategy-prune-reasoning msgs 1))
+         (pruned-k2 (strategy-prune-reasoning msgs 2))
+         (pruned-k0 (strategy-prune-reasoning msgs 0)))
+
+    ;; k=1: only turn 3 retains reasoning
+    (test-equal "msgs count unchanged" 7 (length pruned-k1))
+    (test-assert "turn 1 reasoning stripped"
+      (not (assoc-ref (list-ref pruned-k1 2) (quote reasoning_content))))
+    (test-assert "turn 2 reasoning stripped"
+      (not (assoc-ref (list-ref pruned-k1 4) (quote reasoning_content))))
+    (test-equal "turn 3 reasoning preserved"
+      "think 3" (assoc-ref (list-ref pruned-k1 6) (quote reasoning_content)))
+
+    ;; k=2: turn 2 and 3 retain reasoning, turn 1 stripped
+    (test-assert "k=2: turn 1 stripped"
+      (not (assoc-ref (list-ref pruned-k2 2) (quote reasoning_content))))
+    (test-equal "k=2: turn 2 preserved"
+      "think 2" (assoc-ref (list-ref pruned-k2 4) (quote reasoning_content)))
+    (test-equal "k=2: turn 3 preserved"
+      "think 3" (assoc-ref (list-ref pruned-k2 6) (quote reasoning_content)))
+
+    ;; k=0: all reasoning stripped
+    (test-assert "k=0: turn 1 stripped"
+      (not (assoc-ref (list-ref pruned-k0 2) (quote reasoning_content))))
+    (test-assert "k=0: turn 2 stripped"
+      (not (assoc-ref (list-ref pruned-k0 4) (quote reasoning_content))))
+    (test-assert "k=0: turn 3 stripped"
+      (not (assoc-ref (list-ref pruned-k0 6) (quote reasoning_content))))))
+
 (spec-end)
 (spec-exit)

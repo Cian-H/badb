@@ -13,6 +13,7 @@
   #:use-module (geasa providers-model openai)
   #:use-module (geasa providers-model mock)
   #:use-module (geasa foundation-config plugin)
+  #:use-module (geasa foundation-util plugin)
   #:use-module (badb kernel registry)
   #:use-module (badb kernel journal)
   #:use-module (badb kernel transaction)
@@ -848,14 +849,15 @@
                            (string-contains text "Primary task: (none)"))))
 
 (test-group "react-recitation-integration"
-            ;; Regression: the recitation refresh inside react-step! threw
-            ;; unbound-variable m; unit tests alone did not exercise it.
-            ;; Drive the live path end to end here.
+            ;; Verify recitation is sent on the wire, but NOT stored in session messages,
+            ;; keeping history append-only and preserving KV-cache prefix sharing.
             (let*
-                ((client
+                ((captured-bodies '())
+                 (client
                    (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "looping-llm"))
                  (mock-poster
                    (lambda* (uri #:key body headers streaming?)
+                            (set! captured-bodies (cons body captured-bodies))
                             (let
                                 ((resp-body
                                    (scm->json-string
@@ -880,7 +882,7 @@
                                 ((session
                                    (make-react-session client
                                                        #:initial-messages
-                                                       '(((role "fresh task" "user") (content . "infinite loop")))
+                                                       '(((role . "user") (content . "infinite loop")))
                                                        #:reg
                                                        reg
                                                        #:recitation?
@@ -891,21 +893,61 @@
                                 (lambda (status _results)
                                   (test-equal "step 1 stays continue" 'continue status)
                                   (let ((msgs (react-session-messages session)))
+                                    ;; History remains clean and append-only: no recitation in session messages!
                                     (test-assert
-                                      "recitation present in messages after step 1"
-                                      (any
-                                        (lambda (m)
-                                          (and (equal? (assoc-ref m 'role) "user")
-                                               (string-prefix? "[badb task recitation]" (assoc-ref m 'content))
-                                               (string-contains (assoc-ref m 'content) "ReAct iteration 1")))
-                                        msgs))
-                                    (test-equal "exactly one recitation after step 1"
-                                                1
-                                                (count
-                                                  (lambda (m)
-                                                    (and (equal? (assoc-ref m 'role) "user")
-                                                         (string-prefix? "[badb task recitation]" (assoc-ref m 'content))))
-                                                  msgs)))))))))
+                                      "recitation NOT stored in session messages"
+                                      (not (any
+                                             (lambda (m)
+                                               (and (equal? (assoc-ref m 'role) "user")
+                                                    (string-prefix? "[badb task recitation]" (or (assoc-ref m 'content) ""))))
+                                             msgs)))
+                                    ;; Outbound wire request DOES contain recitation
+                                    (let* ((req-body (car captured-bodies))
+                                           (req-data (json-string->scm req-body))
+                                           (wire-msgs (vector->list (or (assoc-ref req-data "messages") #()))))
+                                      (test-assert
+                                        "recitation present on the wire"
+                                        (any
+                                          (lambda (m)
+                                            (and (equal? (assoc-ref m "role") "user")
+                                                 (string-prefix? "[badb task recitation]" (or (assoc-ref m "content") ""))))
+                                          wire-msgs))))))))))
+
+(test-group "react-deferred-tools-partition"
+  (let* ((make-tool (lambda (n) `((name . ,n) (description . ,(string-append "Tool " n)))))
+         (tool-names '("tool_search" "bash" "read_file" "write_file" "edit_file"
+                       "ctx_exec" "ctx_search" "run_tests" "checkpoint_create" "checkpoint_rollback"
+                       "custom_1" "custom_2"))
+         (all-tools (map make-tool tool-names))
+         (core-names '("tool_search" "bash" "read_file" "write_file" "edit_file"
+                       "ctx_exec" "ctx_search" "run_tests" "checkpoint_create" "checkpoint_rollback"))
+         (active '("custom_1")))
+    ;; When deferred? is #t and total tools > 10:
+    (call-with-values
+      (lambda () (partition-tools-for-step all-tools core-names active #t))
+      (lambda (active-tools deferred-tools)
+        (test-assert "tool_search exists in hydrated"
+          (any (lambda (t) (equal? (prop-ref t 'name) "tool_search")) active-tools))
+        (test-equal "custom_2 is deferred" 1 (length deferred-tools))
+        (test-equal "deferred tool is custom_2" "custom_2" (prop-ref (car deferred-tools) 'name))))
+    ;; When deferred? is #f:
+    (call-with-values
+      (lambda () (partition-tools-for-step all-tools core-names active #f))
+      (lambda (active-tools deferred-tools)
+        (test-equal "all 12 tools active" 12 (length active-tools))
+        (test-equal "no deferred tools" 0 (length deferred-tools))))))
+
+(test-group "react-offload-hook"
+  (let* ((hook-called #f)
+         (custom-hook
+           (lambda (file name content)
+             (set! hook-called #t)
+             (format #f "[custom hook pointer for ~a in ~a]" name file)))
+         (large-content (make-string 2500 #\b))
+         (res (offload-tool-result! "/tmp/badb-react-offload-test" "bash" large-content 2000 #:offload-hook custom-hook)))
+    (test-assert "offload hook called" hook-called)
+    (test-assert "contains custom hook pointer"
+      (string-contains res "[custom hook pointer for bash in"))))
 
 (spec-end)
 (spec-exit)

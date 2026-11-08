@@ -25,7 +25,7 @@ for spec in test/specs/*.geis.scm; do
   guile --no-auto-compile -L src -L . -c "
 (use-modules (badb kernel geis-gate))
 (lock-geis \"$spec\" \"$fid\")
-" >/dev/null 2>&1
+" >/dev/null
 done
 
 # 1b. Lock all geis bundles from src/geasa/*/spec.geis.scm into <gate>/src/geasa/<fid>/
@@ -37,10 +37,10 @@ for bundle in src/geasa/*/spec.geis.scm; do
 (use-modules (badb geis bundle) (badb kernel geis-gate))
 (let ((errors (geis-manifest-valid? \"$bdir\")))
   (unless (null? errors)
-    (format (current-error-port) \"bundle manifest invalid: ~a~%\" errors)
+    (format (current-error-port) \"bundle manifest invalid in ~a: ~s~%\" \"$bdir\" errors)
     (exit 1)))
 (lock-geis-bundle \"$bdir\" \"$fid\")
-" >/dev/null 2>&1
+" >/dev/null
 done
 
 # 2. Run parallel verification via xargs

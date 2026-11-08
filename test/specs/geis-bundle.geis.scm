@@ -129,6 +129,18 @@ entries appended.  Returns the bundle directory."
       (mkdir (string-append dir "/cassettes"))
       (write-manifest! dir manifest)
       (null? (geis-manifest-valid? dir))))
+  (test-assert "bundle with tools and workflow-exports returns empty list"
+    (let* ((dir (string-append %geis-root "/tools-bundle"))
+           (manifest `((bundle-version . 1)
+                       (feature-id . "tools-bundle")
+                       (version . "1.0.0")
+                       (spec . "spec.geis.scm")
+                       (tools . ("custom_tool_1" "custom_tool_2"))
+                       (workflow-exports . ("pipeline_1")))))
+      (mkdir dir)
+      (write-file! (string-append dir "/spec.geis.scm") "(test-begin \"x\")\n")
+      (write-manifest! dir manifest)
+      (null? (geis-manifest-valid? dir))))
   (test-assert "feature-id not matching dir basename returns non-empty"
     (let* ((dir (string-append %geis-root "/wrong-name")))
       (mkdir dir)

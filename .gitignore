@@ -4,4 +4,6 @@
 .agents/
 *.go
 *~
+.jj/
+.worktrees/
 

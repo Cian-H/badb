@@ -77,7 +77,13 @@
   (test-equal "safe-json-parse valid string" '(("a" . 1)) (safe-json-parse "{\"a\": 1}"))
   (test-equal "safe-json-parse invalid string returns fallback"
     'fallback (safe-json-parse "not valid json {{" 'fallback))
-  (test-equal "safe-json-parse empty string returns fallback" #f (safe-json-parse "")))
+  (test-equal "safe-json-parse empty string returns fallback" #f (safe-json-parse ""))
+  (test-equal "parse-tool-args from JSON string"
+    '(("name" . "test")) (parse-tool-args "{\"name\": \"test\"}"))
+  (test-equal "parse-tool-args from alist"
+    '((name . "test")) (parse-tool-args '((name . "test"))))
+  (test-equal "parse-tool-args from invalid string returns empty list"
+    '() (parse-tool-args "invalid-json{")))
 
 ;;;
 ;;; 4. Environment Normalization & Exec Strings
@@ -122,6 +128,104 @@
     "hello..." (truncate-string "hello world" 8))
   (test-equal "truncate-display is an alias for truncate-string"
     "hello..." (truncate-display "hello world" 8)))
+
+(test-group "util-tool-args"
+  (let ((args "{\"name\":\"alice\",\"count\":42}"))
+    (with-tool-args args (name (c count 0) (foo bar "default"))
+      (test-equal "with-tool-args binds simple var" "alice" name)
+      (test-equal "with-tool-args binds custom key" 42 c)
+      (test-equal "with-tool-args fallback default" "default" foo)))
+  (let ((args '((prompt . "hello") (timeout . 10))))
+    (with-tool-args args ((p prompt "") (t timeout 5))
+      (test-equal "with-tool-args alist prompt" "hello" p)
+      (test-equal "with-tool-args alist timeout" 10 t))))
+
+(test-group "util-dir-entries"
+  (test-assert "valid-dir-entry? normal name" (valid-dir-entry? "src"))
+  (test-assert "valid-dir-entry? dot is false" (not (valid-dir-entry? ".")))
+  (test-assert "valid-dir-entry? dot-dot is false" (not (valid-dir-entry? "..")))
+  (test-assert "scandir-valid-entries excludes dot and dot-dot"
+    (let ((entries (scandir-valid-entries ".")))
+      (and (pair? entries)
+           (not (member "." entries))
+           (not (member ".." entries)))))
+  (test-equal "scandir-valid-entries nonexistent dir returns empty"
+    '() (scandir-valid-entries "/nonexistent-path-for-test-12345")))
+
+(test-group "util-message-accessors"
+  (let ((msg '((role . "assistant") (content . "hello world") (reasoning_content . "thinking..."))))
+    (test-equal "message-role assistant" "assistant" (message-role msg))
+    (test-equal "message-content text" "hello world" (message-content msg))
+    (test-equal "message-thoughts reasoning" "thinking..." (message-thoughts msg)))
+  (let ((msg '(("role" . "USER") ("content" . "query"))))
+    (test-equal "message-role string user normalized" "user" (message-role msg))
+    (test-equal "message-content string user" "query" (message-content msg))
+    (test-equal "message-thoughts absent returns #f" #f (message-thoughts msg))))
+
+(test-group "util-shell-and-formatting"
+  (test-equal "format-token-kilo 1500" "1.5k" (format-token-kilo 1500))
+  (test-equal "format-token-kilo 420" "0.4k" (format-token-kilo 420))
+  (call-with-values
+    (lambda () (exec-shell-command "echo test-out"))
+    (lambda (out exit-val err)
+      (test-equal "exec-shell-command stdout" "test-out" out)
+      (test-equal "exec-shell-command exit code" 0 exit-val)
+      (test-equal "exec-shell-command err #f" #f err))))
+
+(test-group "util-let-props"
+  (let ((obj '((name . "alice") (role . "admin") (active . #t))))
+    (let-props obj (name (r role "guest") (cnt count 0))
+      (test-equal "let-props simple key" "alice" name)
+      (test-equal "let-props custom key" "admin" r)
+      (test-equal "let-props default fallback" 0 cnt))))
+
+(test-group "util-ensure-list"
+  (test-equal "ensure-list from list" '(1 2 3) (ensure-list '(1 2 3)))
+  (test-equal "ensure-list from vector" '(1 2 3) (ensure-list #(1 2 3)))
+  (test-equal "ensure-list from empty list" '() (ensure-list '()))
+  (test-equal "ensure-list from #f" '() (ensure-list #f))
+  (test-equal "ensure-list from scalar" '("foo") (ensure-list "foo")))
+
+(test-group "util-flow-macros"
+  (test-equal "with-default returns value when no error"
+    42 (with-default 0 (+ 40 2)))
+  (test-equal "with-default returns fallback on error"
+    99 (with-default 99 (error "boom")))
+  (test-equal "ignore-errors returns #f on error"
+    #f (ignore-errors (/ 1 0)))
+  (test-equal "string-case exact match"
+    "apple" (string-case "apple"
+              ("orange" "citrus")
+              ("apple" "apple")
+              (else "other")))
+  (test-equal "string-case multi-target match"
+    "matched" (string-case "c"
+                (("a" "b" "c") "matched")
+                (else "none")))
+  (test-equal "string-case fallback else"
+    "fallback" (string-case "unknown"
+                 (("a" "b") "first")
+                 (else "fallback")))
+  (receive (x y) (values 10 20)
+    (test-equal "receive binds multiple values" '(10 20) (list x y)))
+  (let-values* (((a b) (values 1 2))
+                ((c) (values (+ a b))))
+    (test-equal "let-values* binds cascading multiple values" 3 c))
+  (with-env (("BADB_MACRO_TEST_ENV" "active"))
+    (test-equal "with-env sets environment variable" "active" (getenv "BADB_MACRO_TEST_ENV")))
+  (test-equal "with-env restores environment variable" #f (getenv "BADB_MACRO_TEST_ENV"))
+  (let ((cwd (getcwd)))
+    (with-directory "/tmp"
+      (test-assert "with-directory changes to /tmp" (or (string=? (getcwd) "/tmp") (string-prefix? "/tmp" (getcwd)))))
+    (test-equal "with-directory restores original directory" cwd (getcwd))))
+
+(test-group "util-file-io"
+  (let* ((tmp (string-append "/tmp/badb-file-io-test-" (number->string (current-time)) ".txt"))
+         (content "hello world UTF-8 string\nline 2\n"))
+    (string->file tmp content)
+    (test-assert "string->file creates file" (file-exists? tmp))
+    (test-equal "file->string reads back content exact" content (file->string tmp))
+    (test-equal "file->string nonexistent returns #f" #f (file->string "/nonexistent-path-fileio-999"))))
 
 (spec-end)
 (spec-exit)

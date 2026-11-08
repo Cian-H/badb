@@ -3,6 +3,7 @@
 ;;; Reusable colour support for badb commands.  Callers pass the
 ;;; target port and never touch raw escape codes.
 (define-module (badb surfaces cli)
+  #:use-module (term ansi-color)
   #:export (bold cyan green red supports-color?))
 
 ;;;
@@ -10,12 +11,6 @@
 ;;; FORCE_COLOR; always disabled by the NO_COLOR convention
 ;;; (no-color.org).  Precedence: FORCE_COLOR > NO_COLOR > tty.
 ;;;
-
-(define %reset (string-append (string #\escape) "[0m"))
-(define %bold  (string-append (string #\escape) "[1m"))
-(define %red   (string-append (string #\escape) "[31m"))
-(define %green (string-append (string #\escape) "[32m"))
-(define %cyan  (string-append (string #\escape) "[36m"))
 
 (define (color-forced?)
   (let ((force (getenv "FORCE_COLOR")))
@@ -26,12 +21,12 @@
       (and (isatty? port)
            (not (getenv "NO_COLOR")))))
 
-(define (colorize port color str)
+(define (colorize port attr str)
   (if (supports-color? port)
-      (string-append color str %reset)
+      (colorize-string str attr)
       str))
 
-(define (bold port str)  (colorize port %bold str))
-(define (cyan port str)  (colorize port %cyan str))
-(define (green port str) (colorize port %green str))
-(define (red port str)   (colorize port %red str))
+(define (bold port str)  (colorize port 'BOLD str))
+(define (cyan port str)  (colorize port 'CYAN str))
+(define (green port str) (colorize port 'GREEN str))
+(define (red port str)   (colorize port 'RED str))

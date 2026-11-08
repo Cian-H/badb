@@ -17,2646 +17,149 @@
 ;;; the running agent sees at the next iteration boundary.
 
 (define-module (geasa surfaces-tui plugin)
-               #:use-module
-               (geasa providers-model common)
-               #:use-module
-               (geasa providers-model openai)
-               #:use-module
-               (badb kernel registry)
-               #:use-module
-               (badb kernel transaction)
-               #:use-module
-               (badb kernel journal)
-               #:use-module
-               (badb kernel geis-gate)
-               #:use-module
-               (badb geis bundle)
-               #:use-module
-               (badb kernel digest)
-               #:use-module
-               (geasa foundation-config plugin)
-               #:use-module
-               (geasa capabilities-mcp plugin)
-               #:use-module
-               (geasa capabilities-history-tools plugin)
-               #:use-module
-               (geasa runtimes-react plugin)
-               #:use-module
-               (geasa policies-guardrail plugin)
-               #:use-module
-               (geasa runtimes-context plugin)
-               #:use-module
-               (geasa runtimes-prompt plugin)
-               #:use-module
-               (geasa runtimes-rollback plugin)
-               #:use-module
-               (geasa runtimes-verify plugin)
-               #:use-module
-               (geasa surfaces-theme plugin)
-               #:use-module
-               (geasa foundation-log plugin)
-               #:use-module
-               (geasa foundation-util plugin)
-               #:use-module
-               (json)
-               #:use-module
-               (ice-9 format)
-               #:use-module
-               (ice-9 popen)
-               #:use-module
-               (ice-9 rdelim)
-               #:use-module
-               (ice-9 optargs)
-               #:use-module
-               (ice-9 regex)
-               #:use-module
-               (srfi srfi-1)
-               #:use-module
-               (srfi srfi-9)
-               #:use-module
-               (srfi srfi-11)
-               #:use-module
-               (srfi srfi-19)
-               #:export
-               (run-tui format-conversation-transcript
-                        wrap-line
-                        wrap-text
-                        parse-command
-                        classify-input
-                        make-repl-mod
-                        normalize-scheme-expr
-                        eval-scheme-code
-                        execute-shell-command
-                        split-thoughts-and-content
-                        %slash-commands
-                        matching-slash-commands
-                        detect-model-decision
-                        build-model-menu-items
-                        selector-active?
-                        %selector-max-visible
-                        selector-visible-slice
-                        %menu-max-visible
-                        make-menu
-                        menu?
-                        menu-title
-                        menu-items
-                        menu-selected-index
-                        menu-count
-                        menu-move
-                        menu-selected-item
-                        menu-visible-slice
-                        menu-item-label
-                        menu-item-description
-                        menu-item-action
-                        get-prompt-indicator
-                        format-header-segments
-                        format-rule-line
-                        format-keymap-line
-                        steering-key-handle
-                        steering-pending-line
-                        agent-run-active?
-                        segment-line
-                        clamp-cursor
-                        insert-at
-                        backspace-at
-                        delete-at
-                        input-visible-window
-                        input-wrapped-rows
-                        %max-input-rows
-                        make-row-cache
-                        row-cache?
-                        row-cache-rows
-                        row-cache-prune!
-                        make-history
-                        input-history?
-                        %history-max-entries
-                        history-cap-entries
-                        history-entries
-                        history-length
-                        history-add
-                        history-recall
-                        history-recall-position
-                        history-reset-nav
-                        history-entry->jsonl-line
-                        jsonl-line->history-entry
-                        default-history-file-path
-                        load-history-file
-                        append-history-file-entry!
-                        turn->jsonl-line
-                        default-sessions-dir
-                        session-file-path
-                        persist-session-file!
-                        load-session-file
-                        recent-session-files
-                        message-collapsed?
-                        make-collapsed-message
-                        message-with-collapsed
-                        message-toggle-collapsed
-                        default-collapsed-role?
-                        message-collapsible?
-                        default-collapse-message
-                        thoughts-preview
-                        format-collapsed-summary-line
-                        message-role-label
-                        message-role->theme-role
-                        system-message-label
-                        color-symbol->ncurses-constant
-                        key->code
-                        resolve-modified-key
-                        spec-tool-lock
-                        spec-tool-verify
-                        spec-tool-status
-                        register-spec-tools!
-                        build-geis-add-prompt
-                        format-message-entry
-                        <input-history>
-                        <row-cache>
-                        <menu>
-                        builtin-read-file)
-               #:re-export
-               (jsonl-line->turn truncate-string))
+  #:use-module (geasa providers-model common)
+  #:use-module (geasa providers-model openai)
+  #:use-module (badb kernel registry)
+  #:use-module (badb kernel transaction)
+  #:use-module (badb kernel journal)
+  #:use-module (badb kernel geis-gate)
+  #:use-module (badb geis bundle)
+  #:use-module (badb kernel digest)
+  #:use-module (geasa foundation-config plugin)
+  #:use-module (geasa capabilities-mcp plugin)
+  #:use-module (geasa capabilities-history-tools plugin)
+  #:use-module (geasa runtimes-react plugin)
+  #:use-module (geasa policies-guardrail plugin)
+  #:use-module (geasa runtimes-context plugin)
+  #:use-module (geasa runtimes-prompt plugin)
+  #:use-module (geasa runtimes-rollback plugin)
+  #:use-module (geasa capabilities-context-index plugin)
+  #:use-module (geasa capabilities-skills plugin)
+  #:use-module (geasa capabilities-code-nav plugin)
+  #:use-module (geasa runtimes-geis-loader plugin)
+  #:use-module (geasa runtimes-workflows plugin)
+  #:use-module (geasa runtimes-verify plugin)
+  #:use-module (geasa surfaces-theme plugin)
+  #:use-module (geasa foundation-log plugin)
+  #:use-module (geasa foundation-util plugin)
+  #:use-module (geasa surfaces-tui editor)
+  #:use-module (geasa surfaces-tui session)
+  #:use-module (geasa surfaces-tui transcript)
+  #:use-module (geasa surfaces-tui menus)
+  #:use-module (geasa surfaces-tui tools)
+  #:use-module (geasa surfaces-tui commands)
+  #:use-module (json)
+  #:use-module (ice-9 format)
+  #:use-module (ice-9 popen)
+  #:use-module (ice-9 rdelim)
+  #:use-module (ice-9 optargs)
+  #:use-module (ice-9 regex)
+  #:use-module (srfi srfi-1)
+  #:use-module (srfi srfi-9)
+  #:use-module (srfi srfi-11)
+  #:use-module (srfi srfi-19)
+  #:export (run-tui)
+  #:re-export (format-conversation-transcript
+               wrap-line
+               wrap-text
+               parse-command
+               classify-input
+               make-repl-mod
+               normalize-scheme-expr
+               eval-scheme-code
+               execute-shell-command
+               split-thoughts-and-content
+               %slash-commands
+               matching-slash-commands
+               detect-model-decision
+               build-model-menu-items
+               selector-active?
+               %selector-max-visible
+               selector-visible-slice
+               %menu-max-visible
+               make-menu
+               menu?
+               menu-title
+               menu-items
+               menu-selected-index
+               menu-count
+               menu-move
+               menu-selected-item
+               menu-visible-slice
+               menu-item-label
+               menu-item-description
+               menu-item-action
+               get-prompt-indicator
+               format-header-segments
+               format-rule-line
+               format-keymap-line
+               steering-key-handle
+               steering-pending-line
+               agent-run-active?
+               segment-line
+               clamp-cursor
+               insert-at
+               backspace-at
+               delete-at
+               input-visible-window
+               input-wrapped-rows
+               %max-input-rows
+               make-row-cache
+               row-cache?
+               row-cache-rows
+               row-cache-prune!
+               make-history
+               input-history?
+               %history-max-entries
+               history-cap-entries
+               history-entries
+               history-length
+               history-add
+               history-recall
+               history-recall-position
+               history-reset-nav
+               history-entry->jsonl-line
+               jsonl-line->history-entry
+               default-history-file-path
+               load-history-file
+               append-history-file-entry!
+               turn->jsonl-line
+               default-sessions-dir
+               session-file-path
+               persist-session-file!
+               load-session-file
+               recent-session-files
+               message-collapsed?
+               make-collapsed-message
+               message-with-collapsed
+               message-toggle-collapsed
+               default-collapsed-role?
+               message-collapsible?
+               default-collapse-message
+               thoughts-preview
+               format-collapsed-summary-line
+               message-role-label
+               message-role->theme-role
+               system-message-label
+               color-symbol->ncurses-constant
+               key->code
+               resolve-modified-key
+               spec-tool-lock
+               spec-tool-verify
+               spec-tool-status
+               register-spec-tools!
+               build-geis-add-prompt
+               format-message-entry
+               <input-history>
+               <row-cache>
+               <menu>
+               builtin-read-file
+               jsonl-line->turn
+               truncate-string))
 
 ;;;
-;;; Text Formatting & Word Wrapping Helpers
+;;; Main TUI Controller (run-tui)
 ;;;
-(define (wrap-line line max-width)
-  "Wrap a single LINE into a list of strings with length <= MAX-WIDTH,
-breaking on whitespace when possible."
-  (let ((line-str (cond
-                   ((string? line) line)
-                   ((not line) "")
-                   (else (format #f "~a" line)))))
-    (if (or (<= (string-length line-str) max-width) (<= max-width 0))
-        (list line-str)
-        (let ((words (string-split line-str #\space)))
-          (let loop ((words words) (current "") (acc '()))
-            (if (null? words)
-                (reverse (if (string-null? current) acc (cons current acc)))
-                (let* ((w (car words))
-                       (candidate (if (string-null? current)
-                                      w
-                                      (string-append current " " w))))
-                  (cond
-                   ((<= (string-length candidate) max-width)
-                    (loop (cdr words) candidate acc))
-                   ((string-null? current)
-                    ;; Single word longer than max-width: hard-break it
-                    (loop (cons (substring w max-width) (cdr words))
-                          ""
-                          (cons (substring w 0 max-width) acc)))
-                   (else
-                    (loop words "" (cons current acc)))))))))))
-
-(define (wrap-text text max-width)
-  "Wrap multi-line TEXT into lines that each fit within MAX-WIDTH."
-  (let* ((safe-str (cond
-                    ((string? text) text)
-                    ((not text) "")
-                    (else (format #f "~a" text))))
-         (raw-lines (string-split safe-str #\newline)))
-    (append-map (lambda (line) (wrap-line (if (string? line) line "") max-width)) raw-lines)))
-
-;;;
-;;; Slash Commands Registry & Parsing
-;;;
-(define %slash-commands
-        '(("help" . "Show help manual & shortcuts")
-          ("model" . "Switch or inspect active LLM model")
-          ("models" . "List models available on the endpoint")
-          ("endpoint" . "Switch or inspect endpoint URL")
-          ("provider" . "Switch or inspect model provider preset (e.g. lmstudio)")
-          ("mcp" . "Manage MCP servers (list, start, stop, add, remove, tools)")
-          ("config" . "Inspect, reload, or save badb configuration")
-          ("theme" . "Inspect or switch the active UI theme")
-          ("guardrail" . "Inspect or set guardrail security policy level")
-          ("compact" . "Compact conversation history context")
-          ("resume" . "Resume a previous chat session from disk")
-          ("checkpoint" . "Create a workspace and registry checkpoint")
-          ("rollback" . "Revert to latest or specified checkpoint")
-          ("rules" . "Inspect discovered project rules & workspace tree")
-          ("geis" . "Contract-gated dynamic harness synthesis (/geis add <desc>, list, verify, status)")
-          ("context" . "View conversation token stats and metrics")
-          ("usage" . "Show per-session token usage report")
-          ("features" . "List kernel registered features")
-          ("journal" . "View checkpoint provenance audit log")
-          ("test" . "Run bootstrap verification test suite")
-          ("sh" . "Execute shell command (!<cmd>)")
-          ("eval" . "Evaluate Scheme code in REPL (,<expr>)")
-          ("steer" . "Queue steering text for the running agent")
-          ("interrupt" . "Halt the running agent at its next boundary")
-          ("clear" . "Clear chat viewport history")
-          ("quit" . "Exit badb microharness")
-          ("exit" . "Exit badb microharness")
-          ("dump" . "Export the conversation to a text file [path]")))
-
-(define (selector-active? input-buffer)
-  "Return #t if the slash command selector palette should be visible."
-  (and (string-prefix? "/" input-buffer)
-       (not (string-contains input-buffer " "))))
-
-(define (matching-slash-commands input-buffer)
-  "Return list of (%slash-commands) items matching the current query in INPUT-BUFFER."
-  (let* ((prefix (if (string-prefix? "/" input-buffer)
-                     (substring input-buffer 1)
-                     input-buffer))
-         (clean-q (string-downcase (string-trim-both prefix))))
-    (if (string-null? clean-q)
-        %slash-commands
-        (filter (lambda (item)
-                  (string-contains (string-downcase (car item)) clean-q))
-                %slash-commands))))
-
-(define %selector-max-visible 7)
-
-(define* (selector-visible-slice matches #:optional (max-visible %selector-max-visible) (sel-index 0))
-  "Return (values visible-items offset sel-pos above-count below-count):
-the window of at most MAX-VISIBLE items of MATCHES positioned so SEL-INDEX
-stays visible inside the slice. Returns offset, relative sel-pos within the slice,
-and above/below scroll counts."
-  (let* ((items (if (list? matches) matches '()))
-         (count (length items))
-         (cap (max 1 (or max-visible %selector-max-visible)))
-         (sel (min (max 0 sel-index) (max 0 (- count 1)))))
-    (if (<= count cap)
-        (values items 0 sel 0 0)
-        (let* ((start (min (max 0 (- (+ sel 1) cap)) (- count cap)))
-               (vis-items (take (drop items start) cap))
-               (offset start)
-               (sel-pos (- sel offset))
-               (above-count offset)
-               (below-count (- count offset cap)))
-          (values vis-items offset sel-pos above-count below-count)))))
-
-(define (parse-command input)
-  "Parse user INPUT into (command . arg-string) or #f if not a slash command."
-  (let ((trimmed (string-trim-both input)))
-    (if (string-prefix? "/" trimmed)
-        (let* ((without-slash (substring trimmed 1))
-               (space-pos (string-index without-slash #\space)))
-          (if space-pos
-              (cons (substring without-slash 0 space-pos)
-                    (string-trim-both (substring without-slash (+ space-pos 1))))
-              (cons without-slash "")))
-        #f)))
-
-;;;
-;;; Model Thoughts & Reasoning Separation Helper
-;;;
-(define (split-thoughts-and-content text)
-  "Separate thought blocks (<think>...</think> or <thought>...</thought>)
-from response content in TEXT. Handles unclosed tags from live streaming.
-Returns (values thoughts content)."
-  (let loop ((remaining text)
-             (thoughts-acc '())
-             (content-acc '()))
-    (let* ((think-start (string-contains remaining "<think>"))
-           (thought-start (string-contains remaining "<thought>"))
-           (start-tag (cond
-                       ((and think-start thought-start)
-                        (if (< think-start thought-start)
-                            (cons think-start "<think>")
-                            (cons thought-start "<thought>")))
-                       (think-start (cons think-start "<think>"))
-                       (thought-start (cons thought-start "<thought>"))
-                       (else #f))))
-      (if start-tag
-          (let* ((start-pos (car start-tag))
-                 (tag-str (cdr start-tag))
-                 (tag-len (string-length tag-str))
-                 (end-tag-str (if (string=? tag-str "<think>") "</think>" "</thought>"))
-                 (prefix-content (substring remaining 0 start-pos))
-                 (after-tag (substring remaining (+ start-pos tag-len)))
-                 (end-pos (string-contains after-tag end-tag-str)))
-            (if end-pos
-                (let ((thought-body (substring after-tag 0 end-pos))
-                      (rest-after (substring after-tag (+ end-pos (string-length end-tag-str)))))
-                  (loop rest-after
-                        (cons (string-trim-both thought-body) thoughts-acc)
-                        (if (string-null? (string-trim-both prefix-content))
-                            content-acc
-                            (cons (string-trim-both prefix-content) content-acc))))
-                (let ((thought-body (string-trim-both after-tag)))
-                  (let* ((all-thoughts (reverse (cons thought-body thoughts-acc)))
-                         (all-content (if (string-null? (string-trim-both prefix-content))
-                                          (reverse content-acc)
-                                          (reverse (cons (string-trim-both prefix-content) content-acc))))
-                         (final-th (string-trim-both (string-join all-thoughts "\n\n")))
-                         (final-ct (string-trim-both (string-join all-content "\n"))))
-                    (values (if (string-null? final-th) #f final-th)
-                            final-ct)))))
-          (let* ((all-c (if (string-null? (string-trim-both remaining))
-                            content-acc
-                            (cons (string-trim-both remaining) content-acc)))
-                 (final-content (string-trim-both (string-join (reverse all-c) "\n")))
-                 (final-thoughts (string-trim-both (string-join (reverse thoughts-acc) "\n\n"))))
-            (values (if (string-null? final-thoughts) #f final-thoughts)
-                    final-content))))))
-
-;;;
-;;; Theme Color Mapping
-;;;
-(define (color-symbol->ncurses-constant color)
-  "Map a theme COLOR symbol to the name of the matching color constant
-symbol (resolved against the (geasa surfaces-tui nc) backend module at runtime
-by the renderer). The neutral 'default maps to white."
-  (case color
-    ((black) 'COLOR_BLACK)
-    ((red) 'COLOR_RED)
-    ((green) 'COLOR_GREEN)
-    ((yellow) 'COLOR_YELLOW)
-    ((blue) 'COLOR_BLUE)
-    ((magenta) 'COLOR_MAGENTA)
-    ((cyan) 'COLOR_CYAN)
-    ((white) 'COLOR_WHITE)
-    (else 'COLOR_WHITE)))
-
-;;;
-;;; Morphing Prompt Indicator
-;;;
-(define %spinner-frames (vector "⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧"))
-(define (streaming-spinner-glyph)
-  "Return the current braille spinner frame, advanced by wall-clock
-time so the prompt indicator animates on every streaming redraw."
-  (let* ((ms (quotient (get-internal-run-time)
-                       (quotient internal-time-units-per-second 1000)))
-         (i (modulo (quotient ms 80) (vector-length %spinner-frames))))
-    (vector-ref %spinner-frames i)))
-
-(define* (get-prompt-indicator input-buffer status-text #:optional (prompt-mode 'chat))
-  "Return (values glyph-char theme-role bold?) for the prompt indicator
-based on current input mode, execution status, and active prompt mode."
-  (cond
-   ((string=? status-text "STREAMING...")
-    (values "⟳" 'status #t))     ; Status-role bold spinner
-   ((string=? status-text "EXEC...")
-    (values "◆" 'shell #t))      ; Shell-role bold diamond
-   ((string-prefix? "TOOL:" status-text)
-    (values "◆" 'tool-call #t))  ; Tool-role bold diamond
-   ((string-prefix? "REACT" status-text)
-    (values "◆" 'tool-call #t))  ; Tool-role bold diamond
-   ((string=? status-text "EVAL...")
-    (values "λ" 'scheme #t))     ; Scheme-role bold lambda
-   ((string=? status-text "TESTING...")
-    (values "◆" 'warning #t))   ; Warning-role bold diamond
-   ((eq? prompt-mode 'shell)
-    (values "$" 'shell #t))     ; Shell-role bold shell mode
-   ((eq? prompt-mode 'scheme)
-    (values "λ" 'scheme #t))    ; Scheme-role bold scheme mode
-   ((string-prefix? "!" input-buffer)
-    (values "$" 'shell #t))     ; Shell-role bold shell prefix
-   ((string-prefix? "(" input-buffer)
-    (values "λ" 'scheme #t))    ; Scheme-role bold lambda prefix
-   (else
-    (values "❯" 'accent #t))))   ; Accent-role bold chat
-
-;;;
-;;; Slim Header, Rule & Keymap Layout Formatters
-;;;
-(define (format-rule-line maxx)
-  "Return a thin horizontal rule line filling MAXX columns for the header
-underline."
-  (make-string (max 0 maxx) #\─))
-
-(define (status->theme-role status-text)
-  "Map a STATUS-TEXT word to the theme role it should carry in the
-header: idle is success-green, active work is accent-cyan, and anything
-else falls back to the neutral status role."
-  (cond
-    ((string=? status-text "READY") 'success)
-    ((or (string-prefix? "EXEC" status-text)
-         (string-prefix? "EVAL" status-text)
-         (string-prefix? "STREAMING" status-text)
-         (string-prefix? "TESTING" status-text)
-         (string-prefix? "REACT" status-text)
-         (string-prefix? "TOOL" status-text))
-      'accent)
-    (else 'status)))
-
-(define* (format-header-segments maxx status-text model-name feat-count jrn-count
-                                 #:optional (mcp-info #f) (ctx-info #f))
-  "Build the slim header line as positioned segments of the form
-((x text role bold?) ...) for a terminal MAXX columns wide: the badb
-wordmark leads in the accent role with the model name dim behind it, and
-the status word plus nonzero feature / checkpoint / mcp counts sit flush
-right. Right-side items drop out, least important first, whenever the two
-sides would collide; the model name truncates last."
-  (let* ((wordmark "badb")
-         (model (cond
-                 ((and (string? model-name) (not (string-null? model-name))) model-name)
-                 (else "")))
-         (right-items
-           (filter-map
-             (lambda (item) (and (pair? item) item))
-             (list (and (string? status-text) (not (string-null? status-text))
-                        (cons (status->theme-role status-text) status-text))
-                   (and (string? ctx-info) (not (string-null? ctx-info))
-                        (cons 'dim ctx-info))
-                   (and (> feat-count 0) (cons 'dim (format #f "~a feats" feat-count)))
-                   (and (> jrn-count 0) (cons 'dim (format #f "~a chkpts" jrn-count)))
-                   (and (string? mcp-info) (not (string-null? mcp-info))
-                        (cons 'dim (format #f "mcp ~a" mcp-info))))))
-         (right-width
-           (lambda (items)
-             (if (null? items)
-                 0
-                 (+ (- (length items) 1)
-                    (fold (lambda (i acc) (+ acc (string-length (cdr i)))) 0 items)))))
-         (build
-           (lambda (model-fit items)
-             (let* ((left-segs
-                      (if (string-null? model-fit)
-                        (list (list 0 wordmark 'accent #t))
-                        (list (list 0 wordmark 'accent #t)
-                              (list 5 model-fit 'dim #f))))
-                    (rw (right-width items))
-                    (right-start (max 0 (- maxx rw))))
-               (append
-                left-segs
-                (let rloop ((rest items) (x right-start))
-                  (if (null? rest)
-                      '()
-                      (cons (list x (cdar rest) (caar rest) #f)
-                            (rloop (cdr rest) (+ x (string-length (cdar rest)) 1))))))))))
-    (let fit ((items right-items))
-      (let* ((rw (right-width items))
-             (fits-full?
-               (<= (+ 4 1 (string-length model) 2 rw) (- maxx 1)))
-             (model-room (max 0 (- maxx 1 2 rw 4 1))))
-        (cond
-          (fits-full? (build model items))
-          ;; The model name truncates to keep the current right items
-          ((>= model-room 1) (build (substring model 0 model-room) items))
-          ;; No room for a model: drop the least important right item
-          ((pair? items) (fit (drop-right items 1)))
-          (else (build "" '())))))))
-
-(define (format-keymap-line mode)
-  "Return the dim bottom keymap hint line describing the keys active in
-MODE (a symbol: chat, shell, scheme, selector, menu or steering)."
-  (case mode
-    ((shell) "enter:run · backspace:back to chat")
-    ((scheme) "enter:eval · backspace:back to chat")
-    ((selector) "↑↓:choose · tab:complete · enter:run · esc:dismiss")
-    ((menu) "↑↓:move · enter:apply · esc:close")
-    ((steering) "type:steer · enter:send · ^i:interrupt · bs:edit · esc:clear")
-    (else "! shell · ( scheme · / cmds · ↑↓ history · PgUp/PgDn scroll · ^↑/^↓ select · ^e collapse")))
-
-;;;
-;;; Agent Steering Helpers
-;;;
-;; Pure keyboard-to-intent mapping and presentation formatters for mid-run
-;; steering: while the autonomous ReAct loop executes, keypresses polled
-;; from the terminal accumulate in a steering buffer and are pushed onto
-;; the session's steering queue (injected as user messages at the next
-;; iteration boundary, or halting the loop with 'interrupt). Keeping these
-;; helpers pure makes the curses wiring trivial and testable headless.
-(define (steering-key-handle buffer ch)
-  "Map a keypress CH to a steering action and the resulting buffer.
-Return (values new-buffer action) with actions:
-  'append     printable character appended to BUFFER
-  'backspace  last character deleted (Ctrl+H / backspace / DEL)
-  'queue      BUFFER submitted to the steering queue (Enter); a queue
-              action is only produced for non-blank content
-  'interrupt  interrupt requested (Ctrl+I / Tab); the buffer is discarded
-  'clear      buffer discarded (Escape)
-  'none       key ignored (other control chars, curses key codes)
-CH is either a character (printable input) or an integer control code or
-curses key constant, matching what getch delivers under keypad mode."
-  (cond
-   ;; Enter (newline, carriage return, or their integer codes)
-   ((or (eqv? ch #\newline) (eqv? ch #\return) (eqv? ch 10) (eqv? ch 13))
-    (if (string-null? (string-trim-both buffer))
-        (values buffer 'none)
-        (values "" 'queue)))
-   ;; Ctrl+I (Tab): request an interrupt, discarding the pending buffer
-   ((or (eqv? ch #\tab) (eqv? ch 9))
-    (values "" 'interrupt))
-   ;; Escape: discard the pending buffer
-   ((eqv? ch 27)
-    (values "" 'clear))
-   ;; Backspace / Ctrl+H / DEL: delete the last character
-   ((or (eqv? ch #\backspace) (eqv? ch 8) (eqv? ch 127))
-    (if (string-null? buffer)
-        (values buffer 'none)
-        (values (substring buffer 0 (- (string-length buffer) 1)) 'backspace)))
-   ;; Printable characters append
-   ((and (char? ch) (>= (char->integer ch) 32))
-    (values (string-append buffer (string ch)) 'append))
-   ;; Integer codes in the printable range (some terminals deliver these)
-   ((and (integer? ch) (>= ch 32) (<= ch 126))
-    (values (string-append buffer (string (integer->char ch))) 'append))
-   ;; Everything else (control chars, arrow and function key codes)
-   (else (values buffer 'none))))
-
-(define* (steering-pending-line buffer queued-count
-                                #:optional (interrupt-queued? #f))
-  "Compose the dim pending-steering display line near the prompt: the
-in-progress BUFFER being typed mid-run, the QUEUED-COUNT of steering
-entries queued but not yet consumed by the loop, and the INTERRUPT-QUEUED?
-pill shown while an interrupt is pending. Return #f when nothing is
-pending and no line should be drawn."
-  (cond
-   (interrupt-queued? "steering: interrupt requested")
-   ((and (not (string-null? buffer)) (> queued-count 0))
-    (format #f "steering: ~a (+~a queued)" buffer queued-count))
-   ((not (string-null? buffer))
-    (format #f "steering: ~a" buffer))
-   ((> queued-count 0)
-    (format #f "steering: ~a queued" queued-count))
-   (else #f)))
-
-(define (agent-run-active? status-text)
-  "Return #t when STATUS-TEXT indicates the autonomous ReAct loop is
-currently executing (a REACT iteration or TOOL status)."
-  (and (string? status-text)
-       (or (string-prefix? "REACT" status-text)
-           (string-prefix? "TOOL:" status-text))
-       #t))
-
-;;;
-;;; Shell & REPL Execution Helpers
-;;;
-(define (classify-input input)
-  "Classify trimmed user INPUT into an action tag and payload:
-   '(slash cmd . arg)
-   '(shell . cmd-string)
-   '(scheme . code-string)
-   '(chat . text)
-   #f for empty or whitespace-only input"
-  (let ((trimmed (string-trim-both input)))
-    (cond
-     ((string-null? trimmed)
-      #f)
-     ((string-prefix? "!" trimmed)
-      (cons 'shell (string-trim-both (substring trimmed 1))))
-
-
-     ((string-prefix? "(" trimmed)
-      (cons 'scheme trimmed))
-     ((string-prefix? "/" trimmed)
-      (let* ((without-slash (substring trimmed 1))
-             (space-pos (string-index without-slash #\space)))
-        (if space-pos
-            (list 'slash
-                  (substring without-slash 0 space-pos)
-                  (string-trim-both (substring without-slash (+ space-pos 1))))
-            (list 'slash without-slash ""))))
-     (else
-      (cons 'chat trimmed)))))
-
-(define (normalize-scheme-expr str)
-  "Normalize user Scheme input string, ensuring s-expressions without outer
-parentheses (e.g. '+ 1 2' or '+ 1 2)') are wrapped for evaluation."
-  (let ((trimmed (string-trim-both str)))
-    (cond
-     ((string-null? trimmed) trimmed)
-     ;; Already properly wrapped
-     ((string-prefix? "(" trimmed) trimmed)
-     ;; Literal string or quote
-     ((or (string-prefix? "\"" trimmed) (string-prefix? "'" trimmed)) trimmed)
-     ;; Ends with ')' but missing '(': e.g. "+ 1 2)"
-     ((and (string-suffix? ")" trimmed) (not (string-prefix? "(" trimmed)))
-      (string-append "(" trimmed))
-     ;; Has spaces and no outer parens: e.g. "+ 1 2"
-     ((string-contains trimmed " ")
-      (string-append "(" trimmed ")"))
-     ;; Standalone identifier or literal number: e.g. "reg", "42"
-     (else trimmed))))
-
-(define* (make-repl-mod reg jrn mgr client #:optional (cfg #f) (mcp-mgr #f)
-                        (policy #f) (compactor #f) (rollback-mgr #f) (verifier #f) (composer #f))
-  "Create an isolated user module pre-populated with kernel state bindings
-and core badb modules for interactive evaluation."
-  (let ((mod (make-fresh-user-module)))
-    (module-use! mod (resolve-interface '(guile)))
-    (module-use! mod (resolve-interface '(geasa providers-model plugin)))
-    (module-use! mod (resolve-interface '(badb registry)))
-    (module-use! mod (resolve-interface '(badb transaction)))
-    (module-use! mod (resolve-interface '(badb journal)))
-    (module-use! mod (resolve-interface '(geasa foundation-config plugin)))
-    (catch #t (lambda () (module-use! mod (resolve-interface '(geasa capabilities-mcp plugin)))) (lambda _ #f))
-    (catch #t (lambda () (module-use! mod (resolve-interface '(geasa policies-guardrail plugin)))) (lambda _ #f))
-    (catch #t (lambda () (module-use! mod (resolve-interface '(geasa runtimes-context plugin)))) (lambda _ #f))
-    (catch #t (lambda () (module-use! mod (resolve-interface '(geasa runtimes-prompt plugin)))) (lambda _ #f))
-    (catch #t (lambda () (module-use! mod (resolve-interface '(geasa runtimes-rollback plugin)))) (lambda _ #f))
-    (catch #t (lambda () (module-use! mod (resolve-interface '(geasa runtimes-verify plugin)))) (lambda _ #f))
-    (catch #t (lambda () (module-use! mod (resolve-interface '(geasa runtimes-react plugin)))) (lambda _ #f))
-    (module-use! mod (resolve-interface '(ice-9 format)))
-    (module-use! mod (resolve-interface '(ice-9 rdelim)))
-    (module-use! mod (resolve-interface '(ice-9 pretty-print)))
-    ;; (ice-9 session) carries the REPL introspection toolkit (apropos,
-    ;; module-inspect helpers) so the scheme prompt can explore the
-    ;; harness beyond plain eval.
-    (catch #t
-      (lambda () (module-use! mod (resolve-interface '(ice-9 session))))
-      (lambda _ #f))
-    (module-use! mod (resolve-interface '(srfi srfi-1)))
-    (module-define! mod 'reg reg)
-    (module-define! mod 'jrn jrn)
-    (module-define! mod 'mgr mgr)
-    (module-define! mod 'client client)
-    (when cfg (module-define! mod 'cfg cfg))
-    (when mcp-mgr (module-define! mod 'mcp-mgr mcp-mgr))
-    (when policy (module-define! mod 'policy policy))
-    (when compactor (module-define! mod 'compactor compactor))
-    (when rollback-mgr (module-define! mod 'rollback-mgr rollback-mgr))
-    (when verifier (module-define! mod 'verifier verifier))
-    (when composer (module-define! mod 'composer composer))
-    mod))
-
-(define (eval-scheme-code code-str repl-mod)
-  "Evaluate CODE-STR in REPL-MOD and return (values result-string error-or-#f)."
-  (let ((normalized (normalize-scheme-expr code-str)))
-    (catch #t
-      (lambda ()
-        (let* ((p (open-input-string normalized))
-               (output-port (open-output-string)))
-          (let loop ()
-            (let ((expr (read p)))
-              (unless (eof-object? expr)
-                (let ((printed
-                       (with-output-to-string
-                         (lambda ()
-                           (call-with-values (lambda () (eval expr repl-mod))
-                             (lambda vals
-                               (for-each (lambda (v)
-                                           (format #t "=> ~s\n" v))
-                                         vals)))))))
-                  (display printed output-port)
-                  (loop)))))
-          (let ((res (string-trim-right (get-output-string output-port))))
-            (values (if (string-null? res) "=> #<unspecified>" res) #f))))
-      (lambda (key . args)
-        (values #f (format #f "Scheme error (~a): ~s" key args))))))
-
-(define (%exec-log-path)
-  "Exec log destination: BADB_EXEC_LOG when set (empty string disables
-logging), else .badb/exec-log.jsonl."
-  (let ((env (getenv "BADB_EXEC_LOG")))
-    (cond
-      ((and (string? env) (string-null? env)) #f)
-      ((string? env) env)
-      (else ".badb/exec-log.jsonl"))))
-
-(define (%append-exec-log! cmd)
-  "Append a byte-exact record of CMD to the exec log just before spawn,
-best effort: never throws, silently skips when the log is disabled or
-unwritable.  The cmd field is the exact string handed to the shell —
-the transcript's post-decode alist views are re-escaped renders, so
-this file is the ground truth when diagnosing quoting-layer corruption
-(a lost paren, a stripped escape, a truncated quote).
-Format: one JSON object per line: {ts, us, len, cmd}."
-  (catch #t
-    (lambda ()
-      (let ((path (%exec-log-path)))
-        (when path
-          (let ((dir (dirname path)))
-            (unless (file-exists? dir) (ensure-directory! dir)))
-          (let* ((tv (gettimeofday))
-                 (port (open-file path "a")))
-            (format port "{\"ts\":~a,\"us\":~a,\"len\":~a,\"cmd\":~a}\n"
-                    (car tv) (cdr tv) (string-length cmd) (scm->json-string cmd))
-            (close-port port)))))
-    (lambda _ #f)))
-
-(define (execute-shell-command cmd)
-  "Execute shell CMD and return (values output-string exit-code
-error-or-#f).  Records the byte-exact command to the exec log
-(.badb/exec-log.jsonl, BADB_EXEC_LOG override; empty disables) just
-before spawn."
-  (%append-exec-log! cmd)
-  (catch #t
-    (lambda ()
-      (let* ((pipe (open-pipe (string-append cmd " 2>&1") OPEN_READ))
-             (raw-out (read-string pipe))
-             (status (close-pipe pipe))
-             (exit-val (if (status:exit-val status) (status:exit-val status) 0))
-             (clean-out (if (or (eof-object? raw-out) (string-null? raw-out))
-                            ""
-                            (string-trim-right raw-out))))
-        (values clean-out exit-val #f)))
-    (lambda (key . args)
-      (values #f 1 (format #f "Shell error (~a): ~s" key args)))))
-
-;;;
-;;; Visual Hierarchy & Token Highlight Engine
-;;;
-;; Canonical status pills with (tag theme-role bold? dim?)
-(define %status-tags
-  (list (list "[RUNNING]" 'success #t #f)
-        (list "[OK]" 'success #t #f)
-        (list "[ALLOW]" 'success #t #f)
-        (list "[ACTIVE]" 'success #t #f)
-        (list "[PASSED]" 'success #t #f)
-        (list "[READY]" 'success #t #f)
-        (list "[STOPPED]" 'warning #t #f)
-        (list "[WARN]" 'warning #t #f)
-        (list "[WARNING]" 'warning #t #f)
-        (list "[ASK]" 'warning #t #f)
-        (list "[PENDING]" 'warning #t #f)
-        (list "[CAUTIOUS]" 'warning #t #f)
-        (list "[STRICT]" 'warning #t #f)
-        (list "[ERROR]" 'error #t #f)
-        (list "[DENY]" 'error #t #f)
-        (list "[FAILED]" 'error #t #f)
-        (list "[PARANOID]" 'error #t #f)
-        (list "[PERMISSIVE]" 'notice #t #f)
-        (list "[DISABLED]" 'dim #t #f)))
-
-;; Regex for key label at the start of a clause: e.g. "Model: ", "System Guardrail: "
-(define %key-label-rx (make-regexp "^[ \t]*([A-Za-z0-9_-]+( [A-Za-z0-9_-]+){0,2}):[ \t]+"))
-
-(define (segment-line line)
-  "Segment LINE into styled chunks of the form ((chunk-str theme-role bold? dim?) ...),
-mapping status pills, list bullets and key labels to their semantic theme
-roles and plain text to the neutral 'default role."
-  (let loop ((pos 0) (acc '()))
-    (if (>= pos (string-length line))
-        (reverse acc)
-        (let* ((rem (substring line pos))
-               (tag-match
-                (find (lambda (tag-entry)
-                        (string-prefix? (car tag-entry) rem))
-                      %status-tags)))
-          (cond
-           (tag-match
-            (let* ((tag-str (car tag-match))
-                   (theme-role (cadr tag-match))
-                   (bold? (caddr tag-match))
-                   (dim? (cadddr tag-match)))
-              (loop (+ pos (string-length tag-str))
-                    (cons (list tag-str theme-role bold? dim?) acc))))
-           ((or (string-prefix? "• " rem) (string-prefix? "❯ " rem))
-            (let ((bullet-str (substring rem 0 2)))
-              (loop (+ pos 2)
-                    (cons (list bullet-str 'accent #t #f) acc))))
-           ((regexp-exec %key-label-rx rem)
-            => (lambda (m)
-                 (let* ((full-match (match:substring m 0))
-                        (match-len (string-length full-match)))
-                   (loop (+ pos match-len)
-                         (cons (list full-match 'accent #f #f) acc)))))
-           (else
-            (let find-next ((end (+ pos 1)))
-              (if (>= end (string-length line))
-                  (reverse (cons (list (substring line pos) 'default #f #f) acc))
-                  (let ((sub-rem (substring line end)))
-                    (if (or (any (lambda (t) (string-prefix? (car t) sub-rem)) %status-tags)
-                            (string-prefix? "• " sub-rem)
-                            (string-prefix? "❯ " sub-rem)
-                            (regexp-exec %key-label-rx sub-rem))
-                        (loop end
-                              (cons (list (substring line pos end) 'default #f #f) acc))
-                        (find-next (+ end 1))))))))))))
-
-;;;
-;;; Input Buffer Cursor Editing Helpers
-;;;
-(define (clamp-cursor pos buffer)
-  "Clamp cursor position POS into the valid range 0..(string-length BUFFER)."
-  (max 0 (min pos (string-length buffer))))
-
-(define (insert-at buffer pos str)
-  "Insert STR into BUFFER at cursor position POS.
-Return (values new-buffer new-pos) with the cursor advanced past STR."
-  (let* ((p (clamp-cursor pos buffer))
-         (new-buffer (string-append (substring buffer 0 p)
-                                    str
-                                    (substring buffer p))))
-    (values new-buffer (+ p (string-length str)))))
-
-(define (backspace-at buffer pos)
-  "Delete the character before cursor position POS in BUFFER.
-A no-op when POS is 0. Return (values new-buffer new-pos)."
-  (let ((p (clamp-cursor pos buffer)))
-    (if (<= p 0)
-        (values buffer 0)
-        (values (string-append (substring buffer 0 (- p 1))
-                               (substring buffer p))
-                (- p 1)))))
-
-(define (delete-at buffer pos)
-  "Delete the character at cursor position POS in BUFFER (KEY_DC semantics).
-A no-op when POS is at the end. Return (values new-buffer new-pos)."
-  (let* ((p (clamp-cursor pos buffer))
-         (len (string-length buffer)))
-    (if (>= p len)
-        (values buffer p)
-        (values (string-append (substring buffer 0 p)
-                               (substring buffer (+ p 1)))
-                p))))
-
-(define (key->code ch)
-  "Normalize a keypress CH from the backend's getch to an integer code:
-chars become their codepoint, integers pass through unchanged, anything
-else (e.g. #f from a failed/non-blocking read) stays as-is. The backend
-may return control keys as chars while function keys arrive as
-integers — so all key dispatch must compare against the normalized code."
-  (cond
-   ((not ch) ch)
-   ((char? ch) (char->integer ch))
-   (else ch)))
-
-(define (resolve-modified-key seq probe bind fallback)
-  "Return the integer code getch delivers when the terminal sends the
-escape sequence SEQ, for modifier combinations like Ctrl+Up whose codes
-terminfo assigns dynamically or not at all. PROBE returns the code
-already bound to SEQ or #f; when nothing is bound, BIND associates SEQ
-with FALLBACK. Returns 0 - a code no keypress produces - when the key
-cannot be resolved, so callers can dispatch safely."
-  (or (probe seq)
-      (and (bind seq fallback) fallback)
-      0))
-
-(define (input-visible-window buffer cursor-pos avail-width)
-  "Compute the horizontally scrolled slice of BUFFER that fits a window
-AVAIL-WIDTH columns wide such that CURSOR-POS is always visible.
-Return (values visible-substring cursor-x-in-window). When the buffer fits
-entirely no scrolling occurs; otherwise the window follows the cursor and
-prefers to keep at least one column of right context in view."
-  (let* ((len (string-length buffer))
-         (pos (clamp-cursor cursor-pos buffer))
-         (w (max 1 avail-width)))
-    (cond
-     ((<= len w)
-      (values buffer pos))
-     ((= w 1)
-      (let ((start (min pos len)))
-        (values (substring buffer start (min len (+ start 1))) 0)))
-     ((<= pos (- w 2))
-      (values (substring buffer 0 w) pos))
-     ((>= pos len)
-      (let ((start (- len w)))
-        (values (substring buffer start len) w)))
-     (else
-      (let ((start (- pos (- w 2))))
-        (values (substring buffer start (min len (+ start w)))
-                (- pos start)))))))
-
-;; Maximum rows the wrapped input may occupy before it scrolls.
-(define %max-input-rows 4)
-
-(define* (input-wrapped-rows buffer cursor-pos avail-width max-rows)
-  "Lay out BUFFER for multi-line wrapped display AVAIL-WIDTH columns wide,
-keeping at most MAX-ROWS lines and scrolling so the line holding the
-editing cursor stays visible. Return (values visible-lines cursor-row
-cursor-col): VISIBLE-LINES is the list of rendered lines, CURSOR-ROW the
-0-based index of the cursor's line within VISIBLE-LINES, CURSOR-COL the
-column of the cursor within that line."
-  (let* ((w (max 1 avail-width))
-         (mr (max 1 max-rows))
-         (lines (wrap-text buffer w))
-         (prefix (substring buffer 0 (clamp-cursor cursor-pos buffer)))
-         (prefix-lines (wrap-text prefix w))
-         (cur-row (max 0 (- (length prefix-lines) 1)))
-         (cur-col (string-length (car (last-pair prefix-lines))))
-         (total (length lines))
-         (scrolled (if (<= total mr)
-                     0
-                     (max 0
-                          (min (max 0 (- cur-row (- mr 1)))
-                               (- total mr)))))
-         (visible (take (drop lines scrolled)
-                        (min mr (- total scrolled)))))
-    (values visible
-            (max 0 (- cur-row scrolled))
-            (min cur-col w))))
-
-;;;
-;;; Input History Recall & Session Persistence
-;;;
-(define %history-max-entries 500)
-
-(define-record-type <input-history>
-  (%make-input-history entries nav-index)
-  input-history?
-  (entries history-entries set-history-entries!)
-  (nav-index history-recall-position set-history-recall-position!))
-
-(define (history-cap-entries entries)
-  "Return ENTRIES truncated to the newest %history-max-entries items,
-dropping the oldest entries when over the cap."
-  (let ((len (length entries)))
-    (if (> len %history-max-entries)
-        (take-right entries %history-max-entries)
-        entries)))
-
-(define* (make-history #:optional (initial-entries '()))
-  "Create a fresh input history seeded with INITIAL-ENTRIES (oldest first),
-capped at %history-max-entries, with the recall position at the newest
-boundary (draft state)."
-  (%make-input-history (history-cap-entries initial-entries) #f))
-
-(define (history-length hist)
-  "Return the number of recorded entries in HIST."
-  (length (history-entries hist)))
-
-(define (history-add hist entry)
-  "Append ENTRY (trimmed) to HIST, skipping empty input and entries
-identical to the most recent one. Cap the list at %history-max-entries
-(oldest dropped) and reset the recall position to the newest boundary.
-Return #t when the entry was added, #f when it was skipped."
-  (let* ((raw (if (string? entry) entry ""))
-         (trimmed (string-trim-both raw))
-         (entries (history-entries hist)))
-    (cond
-     ((string-null? trimmed)
-      (set-history-recall-position! hist #f)
-      #f)
-     ((and (pair? entries) (string=? (last entries) trimmed))
-      (set-history-recall-position! hist #f)
-      #f)
-     (else
-      (set-history-entries! hist
-                            (history-cap-entries (append entries (list trimmed))))
-      (set-history-recall-position! hist #f)
-      #t))))
-
-(define (history-recall hist delta)
-  "Advance the recall position of HIST by DELTA entries (-1 = older,
-+1 = newer) and return the entry at the new position. Return #f when the
-position moves past the newest entry, meaning the caller should restore
-the in-progress draft input. The position clamps at the oldest entry."
-  (let* ((entries (history-entries hist))
-         (len (length entries)))
-    (if (= len 0)
-        #f
-        (let ((target (+ (or (history-recall-position hist) len) delta)))
-          (cond
-           ((>= target len)
-            (set-history-recall-position! hist #f)
-            #f)
-           ((< target 0)
-            (set-history-recall-position! hist 0)
-            (car entries))
-           (else
-            (set-history-recall-position! hist target)
-            (list-ref entries target)))))))
-
-(define (history-reset-nav hist)
-  "Reset the recall position of HIST to the newest boundary (draft state)."
-  (set-history-recall-position! hist #f))
-
-(define (history-entry->jsonl-line input mode ts)
-  "Serialize a history record (INPUT string, MODE tag, TS unix seconds)
-into a single JSON object line for the persistent history journal."
-  (scm->json-string
-   `(("input" . ,(if (string? input) input (format #f "~a" (or input ""))))
-     ("mode" . ,(cond
-                 ((string? mode) mode)
-                 ((symbol? mode) (symbol->string mode))
-                 (else "chat")))
-     ("ts" . ,(if (number? ts) ts 0)))))
-
-(define (jsonl-line->history-entry line)
-  "Parse a single JSONL LINE into a history entry alist of the form
-((\"input\" . STRING) (\"mode\" . STRING) (\"ts\" . NUMBER)). Return #f for
-blank or malformed lines and for entries without a string input."
-  (let ((parsed (safe-json-parse line)))
-    (if (and (list? parsed) (string? (assoc-ref parsed "input")))
-        `(("input" . ,(assoc-ref parsed "input"))
-          ("mode" . ,(let ((m (assoc-ref parsed "mode")))
-                       (cond
-                        ((string? m) m)
-                        ((symbol? m) (symbol->string m))
-                        (else "chat"))))
-          ("ts" . ,(let ((t (assoc-ref parsed "ts")))
-                     (if (number? t) t 0))))
-        #f)))
-
-(define (default-history-file-path)
-  "Return the default persistent input history path (.badb/history.jsonl
-under the current workspace directory)."
-  ".badb/history.jsonl")
-
-(define (load-history-file path)
-  "Load persisted input history from the JSONL file at PATH, returning the
-list of input strings oldest-first, capped at %history-max-entries with
-consecutive duplicates collapsed. An absent or unreadable file yields an
-empty history."
-  (catch #t
-    (lambda ()
-      (if (and (string? path) (file-exists? path))
-          (let* ((raw (catch #t
-                        (lambda () (call-with-input-file path read-string))
-                        (lambda _ "")))
-                 (entries (filter-map jsonl-line->history-entry
-                                      (string-split raw #\newline))))
-            (history-cap-entries
-             (let loop ((rest (map (lambda (e) (assoc-ref e "input")) entries))
-                        (acc '()))
-               (cond
-                ((null? rest) (reverse acc))
-                ((and (pair? acc) (string=? (car acc) (car rest)))
-                 (loop (cdr rest) acc))
-                (else
-                 (loop (cdr rest) (cons (car rest) acc)))))))
-          '()))
-    (lambda _ '())))
-
-(define (append-history-file-entry! path input mode)
-  "Append a single history record for INPUT and MODE to the JSONL file at
-PATH, creating the enclosing directory when missing. Return #t on success
-and #f on any filesystem failure."
-  (catch #t
-    (lambda ()
-      (ensure-parent-directory! path)
-      (let ((port (open-file path "a")))
-        (display (history-entry->jsonl-line input mode
-                                            (time-second (current-time)))
-                 port)
-        (newline port)
-        (close-port port)
-        #t))
-    (lambda _ #f)))
-
-;;;
-;;; Chat Session Persistence (/resume)
-;;;
-(define %session-filename-max-length 40)
-
-(define (default-sessions-dir)
-  "Return the standard directory for persisted chat sessions
-(~/.local/share/badb/sessions, honoring XDG_DATA_HOME)."
-  (let ((xdg (getenv "XDG_DATA_HOME"))
-        (home (getenv "HOME")))
-    (cond
-     ((and xdg (not (string-null? xdg)))
-      (string-append xdg "/badb/sessions"))
-     ((and home (not (string-null? home)))
-      (string-append home "/.local/share/badb/sessions"))
-     (else
-      "/tmp/badb/sessions"))))
-
-(define (session-file-path)
-  "Return the JSONL path for this TUI process's session log: a
-<timestamp>-<pid> name under (default-sessions-dir)."
-  (string-append
-   (default-sessions-dir) "/"
-   (date->string (current-date 0) "~Y~m~dT~H~M~SZ")
-   "-"
-   (number->string (getpid))
-   ".jsonl"))
-
-(define (turn->jsonl-line msg)
-  "Serialize one conversation turn MSG (an alist with role and content)
-into a single JSON object line {\"role\":...,\"content\":...}."
-  (scm->json-string
-   `(("role" . ,(ensure-string (or (prop-ref msg 'role) "user")))
-     ("content" . ,(ensure-string (or (prop-ref msg 'content) ""))))))
-
-(define (persist-session-file! path history)
-  "Write the whole conversation HISTORY to the session JSONL file at PATH,
-one JSON turn object per line (the system prompt first, as-is), creating
-the enclosing directory when missing. Return #t on success and #f on any
-filesystem failure."
-  (catch #t
-    (lambda ()
-      (ensure-parent-directory! path)
-      (call-with-output-file path
-        (lambda (port)
-          (for-each
-           (lambda (msg)
-             (display (turn->jsonl-line msg) port)
-             (newline port))
-           history)))
-      #t)
-    (lambda _ #f)))
-
-(define (load-session-file path)
-  "Load the conversation turns persisted in the session JSONL file at PATH,
-oldest first, skipping blank or malformed lines. An absent or unreadable
-file yields the empty list."
-  (catch #t
-    (lambda ()
-      (if (and (string? path) (file-exists? path))
-          (let ((raw (catch #t
-                       (lambda () (call-with-input-file path read-string))
-                       (lambda _ ""))))
-            (filter-map jsonl-line->turn (string-split raw #\newline)))
-          '()))
-    (lambda _ '())))
-
-(define (recent-session-files dir)
-  "Return up to 7 session JSONL file paths in DIR, most recently modified
-first. A missing or unreadable directory yields the empty list."
-  (catch #t
-    (lambda ()
-      (let* ((names
-              (catch 'system-error
-                (lambda ()
-                  (let ((stream (opendir dir)))
-                    (let loop ((accum '()))
-                      (let ((entry (readdir stream)))
-                        (if (eof-object? entry)
-                            (begin (closedir stream) (reverse accum))
-                            (loop (cons entry accum)))))))
-                (lambda _ '())))
-             (paths
-              (filter-map
-               (lambda (name)
-                 (and (string-suffix? ".jsonl" name)
-                      (let ((path (string-append dir "/" name)))
-                        (and (file-exists? path) path))))
-               names)))
-        (take
-         (sort paths
-               (lambda (a b)
-                 (> (stat:mtime (stat a))
-                    (stat:mtime (stat b)))))
-         (min 7 (length paths)))))
-    (lambda _ '())))
-
-(define (session-mtime-string path)
-  "Format the modification time of PATH as a local timestamp for the
-resume menu."
-  (catch #t
-    (lambda ()
-      (date->string
-       (time-utc->date (make-time time-utc 0 (stat:mtime (stat path))))
-       "~Y-~m-~d ~H:~M"))
-    (lambda _ "unknown")))
-
-;;;
-;;; Message Collapse State & Block Formatting
-;;;
-;; Message alists are immutable data: collapsing a message produces a new
-;; alist carrying a 'collapsed? flag, it never mutates the original.
-(define (replace-nth lst idx val)
-  "Return a copy of LST with the element at position IDX replaced by VAL."
-  (append (take lst idx) (list val) (drop lst (+ idx 1))))
-
-(define (message-collapsed? msg)
-  "Return #t when MSG carries a truthy 'collapsed? flag. An absent flag
-means the message is expanded."
-  (and (assoc-ref msg 'collapsed?) #t))
-
-(define (message-with-collapsed msg collapsed?)
-  "Return a new message alist with MSG's 'collapsed? flag set to COLLAPSED?.
-A false value removes the flag entirely, so an expanded message carries no
-'collapsed? key at all."
-  (if collapsed?
-      (prop-set msg 'collapsed? #t)
-      (alist-remove 'collapsed? msg)))
-
-(define (make-collapsed-message msg)
-  "Return a new message alist with MSG's 'collapsed? flag set to #t."
-  (message-with-collapsed msg #t))
-
-(define (message-toggle-collapsed msg)
-  "Return a new message alist with MSG's collapse state flipped."
-  (message-with-collapsed msg (not (message-collapsed? msg))))
-
-(define (default-collapsed-role? role)
-  "Return #t when a card tagged with ROLE collapses by default: reasoning
-('thought' / 'thinking') cards do, every other role stays expanded."
-  (let ((r (cond
-            ((string? role) role)
-            ((symbol? role) (symbol->string role))
-            (else (format #f "~a" (or role ""))))))
-    (or (string=? r "thought") (string=? r "thinking"))))
-
-(define (message-collapsible? msg)
-  "Return #t when MSG has renderable content or thoughts and can therefore
-be collapsed into a summary row."
-  (or (non-empty-string? (assoc-ref msg 'content))
-      (non-empty-string? (assoc-ref msg 'thoughts))))
-
-(define (default-collapse-message msg)
-  "Apply the default collapse policy to MSG: assistant reasoning collapses
-to a summary row by default. An explicit 'collapsed? flag (set by the user)
-is always preserved."
-  (cond
-   ((assoc 'collapsed? msg) msg)
-   ((and (non-empty-string? (assoc-ref msg 'thoughts))
-         (default-collapsed-role? "thought"))
-    (make-collapsed-message msg))
-   (else msg)))
-
-(define %collapsed-preview-chars 40)
-
-(define (thoughts-preview thoughts)
-  "Return a single-line preview of THOUGHTS trimmed to roughly
-%collapsed-preview-chars characters for a collapsed summary row."
-  (let* ((first-line (car (string-split (string-trim-both thoughts) #\newline)))
-         (clean (string-trim-both
-                 (string-map (lambda (c) (if (char=? c #\tab) #\space c))
-                             first-line))))
-    (if (> (string-length clean) %collapsed-preview-chars)
-        (substring clean 0 %collapsed-preview-chars)
-        clean)))
-
-(define (format-collapsed-summary-line label hidden-lines)
-  "Compose the dim summary text for a collapsed block: the role LABEL, the
-HIDDEN-LINES row count it hides, and the ctrl+e expand hint."
-  (format #f "~a (~a line~a) — ctrl+e to expand"
-          label hidden-lines (if (= hidden-lines 1) "" "s")))
-
-;; Role label text shown on the header line of each flat message block.
-(define (message-role-label role)
-  "Return the lowercase role label text for a message ROLE string."
-  (cond
-   ((string=? role "user") "you")
-   ((string=? role "assistant") "assistant")
-   ((string=? role "thought") "thinking")
-   ((string=? role "shell-cmd") "shell")
-   ((string=? role "shell-out") "shell output")
-   ((string=? role "scheme-in") "scheme")
-   ((string=? role "scheme-out") "scheme output")
-   ((or (string=? role "tool-call") (string=? role "tool")) "tool")
-   ((string=? role "tool-result") "tool result")
-   ((string=? role "error") "error")
-   ((string=? role "notice") "notice")
-   ((string=? role "steer") "steering")
-   (else "system")))
-
-(define (message-role->theme-role role)
-  "Map a message ROLE string to its semantic theme color role symbol."
-  (cond
-   ((string=? role "user") 'user)
-   ((string=? role "assistant") 'assistant)
-   ((string=? role "thought") 'thought)
-   ((string=? role "system") 'system)
-   ((string=? role "notice") 'notice)
-   ((string=? role "error") 'error)
-   ((or (string=? role "shell-cmd") (string=? role "shell-out")) 'shell)
-   ((or (string=? role "scheme-in") (string=? role "scheme-out")) 'scheme)
-   ((or (string=? role "tool-call") (string=? role "tool")) 'tool-call)
-   ((string=? role "tool-result") 'tool-result)
-   ((string=? role "steer") 'accent)
-   (else 'system)))
-
-;; Content-derived label for system messages, replacing the old emoji badges.
-(define (system-message-label content)
-  "Pick the lowercase label text for a system message from CONTENT."
-  (cond
-   ((or (string-contains content "MCP Server")
-        (string-prefix? "Active Model:" content))
-    "mcp servers")
-   ((string-contains content "Configuration") "configuration")
-   ((string-contains content "Guardrail") "guardrails")
-   ((string-contains content "Context Statistics") "context")
-   ((string-contains content "Features & Architecture") "features")
-   ((string-contains content "Help & Commands") "help")
-   ((string-contains content "Test Suite") "tests")
-   ((string-contains content "ReAct") "react")
-   ((or (string-contains content "Journal")
-        (string-contains content "Checkpoint")
-        (string-contains content "checkpoint"))
-    "journal")
-   (else "system")))
-
-;; Helper to wrap lines into a flat block descriptor
-(define (make-block-entry label theme-role lines)
-  "Turn wrapped LINES into flat block rows: one block-label header row
-carrying LABEL and THEME-ROLE, then one block-body row per line. Callers
-append the single blank spacer row between messages."
-  (if (null? lines)
-      '()
-      (cons (list "block-label" label theme-role)
-            (map (lambda (l) (list "block-body" theme-role l)) lines))))
-
-(define (message-block-label role content)
-  "Return the label text for the block header of a message with ROLE and
-CONTENT: system messages derive their label from the content, every other
-role from the role itself."
-  (if (string=? role "system")
-      (system-message-label content)
-      (message-role-label role)))
-
-;; Format a single message entry into flat block structure rows
-(define (format-message-entry msg content-width)
-  "Format MSG into flat block rows for a viewport CONTENT-WIDTH wide: a
-role label line, body lines, and one trailing blank spacer row. Collapsed
-messages (truthy 'collapsed? flag and collapsible content) render a single
-block-summary line instead of the full block, except assistant messages
-whose thoughts collapse to a summary line while their content block stays
-visible."
-  (let*
-      ((role-val (assoc-ref msg 'role))
-       (role
-         (cond
-           ((string? role-val) role-val)
-           ((symbol? role-val) (symbol->string role-val))
-           (else "system")))
-       (raw-content (or (assoc-ref msg 'content) ""))
-       (content
-         (if (string? raw-content)
-           raw-content
-           (format #f "~a" raw-content)))
-       (raw-thoughts (assoc-ref msg 'thoughts))
-       (thoughts
-         (and raw-thoughts
-              (if (string? raw-thoughts)
-                raw-thoughts
-                (format #f "~a" raw-thoughts)))))
-    (cond
-      ((and (message-collapsed? msg) (message-collapsible? msg))
-        (format-collapsed-message-rows msg role content thoughts content-width))
-      ((string=? role "assistant")
-        (let*
-            ((th-block
-               (if (non-empty-string? thoughts)
-                 (make-block-entry "thinking"
-                                   'thought
-                                   (wrap-text (string-trim-both thoughts) content-width))
-                 '()))
-             (ct-block
-               (if (non-empty-string? content)
-                 (make-block-entry "assistant"
-                                   'assistant
-                                   (wrap-text content content-width))
-                 '())))
-          (append
-            (if (and (null? th-block) (null? ct-block))
-              (make-block-entry "assistant"
-                                'assistant
-                                (wrap-text
-                                  (if (string-null? content)
-                                    "(empty response)"
-                                    content)
-                                  content-width))
-              (append th-block ct-block))
-            (list (list "spacer" "")))))
-      (else
-        (let*
-            ((theme-role (message-role->theme-role role))
-             (label (message-block-label role content))
-             (text (if (string=? role "user") (string-trim-both content) content)))
-          (append
-            (make-block-entry label theme-role (wrap-text text content-width))
-            (list (list "spacer" ""))))))))
-
-;; Rows for a collapsed message: one block-summary line (plus the visible
-;; assistant content block when only the reasoning collapses).
-(define (format-collapsed-message-rows msg role content thoughts content-width)
-  "Return the block rows for collapsed MSG with pre-normalized ROLE, CONTENT
-and THOUGHTS fields, followed by the trailing spacer row. The summary
-reports the number of hidden block rows and the ctrl+e expand hint."
-  (cond
-    ((and (string=? role "assistant") (non-empty-string? thoughts))
-      (let*
-          ((th-block
-             (make-block-entry "thinking"
-                               'thought
-                               (wrap-text (string-trim-both thoughts) content-width)))
-           (hidden (max 0 (- (length th-block) 1)))
-           (summary-row
-             (list "block-summary" 'thought
-                   (format-collapsed-summary-line "thinking" hidden)))
-           (ct-block
-             (if (non-empty-string? content)
-               (make-block-entry "assistant"
-                                 'assistant
-                                 (wrap-text content content-width))
-               '())))
-        (append (list summary-row) ct-block (list (list "spacer" "")))))
-    (else
-      (let*
-          ((theme-role (message-role->theme-role role))
-           (label (message-block-label role content))
-           (block (make-block-entry label theme-role (wrap-text content content-width)))
-           (hidden (length block)))
-        (if (null? block)
-          (list (list "spacer" ""))
-          (append
-            (list (list "block-summary" theme-role
-                        (format-collapsed-summary-line label hidden)))
-            (list (list "spacer" ""))))))))
-
-;;;
-;;; Formatted-Row Cache (incremental rendering)
-;;;
-(define-record-type <row-cache>
-                    (%make-row-cache table width)
-                    row-cache?
-                    (table row-cache-table set-row-cache-table!)
-                    (width row-cache-width set-row-cache-width!))
-
-(define (make-row-cache)
-  "Create an empty formatted-row cache for the message renderer."
-  (%make-row-cache (make-hash-table 63) #f))
-
-(define (row-cache-rows cache msg content-width)
-  "Return the formatted block rows of MSG at CONTENT-WIDTH, memoized in
-CACHE per message object (identity-keyed): rendering an unchanged
-transcript costs O(new messages) instead of re-wrapping the whole
-history every frame. Streaming updates and collapse toggles replace
-message objects, so they naturally miss and re-format; a CONTENT-WIDTH
-change (terminal resize) clears the cache wholesale. Evicted messages
-are dropped with ROW-CACHE-PRUNE!."
-  (unless (eq? (row-cache-width cache) content-width)
-    (set-row-cache-width! cache content-width)
-    (hash-clear! (row-cache-table cache)))
-  (or (hashq-ref (row-cache-table cache) msg)
-      (let ((rows (format-message-entry msg content-width)))
-        (hashq-set! (row-cache-table cache) msg rows)
-        rows)))
-
-(define (row-cache-prune! cache messages)
-  "Drop cache entries whose message objects are no longer in MESSAGES.
-The react streaming placeholder is replaced with a fresh object every
-delta, so without pruning a long streaming run grows the cache
-without bound; pruning keeps it proportional to the live transcript."
-  (let ((live (make-hash-table 31)))
-    (for-each (lambda (m) (hashq-set! live m #t)) messages)
-    (let ((kept (make-hash-table 63)))
-      (hash-for-each (lambda (k v)
-                       (when (hashq-ref live k)
-                         (hashq-set! kept k v)))
-                     (row-cache-table cache))
-      (set-row-cache-table! cache kept))))
-
-;;;
-;;; Interactive Menu Model
-;;;
-;; Pure data model for the interactive menu pop-ups (the /config, /model and
-;; /endpoint flows). A menu is a plain record of a title, an item list, and
-;; a selected index; items carry their actions as data — a symbol or a small
-;; (tag . value) pair — so the model stays pure and testable without any
-;; curses or handler wiring.
-(define %menu-max-visible 12)
-
-(define-record-type <menu>
-  (%make-menu title items selected-index)
-  menu?
-  (title menu-title)
-  (items menu-items)
-  (selected-index menu-selected-index))
-
-(define (normalize-menu-item item)
-  "Coerce raw ITEM into canonical ((label . description) . action) form.
-Accepts a head that is a (label . description) pair or a bare label, with
-the action data carried in the tail."
-  (let* ((head (if (pair? item) (car item) item))
-         (label (if (pair? head) (car head) head))
-         (desc (if (pair? head) (cdr head) #f))
-         (action (if (pair? item) (cdr item) #f)))
-    (cons (cons (ensure-string label) (ensure-string (or desc ""))) action)))
-
-(define* (make-menu title items #:key (selected-index 0))
-  "Create a menu titled TITLE from ITEMS, each of the form
-((label . description) . action), with SELECTED-INDEX preselected. The
-index is clamped into the valid range and the title coerced to a string."
-  (let* ((norm-items (map normalize-menu-item (if (list? items) items '())))
-         (count (length norm-items))
-         (idx (min (max 0 selected-index) (max 0 (- count 1)))))
-    (%make-menu (ensure-string (or title "Menu")) norm-items idx)))
-
-(define (menu-count menu)
-  "Return the number of items in MENU."
-  (length (menu-items menu)))
-
-(define (menu-move menu delta)
-  "Return a new MENU with the selection moved by DELTA positions, wrapping
-around at both ends. Empty menus are returned unchanged."
-  (let ((count (menu-count menu)))
-    (if (= count 0)
-        menu
-        (let ((m (remainder (+ (menu-selected-index menu) delta) count)))
-          (%make-menu (menu-title menu)
-                      (menu-items menu)
-                      (if (< m 0) (+ m count) m))))))
-
-(define (menu-selected-item menu)
-  "Return the currently selected item of MENU, or #f when it is empty."
-  (let ((count (menu-count menu)))
-    (if (= count 0)
-        #f
-        (list-ref (menu-items menu)
-                  (min (max 0 (menu-selected-index menu)) (- count 1))))))
-
-(define (menu-visible-slice menu max-visible)
-  "Return (values visible-items offset): the window of at most MAX-VISIBLE
-items of MENU positioned so the selected item stays on screen. OFFSET is
-the index of the first returned item within the full item list, for scroll
-indicators. Menus that fit return every item with offset 0."
-  (let* ((items (menu-items menu))
-         (count (length items))
-         (cap (max 1 max-visible))
-         (sel (min (max 0 (menu-selected-index menu)) (max 0 (- count 1)))))
-    (if (<= count cap)
-        (values items 0)
-        (let ((start (min (max 0 (- (+ sel 1) cap)) (- count cap))))
-          (values (take (drop items start) cap) start)))))
-
-(define (menu-item-label item)
-  "Return the label string of menu ITEM."
-  (if (and (pair? item) (pair? (car item))) (ensure-string (caar item)) ""))
-
-(define (menu-item-description item)
-  "Return the description string of menu ITEM."
-  (if (and (pair? item) (pair? (car item))) (ensure-string (cdar item)) ""))
-
-(define (menu-item-action item)
-  "Return the action data carried by menu ITEM (a symbol, a small pair, or
-other plain data); #f when the item carries none."
-  (if (pair? item) (cdr item) #f))
-
-;; Short descriptions for the built-in themes shown in the Theme menu.
-(define %theme-descriptions
-  '(("badb-dark" . "Cyan & green on black (default)")
-    ("midnight" . "Deep blue night palette")
-    ("nord" . "Nord-inspired cool blues")
-    ("solarized-dark" . "Solarized dark warm tones")
-    ("paper" . "Light paper-like scheme")
-    ("mono" . "Monochrome, no colors")
-    ("tokyo-night" . "Blue-heavy modern night theme")
-    ("tokyo-night-storm" . "Tokyo Night, deeper and muted")
-    ("tokyo-night-day" . "Tokyo Night light variant")
-    ("catppuccin-mocha" . "Pastel dark standard")
-    ("catppuccin-latte" . "Pastel light counterpart")
-    ("gruvbox-dark" . "Warm retro groove")
-    ("gruvbox-light" . "Daytime groove")
-    ("dracula" . "The famous purple-dark theme")
-    ("kanagawa" . "Japanese wave palette")
-    ("rose-pine" . "Soft sunset pastels")
-    ("everforest-dark" . "Calm forest greens")
-    ("monokai" . "Classic editor dark")
-    ("onedark" . "Atom editor classic")))
-
-;; Guardrail policy levels with short descriptions for the Guardrail menu.
-(define %guardrail-levels
-  '((disabled . "No guardrail restrictions")
-    (permissive . "Ask only on high-risk commands")
-    (cautious . "Deny destructive, ask mutations (default)")
-    (strict . "Deny dangerous, ask for everything")
-    (paranoid . "Deny all state mutations")))
-
-;;;
-;;; Model Auto-Detection & Live Model Menu Helpers
-;;;
-(define (detect-model-decision cur-model detected-model error)
-  "Pure adopt/detect decision policy for startup model detection.
-Return (values new-model notice-kind):
-  'skipped      CUR-MODEL is a specific model: keep it, skip detection.
-  'adopted      DETECTED-MODEL becomes the new model.
-  'failed       detection errored (ERROR describes the failure).
-  'unavailable  detection succeeded but found no model.
-NEW-MODEL is #f for the failed and unavailable outcomes."
-  (cond
-   ((not (generic-model-name? cur-model)) (values cur-model 'skipped))
-   (error (values #f 'failed))
-   (detected-model (values detected-model 'adopted))
-   (else (values #f 'unavailable))))
-
-(define (build-model-menu-items model-ids active-model)
-  "Pure construction of live model menu items: one item per MODEL-ID in
-order, each carrying a (set-model . id) action, with ACTIVE-MODEL marked in
-its description, plus the trailing 'Set model...' manual entry item."
-  (append
-   (map
-    (lambda (id)
-      (cons (cons id
-                  (if (and (string? active-model)
-                           (string=? id active-model))
-                      "active"
-                      "available"))
-            (cons 'set-model id)))
-    (if (list? model-ids) model-ids '()))
-   (list (cons (cons "Set model..." "Type a model name manually")
-               'prefill-model))))
-
-;;;
-;;; Main TUI Controller
-;;;
-(define (format-conversation-transcript messages)
-        "Render MESSAGES (the TUI conversation alist with role/content/thoughts
-entries) as a plain-text transcript: one block per message with a role
-header, an optional thinking section, and the content. Pure - no I/O."
-        (let
-            ((blocks
-               (map
-                 (lambda (msg)
-                   (let*
-                       ((role
-                          (let ((r (assoc-ref msg 'role)))
-                            (cond
-                              ((string? r) r)
-                              ((symbol? r) (symbol->string r))
-                              (else "system"))))
-                        (content
-                          (let ((c (assoc-ref msg 'content)))
-                            (cond
-                              ((string? c) c)
-                              ((not c) "")
-                              (else (format #f "~a" c)))))
-                        (thoughts
-                          (let ((t (assoc-ref msg 'thoughts))) (and (string? t) (not (string-null? t)) t))))
-                     (string-append "=== "
-                                    (string-upcase role)
-                                    " ===\n"
-                                    (if thoughts
-                                      (string-append "[thinking]\n" thoughts "\n\n")
-                                      "")
-                                    (if (string-null? content)
-                                      ""
-                                      (string-append content "\n"))
-                                    "\n")))
-                 messages)))
-          (string-append ";; badb conversation transcript\n" (string-join blocks ""))))
-
-;;;
-;;; Kernel-Owned Spec Gate Tools (roadmap Phase 2/3 dogfood)
-;;;
-(define (spec-tool-format-failure failure)
-        "Render one parsed spec failure record (a string-keyed alist from
-the diagnostics JSON) as a single diagnostic line."
-        (format #f
-                "- ~a [kind: ~a] seed: ~a inputs: ~s exception: ~a\n"
-                (or (assoc-ref failure "name") "?")
-                (or (assoc-ref failure "kind") "?")
-                (or (assoc-ref failure "seed") "?")
-                (or (assoc-ref failure "inputs") '?)
-                (or (assoc-ref failure "exception") "?")))
-
-(define (spec-tool-lock spec-path feature-id)
-        "Kernel tool 'spec.lock': lock the authored spec at SPEC-PATH for
-FEATURE-ID into the kernel-owned locked spec store and return the
-locked copy path plus its SHA-256 spec-hash. Locking is how a
-contract becomes binding: the kernel re-reads the LOCKED copy at
-commit time, never the agent's working copy. The gate itself
-constrains the copy to (spec-gate-root)/specs/."
-        (catch #t
-          (lambda ()
-            (cond
-              ((not
-                 (and (string? spec-path)
-                      (not (string-null? (string-trim-both spec-path)))
-                      (string? feature-id)
-                      (not (string-null? (string-trim-both feature-id)))))
-                "Error: spec.lock requires non-empty string arguments spec-path and feature-id")
-              ((not (file-exists? spec-path))
-                (format #f "Error: spec file '~a' does not exist" spec-path))
-              ((not
-                 (catch #t
-                   (lambda ()
-                     (call-with-input-file spec-path
-                                           (lambda (_port)
-                                             #t)))
-                   (lambda _
-                     #f)))
-                (format #f "Error: spec file '~a' is not readable" spec-path))
-              (else
-                (let*
-                    ((hash (lock-spec spec-path feature-id)) (locked (locked-spec-path feature-id)))
-                  (format #f
-                          "Locked spec for feature '~a'.\nLocked copy: ~a\nSHA-256 spec-hash: ~a\nThe kernel re-reads the LOCKED copy at commit time; locking is how this contract became binding."
-                          feature-id
-                          locked
-                          hash)))))
-          (lambda (key . args)
-            (format #f "Error locking spec (~a): ~s" key args))))
-
-;; DEV-DEBT [ux-gap]: verifies only the locked FLAT spec (.badb/specs/<fid>.scm);
-;; 'badb geis verify <bundle-fid>' never falls back to verify-locked-geis-bundle and
-;; can replay a stale flat lock. Use 'geis verify --all' for bundle contracts.
-(define (spec-tool-verify feature-id)
-        "Kernel tool 'spec.verify': replay the LOCKED spec copy for
-FEATURE-ID in a disposable kernel subprocess and return the verdict,
-spec-hash, summary counts, and failure diagnostics. The verdict comes
-only from kernel subprocess replay of the locked copy, never from
-agent self-report, and the gate fails closed on any spawn, timeout,
-or parse failure."
-        (if (and (string? feature-id) (not (string-null? (string-trim-both feature-id))))
-          (let*
-              ((result (verify-locked-spec feature-id))
-               (verdict (ensure-string (assoc-ref result 'verdict)))
-               (failures (assoc-ref result 'failures)))
-            (apply string-append
-                   (append
-                     (list
-                       (format #f
-                               "Kernel replay verdict: ~a for feature '~a'.\n"
-                               (string-upcase verdict)
-                               feature-id)
-                       (format #f "spec-hash: ~a\n" (or (assoc-ref result 'spec-hash) "none"))
-                       (format #f
-                               "summary: total=~a passed=~a failed=~a\n"
-                               (or (assoc-ref result 'summary-total) "?")
-                               (or (assoc-ref result 'summary-passed) "?")
-                               (or (assoc-ref result 'summary-failed) "?"))
-                       (format #f "seed: ~a\n" (ensure-string (assoc-ref result 'seed)))
-                       (format #f
-                               "exit-status: ~a signal: ~a timed-out: ~a\n"
-                               (or (assoc-ref result 'exit-status) "none")
-                               (or (assoc-ref result 'signal) "none")
-                               (assoc-ref result 'timed-out?))
-                       (format #f "reason: ~a\n" (ensure-string (assoc-ref result 'reason)))
-                       "Verdicts come only from kernel subprocess replay of the LOCKED copy; the kernel re-reads it at commit time.\n")
-                     (if (or (not failures) (null? failures))
-                       (list "failures: none\n")
-                       (cons "failures:\n" (map spec-tool-format-failure failures))))))
-          "Error: spec.verify requires a non-empty string feature-id"))
-
-(define (spec-tool-list-locked-specs)
-        "Return the sorted locked spec file names in the kernel locked-spec
-store directory, or the empty list when the store does not exist yet."
-        (let ((dir (spec-gate-dir)))
-          (if (file-exists? dir)
-            (let ((d (opendir dir)))
-              (let loop
-                ((names '()))
-                (let
-                    ((entry
-                       (catch #t
-                         (lambda ()
-                           (readdir d))
-                         (lambda _
-                           #f))))
-                  (cond
-                    ((or (not entry) (eof-object? entry)) (closedir d) (sort names string<?))
-                    ((string-suffix? ".scm" entry) (loop (cons entry names)))
-                    (else (loop names))))))
-            '())))
-
-(define (spec-tool-status . maybe-feature-id)
-        "Kernel tool 'spec.status': list the locked specs in the kernel
-locked-spec store with their recomputed SHA-256 hashes and, when a
-FEATURE-ID is supplied, report whether that feature has a locked
-spec. The kernel re-reads the LOCKED copies at commit time; locking
-is how a contract becomes binding."
-        (let*
-            ((raw-fid (and (pair? maybe-feature-id) (car maybe-feature-id)))
-             (feature-id
-               (and (string? raw-fid) (not (string-null? (string-trim-both raw-fid))) raw-fid))
-             (dir (spec-gate-dir))
-             (names (spec-tool-list-locked-specs)))
-          (apply string-append
-                 (append
-                   (list (format #f "Locked spec store: ~a\n" dir)
-                         (if (null? names)
-                           "No locked specs yet.\n"
-                           (format #f
-                                   "~a locked spec~a:\n"
-                                   (length names)
-                                   (if (= (length names) 1)
-                                     ""
-                                     "s"))))
-                   (map
-                     (lambda (name)
-                       (let*
-                           ((path (string-append dir "/" name))
-                            (hash
-                              (catch #t
-                                (lambda ()
-                                  (sha256-hex (call-with-input-file path read-string)))
-                                (lambda _
-                                  "unreadable"))))
-                         (format #f
-                                 "  ~a  ~a  (~a)\n"
-                                 (substring name 0 (- (string-length name) 4))
-                                 hash
-                                 path)))
-                     names)
-                   (if feature-id
-                     (let ((locked (locked-spec-path feature-id)))
-                       (list
-                         (if (file-exists? locked)
-                           (format #f "Locked spec for feature '~a': present at ~a\n" feature-id locked)
-                           (format #f
-                                   "Locked spec for feature '~a': none (no locked copy at ~a)\n"
-                                   feature-id
-                                   locked))))
-                     '())))))
-
-(define (register-spec-tools! reg)
-        "Attach the kernel-owned spec gate tools to the kernel feature
-registry REG: spec.lock, spec.verify, and spec.status. The
-descriptions tell the agent that the kernel re-reads the LOCKED copy
-at commit time, that locking is how a contract becomes binding, and
-that verdicts come only from kernel subprocess replay."
-        (registry-attach! reg
-                          "spec.lock"
-                          (lambda (spec-path feature-id)
-                            (spec-tool-lock spec-path feature-id))
-                          '((description .
-                             "Lock the authored spec at spec-path for feature-id into the kernel-owned locked spec store; returns the locked copy path and its SHA-256 spec-hash. Locking is how a contract becomes binding: the kernel re-reads the LOCKED copy at commit time, never the agent's working copy.")
-                            (parameters .
-                             ((type . "object")
-                              (properties .
-                               ((spec-path .
-                                 ((type . "string") (description . "Path to the authored spec file to lock")))
-                                (feature-id .
-                                 ((type . "string") (description . "Feature identifier the spec gates")))))
-                              (required . #("spec-path" "feature-id"))))))
-        (registry-attach! reg
-                          "spec.verify"
-                          (lambda (feature-id)
-                            (spec-tool-verify feature-id))
-                          '((description .
-                             "Ask the kernel to replay the LOCKED spec copy for feature-id in a disposable subprocess; returns the verdict, spec-hash, summary counts, and failure diagnostics. Verdicts come only from kernel subprocess replay of the locked copy, never from agent self-report; the gate fails closed.")
-                            (parameters .
-                             ((type . "object")
-                              (properties .
-                               ((feature-id .
-                                 ((type . "string")
-                                  (description . "Feature identifier whose locked spec to replay")))))
-                              (required . #("feature-id"))))))
-        (registry-attach! reg
-                          "spec.status"
-                          (lambda args
-                            (apply spec-tool-status args))
-                          '((description .
-                             "List the locked specs in the kernel locked-spec store with recomputed SHA-256 hashes; with optional feature-id, report whether that feature has a locked spec. The kernel re-reads the LOCKED copies at commit time.")
-                            (parameters .
-                             ((type . "object")
-                              (properties .
-                               ((feature-id .
-                                 ((type . "string")
-                                  (description . "Optional feature identifier to check for a locked spec")))))
-                              (required . #())))))
-        (registry-attach! reg
-                          "spec.synthesize"
-                          (lambda*
-                            (feature-id #:optional target-path spec-path)
-                            (catch #t
-                              (lambda ()
-                                (let*
-                                    ((synth-mod
-                                       (false-if-exception (resolve-module '(geasa runtimes-synthesis plugin))))
-                                     (resolve-role (module-ref synth-mod 'resolve-synthesis-role))
-                                     (synth-fn (module-ref synth-mod 'run-synthesis-workflow))
-                                     ;; The synthesis agent role (model + persona
-                                     ;; from the persona geasa) resolved from the
-                                     ;; project config at call time.
-                                     (role
-                                       (catch #t
-                                         (lambda ()
-                                           (resolve-role (load-config)))
-                                         (lambda _
-                                           #f)))
-                                     (res
-                                       (synth-fn feature-id
-                                                 #:target-path
-                                                 target-path
-                                                 #:spec-path
-                                                 spec-path
-                                                 #:model
-                                                 (and role (assoc-ref role 'model))
-                                                 #:persona
-                                                 (and role (assoc-ref role 'persona-text))
-                                                 #:env
-                                                 (if role
-                                                   ((module-ref synth-mod 'synthesis-env-alist) role)
-                                                   '())
-                                                 #:llm-endpoint
-                                                 (if role
-                                                   (assoc-ref ((module-ref synth-mod 'synthesis-llm-args) role) 'llm-endpoint)
-                                                   #f)
-                                                 #:llm-api-key
-                                                 (if role
-                                                   (assoc-ref ((module-ref synth-mod 'synthesis-llm-args) role) 'llm-api-key)
-                                                   #f)))
-                                     (status (assoc-ref res 'status))
-                                     (wf-result (assoc-ref res 'result)))
-                                  (let*
-                                      ((target
-                                         (or target-path ((module-ref synth-mod 'default-synthesis-target) feature-id)))
-                                       (install-report
-                                         (if (string=? (or status "") "success")
-                                           ((module-ref synth-mod 'install-synthesized-bundle!) feature-id target)
-                                           #f)))
-                                    (format #f
-                                            "Sema plugin synthesis ~a for feature '~a'.\n~a~a~a"
-                                            status
-                                            feature-id
-                                            (if wf-result
-                                              (scm->json-string wf-result)
-                                              (or (assoc-ref res 'stdout) ""))
-                                            (if install-report
-                                              (format #f
-                                                      "\nInstalled geis for project: ~a verdict: ~a"
-                                                      (or (assoc-ref install-report 'feature-id) feature-id)
-                                                      (or (assoc-ref install-report 'verify-verdict)
-                                                          (assoc-ref install-report 'install-status)
-                                                          "?"))
-                                              "")
-                                            (if (string=? (or status "") "success")
-                                              ""
-                                              (format #f
-                                                      "\n[guidance] synthesis did not converge. Do NOT keep re-running synthesize: after at most ONE more attempt, write the plugin directly with write_file (the contract stays locked), then verify with the spec gates. Re-running synthesize repeatedly burns budget without progress."))))))
-                              (lambda (k . a)
-                                (format #f "Error during synthesis (~a): ~s" k a))))
-                          '((description .
-                             "Run the Sema plugin synthesis workflow for feature-id against its locked contract specification; iteratively synthesizes the Guile module from counterexamples and triggers kernel commit + hot-attach.")
-                            (parameters .
-                             ((type . "object")
-                              (properties .
-                               ((feature-id .
-                                 ((type . "string") (description . "Feature identifier to synthesize")))
-                                (target-path .
-                                 ((type . "string")
-                                  (description . "Optional path to target Guile module implementation file")))
-                                (spec-path .
-                                 ((type . "string")
-                                  (description . "Optional path to contract specification file")))))
-                              (required . #("feature-id"))))))
-        reg)
-
-(define (build-geis-add-prompt desc)
-  "Construct a structured prompt instructing the agent to author a contract
-specification, lock it via spec.lock, synthesize it via spec.synthesize, and
-verify hot-attachment."
-  (format #f
-"Please implement and dynamically attach a new feature to the badb harness: ~a
-
-Follow the contract-gated dynamic synthesis workflow:
-1. Design and write a declarative contract specification in Scheme (SRFI-64) defining the feature requirements, exported procedures, invariants, and test cases. Save this to a file under 'specs/' (e.g. 'specs/<feature-id>.spec.scm').
-2. Lock the specification into the kernel-owned spec store using the 'spec.lock' tool with feature-id and spec-path. (Locking makes the contract binding; the kernel re-reads the locked copy at commit time).
-3. Synthesize the Guile module implementation using the 'spec.synthesize' tool for your feature-id (which iteratively runs the Sema plugin-synthesis workflow with counterexample feedback until all contracts pass, then commits and hot-attaches the module).
-4. Verify the newly attached feature is listed in the kernel registry (e.g. via 'spec.status' or kernel inspection) and summarize what capabilities were attached."
-          desc))
-
-;;;
-;;; TUI Kernel Tool Registration, Menu Builders & Subcommand Formatters
-;;;
-(define (exec-shell-tool-impl cmd-or-arg)
-  "Execute a shell command passed as a string or tool-call argument alist."
-  (let ((cmd (cond
-              ((string? cmd-or-arg) cmd-or-arg)
-              ((and (pair? cmd-or-arg) (pair? (car cmd-or-arg)))
-               (or (assoc-ref cmd-or-arg "command")
-                   (assoc-ref cmd-or-arg 'command)
-                   (assoc-ref cmd-or-arg "cmd")
-                   (assoc-ref cmd-or-arg 'cmd)
-                   (cdar cmd-or-arg)))
-              (else (object->string cmd-or-arg)))))
-    (call-with-values
-      (lambda () (execute-shell-command cmd))
-      (lambda (out exit-val err)
-        (if err
-            (format #f "Error: ~a" err)
-            (format #f "[exit ~a]\n~a" exit-val out))))))
-
-(define %read-file-default-limit 800)
-
-(define %read-file-max-chars-per-line 400)
-
-(define %read-file-max-chars 16000)
-
-(define*
-  (builtin-read-file path #:optional (offset 0) (limit #f))
-  "Read a bounded, line-based slice of the file at PATH. OFFSET is a 0-based
-line number (default 0) and LIMIT caps the number of lines returned
-(default 800). Returns a header reporting the total line count, the
-requested slice with long lines truncated to ~400 chars, and a footer
-showing what was elided so the model can continue with a further offset.
-Module-level so the contract spec can exercise it without booting the TUI."
-  (catch #t
-    (lambda ()
-      (if (not (file-exists? path))
-        (format #f "Error: file '~a' does not exist" path)
-        (let*
-            ((text (call-with-input-file path read-string))
-             (raw-lines (string-split text #\newline))
-             (trailing-newline? (and (pair? raw-lines) (string-null? (last raw-lines))))
-             (total
-               (- (length raw-lines)
-                  (if trailing-newline?
-                    1
-                    0)))
-             (start
-               (max 0
-                    (if (number? offset)
-                      (inexact->exact (floor offset))
-                      0)))
-             (lim
-               (if (and (number? limit) (> limit 0))
-                 (inexact->exact (floor limit))
-                 %read-file-default-limit))
-             (end (min total (+ start lim))))
-          (if (>= start total)
-            (format #f
-                    "[file ~a - ~a total lines - offset ~a is at or past end of file]"
-                    path
-                    total
-                    start)
-            (let loop
-              ((i start) (acc '()) (chars 0))
-              (cond
-                ((or (>= i end) (>= chars %read-file-max-chars))
-                  (let*
-                      ((shown (reverse acc))
-                       (last-shown
-                         (if (null? shown)
-                           start
-                           (+ i -1))))
-                    (string-append
-                      (format #f
-                              "[file ~a - ~a total lines - showing lines ~a..~a]~%"
-                              path
-                              total
-                              start
-                              last-shown)
-                      (string-join shown "\n")
-                      (if (>= end total)
-                        (format #f "~%[end of file at line ~a of ~a]" total total)
-                        (format #f
-                                "~%[~a more lines elided - call read_file with offset=~a to continue (total ~a lines)]"
-                                (- total i)
-                                i
-                                total)))))
-                (else
-                  (let*
-                      ((line (list-ref raw-lines i))
-                       (trim
-                         (if
-                             (> (string-length line) %read-file-max-chars-per-line)
-                           (string-append
-                             (substring line 0 %read-file-max-chars-per-line)
-                             (format #f
-                                     "... [line ~a truncated: ~a of ~a chars]"
-                                     i
-                                     (string-length line)
-                                     (string-length line)))
-                           line)))
-                    (loop (+ i 1) (cons trim acc) (+ chars (string-length trim)))))))))))
-    (lambda (_k . a)
-      (format #f "Error reading file: ~s" a))))
-
-(define
-  (register-builtin-tui-tools! reg rollback-mgr verifier mcp-mgr get-llm-history)
-  "Register built-in autonomous agent tools, MCP kernel tools, and spec gate
-tools on REG."
-  (registry-attach! reg
-                    "read_file"
-                    (lambda (path offset limit)
-                      (builtin-read-file path offset limit))
-                    '((description .
-                       "Read a bounded slice of the file at PATH (line-based OFFSET and LIMIT; header shows the total line count; call again with a new offset to continue)")
-                      (parameters .
-                       ((type . "object")
-                        (properties .
-                         ((path . ((type . "string") (description . "Path to the file to read")))
-                          (offset .
-                           ((type . "integer")
-                            (description . "0-based line number to start from (default 0)")))
-                          (limit .
-                           ((type . "integer")
-                            (description . "Maximum number of lines to return (default 800)")))))
-                        (required . #("path"))))))
-  (registry-attach! reg
-                    "write_file"
-                    (lambda (path content)
-                      (catch #t
-                        (lambda ()
-                          (create-checkpoint! rollback-mgr
-                                              (format #f "pre-write: ~a" path)
-                                              #:files
-                                              (list path))
-                          (let
-                              ((v-res (verify-action verifier #:code content #:file path)))
-                            (if (assoc-ref v-res 'passed?)
-                              (begin
-                                (call-with-output-file path
-                                                       (lambda (p)
-                                                         (display content p)))
-                                (format #f
-                                        "Successfully wrote ~a characters to '~a'"
-                                        (string-length content)
-                                        path))
-                              (begin (rollback-latest! rollback-mgr)
-                                     (format #f "Write aborted: verification failed: ~s" (assoc-ref v-res 'failures))))))
-                        (lambda (_k . a)
-                          (format #f "Error writing file: ~s" a))))
-                    '((description . "Write CONTENT to a file at PATH")
-                      (parameters .
-                       ((type . "object")
-                        (properties .
-                         ((path . ((type . "string") (description . "File path to write")))
-                          (content . ((type . "string") (description . "Content to write")))))
-                        (required . #("path" "content"))))))
-  (registry-attach! reg
-                    "execute_command"
-                    exec-shell-tool-impl
-                    '((description . "Execute a shell command and return output and exit status")
-                      (parameters .
-                       ((type . "object")
-                        (properties .
-                         ((cmd . ((type . "string") (description . "Shell command to run")))))
-                        (required . #("cmd"))))))
-  (registry-attach! reg
-                    "bash"
-                    exec-shell-tool-impl
-                    '((description .
-                       "Execute a bash shell command and return stdout/stderr and exit code")
-                      (parameters .
-                       ((type . "object")
-                        (properties .
-                         ((command . ((type . "string") (description . "Bash command line")))))
-                        (required . #("command"))))))
-  (registry-attach! reg
-                    "sh"
-                    exec-shell-tool-impl
-                    '((description . "Execute a POSIX shell command and return output and exit code")
-                      (parameters .
-                       ((type . "object")
-                        (properties .
-                         ((command . ((type . "string") (description . "Shell command line")))))
-                        (required . #("command"))))))
-  (registry-attach! reg
-                    "checkpoint_create"
-                    (lambda (description)
-                      (let
-                          ((c (create-checkpoint! rollback-mgr (or description "agent-checkpoint"))))
-                        (format #f
-                                "Created checkpoint: ~a (~a) covering ~a workspace file(s) and the registry. Files outside the workspace directory are NOT captured."
-                                (checkpoint-id c)
-                                (checkpoint-description c)
-                                (length (checkpoint-files c)))))
-                    '((description .
-                       "Create a rollback checkpoint for current workspace files and registry. Only files under the workspace directory are captured; paths outside it are silently left out of the checkpoint.")
-                      (parameters .
-                       ((type . "object")
-                        (properties .
-                         ((description . ((type . "string") (description . "Checkpoint description")))))))))
-  (registry-attach! reg
-                    "checkpoint_rollback"
-                    (lambda* (#:optional id)
-                             (let
-                                 ((res
-                                    (if (and id (not (string-null? id)))
-                                      (rollback-to-checkpoint! rollback-mgr id)
-                                      (rollback-latest! rollback-mgr))))
-                               (format #f
-                                       "Rollback: ~a (restored ~a file(s), removed ~a file(s)). Only files captured by the checkpoint are restored; files outside the workspace were never captured."
-                                       (assoc-ref res 'status)
-                                       (length (or (assoc-ref res 'restored-files) '()))
-                                       (length (or (assoc-ref res 'removed-files) '())))))
-                    '((description .
-                       "Rollback to specified or latest checkpoint. Only files captured by the checkpoint (workspace files at creation time) are restored.")
-                      (parameters .
-                       ((type . "object")
-                        (properties . ((id . ((type . "string") (description . "Checkpoint ID")))))))))
-  (registry-attach! reg
-                    "run_tests"
-                    (lambda* (#:optional (cmd "./scripts/test"))
-                             (let
-                                 ((res (verify-test-suite #:command (or cmd "./scripts/test"))))
-                               (format #f
-                                       "Tests: ~a (exit ~a)\n~a"
-                                       (if (assoc-ref res 'passed?)
-                                         "PASS"
-                                         "FAIL")
-                                       (assoc-ref res 'exit-code)
-                                       (assoc-ref res 'output))))
-                    '((description . "Run project test suite and return verdict")
-                      (parameters .
-                       ((type . "object")
-                        (properties . ((cmd . ((type . "string") (description . "Test command")))))))))
-  (registry-attach! reg
-                    "history/summarize"
-                    (lambda ()
-                      (let
-                          ((summary (summarize-turns (get-llm-history)))
-                           (hist-file (getenv "BADB_HISTORY_FILE")))
-                        (if
-                            (and hist-file (not (string-null? hist-file)))
-                          (let
-                              ((file-summary (summarize-history-file hist-file)))
-                            (if file-summary
-                              (string-append summary "\n\n--- " hist-file " ---\n" file-summary)
-                              summary))
-                          summary)))
-                    '((description .
-                       "Summarize the current conversation: turn counts, token estimate, recent topics")
-                      (parameters . ((type . "object") (properties . ()) (required . #())))))
-  ;; Register MCP Kernel Features
-  (registry-attach! reg
-                    "mcp.list"
-                    (lambda ()
-                      (mcp-manager-list-servers mcp-mgr))
-                    '((description . "List all configured MCP servers and their status")))
-  (registry-attach! reg
-                    "mcp.start"
-                    (lambda (name)
-                      (mcp-manager-start-server! mcp-mgr name))
-                    '((description . "Start a configured MCP server by name")))
-  (registry-attach! reg
-                    "mcp.stop"
-                    (lambda (name)
-                      (mcp-manager-stop-server! mcp-mgr name))
-                    '((description . "Stop a running MCP server by name")))
-  (registry-attach! reg
-                    "mcp.add"
-                    (lambda (name cmd args)
-                      (mcp-manager-add-server! mcp-mgr name cmd args #:auto-start #t))
-                    '((description . "Add a new MCP server specification and persist to config")))
-  (registry-attach! reg
-                    "mcp.remove"
-                    (lambda (name)
-                      (mcp-manager-remove-server! mcp-mgr name))
-                    '((description . "Remove an MCP server from configuration and stop it")))
-  (registry-attach! reg
-                    "mcp.tools"
-                    (lambda* (#:optional server-name) (mcp-manager-list-tools mcp-mgr server-name))
-                    '((description . "List available tools discovered from running MCP servers")))
-  (registry-attach! reg
-                    "mcp.call"
-                    (lambda
-                        (name-or-server tool-or-args . maybe-args)
-                      (if (pair? maybe-args)
-                        (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args (car maybe-args))
-                        (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args)))
-                    '((description . "Call a tool on an MCP server")))
-  ;; Register kernel-owned spec gate tools (Phase 2 dogfood)
-  (register-spec-tools! reg))
-
-(define (auto-start-mcp-servers! cfg mcp-mgr)
-  "Auto-start configured MCP servers that specify auto-start: #t."
-  (catch #t
-    (lambda ()
-      (for-each
-        (lambda (entry)
-          (let* ((name (if (pair? entry)
-                           (if (pair? (car entry))
-                               (assoc-ref entry 'name)
-                               (car entry))
-                           #f))
-                 (spec (if (pair? entry)
-                           (if (pair? (car entry))
-                               entry
-                               (cdr entry))
-                           '()))
-                 (auto? (or (assoc-ref spec 'auto-start) (assoc-ref spec 'auto-start?))))
-            (when (and name auto?)
-              (catch #t
-                (lambda () (mcp-manager-start-server! mcp-mgr name))
-                (lambda _ #f)))))
-        (badb-config-mcp-servers cfg)))
-    (lambda _ #f)))
-
-;; DEV-DEBT [complexity]: cyclomatic ~41 / nesting 18 (ast_complexity_metrics).
-(define (execute-mcp-subcommand! mcp-mgr arg add-sys-msg! add-err-msg!)
-  "Dispatch /mcp subcommands (list, start, stop, restart, add, remove, tools)."
-  (let* ((tokens (split-words arg))
-         (subcmd (if (null? tokens) "list" (car tokens)))
-         (rest (if (null? tokens) '() (cdr tokens))))
-    (cond
-     ((or (string=? subcmd "list") (string=? subcmd "ls") (string-null? arg))
-      (let ((servers (mcp-manager-list-servers mcp-mgr)))
-        (if (null? servers)
-            (add-sys-msg!
-             "No MCP servers configured.\nUse /mcp add <name> <cmd> [args...] to register one.")
-            (let ((desc (map (lambda (s)
-                               (let* ((name (assoc-ref s 'name))
-                                      (cmd (assoc-ref s 'command))
-                                      (s-args (or (assoc-ref s 'args) '()))
-                                      (running? (assoc-ref s 'running?))
-                                      (pid (assoc-ref s 'pid))
-                                      (tools (assoc-ref s 'tools))
-                                      (t-count (if (list? tools) (length tools) 0))
-                                      (auto? (assoc-ref s 'auto-start))
-                                      (auto-str (if auto? " (auto-start)" ""))
-                                      (status (if running?
-                                                  (format #f "[RUNNING pid:~a tools:~a]" pid t-count)
-                                                  "[STOPPED]")))
-                                 (format #f "• ~a ~a~a\n  command: ~a ~a"
-                                         name status auto-str cmd (string-join s-args " "))))
-                             servers)))
-              (add-sys-msg! (string-append "Configured MCP Servers:\n" (string-join desc "\n")))))))
-     ((string=? subcmd "start")
-      (let ((name (and (pair? rest) (car rest))))
-        (if (or (not name) (string=? name "all"))
-            (let* ((servers (mcp-manager-list-servers mcp-mgr))
-                   (results (map (lambda (s)
-                                   (let ((s-name (assoc-ref s 'name))
-                                         (running? (assoc-ref s 'running?)))
-                                     (if running?
-                                         (format #f "• ~a: already running" s-name)
-                                         (call-with-values
-                                           (lambda () (mcp-manager-start-server! mcp-mgr s-name))
-                                           (lambda (_client tools err)
-                                             (if err
-                                                 (format #f "• ~a: error (~a)" s-name err)
-                                                 (format #f "• ~a: started (~a tools)" s-name (length tools))))))))
-                                 servers)))
-              (add-sys-msg! (string-append "Starting MCP servers:\n" (string-join results "\n"))))
-            (call-with-values
-              (lambda () (mcp-manager-start-server! mcp-mgr name))
-              (lambda (_client tools err)
-                (if err
-                    (add-err-msg! err)
-                    (add-sys-msg!
-                     (format #f "Started MCP server '~a' (~a tools available)." name (length tools)))))))))
-     ((string=? subcmd "stop")
-      (let ((name (and (pair? rest) (car rest))))
-        (if (or (not name) (string=? name "all"))
-            (let ((servers (mcp-manager-list-servers mcp-mgr)))
-              (mcp-manager-stop-all! mcp-mgr)
-              (add-sys-msg! (format #f "Stopped all MCP servers (~a total)." (length servers))))
-            (if (mcp-manager-stop-server! mcp-mgr name)
-                (add-sys-msg! (format #f "Stopped MCP server '~a'." name))
-                (add-err-msg! (format #f "MCP server '~a' was not running." name))))))
-     ((string=? subcmd "restart")
-      (let ((name (and (pair? rest) (car rest))))
-        (if (or (not name) (string=? name "all"))
-            (begin
-              (mcp-manager-stop-all! mcp-mgr)
-              (let* ((servers (mcp-manager-list-servers mcp-mgr))
-                     (results (map (lambda (s)
-                                     (let ((s-name (assoc-ref s 'name)))
-                                       (call-with-values
-                                         (lambda () (mcp-manager-start-server! mcp-mgr s-name))
-                                         (lambda (_client tools err)
-                                           (if err
-                                               (format #f "• ~a: error (~a)" s-name err)
-                                               (format #f "• ~a: restarted (~a tools)" s-name (length tools)))))))
-                                   servers)))
-                (add-sys-msg! (string-append "Restarted MCP servers:\n" (string-join results "\n")))))
-            (begin
-              (mcp-manager-stop-server! mcp-mgr name)
-              (call-with-values
-                (lambda () (mcp-manager-start-server! mcp-mgr name))
-                (lambda (_client tools err)
-                  (if err
-                      (add-err-msg! (format #f "Failed to restart '~a': ~a" name err))
-                      (add-sys-msg!
-                       (format #f "Restarted MCP server '~a' (~a tools available)."
-                               name (length tools))))))))))
-     ((string=? subcmd "add")
-      (if (< (length rest) 2)
-          (add-err-msg! "Usage: /mcp add <name> <command> [args...]")
-          (let ((name (car rest)) (cmd (cadr rest)) (cmd-args (cddr rest)))
-            (mcp-manager-add-server! mcp-mgr name cmd cmd-args #:auto-start #t)
-            (add-sys-msg!
-             (format #f "Added MCP server '~a' (~a ~a).\nSaved to ~a."
-                     name cmd (string-join cmd-args " ") (default-local-config-path))))))
-     ((or (string=? subcmd "remove") (string=? subcmd "rm"))
-      (if (null? rest)
-          (add-err-msg! "Usage: /mcp remove <name>")
-          (let ((name (car rest)))
-            (if (mcp-manager-remove-server! mcp-mgr name)
-                (add-sys-msg! (format #f "Removed MCP server '~a'. Configuration updated." name))
-                (add-err-msg! (format #f "MCP server '~a' not found." name))))))
-     ((string=? subcmd "tools")
-      (let* ((target-server (and (pair? rest) (car rest)))
-             (tools (mcp-manager-list-tools mcp-mgr target-server)))
-        (if (null? tools)
-            (add-sys-msg!
-             (if target-server
-                 (format #f "No tools available from server '~a' (is it running?)." target-server)
-                 "No MCP tools available. Make sure servers are running with /mcp start <name>."))
-            (let ((desc (map (lambda (t)
-                               (format #f "• ~a (~a): ~a"
-                                       (assoc-ref t 'name)
-                                       (assoc-ref t 'server)
-                                       (or (assoc-ref t 'description) "no description")))
-                             tools)))
-              (add-sys-msg! (string-append "Discovered MCP Tools:\n" (string-join desc "\n")))))))
-     (else
-      (add-err-msg!
-       (format #f "Unknown /mcp subcommand '~a'. Valid: list, start, stop, restart, add, remove, tools"
-               subcmd))))))
-
-(define (config-recorded-models cfg)
-  "Collect the model names recorded in CFG: the models of every provider
-preset, deduplicated in declaration order."
-  (delete-duplicates
-   (append-map
-    (lambda (p)
-      (let ((raw (get-prop (cdr p) 'models #f)))
-        (cond
-         ((string? raw) (list raw))
-         ((list? raw)
-          (filter-map
-           (lambda (m)
-             (cond
-              ((string? m) m)
-              ((and (pair? m) (string? (car m))) (car m))
-              ((and (pair? m) (string? (cdr m))) (cdr m))
-              (else #f)))
-           raw))
-         (else '()))))
-    (badb-config-providers cfg))
-   equal?))
-
-(define (fetch-live-models client)
-  "Query CLIENT's /models listing. Returns (values ids error): IDS is the
-non-empty list of available model id strings or #f, ERROR the failure
-description or #f. Never throws."
-  (catch #t
-    (lambda ()
-      (call-with-values
-        (lambda () (list-models client))
-        (lambda (ids err)
-          (if (or err (null? ids))
-              (values #f (or err "no models listed on endpoint"))
-              (values ids #f)))))
-    (lambda (key . args)
-      (values #f (format #f "model list request failed (~a): ~s" key args)))))
-
-(define (build-live-or-recorded-model-menu-items client cfg cur-model)
-  "Build the model menu items: live models from CLIENT when available,
-otherwise CUR-MODEL plus models recorded in CFG provider presets, plus
-the trailing manual entry item."
-  (call-with-values
-    (lambda () (fetch-live-models client))
-    (lambda (live-ids _live-err)
-      (if live-ids
-          (build-model-menu-items live-ids cur-model)
-          (let ((known (delete-duplicates (cons cur-model (config-recorded-models cfg)) equal?)))
-            (append
-             (map (lambda (m)
-                    (cons (cons m (if (string=? m cur-model)
-                                      "current model"
-                                      "recorded in config"))
-                          (cons 'set-model m)))
-                  known)
-             (list (cons (cons "Set model..." "Type a model name manually") 'prefill-model))))))))
-
-(define (endpoint-menu-items-for-config cfg)
-  "Build the endpoint menu items: configured provider presets in CFG plus
-a manual entry item."
-  (append
-   (map (lambda (p)
-          (let ((name (ensure-string (car p))))
-            (cons (cons name (or (get-prop (cdr p) 'endpoint #f) "provider preset"))
-                  (cons 'switch-provider name))))
-        (badb-config-providers cfg))
-   (list (cons (cons "Set endpoint..." "Type an endpoint URL manually")
-               'prefill-endpoint))))
-
-(define (theme-menu-items)
-  "Build the theme menu items from the built-in theme list."
-  (map (lambda (name)
-         (cons (cons name (or (assoc-ref %theme-descriptions name) "Built-in color theme"))
-               (cons 'set-theme name)))
-       (all-theme-names)))
-
-(define (guardrail-menu-items)
-  "Build the guardrail level menu items."
-  (map (lambda (entry)
-         (cons (cons (symbol->string (car entry)) (cdr entry))
-               (cons 'set-guardrail (car entry))))
-       %guardrail-levels))
-
-(define (config-menu-items-for-state cfg cur-model cur-endpoint policy)
-  "Build the top-level config menu items with live state woven into descriptions."
-  (list
-   (cons (cons "Model" (format #f "Switch active model (~a)" cur-model))
-         'open-model-menu)
-   (cons (cons "Endpoint" (format #f "Switch endpoint (~a)" cur-endpoint))
-         'open-endpoint-menu)
-   (cons (cons "Temperature"
-               (format #f "Set sampling temperature (~a)" (badb-config-model-temperature cfg)))
-         'prefill-temperature)
-   (cons (cons "Theme"
-               (format #f "Choose UI color theme (~a)" (or (badb-config-ui-theme cfg) "default")))
-         'open-theme-menu)
-   (cons (cons "Guardrail"
-               (format #f "Set policy level (~a)" (guardrail-policy-level policy)))
-         'open-guardrail-menu)
-   (cons (cons "Reload" "Reload configuration from disk") 'config-reload)
-   (cons (cons "Save" "Save configuration to disk") 'config-save)))
-
-(define (format-config-summary cfg cur-model cur-endpoint cur-journal-path)
-  "Format the /config show status report."
-  (let* ((global-path (default-global-config-path))
-         (local-path (default-local-config-path))
-         (global? (file-exists? global-path))
-         (local? (file-exists? local-path))
-         (mcp-count (length (badb-config-mcp-servers cfg))))
-    (format #f
-            "badb Configuration:\n~
-            • Model: ~a\n~
-            • Endpoint: ~a\n~
-            • Temperature: ~a\n~
-            • Journal Path: ~a\n~
-            • Global Config: ~a (~a)\n~
-            • Local Config:  ~a (~a)\n~
-            • MCP Servers Configured: ~a"
-            cur-model
-            cur-endpoint
-            (badb-config-model-temperature cfg)
-            cur-journal-path
-            global-path
-            (if global? "active" "not found")
-            local-path
-            (if local? "active" "not found")
-            mcp-count)))
-
-(define (format-provider-presets provs)
-  "Format the list of configured provider presets for /provider."
-  (if (null? provs)
-      "No provider presets configured.\nDefine presets under (options (providers ...)) in .badb/config.scm."
-      (string-append "Configured Provider Presets:\n"
-                     (string-join
-                      (map (lambda (p)
-                             (format #f "• ~a -> ~a"
-                                     (car p)
-                                     (or (get-prop (cdr p) 'endpoint #f) "(no endpoint)")))
-                           provs)
-                      "\n")
-                     "\nUsage: /provider <name> to switch the active preset.")))
-
-(define (format-rules-and-tree workspace-dir)
-  "Format discovered project rules and workspace file tree for /rules."
-  (let* ((rules (discover-project-rules workspace-dir))
-         (tree (build-workspace-file-tree workspace-dir #:max-depth 2 #:max-files 20))
-         (rule-desc (if (null? rules)
-                        "No project rule files found."
-                        (string-join
-                         (map (lambda (r) (format #f "• ~a" (assoc-ref r 'path))) rules)
-                         "\n"))))
-    (format #f "Discovered Project Rules:\n~a\n\nWorkspace Tree:\n~a" rule-desc tree)))
-
-(define (format-context-metrics compactor llm-history messages)
-  "Format conversation context metrics for /context."
-  (let* ((tokens (estimate-conversation-tokens llm-history))
-         (ceiling (- (context-compactor-max-tokens compactor)
-                     (context-compactor-reserve-tokens compactor)))
-         (needed? (compaction-needed? compactor llm-history)))
-    (format #f
-            "Conversation Context Metrics:\n• LLM Message Count: ~a\n• UI Cards Count: ~a\n• Estimated Tokens: ~a / ~a ceiling\n• Status: ~a"
-            (length llm-history)
-            (length messages)
-            tokens
-            ceiling
-            (if needed? "COMPACTION REQUIRED" "NORMAL"))))
-
-(define (format-usage-report compactor llm-history prompt-tokens completion-tokens estimated-tokens turns)
-  "Format per-session token usage report for /usage."
-  (let* ((used (estimate-conversation-tokens llm-history))
-         (ceiling (context-compactor-effective-ceiling compactor))
-         (k (lambda (n) (format #f "~,1fk" (/ n 1000.0))))
-         (est-suffix (if (> estimated-tokens 0)
-                         (format #f " (+~a estimated)" estimated-tokens)
-                         "")))
-    (format #f
-            "Session token usage:\n• Prompt tokens: ~a~a\n• Completion tokens: ~a\n• Turns: ~a\n• Context: ~a/~a tokens (estimated)"
-            prompt-tokens
-            est-suffix
-            completion-tokens
-            turns
-            (if (number? used) (k used) "?")
-            (if (> ceiling 0) (k ceiling) "?"))))
-
-(define (format-features-list reg)
-  "Format active registry features for /features."
-  (let ((feats (registry-list reg)))
-    (if (null? feats)
-        "No features currently registered in kernel."
-        (string-append
-         "Registered Features:\n"
-         (string-join
-          (map (lambda (f)
-                 (format #f "• ~a (~a)" (assoc-ref f 'id) (assoc-ref f 'metadata)))
-               feats)
-          "\n")))))
-
-(define (format-journal-recent jrn)
-  "Format recent checkpoint provenance entries for /journal."
-  (let ((entries (journal-entries jrn)))
-    (if (null? entries)
-        "Journal is empty (0 checkpoints on disk)."
-        (let* ((recent (take-right entries (min 8 (length entries))))
-               (formatted (map (lambda (e)
-                                 (format #f "  #~a: [~a] ~a -> ~a (~a)"
-                                         (assoc-ref e "iteration")
-                                         (assoc-ref e "checkpoint")
-                                         (assoc-ref e "feature-id")
-                                         (assoc-ref e "status")
-                                         (assoc-ref e "timestamp")))
-                               recent)))
-          (string-append "Recent Checkpoints:\n" (string-join formatted "\n"))))))
-
-(define %tui-help-message
-  (string-append "Available Commands:\n"
-                 "  /help             Display this help message\n"
-                 "  /model [NAME]     Switch LLM model; no argument opens a menu\n"
-                 "  /models           List models available on the endpoint\n"
-                 "  /endpoint [URL]   Switch endpoint URL; no argument opens a menu\n"
-                 "  /provider [NAME]  Switch or inspect provider preset\n"
-                 "  /mcp [CMD]        Manage MCP servers (list, start, stop, add, remove, tools)\n"
-                 "  /config [CMD]     Inspect, reload, save, set configuration; no argument opens a menu\n"
-                 "  /guardrail [LVL]  Set policy level (disabled, permissive, cautious, strict, paranoid)\n"
-                 "  /compact          Compact conversation history\n"
-                 "  /resume           Resume a previous chat session from disk\n"
-                 "  /checkpoint [DSC] Create a rollback checkpoint snapshot\n"
-                 "  /rollback [ID]    Revert to latest or specified checkpoint\n"
-                 "  /rules            View discovered project rules & workspace tree\n"
-                 "  /geis [CMD]       Contract-gated dynamic synthesis (/geis add <desc>, list, verify, status)\n"
-                 "  /context          View conversation token metrics\n"
-                 "  /usage            Show per-session token usage report\n"
-                 "  /steer [TEXT]     Queue steering text for the running or next agent run\n"
-                 "  /interrupt        Halt the agent at its next iteration boundary\n"
-                 "  /features         List active registry features\n"
-                 "  /journal          View recent checkpoint provenance\n"
-                 "  /test             Run the bootstrap test suite\n"
-                 "  /clear            Clear chat history\n"
-                 "  /quit, /exit      Exit TUI\n"
-                 "  /dump [PATH]      Export the conversation to a text file\n"
-                 "  !<command>        Execute shell command\n"
-                 "  ,<expr> or (..)   Evaluate Scheme code\n"
-                 "  ctrl+up / ctrl+down   Select a message block\n"
-                 "  ctrl+e            Collapse or expand the selected message\n"
-                 "  while agent runs  type to steer it: enter sends, ctrl+i interrupts\n"
-                 "  menus             up/down move, enter apply, esc close (/config, /model, /endpoint)\n"
-                 "  /sh <cmd>         Alias for shell command\n"
-                 "  /eval <expr>      Alias for Scheme eval"))
-
 ;; DEV-DEBT [complexity]: run-tui is the largest form in the repo (9209 AST nodes,
 ;; cyclomatic ~447 per ast_complexity_metrics). Covered by the 582-assertion bundle
 ;; spec, but the prime candidate for decomposition into smaller units.
@@ -2815,15 +318,6 @@ a manual entry item."
             (make-rollback-manager #:workspace-dir (getcwd) #:registry reg #:journal jrn))
     (define verifier (make-verifier #:check-syntax? #t #:run-tests? #f))
     (define composer (make-prompt-composer))
-    ;; Register Built-in Autonomous Agent Tools & Auto-start MCP servers
-    (define llm-history '())
-    (register-builtin-tui-tools! reg
-                                 rollback-mgr
-                                 verifier
-                                 mcp-mgr
-                                 (lambda ()
-                                   llm-history))
-    (auto-start-mcp-servers! cfg mcp-mgr)
     (define client
             (make-model-client #:endpoint
                                cur-endpoint
@@ -2833,6 +327,28 @@ a manual entry item."
                                cur-model
                                #:allow-missing-thinking?
                                (badb-config-allow-missing-thinking? cfg cur-endpoint)))
+    (define ctx-idx (make-bm25-index))
+    (define skill-reg (make-skill-registry))
+    (catch #t
+      (lambda ()
+        (discover-skills! skill-reg)
+        (discover-and-mount-project-geasa! reg #:workspace (getcwd))
+        (mount-bundle-workflows! reg #:workspace (getcwd)))
+      (lambda _ #f))
+    ;; Register Built-in Autonomous Agent Tools & Auto-start MCP servers
+    (define llm-history '())
+    (register-builtin-tui-tools! reg
+                                 rollback-mgr
+                                 verifier
+                                 mcp-mgr
+                                 (lambda ()
+                                   llm-history)
+                                 #:ctx-idx ctx-idx
+                                 #:skill-reg skill-reg
+                                 #:client client
+                                 #:config cfg
+                                 #:policy policy)
+    (auto-start-mcp-servers! cfg mcp-mgr)
     (define (semantic-summarize-fn older-msgs)
             "Summarize OLDER-MSGS into the pinned schema state block via the
 configured model client. Derives only from raw turns, keeps identifiers
@@ -2909,9 +425,15 @@ verbatim, and fails open to a verbatim truncation."
     (define (make-system-turn)
             `((role . "system")
               (content .
-                       ,(default-system-prompt #:workspace-dir (getcwd)
-                                               #:tools
-                                               (collect-available-tools reg mcp-mgr)))))
+                       ,(assemble-system-prompt composer
+                                                #:workspace-dir (getcwd)
+                                                #:tools
+                                                (collect-available-tools reg mcp-mgr)
+                                                #:skills
+                                                (skill-catalog-summary skill-reg)
+                                                #:memories
+                                                (catch #t (lambda () (memory-read "all")) (lambda _ #f))
+                                                #:static-only? #t))))
     ;; The system prompt stays in llm-history for the model but is not
     ;; displayed as a transcript card.
     (define messages
@@ -3762,9 +1284,7 @@ grown journal), which the per-frame header render must not pay."
               (let*
                   ((used %ctx-cache-tokens)
                    (ceiling (context-compactor-effective-ceiling compactor))
-                   (k
-                     (lambda (n)
-                       (format #f "~,1fk" (/ n 1000.0)))))
+                   (k format-token-kilo))
                 (if (and (number? used) (> ceiling 0))
                   (format #f "ctx ~a/~a" (k used) (k ceiling))
                   #f))))
@@ -3819,6 +1339,10 @@ grown journal), which the per-frame header render must not pay."
                                                    steering-queue
                                                    #:max-tokens
                                                    (or (badb-config-model-max-tokens cfg) 4096)
+                                                   #:deferred-tools?
+                                                   #t
+                                                   #:offload-hook
+                                                   (make-ctx-offload-hook ctx-idx)
                                                    #:guardrail
                                                    (lambda (t-name t-args)
                                                      (evaluate-guardrail policy t-name t-args))
@@ -4057,15 +1581,15 @@ grown journal), which the per-frame header render must not pay."
                    (if (null? tokens)
                      '()
                      (cdr tokens))))
-              (cond
-                ((string-null? arg)
+              (string-case (if (string-null? arg) "" subcmd)
+                (""
                   (set! active-menu
                         (make-menu "Configuration"
                                    (config-menu-items-for-state cfg cur-model cur-endpoint policy))))
-                ((string=? subcmd "show")
+                ("show"
                   (add-sys-msg!
                     (format-config-summary cfg cur-model cur-endpoint cur-journal-path)))
-                ((string=? subcmd "reload")
+                ("reload"
                   (catch #t
                     (lambda ()
                       (set! cfg (load-config))
@@ -4078,7 +1602,7 @@ grown journal), which the per-frame header render must not pay."
                       (add-sys-msg! "Configuration reloaded from disk successfully."))
                     (lambda (k . a)
                       (add-err-msg! (format #f "Failed to reload config: ~a ~s" k a)))))
-                ((string=? subcmd "save")
+                ("save"
                   (catch #t
                     (lambda ()
                       (save-local-config! cfg)
@@ -4086,23 +1610,24 @@ grown journal), which the per-frame header render must not pay."
                         (format #f "Configuration saved to ~a" (default-local-config-path))))
                     (lambda (k . a)
                       (add-err-msg! (format #f "Failed to save config: ~a ~s" k a)))))
-                ((string=? subcmd "set")
+                ("set"
                   (if (< (length rest) 2)
                     (add-err-msg! "Usage: /config set <model|endpoint|temperature> <value>")
                     (let ((prop (car rest)) (val (cadr rest)))
-                      (cond
-                        ((string=? prop "model") (set! cur-model val)
-                                                 (badb-config-set-model-name! cfg val)
-                                                 (refresh-client!)
-                                                 (try-save-config!)
-                                                 (add-sys-msg! (format #f "Model set to '~a' and saved." val)))
-                        ((string=? prop "endpoint")
+                      (string-case prop
+                        ("model"
+                          (set! cur-model val)
+                          (badb-config-set-model-name! cfg val)
+                          (refresh-client!)
+                          (try-save-config!)
+                          (add-sys-msg! (format #f "Model set to '~a' and saved." val)))
+                        ("endpoint"
                           (set! cur-endpoint val)
                           (badb-config-set-model-endpoint! cfg val)
                           (refresh-client!)
                           (try-save-config!)
                           (add-sys-msg! (format #f "Endpoint set to '~a' and saved." val)))
-                        ((string=? prop "temperature")
+                        ("temperature"
                           (let ((temp (string->number val)))
                             (if (and temp (number? temp))
                               (begin
@@ -4372,7 +1897,8 @@ any open menu first; submenu actions open the next menu in its place."
                                    session-prompt-tokens
                                    session-completion-tokens
                                    session-estimated-tokens
-                                   session-turns)))
+                                   session-turns
+                                   #:ctx-idx ctx-idx)))
     ;; Handle session resume: interactive picker over recent session logs
     (define (handle-resume-cmd! _arg)
             (let
@@ -4471,6 +1997,10 @@ any open menu first; submenu actions open the next menu in its place."
                   (if (string-null? rest-arg)
                     (add-sys-msg! "Usage: /geis verify <feature-id>")
                     (add-sys-msg! (spec-tool-verify rest-arg))))
+                ((string=? sub "bootstrap")
+                  (execute-geis-bootstrap! add-sys-msg! add-err-msg!))
+                ((string=? sub "distill")
+                  (execute-geis-distill! rest-arg add-sys-msg! add-err-msg!))
                 ((string=? sub "synthesize")
                   (if (string-null? rest-arg)
                     (add-sys-msg! "Usage: /geis synthesize <feature-id> [target-path] [spec-path]")
@@ -4530,6 +2060,9 @@ any open menu first; submenu actions open the next menu in its place."
                 ((string=? cmd "rules") (handle-rules-cmd! arg))
                 ((string=? cmd "geis") (handle-geis-cmd! arg))
                 ((string=? cmd "context") (handle-context-cmd! arg))
+                ((string=? cmd "ctx") (execute-ctx-subcommand! ctx-idx arg add-sys-msg! add-err-msg!))
+                ((string=? cmd "skills") (execute-skills-subcommand! skill-reg arg add-sys-msg! add-err-msg!))
+                ((string=? cmd "memories") (execute-memories-subcommand! arg add-sys-msg! add-err-msg!))
                 ((string=? cmd "usage") (handle-usage-cmd!))
                 ((string=? cmd "models") (handle-models-cmd!))
                 ((string=? cmd "model")

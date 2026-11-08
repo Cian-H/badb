@@ -10,6 +10,7 @@
   #:use-module (badb spec)
   #:use-module (srfi srfi-1)
   #:use-module (ice-9 textual-ports)
+  #:use-module (badb kernel registry)
   #:use-module (geasa capabilities-skills plugin))
 
 (spec-begin "capabilities-skills")
@@ -221,6 +222,137 @@
       (string-contains prompt "Run the alpha steps in order."))
     (test-assert "body follows the tag after a blank line"
       (string-contains prompt "</skill>\n\n# Alpha")))
+  (teardown-fixtures!))
+
+;;;
+;;; 6. Catalog summary
+;;;
+
+(test-group "skills-catalog-summary"
+  (setup-fixtures!)
+  (let* ((registry (make-skill-registry #:roots (list %root-a)))
+         (_ (discover-skills! registry))
+         (summary (skill-catalog-summary registry)))
+    (test-equal "summarizes active skills with id and description"
+      '(("alpha" . "Drives the alpha workflow.")
+        ("plain" . "# Just a body"))
+      summary)
+
+    ;; Disabled skills are excluded from summary
+    (skill-registry-disable! registry "plain")
+    (test-equal "disabled skill excluded from catalog summary"
+      '(("alpha" . "Drives the alpha workflow."))
+      (skill-catalog-summary registry))
+    (skill-registry-enable! registry "plain")
+    (test-equal "re-enabled skill appears in catalog summary"
+      '(("alpha" . "Drives the alpha workflow.")
+        ("plain" . "# Just a body"))
+      (skill-catalog-summary registry))
+
+    ;; Empty or whitespace-only description in frontmatter falls back to body
+    (system (format #f "mkdir -p ~a/blank-desc" %root-a))
+    (write-text! (string-append %root-a "/blank-desc/SKILL.md")
+      "---\nname: Blank Desc\ndescription:   \n---\n\n\n  # First Real Line\n\nMore content.\n")
+    (skill-registry-reload! registry)
+    (let ((reloaded-summary (skill-catalog-summary registry)))
+      (test-equal "empty frontmatter description falls back to first non-empty body line"
+        "# First Real Line"
+        (assoc-ref reloaded-summary "blank-desc")))
+
+    (test-assert "skill-catalog-summary rejects non-skill-registry"
+      (catch #t
+        (lambda () (skill-catalog-summary "not-a-reg") #f)
+        (lambda args #t))))
+  (teardown-fixtures!))
+
+;;;
+;;; 7. Tool registration (skill_load, skill_list, _badb_defer flags)
+;;;
+
+(test-group "skills-tool-registration"
+  (setup-fixtures!)
+  (let* ((skill-reg (make-skill-registry #:roots (list %root-a)))
+         (_ (discover-skills! skill-reg))
+         (tool-reg (make-registry))
+         (_ (register-skill-tools! tool-reg skill-reg)))
+
+    ;; Tool attachment verification
+    (test-assert "skill_load is attached to registry"
+      (procedure? (registry-lookup tool-reg "skill_load")))
+    (test-assert "skill_list is attached to registry"
+      (procedure? (registry-lookup tool-reg "skill_list")))
+
+    ;; _badb_defer flags verification
+    (let ((load-meta (registry-metadata tool-reg "skill_load"))
+          (list-meta (registry-metadata tool-reg "skill_list")))
+      (test-assert "skill_load metadata present" (pair? load-meta))
+      (test-assert "skill_list metadata present" (pair? list-meta))
+
+      (test-equal "skill_load assoc-ref _badb_defer is #f"
+        #f
+        (assoc-ref load-meta '_badb_defer))
+
+      (test-equal "skill_list assoc-ref _badb_defer is #t"
+        #t
+        (assoc-ref list-meta '_badb_defer))
+
+      ;; Parameters schema validation
+      (let* ((load-params (assoc-ref load-meta 'parameters))
+             (load-req (assoc-ref load-params 'required))
+             (list-params (assoc-ref list-meta 'parameters))
+             (list-req (assoc-ref list-params 'required)))
+        (test-assert "skill_load required is a vector" (vector? load-req))
+        (test-equal "skill_load required contains id" #("id") load-req)
+        (test-assert "skill_list required is a vector" (vector? list-req))
+        (test-equal "skill_list required is empty vector" #() list-req)))
+
+    ;; skill_load with valid ID returns skill prompt
+    (let ((out (registry-dispatch tool-reg "skill_load" "alpha")))
+      (test-assert "skill_load returns string for valid id" (string? out))
+      (test-assert "skill_load output begins with skill tag"
+        (string-prefix? "<skill id=\"alpha\" name=\"Alpha Skill\">" out))
+      (test-assert "skill_load output contains prompt body"
+        (string-contains out "Run the alpha steps in order."))
+      (test-equal "skill_load output matches skill-prompt"
+        (skill-prompt (skill-registry-find skill-reg "alpha"))
+        out))
+
+    ;; skill_load with unknown ID returns informative error listing available skill IDs
+    (let ((err-out (registry-dispatch tool-reg "skill_load" "ghost-skill")))
+      (test-assert "skill_load returns string for unknown id" (string? err-out))
+      (test-assert "error message mentions Error or not found"
+        (and (string-contains err-out "Error")
+             (string-contains err-out "ghost-skill")))
+      (test-assert "error message lists available skill IDs (alpha)"
+        (string-contains err-out "alpha"))
+      (test-assert "error message lists available skill IDs (plain)"
+        (string-contains err-out "plain")))
+
+    ;; skill_list returns formatted list of discovered skill IDs, status, and paths
+    (let ((list-out (registry-dispatch tool-reg "skill_list")))
+      (test-assert "skill_list returns string" (string? list-out))
+      (test-assert "skill_list mentions alpha" (string-contains list-out "alpha"))
+      (test-assert "skill_list mentions plain" (string-contains list-out "plain"))
+      (test-assert "skill_list indicates active status for alpha"
+        (string-contains list-out "active"))
+      (test-assert "skill_list contains file path"
+        (string-contains list-out (string-append %root-a "/alpha/SKILL.md"))))
+
+    ;; skill_list reflects disabled status
+    (skill-registry-disable! skill-reg "plain")
+    (let ((list-out-disabled (registry-dispatch tool-reg "skill_list")))
+      (test-assert "skill_list reflects disabled status for plain"
+        (string-contains list-out-disabled "disabled")))
+
+    ;; Validation of arguments to register-skill-tools!
+    (test-assert "register-skill-tools! rejects invalid tool-reg"
+      (catch #t
+        (lambda () (register-skill-tools! "not-a-reg" skill-reg) #f)
+        (lambda args #t)))
+    (test-assert "register-skill-tools! rejects invalid skill-reg"
+      (catch #t
+        (lambda () (register-skill-tools! tool-reg "not-a-reg") #f)
+        (lambda args #t))))
   (teardown-fixtures!))
 
 (spec-end)

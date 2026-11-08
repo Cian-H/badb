@@ -14,6 +14,9 @@
   #:use-module (json)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-9)
+  #:use-module (uuid generate)
+  #:use-module (uuid utils)
+  #:use-module (pfds hamts)
   #:export (<rollback-manager>
             make-rollback-manager
             rollback-manager?
@@ -47,21 +50,12 @@
 ;;;
 (define (read-file-content path)
   "Read the entire content of PATH as string, or #f if unreadable/non-existent/binary."
-  (catch #t
-    (lambda ()
-      (if (and (file-exists? path) (not (file-is-directory? path)))
-          (let ((s (call-with-input-file path read-string)))
-            (if (and (string? s) (not (string-index s #\nul)))
-                s
-                #f))
-          #f))
-    (lambda _ #f)))
+  (and (file-exists? path)
+       (not (file-is-directory? path))
+       (let ((s (file->string path)))
+         (and (string? s) (not (string-index s #\nul)) s))))
 
-(define (write-file-content path content)
-  "Write CONTENT string to PATH, creating parent directories if needed."
-  (ensure-parent-directory! path)
-  (call-with-output-file path
-    (lambda (port) (display (or content "") port))))
+(define write-file-content string->file)
 
 ;;;
 ;;; Data Records
@@ -72,16 +66,16 @@
   (id checkpoint-id)
   (description checkpoint-description)
   (timestamp checkpoint-timestamp)
-  (files checkpoint-files)                   ;; alist: ((rel-path . (existed? . content)))
-  (registry-state checkpoint-registry-state) ;; alist: ((feature-id . (impl . metadata)))
+  (files checkpoint-files set-checkpoint-files!)                   ;; HAMT: path -> (existed? . content)
+  (registry-state checkpoint-registry-state set-checkpoint-registry-state!) ;; HAMT: feature-id -> (impl . metadata)
   (full-scan? checkpoint-full-scan?))
 
 (define* (make-checkpoint id description #:key (timestamp #f) (files '()) (registry-state '()) (full-scan? #f))
   (%make-checkpoint id
                     description
                     (or timestamp (current-iso8601-timestamp))
-                    files
-                    registry-state
+                    (if (hamt? files) files (alist->hamt files string-hash string=?))
+                    (if (hamt? registry-state) registry-state (alist->hamt registry-state string-hash string=?))
                     full-scan?))
 
 (define-record-type <rollback-manager>
@@ -183,16 +177,18 @@
   (walk root-dir ""))
 
 (define (snapshot-registry reg)
-  "Snapshot features and metadata from REGISTRY."
+  "Snapshot features and metadata from REGISTRY as a HAMT."
   (if (and reg (registry? reg))
-      (let ((entries (registry-list reg)))
-        (map (lambda (entry)
-               (let* ((f-id (assoc-ref entry 'id))
-                      (meta (assoc-ref entry 'metadata))
-                      (impl (registry-lookup reg f-id)))
-                 (cons f-id (cons impl meta))))
-             entries))
-      '()))
+      (let ((entries (registry-list reg))
+            (hamt (make-hamt string-hash string=?)))
+        (fold (lambda (entry acc)
+                (let* ((f-id (assoc-ref entry 'id))
+                       (meta (assoc-ref entry 'metadata))
+                       (impl (registry-lookup reg f-id)))
+                  (hamt-set acc f-id (cons impl meta))))
+              hamt
+              entries))
+      (make-hamt string-hash string=?)))
 
 (define (resolve-workspace-path ws rel-path)
   "Resolve REL-PATH against workspace directory WS."
@@ -209,21 +205,21 @@ and active registry state. Persists metadata to disk and journal if configured."
       ((ws (rollback-manager-workspace-dir mgr))
        (reg (rollback-manager-registry mgr))
        (jrn (rollback-manager-journal mgr))
-       (id (format #f "chkpt-~a-~a" (current-time) (random 100000)))
+       (id (uuid->string (generate-uuid 'uuidv4)))
        (full-scan? (not (list? files)))
        (target-files
          (cond
            ((list? files) files)
            (else (scan-text-files ws))))
        (file-snapshots
-         (map
-           (lambda (rel-path)
-             (let*
-                 ((full-path (resolve-workspace-path ws rel-path))
-                  (existed? (file-exists? full-path))
-                  (content (and existed? (read-file-content full-path))))
-               (cons rel-path (cons existed? content))))
-           target-files))
+         (let ((hamt (make-hamt string-hash string=?)))
+           (fold (lambda (rel-path acc)
+                   (let* ((full-path (resolve-workspace-path ws rel-path))
+                          (existed? (file-exists? full-path))
+                          (content (and existed? (read-file-content full-path))))
+                     (hamt-set acc rel-path (cons existed? content))))
+                 hamt
+                 target-files)))
        (reg-state (snapshot-registry reg))
        (chkpt
          (make-checkpoint id
@@ -240,13 +236,25 @@ and active registry state. Persists metadata to disk and journal if configured."
     ;; Persist to disk (including file snapshots)
     (let
         ((chkpt-file (format #f "~a/~a.json" (rollback-manager-storage-dir mgr) id))
+         (files-count (if (hamt? file-snapshots) (hamt-size file-snapshots) (length file-snapshots)))
+         (registry-count (if (hamt? reg-state) (hamt-size reg-state) (length reg-state)))
          (serialized-files
           (list->vector
-           (map (lambda (entry)
-                  `((path . ,(car entry))
-                    (existed . ,(cadr entry))
-                    (content . ,(or (cddr entry) ""))))
-                file-snapshots))))
+           (if (hamt? file-snapshots)
+               (hamt-fold (lambda (path file-data acc)
+                            (let ((existed? (car file-data))
+                                  (content (cdr file-data)))
+                              (cons `((path . ,path)
+                                      (existed . ,existed?)
+                                      (content . ,(or content "")))
+                                    acc)))
+                          '()
+                          file-snapshots)
+               (map (lambda (entry)
+                      `((path . ,(car entry))
+                        (existed . ,(cadr entry))
+                        (content . ,(or (cddr entry) ""))))
+                    file-snapshots)))))
       (catch #t
         (lambda ()
           (ensure-parent-directory! chkpt-file)
@@ -256,8 +264,8 @@ and active registry state. Persists metadata to disk and journal if configured."
                                      `((id . ,id) (description . ,description)
                                        (timestamp . ,(checkpoint-timestamp chkpt))
                                        (full-scan . ,full-scan?)
-                                       (files-count . ,(length file-snapshots))
-                                       (registry-count . ,(length reg-state))
+                                       (files-count . ,files-count)
+                                       (registry-count . ,registry-count)
                                        (files . ,serialized-files))
                                      port))))
         (lambda _
@@ -268,7 +276,11 @@ and active registry state. Persists metadata to disk and journal if configured."
                             (status . "checkpoint_created")
                             (feature-id . "rollback")
                             (details .
-                                     ((description . ,description) (files-count . ,(length file-snapshots))))))
+                                     ((description . ,description)
+                                      (files-count .
+                                       ,(if (hamt? file-snapshots)
+                                            (hamt-size file-snapshots)
+                                            (length file-snapshots)))))))
     chkpt))
 
 ;;;
@@ -287,23 +299,32 @@ and active registry state. Persists metadata to disk and journal if configured."
 ;;; Rollback Application
 ;;;
 (define (restore-registry! reg saved-state)
-  "Restore kernel registry to SAVED-STATE."
-  (when (and reg (registry? reg) (list? saved-state))
+  "Restore kernel registry to SAVED-STATE (HAMT or alist)."
+  (when (and reg (registry? reg))
     ;; Detach current features not in saved state
     (let* ((current-entries (registry-list reg))
            (current-feats (map (lambda (e) (assoc-ref e 'id)) current-entries))
-           (saved-feat-names (map car saved-state)))
+           (saved-feat-names (if (hamt? saved-state)
+                                (hamt-fold (lambda (k v acc) (cons k acc)) '() saved-state)
+                                (map car saved-state))))
       (for-each (lambda (f)
                   (unless (member f saved-feat-names)
                     (registry-detach! reg f)))
                 current-feats))
     ;; Re-attach saved features
-    (for-each (lambda (entry)
-                (let* ((f-id (car entry))
-                       (impl (cadr entry))
-                       (meta (cddr entry)))
-                  (registry-attach! reg f-id impl #:metadata meta)))
-              saved-state)))
+    (if (hamt? saved-state)
+        (hamt-fold (lambda (f-id entry _)
+                     (let* ((impl (car entry))
+                            (meta (cdr entry)))
+                       (registry-attach! reg f-id impl #:metadata meta)))
+                   #f
+                   saved-state)
+        (for-each (lambda (entry)
+                    (let* ((f-id (car entry))
+                           (impl (cadr entry))
+                           (meta (cddr entry)))
+                      (registry-attach! reg f-id impl #:metadata meta)))
+                  saved-state))))
 
 (define (rollback-to-checkpoint! mgr checkpoint-id)
   "Rollback workspace files and kernel registry to the state at CHECKPOINT-ID.
@@ -318,28 +339,35 @@ Returns an alist describing restoration results."
                (restored-files '())
                (removed-files '()))
           ;; 1. Restore files recorded in checkpoint
-          (for-each
-           (lambda (entry)
-             (let* ((rel-path (car entry))
-                    (existed? (cadr entry))
-                    (content (cddr entry))
-                    (full-path (resolve-workspace-path ws rel-path)))
-               (cond
-                (existed?
-                 (unless (and (file-exists? full-path)
-                              (let ((cur (read-file-content full-path)))
-                                (and cur (string=? cur content))))
-                   (write-file-content full-path content))
-                 (set! restored-files (cons rel-path restored-files)))
-                (else
-                 ;; File didn't exist at checkpoint: delete if it was created
-                 (when (file-exists? full-path)
-                   (delete-file full-path)
-                   (set! removed-files (cons rel-path removed-files)))))))
-           (checkpoint-files chkpt))
+          (let* ((files-hamt (checkpoint-files chkpt))
+                 (files-list (if (hamt? files-hamt)
+                                 (hamt-fold (lambda (k v acc) (cons (cons k v) acc)) '() files-hamt)
+                                 files-hamt)))
+            (for-each
+             (lambda (entry)
+               (let* ((rel-path (car entry))
+                      (file-data (cdr entry))
+                      (existed? (car file-data))
+                      (content (cdr file-data))
+                      (full-path (resolve-workspace-path ws rel-path)))
+                 (cond
+                  (existed?
+                   (unless (and (file-exists? full-path)
+                                (let ((cur (read-file-content full-path)))
+                                  (and cur (string=? cur content))))
+                     (write-file-content full-path content))
+                   (set! restored-files (cons rel-path restored-files)))
+                  (else
+                   ;; File didn't exist at checkpoint: delete if it was created
+                   (when (file-exists? full-path)
+                     (delete-file full-path)
+                     (set! removed-files (cons rel-path removed-files)))))))
+             files-list))
           ;; 1b. If checkpoint was a full workspace scan, remove any newly created files
           (when (checkpoint-full-scan? chkpt)
-            (let ((recorded-paths (map car (checkpoint-files chkpt))))
+            (let ((recorded-paths (if (hamt? (checkpoint-files chkpt))
+                                      (hamt-fold (lambda (k v acc) (cons k acc)) '() (checkpoint-files chkpt))
+                                      (map car (checkpoint-files chkpt)))))
               (for-each
                (lambda (cur-rel)
                  (unless (member cur-rel recorded-paths)

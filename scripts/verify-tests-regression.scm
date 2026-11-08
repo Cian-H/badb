@@ -88,9 +88,13 @@
             (cond
               ((string-contains line "* PASS: geis")
                ;; Extract spec name, e.g., "  * PASS: geis policies-guardrail (summary: total=31 passed=31 failed=0)"
+               ;; or bundle format: "  * PASS: geis bundle policies-guardrail (verdict: PASS summary: ...)"
                (let* ((sub (string-copy line))
                       (m (string-contains sub "geis "))
-                      (rest (substring sub (+ m 5)))
+                      (raw-rest (substring sub (+ m 5)))
+                      (rest (if (string-prefix? "bundle " raw-rest)
+                                (substring raw-rest 7)
+                                raw-rest))
                       (sp (string-index rest #\space))
                       (fid (if sp (substring rest 0 sp) rest))
                       (spec-file (string-append "test/specs/" fid ".geis.scm"))
@@ -103,7 +107,10 @@
               ((string-contains line "* FAIL: geis")
                (let* ((sub (string-copy line))
                       (m (string-contains sub "geis "))
-                      (rest (substring sub (+ m 5)))
+                      (raw-rest (substring sub (+ m 5)))
+                      (rest (if (string-prefix? "bundle " raw-rest)
+                                (substring raw-rest 7)
+                                raw-rest))
                       (sp (string-index rest #\space))
                       (fid (if sp (substring rest 0 sp) rest))
                       (spec-file (string-append "test/specs/" fid ".geis.scm")))

@@ -122,10 +122,13 @@ Returns '((passed? . #t/#f) (exit-code . code) (output . output-string))."
     (when (verifier-check-syntax? verifier)
       (cond
        ((or code file)
-        (let* ((target (or code file))
-               (res (verify-scheme-syntax target)))
-          (unless (assoc-ref res 'passed?)
-            (set! failures (cons (assoc-ref res 'error) failures)))))
+        (when (or (not file)
+                  (string-suffix? ".scm" file)
+                  (string-suffix? ".sema" file))
+          (let* ((target (or code file))
+                 (res (verify-scheme-syntax target)))
+            (unless (assoc-ref res 'passed?)
+              (set! failures (cons (assoc-ref res 'error) failures))))))
        ((and workspace-dir (file-exists? workspace-dir))
         (for-each
          (lambda (rel-path)

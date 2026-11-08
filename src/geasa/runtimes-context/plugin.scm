@@ -14,11 +14,10 @@
                #:use-module
                (srfi srfi-1)
                #:use-module
-               (srfi srfi-8)
-               #:use-module
                (srfi srfi-9)
                #:use-module
                (srfi srfi-13)
+  #:use-module (pipe)
                #:export
                (<context-compactor> make-context-compactor
                                     context-compactor?
@@ -38,6 +37,8 @@
                                     word-heuristic-estimator
                                     estimate-message-tokens
                                     estimate-conversation-tokens
+                                    tool-token-estimate
+                                    strategy-prune-reasoning
                                     strategy-prune-tool-results
                                     strategy-sliding-window
                                     strategy-summarize-older-turns
@@ -52,14 +53,6 @@
 ;;;
 ;;; Token Estimators
 ;;;
-(define (message-role msg)
-  "Extract normalized role string from MSG."
-  (normalize-role (prop-ref msg 'role "")))
-
-(define (message-content msg)
-  "Extract content field from MSG alist."
-  (prop-ref msg 'content ""))
-
 (define (content->string content)
   "Convert content to a string representation for token estimation."
   (safe-json-string content))
@@ -126,12 +119,57 @@
           2 ;; conversation priming tokens
           msg-list)))
 
+(define (tool-token-estimate tool-spec-or-text)
+  "Estimate token count for a tool schema or tool observation text using character count / 3.8."
+  (let ((text (cond
+               ((string? tool-spec-or-text) tool-spec-or-text)
+               ((or (pair? tool-spec-or-text) (vector? tool-spec-or-text))
+                (safe-json-string tool-spec-or-text))
+               (else (object->string tool-spec-or-text)))))
+    (if (non-empty-string? text)
+        (max 1 (inexact->exact (round (/ (string-length text) 3.8))))
+        0)))
+
 ;;;
 ;;; Compaction Strategies
 ;;;
 (define (system-message? msg)
         "Return #t if MSG has role 'system'."
         (and (pair? msg) (string=? (message-role msg) "system")))
+
+(define (assistant-has-reasoning? msg)
+  (and (pair? msg)
+       (string=? (message-role msg) "assistant")
+       (let ((r (or (assoc-ref msg (quote reasoning_content))
+                    (assoc-ref msg "reasoning_content"))))
+         (and (string? r) (not (string-null? r))))))
+
+(define (strip-reasoning msg)
+  (filter (lambda (pair)
+            (not (or (eq? (car pair) (quote reasoning_content))
+                     (equal? (car pair) "reasoning_content"))))
+          msg))
+
+(define* (strategy-prune-reasoning messages #:optional (k 1) #:key (retain-window #f))
+  "Keep reasoning_content ONLY on the most recent K assistant messages that have it.
+For any earlier assistant message with reasoning_content, strip the reasoning_content field."
+  (let* ((k-val (cond
+                 ((number? retain-window) retain-window)
+                 ((number? k) k)
+                 (else 1)))
+         (effective-k (max 0 k-val))
+         (msg-list (if (vector? messages) (vector->list messages) messages)))
+    (let loop ((rest (reverse msg-list))
+               (retained 0)
+               (acc (quote ())))
+      (if (null? rest)
+          acc
+          (let ((msg (car rest)))
+            (if (assistant-has-reasoning? msg)
+                (if (< retained effective-k)
+                    (loop (cdr rest) (+ retained 1) (cons msg acc))
+                    (loop (cdr rest) retained (cons (strip-reasoning msg) acc)))
+                (loop (cdr rest) retained (cons msg acc))))))))
 
 (define (partition-system-prompt messages keep?)
         "Split MESSAGES into (cons sys-msg-or-#f pool)."
@@ -298,8 +336,10 @@ excluded from the older-msgs passed to summarize-fn and dropped from the output.
                                      (let ((content (or (assoc-ref msg 'content) (assoc-ref msg "content") "")))
                                        (and (string? content)
                                             (string-prefix? summary-prefix content)))))
-                      (filtered-older (filter (lambda (msg) (not (is-summary? msg))) older-msgs))
-                      (filtered-recent (filter (lambda (msg) (not (is-summary? msg))) recent-msgs))
+                      (filtered-older (->> older-msgs
+                                           (filter (lambda (msg) (not (is-summary? msg))))))
+                      (filtered-recent (->> recent-msgs
+                                            (filter (lambda (msg) (not (is-summary? msg))))))
                       (summary-text (summarize-fn filtered-older))
                       (summary-msg `((role . "system")
                                      (content .
@@ -356,22 +396,22 @@ them with audit trail checkpoint pointers."
 Executes each configured strategy in order until the token ceiling is satisfied."
   (let
       ((stages
-         (filter procedure?
-                 (list
-                   (strategy-prune-tool-results #:keep-recent-turns
-                                                keep-recent-turns
-                                                #:max-tool-chars
-                                                max-tool-chars
-                                                #:placeholder-generator
-                                                placeholder-generator)
-                   (and summarize-fn
-                        (strategy-summarize-older-turns summarize-fn
-                                                        #:keep-recent-turns
-                                                        keep-recent-turns))
-                   (and journal
-                        (strategy-journal-offload journal #:keep-recent-turns keep-recent-turns))
-                   (strategy-sliding-window #:keep-system-prompt keep-system-prompt
-                                            #:pin-first-user pin-first-user)))))
+         (->> (list
+                (strategy-prune-tool-results #:keep-recent-turns
+                                             keep-recent-turns
+                                             #:max-tool-chars
+                                             max-tool-chars
+                                             #:placeholder-generator
+                                             placeholder-generator)
+                (and summarize-fn
+                     (strategy-summarize-older-turns summarize-fn
+                                                     #:keep-recent-turns
+                                                     keep-recent-turns))
+                (and journal
+                     (strategy-journal-offload journal #:keep-recent-turns keep-recent-turns))
+                (strategy-sliding-window #:keep-system-prompt keep-system-prompt
+                                         #:pin-first-user pin-first-user))
+               (filter procedure?))))
     (apply strategy-pipeline stages)))
 
 ;;;

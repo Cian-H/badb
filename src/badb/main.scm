@@ -1,40 +1,40 @@
-(define-module (badb main) #:use-module
-;; DEV-DEBT [accepted-layering]: harness shell (not kernel) intentionally autoloads
-;; geasa plugins; kernel boundary src/badb/kernel/ stays geasa-free (see
-;; scripts/verify-kernel-deps.scm).
-               (ice-9 format)
-               #:use-module
-               (badb surfaces cli)
-               #:autoload
-               (geasa surfaces-tui plugin)
-               (run-tui spec-tool-status spec-tool-verify)
-               #:autoload
-               (badb capabilities filetree-mcp)
-               (run-filetree-mcp)
-               #:autoload
-               (geasa runtimes-synthesis plugin)
-               (run-synthesis-cli synthesis-assemble-hook default-workflow-path
-                 synthesis-bundle-dir)
-               #:export
-               (%program-name %version main))
+(define-module (badb main)
+  #:use-module (ice-9 format)
+  #:use-module (badb surfaces cli)
+  #:autoload (geasa surfaces-tui plugin)
+             (run-tui spec-tool-status spec-tool-verify)
+  #:autoload (badb capabilities filetree-mcp)
+             (run-filetree-mcp)
+  #:autoload (geasa runtimes-synthesis plugin)
+             (run-synthesis-cli synthesis-assemble-hook default-workflow-path
+              synthesis-bundle-dir)
+  #:autoload (geasa runtimes-workflows plugin)
+             (bootstrap-project-geasa! distill-exec-patterns!)
+  #:autoload (geasa capabilities-code-nav plugin)
+             (symbols-overview)
+  #:autoload (geasa capabilities-context-index plugin)
+             (make-bm25-index format-ctx-stats)
+  #:export (%program-name %version main))
 
 (define %program-name "badb")
 
 (define %version "0.1.0")
 
 (define (print-usage port)
-        (format port
-                "~a ~a [COMMAND] [OPTION]...\n\nMicroharness kernel.\n\n~a\n  ~a   launch interactive terminal user interface (default)\n  ~a          run bootstrap test suite\n  ~a  run the filetree MCP server over stdio\n  ~a   run the Sema plugin synthesis workflow\n  ~a         inspect or verify contract specifications (geasa)\n  ~a    display this help and exit\n  ~a output version information and exit\n"
-                (bold port "Usage:")
-                %program-name
-                (bold port "Commands & Options:")
-                (cyan port "tui, (none)")
-                (cyan port "test")
-                (cyan port "mcp-filetree")
-                (cyan port "synthesize")
-                (cyan port "geis")
-                (cyan port "-h, --help")
-                (cyan port "-V, --version")))
+  (format port
+          "~a ~a [COMMAND] [OPTION]...\n\nMicroharness kernel.\n\n~a\n  ~a   launch interactive terminal user interface (default)\n  ~a          initialize project geasa, workflows & memories\n  ~a          run bootstrap test suite\n  ~a  run the filetree MCP server over stdio\n  ~a   run the Sema plugin synthesis workflow\n  ~a         inspect, verify, or distill contract specifications (geasa)\n  ~a          show BM25 context index token statistics\n  ~a    display this help and exit\n  ~a output version information and exit\n"
+          (bold port "Usage:")
+          %program-name
+          (bold port "Commands & Options:")
+          (cyan port "tui, (none)")
+          (cyan port "init")
+          (cyan port "test")
+          (cyan port "mcp-filetree")
+          (cyan port "synthesize")
+          (cyan port "geis")
+          (cyan port "ctx")
+          (cyan port "-h, --help")
+          (cyan port "-V, --version")))
 
 (define (wire-synthesis-assemble!)
         (synthesis-assemble-hook
@@ -58,10 +58,40 @@
                target-path)))))
 
 (define (main args)
-        (let ((options (cdr args)))
+  (let ((options (cdr args)))
+    (cond
+      ((or (null? options) (member (car options) '("tui" "-t" "--tui"))) (run-tui))
+      ((equal? (car options) "init")
+        (let ((workspace (getcwd)))
+          (bootstrap-project-geasa! workspace)
+          (catch #t
+            (lambda ()
+              (let* ((scan-dir (if (file-exists? (string-append workspace "/src"))
+                                   (string-append workspace "/src")
+                                   workspace))
+                     (outline (symbols-overview scan-dir))
+                     (mem-file (string-append workspace "/.badb/memories/symbols.md")))
+                (when (and outline (not (string-null? outline)))
+                  (call-with-output-file mem-file
+                    (lambda (p)
+                      (format p "# Project Symbols Outline~%~%~a~%" outline))))))
+            (lambda _ #f))
+          (format #t "Initialized badb project infrastructure in ~a~%" workspace)
+          (format #t "• .badb/geasa/ (dynamic project capabilities)~%")
+          (format #t "• .badb/workflows/verify.sema (declarative workflows)~%")
+          (format #t "• .badb/memories/ (persistent project knowledge)~%")
+          (format #t "• .badb/rules.scm (project constraints)~%")))
+      ((equal? (car options) "ctx")
+        (let ((sub-args (cdr options)))
           (cond
-            ((or (null? options) (member (car options) '("tui" "-t" "--tui"))) (run-tui))
-            ((equal? (car options) "test")
+            ((or (null? sub-args) (equal? (car sub-args) "stats"))
+              (let ((idx (make-bm25-index)))
+                (display (format-ctx-stats idx))
+                (newline)))
+            (else
+              (format (current-error-port) "Usage: badb ctx stats\n")
+              (exit 1)))))
+      ((equal? (car options) "test")
               (let
                   ((runner
                      (catch #t
@@ -83,7 +113,11 @@
                 (cond
                   ((or (null? sub-args) (member (car sub-args) '("help" "-h" "--help")))
                     (format #t
-                            "Usage: badb geis [status [fid]|list|verify <fid>|synthesize <fid>|pack <fid>|install <dir>|replay <fid>]\n\nInspect, verify, or synthesize contract specifications (geasa).\npack builds a shareable tarball of a bundle from BADB_GEIS_PATH; install locks\na bundle (and its geis dependencies) into the kernel gate and verifies it.\nTo dynamically synthesize a feature with an agent, launch the TUI and run:\n  /geis add <feature description>\n"))
+                            "Usage: badb geis [status [fid]|list|verify <fid>|synthesize <fid>|pack <fid>|install <dir>|replay <fid>|distill [--analyze-only]]\n\nInspect, verify, or synthesize contract specifications (geasa).\npack builds a shareable tarball of a bundle from BADB_GEIS_PATH; install locks\na bundle (and its geis dependencies) into the kernel gate and verifies it.\ndistill analyzes recent execution trajectory and distills into a Geis bundle.\nTo dynamically synthesize a feature with an agent, launch the TUI and run:\n  /geis add <feature description>\n"))
+                  ((equal? (car sub-args) "distill")
+                    (let* ((analyze? (member "--analyze-only" (cdr sub-args)))
+                           (res (distill-exec-patterns! #:workspace (getcwd) #:analyze-only? (and analyze? #t))))
+                      (format #t "distill: ~s~%" res)))
                   ((equal? (car sub-args) "list") (display (spec-tool-status)))
                   ((equal? (car sub-args) "status")
                     (display (apply spec-tool-status (cdr sub-args))))

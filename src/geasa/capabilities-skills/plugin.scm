@@ -14,6 +14,7 @@
   #:use-module (ice-9 textual-ports)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-9)
+  #:use-module (badb kernel registry)
   #:export (<skill>
             make-skill
             skill?
@@ -38,7 +39,9 @@
             skill-registry-enable!
             skill-registry-disable!
             skill-registry-reload!
-            skill-prompt))
+            skill-prompt
+            skill-catalog-summary
+            register-skill-tools!))
 
 ;;;
 ;;; Skill record
@@ -89,8 +92,7 @@ TEXT is the body."
                  (value (string-trim-both (substring line (+ idx 1)))))
              (and (not (string-null? key))
                   (cons key value))))))
-  (if (not (string-prefix-line? "---" text))
-      `((name . #f) (description . #f) (body . ,text))
+  (if (string-prefix-line? "---" text)
       (let* ((rest (if (< (string-length text) 4) "" (substring text 4)))
              (lines (string-split rest #\newline)))
         (let loop ((pending lines)
@@ -102,14 +104,16 @@ TEXT is the body."
             ;; No closing delimiter: treat the entire text as body.
             `((name . #f) (description . #f) (body . ,text)))
            ((null? pending)
-            (let* ((lines (reverse body-lines))
-                   (lines (if (and (pair? lines) (string-null? (car lines)))
-                              (cdr lines) lines))
-                   (lines (if (and (pair? lines) (string-null? (last lines)))
-                              (drop-right lines 1) lines)))
+            (let* ((rev-lines (reverse body-lines))
+                   (trimmed-top (if (and (pair? rev-lines) (string-null? (car rev-lines)))
+                                    (cdr rev-lines)
+                                    rev-lines))
+                   (clean-body (if (and (pair? trimmed-top) (string-null? (last trimmed-top)))
+                                   (drop-right trimmed-top 1)
+                                   trimmed-top)))
               `((name . ,(assoc-ref fields "name"))
                 (description . ,(assoc-ref fields "description"))
-                (body . ,(string-join lines "\n")))))
+                (body . ,(string-join clean-body "\n")))))
            ((and (not closed?) (frontmatter-line? (car pending)))
             (loop (cdr pending) fields #t body-lines))
            ((not closed?)
@@ -120,7 +124,8 @@ TEXT is the body."
                     body-lines)))
            (else
             (loop (cdr pending) fields closed?
-                  (cons (car pending) body-lines))))))))
+                  (cons (car pending) body-lines))))))
+      `((name . #f) (description . #f) (body . ,text))))
 
 ;;;
 ;;; File loading
@@ -268,3 +273,100 @@ a delimited header carrying id, name and description, then the body."
           (skill-name skill)
           (skill-description skill)
           (skill-body skill)))
+
+;;;
+;;; Catalog Summary
+;;;
+
+(define (extract-first-non-empty-line text)
+  "Extract the first non-empty line from TEXT, trimmed of leading/trailing whitespace."
+  (let ((lines (string-split (or text "") #\newline)))
+    (let loop ((rest lines))
+      (cond
+       ((null? rest) "")
+       (else
+        (let ((line (string-trim-both (car rest))))
+          (if (string-null? line)
+              (loop (cdr rest))
+              line)))))))
+
+(define (skill-effective-description skill)
+  "Return SKILL's frontmatter description if present and non-empty,
+otherwise the first non-empty line of its body."
+  (let ((desc (skill-description skill)))
+    (if (and (string? desc) (not (string-null? (string-trim-both desc))))
+        desc
+        (extract-first-non-empty-line (skill-body skill)))))
+
+(define (skill-catalog-summary skill-reg)
+  "Return an alist ((id . description) ...) for all active skills in SKILL-REG.
+If a skill's frontmatter description is missing or empty, extract the first
+non-empty line of its body."
+  (unless (skill-registry? skill-reg)
+    (error "skill-catalog-summary: expected <skill-registry>" skill-reg))
+  (map (lambda (skill)
+         (cons (skill-id skill) (skill-effective-description skill)))
+       (skill-registry-active-skills skill-reg)))
+
+;;;
+;;; Tool Registration
+;;;
+
+(define (register-skill-tools! tool-reg skill-reg)
+  "Attach skill_load and skill_list tools into kernel TOOL-REG backed by SKILL-REG."
+  (unless (registry? tool-reg)
+    (error "register-skill-tools!: expected <registry>" tool-reg))
+  (unless (skill-registry? skill-reg)
+    (error "register-skill-tools!: expected <skill-registry>" skill-reg))
+
+  (registry-attach!
+   tool-reg
+   "skill_load"
+   (lambda* (id #:rest _rest)
+     (let* ((sid (cond ((string? id) id)
+                       ((symbol? id) (symbol->string id))
+                       ((not id) "")
+                       (else (format #f "~a" id))))
+            (skill (and (not (string-null? sid))
+                        (skill-registry-find skill-reg sid))))
+       (if skill
+           (skill-prompt skill)
+           (let ((ids (skill-registry-ids skill-reg)))
+             (format #f "Error: skill '~a' not found. Available skills: ~a"
+                     sid
+                     (if (null? ids)
+                         "none"
+                         (string-join ids ", ")))))))
+   '((description . "Load a skill's full prompt instructions into context by its ID.")
+     (parameters .
+      ((type . "object")
+       (properties .
+        ((id . ((type . "string")
+                (description . "Identifier of the skill to load")))))
+       (required . #("id"))))
+     (_badb_defer . #f)))
+
+  (registry-attach!
+   tool-reg
+   "skill_list"
+   (lambda* (#:rest _rest)
+     (let ((skills (skill-registry-list skill-reg)))
+       (if (null? skills)
+           "No skills discovered."
+           (string-join
+            (map (lambda (skill)
+                   (let* ((sid (skill-id skill))
+                          (disabled? (member sid (skill-registry-disabled skill-reg)))
+                          (status (if disabled? "disabled" "active"))
+                          (path (or (skill-path skill) "")))
+                     (format #f "- ~a [~a]: ~a" sid status path)))
+                 skills)
+            "\n"))))
+   '((description . "List all discovered skills with their status and file paths.")
+     (parameters .
+      ((type . "object")
+       (properties . ())
+       (required . #())))
+     (_badb_defer . #t)))
+
+  tool-reg)

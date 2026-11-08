@@ -17,6 +17,8 @@
                (ice-9 format)
                #:use-module
                (ice-9 pretty-print)
+               #:use-module
+               (lens)
                #:export
                (badb-config-react-max-iterations
                  make-badb-config
@@ -234,8 +236,9 @@
         "Extract the providers alist from CONFIG options, or '().
 Uses a raw alist lookup: GET-PROP unwraps single-provider catalogs,
 which would break badb-config-get-provider on them."
-        (let ((opts (badb-config-options config)))
-          (or (assq-ref opts 'providers) '())))
+        (let ((opts (badb-config-options config))
+              (providers-lens (key-ref 'providers)))
+          (or (focus providers-lens opts) '())))
 
 (define (badb-config-get-provider config name)
         "Retrieve provider entry for NAME (symbol or string) from CONFIG options, or #f."
@@ -249,20 +252,21 @@ which would break badb-config-get-provider on them."
   (badb-config-switch-provider! config name)
   "Switch active model configuration in CONFIG to match named provider preset.
 Returns #t on success, or #f if provider NAME was not found."
-  (let
-      ((prov (badb-config-get-provider config name)))
+  (let ((prov (badb-config-get-provider config name))
+        (endpoint-lens (prop-lens 'endpoint))
+        (api-key-lens (prop-lens 'api-key))
+        (models-lens (prop-lens 'models)))
     (if prov
-      (let*
-          ((ep (get-prop prov 'endpoint #f))
-           (key (get-prop prov 'api-key #f))
-           (models (get-prop prov 'models #f))
-           (m
-             (cond
-               ((string? models) models)
-               ((and (pair? models) (string? (car models))) (car models))
-               ((and (pair? models) (pair? (car models)) (string? (caar models)))
-                 (caar models))
-               (else #f))))
+      (let* ((ep (focus endpoint-lens prov))
+             (key (focus api-key-lens prov))
+             (models (focus models-lens prov))
+             (m
+               (cond
+                 ((string? models) models)
+                 ((and (pair? models) (string? (car models))) (car models))
+                 ((and (pair? models) (pair? (car models)) (string? (caar models)))
+                   (caar models))
+                 (else #f))))
         (when ep (set-badb-config-model-endpoint! config ep))
         (when key (set-badb-config-model-api-key! config key))
         (when m (set-badb-config-model-name! config m))
@@ -273,12 +277,13 @@ Returns #t on success, or #f if provider NAME was not found."
   (badb-config-provider-for-endpoint config endpoint)
   "Return the provider preset entry (its field alist) whose endpoint
 matches ENDPOINT, or #f.  The first matching preset wins."
-  (let ((ep (and (string? endpoint) endpoint)))
+  (let ((ep (and (string? endpoint) endpoint))
+        (endpoint-lens (prop-lens 'endpoint)))
     (and ep
          (let loop ((provs (badb-config-providers config)))
            (cond
              ((null? provs) #f)
-             ((equal? (get-prop (cdar provs) 'endpoint #f) ep)
+             ((equal? (focus endpoint-lens (cdar provs)) ep)
               (cdar provs))
              (else (loop (cdr provs))))))))
 
@@ -288,7 +293,8 @@ matches ENDPOINT, or #f.  The first matching preset wins."
 allow_missing_thinking flag: #t by default, #f when the provider preset
 matching ENDPOINT sets (allow-missing-thinking #f)."
   (let* ((prov (badb-config-provider-for-endpoint config endpoint))
-         (flag (if prov (get-prop prov 'allow-missing-thinking #t) #t)))
+         (flag-lens (prop-lens 'allow-missing-thinking #t))
+         (flag (if prov (focus flag-lens prov) #t)))
     (not (eq? flag #f))))
 
 (define
@@ -297,8 +303,9 @@ matching ENDPOINT sets (allow-missing-thinking #f)."
 (options (agents (role ...) ...)) — or '().  Uses a raw alist lookup:
 GET-PROP unwraps single-entry catalogs ((one-role ...)) into the role
 form itself, which would corrupt single-role configurations."
-  (let ((opts (badb-config-options config)))
-    (or (assq-ref opts 'agents) '())))
+  (let ((opts (badb-config-options config))
+        (agents-lens (key-ref 'agents)))
+    (or (focus agents-lens opts) '())))
 
 (define
   (badb-config-get-agent config name)
@@ -309,13 +316,43 @@ form itself, which would corrupt single-role configurations."
          (roles (badb-config-agents config)))
     (or (assq-ref roles name-sym) (assoc-ref roles name-str))))
 
+;;;
+;;; Tolerant property lens (guile-lens over get-prop matching)
+;;;
+;; Configuration forms mix (key . val), (key val), and #:key val shapes
+;; with symbol/string/keyword keys; get-prop (foundation-util) resolves
+;; them all.  prop-lens focuses such properties using guile-lens.
+(define (%entry-key-matches? entry sym str kw)
+  (and (pair? entry)
+       (let ((k (if (pair? (car entry)) (caar entry) (car entry))))
+         (or (equal? k sym) (equal? k str) (equal? k kw)))))
+
+(define* (prop-lens key #:optional (default #f))
+  "Return a guile-lens lens focusing KEY in property lists and alists
+with get-prop's tolerant matching (symbol, string, or keyword keys;
+dotted or single-element-list values).  DEFAULT is the focus default."
+  (let* ((sym (ensure-symbol key))
+         (str (symbol->string sym))
+         (kw (symbol->keyword sym)))
+    (lens
+     (lambda (obj) (get-prop (if (list? obj) obj '()) key default))
+     (lambda (obj f)
+       (let ((obj (if (list? obj) obj '()))
+             (val (get-prop (if (list? obj) obj '()) key default)))
+         (cons (list sym (f val))
+               (filter (lambda (entry)
+                         (not (%entry-key-matches? entry sym str kw)))
+                       obj)))))))
+
+
 (define (badb-config-react-max-iterations config)
         "Optional ReAct loop iteration cap from (options (react (max-iterations N))):
 a positive integer, or #f (the default) for an unlimited loop."
-        (let*
-            ((opts (badb-config-options config))
-             (react (and (pair? opts) (assq-ref opts (quote react))))
-             (limit (and (pair? react) (get-prop react (quote max-iterations) #f))))
+        (let* ((opts (badb-config-options config))
+               (react-lens (key-ref 'react))
+               (max-iter-lens (prop-lens 'max-iterations))
+               (react (and (pair? opts) (focus react-lens opts)))
+               (limit (and (pair? react) (focus max-iter-lens react))))
           (if
               (and (number? limit) (integer? limit) (> limit 0))
             limit
@@ -329,13 +366,19 @@ a positive integer, or #f (the default) for an unlimited loop."
   (let* ((body (if (and (pair? form-body) (eq? (car form-body) 'model))
                    (cdr form-body)
                    form-body))
-         (m (or (get-prop body 'name #f)
-                (get-prop body 'default #f)
+         (name-lens (prop-lens 'name))
+         (default-lens (prop-lens 'default))
+         (endpoint-lens (prop-lens 'endpoint))
+         (api-key-lens (prop-lens 'api-key))
+         (temperature-lens (prop-lens 'temperature))
+         (max-tokens-lens (prop-lens 'max-tokens))
+         (m (or (focus name-lens body)
+                (focus default-lens body)
                 (badb-config-model-name cfg)))
-         (ep (get-prop body 'endpoint (badb-config-model-endpoint cfg)))
-         (key (get-prop body 'api-key (badb-config-model-api-key cfg)))
-         (temp (get-prop body 'temperature (badb-config-model-temperature cfg)))
-         (max-tok (get-prop body 'max-tokens (badb-config-model-max-tokens cfg))))
+         (ep (or (focus endpoint-lens body) (badb-config-model-endpoint cfg)))
+         (key (or (focus api-key-lens body) (badb-config-model-api-key cfg)))
+         (temp (or (focus temperature-lens body) (badb-config-model-temperature cfg)))
+         (max-tok (or (focus max-tokens-lens body) (badb-config-model-max-tokens cfg))))
     (when m (set-badb-config-model-name! cfg m))
     (when ep (set-badb-config-model-endpoint! cfg ep))
     (when key (set-badb-config-model-api-key! cfg key))
@@ -347,7 +390,8 @@ a positive integer, or #f (the default) for an unlimited loop."
   (let* ((body (if (and (pair? form-body) (eq? (car form-body) 'journal))
                    (cdr form-body)
                    form-body))
-         (p (get-prop body 'path (badb-config-journal-path cfg))))
+         (path-lens (prop-lens 'path))
+         (p (focus path-lens body)))
     (when p (set-badb-config-journal-path! cfg p))))
 
 (define (apply-ui-config-form! cfg form-body)
@@ -355,7 +399,8 @@ a positive integer, or #f (the default) for an unlimited loop."
   (let* ((body (if (and (pair? form-body) (eq? (car form-body) 'ui))
                    (cdr form-body)
                    form-body))
-         (t (get-prop body 'theme (badb-config-ui-theme cfg))))
+         (theme-lens (prop-lens 'theme))
+         (t (focus theme-lens body)))
     (when t (set-badb-config-ui-theme! cfg (ensure-string t)))))
 
 (define (apply-mcp-config-form! cfg form-body)
@@ -363,7 +408,8 @@ a positive integer, or #f (the default) for an unlimited loop."
   (let* ((body (if (and (pair? form-body) (eq? (car form-body) 'mcp))
                    (cdr form-body)
                    form-body))
-         (servers-entry (get-prop body 'servers #f))
+         (servers-lens (prop-lens 'servers))
+         (servers-entry (focus servers-lens body))
          (entries (if (list? servers-entry) servers-entry body))
          (parsed (filter-map parse-mcp-server-spec entries)))
     (badb-config-merge-mcp-servers! cfg parsed)))

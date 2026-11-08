@@ -155,5 +155,56 @@
       (and (string? default-prompt) (> (string-length default-prompt) 100)))
     (test-assert "default-system-prompt includes custom rule" (string-contains default-prompt "Rule 1"))))
 
+(test-group "format-skill-catalog-section"
+  (test-assert "empty skills returns #f"
+    (not (format-skill-catalog-section '())))
+  (test-assert "string skills formatted"
+    (string-contains (format-skill-catalog-section "- my-skill: does things") "## Skills"))
+  (let ((formatted (format-skill-catalog-section
+                    '(((name . "tdd") (description . "test driven development"))
+                      ((name . "refactor") (description . "clean code"))))))
+    (test-assert "formatted contains header" (string-contains formatted "## Available Skills"))
+    (test-assert "formatted contains tdd" (string-contains formatted "- tdd: test driven development"))
+    (test-assert "formatted contains refactor" (string-contains formatted "- refactor: clean code"))))
+
+(test-group "format-memory-catalog-section"
+  (test-assert "empty memories returns #f"
+    (not (format-memory-catalog-section '())))
+  (test-assert "string memories formatted"
+    (string-contains (format-memory-catalog-section "- memory: fact 1") "## Project Memories"))
+  (let ((formatted (format-memory-catalog-section
+                    '(((title . "arch") (content . "uses guile scheme"))
+                      ((title . "rule") (content . "no kernel deps"))))))
+    (test-assert "formatted contains header" (string-contains formatted "## Project Memories"))
+    (test-assert "formatted contains arch" (string-contains formatted "- arch: uses guile scheme"))))
+
+(test-group "static-prefix-invariance"
+  (let* ((prefix1 (compile-system-prompt #:workspace-dir "/dir/alpha"
+                                         #:skills '(((name . "skill1") (description . "desc1")))
+                                         #:memories '(((title . "mem1") (content . "val1")))
+                                         #:tools '(((name . "bash")))
+                                         #:static-only? #t))
+         (prefix2 (compile-system-prompt #:workspace-dir "/dir/beta"
+                                         #:skills '(((name . "skill2") (description . "desc2")))
+                                         #:memories '(((title . "mem2") (content . "val2")))
+                                         #:tools '(((name . "read_file")))
+                                         #:static-only? #t)))
+    (test-assert "static prefix contains identity" (string-contains prefix1 "You are badb"))
+    (test-assert "static prefix contains Operational Directives" (string-contains prefix1 "## Operational Directives"))
+    (test-assert "static prefix contains Tool Usage" (string-contains prefix1 "## Tool Usage"))
+    (test-assert "static prefix does NOT contain Environment" (not (string-contains prefix1 "## Environment")))
+    (test-assert "static prefix does NOT contain Skills" (not (string-contains prefix1 "## Available Skills")))
+    (test-assert "static prefix does NOT contain Memories" (not (string-contains prefix1 "## Project Memories")))
+    (test-equal "static prefix is completely invariant to dynamic inputs" prefix1 prefix2)))
+
+(test-group "compile-system-prompt-full"
+  (let ((prompt (compile-system-prompt #:workspace-dir (getcwd)
+                                       #:skills '(((name . "git-flow") (description . "git workflow")))
+                                       #:memories '(((title . "note") (content . "important note")))
+                                       #:static-only? #f)))
+    (test-assert "full prompt contains static prefix" (string-contains prompt "## Operational Directives"))
+    (test-assert "full prompt contains skills" (string-contains prompt "git-flow: git workflow"))
+    (test-assert "full prompt contains memories" (string-contains prompt "note: important note"))))
+
 (spec-end)
 (spec-exit)

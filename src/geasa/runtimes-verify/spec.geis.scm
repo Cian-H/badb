@@ -120,7 +120,21 @@
       (test-equal "workspace syntax check catches error without verify-target"
         "verification_failed" (assoc-ref res 'status))
       (test-assert "file content restored after workspace syntax failure"
-        (string-contains (call-with-input-file target-file read-line) "updated-world"))))
+        (string-contains (call-with-input-file target-file read-line) "updated-world")))
+
+    ;; Non-Scheme file with unbalanced parens passes verify-action
+    (let* ((v-syntax (make-verifier #:check-syntax? #t #:run-tests? #f))
+           (md-content "# Title\nHere is an unbalanced parenthesis (like this.\n")
+           (md-res (verify-action v-syntax #:code md-content #:file "README.md")))
+      (test-assert "markdown with unbalanced paren passes verify-action"
+        (assoc-ref md-res 'passed?)))
+
+    ;; Scheme file with unbalanced parens fails verify-action
+    (let* ((v-syntax (make-verifier #:check-syntax? #t #:run-tests? #f))
+           (scm-broken "(define (broken-fn x\n")
+           (scm-res (verify-action v-syntax #:code scm-broken #:file "broken.scm")))
+      (test-assert "broken scheme file fails verify-action"
+        (not (assoc-ref scm-res 'passed?)))))
   (teardown-test-env!))
 
 (spec-end)

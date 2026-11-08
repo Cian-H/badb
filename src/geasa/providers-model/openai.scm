@@ -129,11 +129,7 @@ Optional keyword arguments:
                          (cons "tools"
                                (list->vector
                                  (map strip-internal-tool-keys
-                                      (filter pair?
-                                              (cond
-                                                ((vector? tools) (vector->list tools))
-                                                ((list? tools) tools)
-                                                (else '())))))))
+                                      (filter pair? (ensure-list tools))))))
                        (and tool-choice (cons "tool_choice" tool-choice))
                        (and allow-missing-thinking (cons "allow_missing_thinking" #t))
                        (cons "stream"
@@ -306,10 +302,7 @@ Returns the raw fragment alists, or '() when the chunk has none."
                   (vector-ref choices 0)))
          (delta (and (pair? c0) (json-ref c0 "delta")))
          (raw (and (pair? delta) (json-ref delta "tool_calls"))))
-    (cond
-      ((vector? raw) (vector->list raw))
-      ((list? raw) raw)
-      (else '()))))
+    (ensure-list raw)))
 
 (define (merge-tool-call-fragment acc fragment)
   "Merge a streamed tool-call FRAGMENT into accumulator ACC (an alist

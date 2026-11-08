@@ -14,6 +14,8 @@
                (srfi srfi-1)
                #:use-module
                (srfi srfi-9)
+               #:use-module
+               (srfi srfi-158)
                #:export
                (current-send-reasoning? <model-client>
                                         make-model-client
@@ -25,6 +27,7 @@
                                         valid-api-message?
                                         normalize-messages
                                         parse-sse-line
+                                        sse-event-generator
                                         read-sse-events))
 
 ;;;
@@ -191,50 +194,69 @@ Returns:
      ;; Other SSE fields (event, id, retry)
      (else #f))))
 
+(define (sse-event-generator port)
+  "Return a lazy (srfi-158) generator that yields parsed SSE events
+from PORT.  Each yield is one of:
+  (data . OBJ-OR-STRING)  a 'data: ' SSE event payload
+  (body . ALIST)          a non-SSE complete JSON completion response
+  done                      '[DONE]' was seen
+  eof                       the port reached end of file"
+  (make-coroutine-generator
+   (lambda (yield)
+     (let loop ()
+       (let ((line (read-line port)))
+         (cond
+          ((eof-object? line) (yield 'eof))
+          (else
+           (let* ((cleaned (clean-sse-line line))
+                  (parsed (parse-sse-line line)))
+             (cond
+              ((eq? parsed 'done) (yield 'done))
+              ((string? parsed)
+               (let ((data (catch #t
+                             (lambda () (json-string->scm parsed))
+                             (lambda _ parsed))))
+                 (yield (cons 'data data))
+                 (loop)))
+              ((and (string-prefix? "{" cleaned)
+                    (or (string-contains cleaned "\"error\"")
+                        (string-contains cleaned "'error'")))
+               (let ((err-obj (catch #t
+                              (lambda () (json-string->scm cleaned))
+                              (lambda _ #f))))
+                 (error "SSE stream received error response"
+                        (or (and (pair? err-obj)
+                                 (let ((err-inner (assoc-ref err-obj "error")))
+                                   (and (pair? err-inner) (assoc-ref err-inner "message"))))
+                            cleaned))))
+              ;; Non-SSE complete JSON response: some endpoints ignore
+              ;; stream:true and answer with a normal completion body.
+              ;; Yield it as a terminal event.
+              ((and (string-prefix? "{" cleaned)
+                    (catch #t
+                      (lambda () (json-string->scm cleaned))
+                      (lambda _ #f)))
+               => (lambda (obj)
+                    (if (and (pair? obj) (json-ref obj "choices"))
+                        (yield (cons 'body obj))
+                        (loop))))
+              (else (loop)))))))))))
+
 (define (read-sse-events port callback)
   "Read lines from PORT, parse SSE 'data: ' events, and invoke
 (CALLBACK data-json-or-string) for each event until EOF or '[DONE]'.
 Returns 'done when [DONE] is encountered, 'eof upon reaching EOF, or the
 parsed alist when the body is a non-SSE complete JSON response (an
 endpoint that ignored stream:true)."
-  (let loop ()
-    (let ((line (read-line port)))
-      (cond
-       ((eof-object? line)
-        'eof)
-       (else
-        (let* ((cleaned (clean-sse-line line))
-               (parsed (parse-sse-line line)))
-          (cond
-           ((eq? parsed 'done)
-            'done)
-           ((string? parsed)
-            (let ((data (catch #t
-                          (lambda () (json-string->scm parsed))
-                          (lambda _ parsed))))
-              (callback data)
-              (loop)))
-           ((and (string-prefix? "{" cleaned)
-                 (or (string-contains cleaned "\"error\"")
-                     (string-contains cleaned "'error'")))
-            (let ((err-obj (catch #t
-                             (lambda () (json-string->scm cleaned))
-                             (lambda _ #f))))
-              (error "SSE stream received error response"
-                     (or (and (pair? err-obj)
-                              (let ((err-inner (assoc-ref err-obj "error")))
-                                (and (pair? err-inner) (assoc-ref err-inner "message"))))
-                         cleaned))))
-           ;; Non-SSE complete JSON response: some endpoints ignore
-           ;; stream:true and answer with a normal completion body.
-           ;; Return the parsed object to the caller and stop.
-           ((and (string-prefix? "{" cleaned)
-                 (catch #t
-                   (lambda () (json-string->scm cleaned))
-                   (lambda _ #f)))
-            => (lambda (obj)
-                 (if (and (pair? obj) (json-ref obj "choices"))
-                     obj
-                     (loop))))
-           (else
-            (loop)))))))))
+  (let ((gen (sse-event-generator port)))
+    (let loop ()
+      (let ((event (gen)))
+        (cond
+         ((eq? event 'eof) 'eof)
+         ((eq? event 'done) 'done)
+         ((and (pair? event) (eq? (car event) 'data))
+          (callback (cdr event))
+          (loop))
+         ((and (pair? event) (eq? (car event) 'body))
+          (cdr event))
+         (else (loop)))))))
