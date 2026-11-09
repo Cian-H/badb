@@ -433,7 +433,7 @@ verbatim, and fails open to a verbatim truncation."
                                                 (skill-catalog-summary skill-reg)
                                                 #:memories
                                                 (catch #t (lambda () (memory-read "all")) (lambda _ #f))
-                                                #:static-only? #t))))
+                                                #:static-only? #f))))
     ;; The system prompt stays in llm-history for the model but is not
     ;; displayed as a transcript card.
     (define messages
