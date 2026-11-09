@@ -19,63 +19,63 @@
 
 ;; Resolve gate module (supporting both (badb kernel geis-gate) and facade (badb spec-gate))
 (define %gate-module
-  (catch #t
-    (lambda ()
-      (resolve-module '(badb kernel geis-gate) #:ensure #f))
-    (lambda _ #f)))
+        (catch #t
+          (lambda ()
+            (resolve-module '(badb kernel geis-gate) #:ensure #f))
+          (lambda _ #f)))
 
 (define %use-gate
-  (if (and %gate-module (module-bound? %gate-module 'lock-geis))
-      %gate-module
-      (resolve-interface '(badb spec-gate))))
+        (if (and %gate-module (module-bound? %gate-module 'lock-geis))
+          %gate-module
+          (resolve-interface '(badb spec-gate))))
 
 (define lock-spec-proc
-  (if (module-bound? %use-gate 'lock-geis)
-      (module-ref %use-gate 'lock-geis)
-      (module-ref %use-gate 'lock-spec)))
+        (if (module-bound? %use-gate 'lock-geis)
+          (module-ref %use-gate 'lock-geis)
+          (module-ref %use-gate 'lock-spec)))
 
 (define verify-locked-spec-proc
-  (if (module-bound? %use-gate 'verify-locked-geis)
-      (module-ref %use-gate 'verify-locked-geis)
-      (module-ref %use-gate 'verify-locked-spec)))
+        (if (module-bound? %use-gate 'verify-locked-geis)
+          (module-ref %use-gate 'verify-locked-geis)
+          (module-ref %use-gate 'verify-locked-spec)))
 
 (define locked-spec-path-proc
-  (module-ref %use-gate 'locked-spec-path))
+        (module-ref %use-gate 'locked-spec-path))
 
 (define %pass-count 0)
 (define %fail-count 0)
 
 (define (assert-true desc condition)
-  (if condition
-      (begin
-        (format #t "  PASS: ~a~%" desc)
-        (set! %pass-count (+ %pass-count 1)))
-      (begin
-        (format (current-error-port) "  FAIL: ~a~%" desc)
-        (set! %fail-count (+ %fail-count 1)))))
+        (if condition
+          (begin
+            (format #t "  PASS: ~a~%" desc)
+            (set! %pass-count (+ %pass-count 1)))
+          (begin
+            (format (current-error-port) "  FAIL: ~a~%" desc)
+            (set! %fail-count (+ %fail-count 1)))))
 
 (define (assert-eq desc expected actual)
-  (if (equal? expected actual)
-      (begin
-        (format #t "  PASS: ~a~%" desc)
-        (set! %pass-count (+ %pass-count 1)))
-      (begin
-        (format (current-error-port) "  FAIL: ~a (expected ~s, got ~s)~%" desc expected actual)
-        (set! %fail-count (+ %fail-count 1)))))
+        (if (equal? expected actual)
+          (begin
+            (format #t "  PASS: ~a~%" desc)
+            (set! %pass-count (+ %pass-count 1)))
+          (begin
+            (format (current-error-port) "  FAIL: ~a (expected ~s, got ~s)~%" desc expected actual)
+            (set! %fail-count (+ %fail-count 1)))))
 
 (define (assert-contains desc needle haystack)
-  (if (and (string? haystack) (string-contains haystack needle))
-      (begin
-        (format #t "  PASS: ~a~%" desc)
-        (set! %pass-count (+ %pass-count 1)))
-      (begin
-        (format (current-error-port) "  FAIL: ~a (expected to contain ~s)~%" desc needle)
-        (format (current-error-port) "  Haystack: ~a~%" haystack)
-        (set! %fail-count (+ %fail-count 1)))))
+        (if (and (string? haystack) (string-contains haystack needle))
+          (begin
+            (format #t "  PASS: ~a~%" desc)
+            (set! %pass-count (+ %pass-count 1)))
+          (begin
+            (format (current-error-port) "  FAIL: ~a (expected to contain ~s)~%" desc needle)
+            (format (current-error-port) "  Haystack: ~a~%" haystack)
+            (set! %fail-count (+ %fail-count 1)))))
 
 (define (write-file! path text)
-  (call-with-output-file path
-    (lambda (port) (display text port))))
+        (call-with-output-file path
+                               (lambda (port) (display text port))))
 
 (format #t "=== E2E Test Suite: Geis Contract Locking & Verification ===~%")
 
@@ -117,11 +117,11 @@
 
           ;; Verify write attempt fails with permission error
           (let ((write-failed?
-                 (catch 'system-error
-                   (lambda ()
-                     (call-with-output-file locked-file (lambda (p) (display "tampered" p)))
-                     #f)
-                   (lambda _ #t))))
+                  (catch 'system-error
+                    (lambda ()
+                      (call-with-output-file locked-file (lambda (p) (display "tampered" p)))
+                      #f)
+                    (lambda _ #t))))
             (assert-true "Attempt to overwrite locked file is rejected by OS permissions" write-failed?))))
 
       ;; -----------------------------------------------------------------------
@@ -197,8 +197,8 @@
     (lambda ()
       ;; Restore environment & clean up
       (if saved-root
-          (setenv "BADB_SPEC_GATE_ROOT" saved-root)
-          (unsetenv "BADB_SPEC_GATE_ROOT"))
+        (setenv "BADB_SPEC_GATE_ROOT" saved-root)
+        (unsetenv "BADB_SPEC_GATE_ROOT"))
       (system* "rm" "-rf" tmp-dir))))
 
 ;;; ---------------------------------------------------------------------------
@@ -209,9 +209,9 @@
 (format #t "  Total Failed: ~a~%" %fail-count)
 
 (if (> %fail-count 0)
-    (begin
-      (format (current-error-port) "FAIL: Geis contract E2E suite had ~a failure(s).~%" %fail-count)
-      (exit 1))
-    (begin
-      (format #t "SUCCESS: All Geis contract locking & verification tests passed.~%")
-      (exit 0)))
+  (begin
+    (format (current-error-port) "FAIL: Geis contract E2E suite had ~a failure(s).~%" %fail-count)
+    (exit 1))
+  (begin
+    (format #t "SUCCESS: All Geis contract locking & verification tests passed.~%")
+    (exit 0)))

@@ -21,32 +21,32 @@
 (define %fail-count 0)
 
 (define (assert-true desc condition)
-  (if condition
-      (begin
-        (format #t "  PASS: ~a~%" desc)
-        (set! %pass-count (+ %pass-count 1)))
-      (begin
-        (format (current-error-port) "  FAIL: ~a~%" desc)
-        (set! %fail-count (+ %fail-count 1)))))
+        (if condition
+          (begin
+            (format #t "  PASS: ~a~%" desc)
+            (set! %pass-count (+ %pass-count 1)))
+          (begin
+            (format (current-error-port) "  FAIL: ~a~%" desc)
+            (set! %fail-count (+ %fail-count 1)))))
 
 (define (assert-eq desc expected actual)
-  (if (equal? expected actual)
-      (begin
-        (format #t "  PASS: ~a~%" desc)
-        (set! %pass-count (+ %pass-count 1)))
-      (begin
-        (format (current-error-port) "  FAIL: ~a (expected ~s, got ~s)~%" desc expected actual)
-        (set! %fail-count (+ %fail-count 1)))))
+        (if (equal? expected actual)
+          (begin
+            (format #t "  PASS: ~a~%" desc)
+            (set! %pass-count (+ %pass-count 1)))
+          (begin
+            (format (current-error-port) "  FAIL: ~a (expected ~s, got ~s)~%" desc expected actual)
+            (set! %fail-count (+ %fail-count 1)))))
 
 (define (assert-contains desc needle haystack)
-  (if (and (string? haystack) (string-contains haystack needle))
-      (begin
-        (format #t "  PASS: ~a~%" desc)
-        (set! %pass-count (+ %pass-count 1)))
-      (begin
-        (format (current-error-port) "  FAIL: ~a (expected to contain ~s)~%" desc needle)
-        (format (current-error-port) "  Haystack: ~a~%" haystack)
-        (set! %fail-count (+ %fail-count 1)))))
+        (if (and (string? haystack) (string-contains haystack needle))
+          (begin
+            (format #t "  PASS: ~a~%" desc)
+            (set! %pass-count (+ %pass-count 1)))
+          (begin
+            (format (current-error-port) "  FAIL: ~a (expected to contain ~s)~%" desc needle)
+            (format (current-error-port) "  Haystack: ~a~%" haystack)
+            (set! %fail-count (+ %fail-count 1)))))
 
 (format #t "=== E2E Test Suite: Transaction Atomic Rollback on Spec Failure ===~%")
 
@@ -67,13 +67,13 @@
       (let ((res1 (apply-transaction! tx-mgr 'crypto-service
                                       '((define (encrypt msg) (string-append "enc:" msg))
                                         (define (decrypt msg)
-                                          (if (string-prefix? "enc:" msg)
-                                              (substring msg 4)
-                                              #f))
+                                         (if (string-prefix? "enc:" msg)
+                                          (substring msg 4)
+                                          #f))
                                         (define (crypto-service op . args)
-                                          (case op
-                                            ((encrypt) (apply encrypt args))
-                                            ((decrypt) (apply decrypt args)))))
+                                         (case op
+                                          ((encrypt) (apply encrypt args))
+                                          ((decrypt) (apply decrypt args)))))
                                       (lambda (mod)
                                         (let ((svc (feature-module-ref mod 'crypto-service)))
                                           (and (procedure? svc)
@@ -157,9 +157,9 @@
 
       (let ((res5 (apply-transaction! tx-mgr 'crypto-service
                                       '((define (crypto-service op . args)
-                                          (case op
-                                            ((encrypt) (string-append "v2:" (car args)))
-                                            ((decrypt) (substring (car args) 3)))))
+                                         (case op
+                                          ((encrypt) (string-append "v2:" (car args)))
+                                          ((decrypt) (substring (car args) 3)))))
                                       (lambda (mod)
                                         (let ((svc (feature-module-ref mod 'crypto-service)))
                                           (string=? "v2:test" (svc 'encrypt "test"))))
@@ -211,9 +211,9 @@
 (format #t "  Total Failed: ~a~%" %fail-count)
 
 (if (> %fail-count 0)
-    (begin
-      (format (current-error-port) "FAIL: Transaction rollback E2E suite had ~a failure(s).~%" %fail-count)
-      (exit 1))
-    (begin
-      (format #t "SUCCESS: All Transaction atomic rollback tests passed.~%")
-      (exit 0)))
+  (begin
+    (format (current-error-port) "FAIL: Transaction rollback E2E suite had ~a failure(s).~%" %fail-count)
+    (exit 1))
+  (begin
+    (format #t "SUCCESS: All Transaction atomic rollback tests passed.~%")
+    (exit 0)))

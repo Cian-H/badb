@@ -8,29 +8,29 @@
 ;;; travel in the workflow's task prompt, not here.
 
 (define-module (geasa persona-synthesizer plugin)
-  #:use-module (geasa persona-base plugin)
-  #:export (persona-id
-            persona-identity
-            persona-identity-file
-            persona-prompt))
+               #:use-module (geasa persona-base plugin)
+               #:export (persona-id
+                          persona-identity
+                          persona-identity-file
+                          persona-prompt))
 
 (define %service
-  (make-persona-service "synthesizer"
-                        #:directives '("scheme-structural-editing")))
+        (make-persona-service "synthesizer"
+                              #:directives '("scheme-structural-editing")))
 
 (define (persona-id)
-  "Identifier of this persona."
-  (persona-service-id %service))
+        "Identifier of this persona."
+        (persona-service-id %service))
 
 (define (persona-identity-file)
-  "Path of the canonical persona text within this bundle."
-  (persona-service-identity-file %service))
+        "Path of the canonical persona text within this bundle."
+        (persona-service-identity-file %service))
 
 (define (persona-identity)
-  "The synthesizer persona: the content of the bundle's prompts/identity.md."
-  (persona-service-identity %service))
+        "The synthesizer persona: the content of the bundle's prompts/identity.md."
+        (persona-service-identity %service))
 
 (define (persona-prompt)
-  "The full synthesizer prompt: the persona composed with its shared
+        "The full synthesizer prompt: the persona composed with its shared
 directive features (structural Scheme editing)."
-  (persona-service-prompt %service))
+        (persona-service-prompt %service))

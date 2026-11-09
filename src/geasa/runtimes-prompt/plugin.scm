@@ -5,142 +5,142 @@
 ;;; system prompts tailored for autonomous ReAct loops.
 
 (define-module (geasa runtimes-prompt plugin)
-  #:use-module (geasa foundation-util plugin)
-  #:use-module (geasa persona-badb plugin)
-  #:use-module (git bindings)
-  #:use-module (git repository)
-  #:use-module (git reference)
-  #:use-module (git branch)
-  #:use-module (git status)
-  #:use-module (ice-9 popen)
-  #:use-module (ice-9 rdelim)
-  #:use-module (ice-9 format)
-  #:use-module (ice-9 optargs)
-  #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-9)
-  #:use-module (pipe)
-  #:export (<prompt-composer>
-            make-prompt-composer
-            prompt-composer?
-            prompt-composer-system-identity
-            prompt-composer-include-git-status?
-            prompt-composer-include-file-tree?
-            prompt-composer-file-tree-depth
-            prompt-composer-file-tree-max-files
-            prompt-composer-rule-files
-            prompt-composer-custom-rules
-            prompt-composer-tool-style
-            prompt-composer-context-limit-chars
-            set-prompt-composer-system-identity!
-            set-prompt-composer-custom-rules!
+               #:use-module (geasa foundation-util plugin)
+               #:use-module (geasa persona-badb plugin)
+               #:use-module (git bindings)
+               #:use-module (git repository)
+               #:use-module (git reference)
+               #:use-module (git branch)
+               #:use-module (git status)
+               #:use-module (ice-9 popen)
+               #:use-module (ice-9 rdelim)
+               #:use-module (ice-9 format)
+               #:use-module (ice-9 optargs)
+               #:use-module (srfi srfi-1)
+               #:use-module (srfi srfi-9)
+               #:use-module (pipe)
+               #:export (<prompt-composer>
+                          make-prompt-composer
+                          prompt-composer?
+                          prompt-composer-system-identity
+                          prompt-composer-include-git-status?
+                          prompt-composer-include-file-tree?
+                          prompt-composer-file-tree-depth
+                          prompt-composer-file-tree-max-files
+                          prompt-composer-rule-files
+                          prompt-composer-custom-rules
+                          prompt-composer-tool-style
+                          prompt-composer-context-limit-chars
+                          set-prompt-composer-system-identity!
+                          set-prompt-composer-custom-rules!
 
-            ;; Environment & Git Inspection
-            get-git-branch
-            get-git-status-summary
-            build-workspace-file-tree
-            collect-environment-info
+                          ;; Environment & Git Inspection
+                          get-git-branch
+                          get-git-status-summary
+                          build-workspace-file-tree
+                          collect-environment-info
 
-            ;; Rules Discovery
-            discover-project-rules
-            read-rule-file
+                          ;; Rules Discovery
+                          discover-project-rules
+                          read-rule-file
 
-            ;; Tool Formatting
-            format-tools-for-prompt
+                          ;; Tool Formatting
+                          format-tools-for-prompt
 
-            ;; Prompt Assembly
-            assemble-system-prompt
-            compile-system-prompt
-            format-skill-catalog-section
-            format-memory-catalog-section
-            default-system-prompt))
+                          ;; Prompt Assembly
+                          assemble-system-prompt
+                          compile-system-prompt
+                          format-skill-catalog-section
+                          format-memory-catalog-section
+                          default-system-prompt))
 
 ;;;
 ;;; Shell & Process Helper
 ;;;
 (define* (exec-cmd-output cmd args #:optional (dir #f))
-  "Execute CMD with ARGS, optionally within DIR, and capture stdout as a trimmed string.
+         "Execute CMD with ARGS, optionally within DIR, and capture stdout as a trimmed string.
 The child's stderr is routed to /dev/null: under the notcurses backend
 any stderr bytes land on the same tty as the diff-rendered frame and
 corrupt it mid-session (git's 'fatal: not a repository' noise was
 bleeding straight through the UI). Returns #f if execution fails or
 command exits non-zero."
-  (ignore-errors
-    (with-directory dir
-      (let*
-          ;; sh -c 'exec "$0" "$@"' passes the command and
-          ;; arguments through sh's own safe word splitting - no
-          ;; quoting to get wrong - while the trailing redirect
-          ;; silences the child's stderr.
-          ((pipe (apply open-pipe* "r"
-                        "/bin/sh" "-c"
-                        "exec \"$0\" \"$@\" 2>/dev/null"
-                        cmd args))
-           (output (read-string pipe))
-           (status (close-pipe pipe)))
-        (if (zero? (status:exit-val status))
-          (if (string? output)
-            (string-trim-both output)
-            "")
-          #f)))))
+         (ignore-errors
+           (with-directory dir
+                           (let*
+                               ;; sh -c 'exec "$0" "$@"' passes the command and
+                               ;; arguments through sh's own safe word splitting - no
+                               ;; quoting to get wrong - while the trailing redirect
+                               ;; silences the child's stderr.
+                               ((pipe (apply open-pipe* "r"
+                                             "/bin/sh" "-c"
+                                             "exec \"$0\" \"$@\" 2>/dev/null"
+                                             cmd args))
+                                (output (read-string pipe))
+                                (status (close-pipe pipe)))
+                             (if (zero? (status:exit-val status))
+                               (if (string? output)
+                                 (string-trim-both output)
+                                 "")
+                               #f)))))
 
 ;;;
 ;;; Git Inspection
 ;;;
 (define* (get-git-branch #:optional (workspace-dir (getcwd)))
-  "Return current git branch name in WORKSPACE-DIR, or #f if not a git repository."
-  (catch #t
-    (lambda ()
-      (libgit2-init!)
-      (let* ((repo (repository-open workspace-dir))
-             (head (repository-head repo)))
-        (or (branch-name head)
-            (exec-cmd-output "git" '("branch" "--show-current") workspace-dir))))
-    (lambda _
-      (exec-cmd-output "git" '("branch" "--show-current") workspace-dir))))
+         "Return current git branch name in WORKSPACE-DIR, or #f if not a git repository."
+         (catch #t
+           (lambda ()
+             (libgit2-init!)
+             (let* ((repo (repository-open workspace-dir))
+                    (head (repository-head repo)))
+               (or (branch-name head)
+                   (exec-cmd-output "git" '("branch" "--show-current") workspace-dir))))
+           (lambda _
+             (exec-cmd-output "git" '("branch" "--show-current") workspace-dir))))
 
 (define* (get-git-status-summary #:optional (workspace-dir (getcwd)) #:key (max-lines 25))
-  "Return a concise summary of git status in WORKSPACE-DIR, or #f if not a git repository."
-  (catch #t
-    (lambda ()
-      (libgit2-init!)
-      (let* ((repo (repository-open workspace-dir))
-             (status (status-list-new repo (make-status-options)))
-             (count (status-list-entry-count status)))
-        (if (zero? count)
-            "clean (no changes)"
-            (let ((raw (exec-cmd-output "git" '("status" "--porcelain") workspace-dir)))
-              (cond
-               ((not raw) #f)
-               ((string-null? raw) "clean (no changes)")
-               (else
-                (let* ((lines (filter (lambda (l) (not (string-null? l)))
-                                      (string-split raw #\newline)))
-                       (n (length lines))
-                       (trimmed (take lines (min n max-lines)))
-                       (body (string-join trimmed "\n")))
-                  (if (> n max-lines)
-                      (format #f "~a\n... (~a more changes truncated)" body (- n max-lines))
-                      body))))))))
-    (lambda _
-      (let ((raw (exec-cmd-output "git" '("status" "--porcelain") workspace-dir)))
-        (cond
-         ((not raw) #f)
-         ((string-null? raw) "clean (no changes)")
-         (else
-          (let* ((lines (filter (lambda (l) (not (string-null? l)))
-                                (string-split raw #\newline)))
-                 (count (length lines))
-                 (trimmed (take lines (min count max-lines)))
-                 (body (string-join trimmed "\n")))
-            (if (> count max-lines)
-                (format #f "~a\n... (~a more changes truncated)" body (- count max-lines))
-                body))))))))
+         "Return a concise summary of git status in WORKSPACE-DIR, or #f if not a git repository."
+         (catch #t
+           (lambda ()
+             (libgit2-init!)
+             (let* ((repo (repository-open workspace-dir))
+                    (status (status-list-new repo (make-status-options)))
+                    (count (status-list-entry-count status)))
+               (if (zero? count)
+                 "clean (no changes)"
+                 (let ((raw (exec-cmd-output "git" '("status" "--porcelain") workspace-dir)))
+                   (cond
+                     ((not raw) #f)
+                     ((string-null? raw) "clean (no changes)")
+                     (else
+                       (let* ((lines (filter (lambda (l) (not (string-null? l)))
+                                             (string-split raw #\newline)))
+                              (n (length lines))
+                              (trimmed (take lines (min n max-lines)))
+                              (body (string-join trimmed "\n")))
+                         (if (> n max-lines)
+                           (format #f "~a\n... (~a more changes truncated)" body (- n max-lines))
+                           body))))))))
+           (lambda _
+             (let ((raw (exec-cmd-output "git" '("status" "--porcelain") workspace-dir)))
+               (cond
+                 ((not raw) #f)
+                 ((string-null? raw) "clean (no changes)")
+                 (else
+                   (let* ((lines (filter (lambda (l) (not (string-null? l)))
+                                         (string-split raw #\newline)))
+                          (count (length lines))
+                          (trimmed (take lines (min count max-lines)))
+                          (body (string-join trimmed "\n")))
+                     (if (> count max-lines)
+                       (format #f "~a\n... (~a more changes truncated)" body (- count max-lines))
+                       body))))))))
 
 ;;;
 ;;; File Tree Scanning
 ;;;
 (define %default-ignore-patterns
-  '(".git" ".cache" "node_modules" "target" ".badb" "dist" "build" ".guix-profile"))
+        '(".git" ".cache" "node_modules" "target" ".badb" "dist" "build" ".guix-profile"))
 
 (define*
   (build-workspace-file-tree #:optional
@@ -168,33 +168,33 @@ command exits non-zero."
                        (sorted
                          (sort
                            (->> entries
-                                 (filter (lambda (name)
-                                           (and (valid-dir-entry? name)
-                                                (not (member name ignore-patterns))
-                                                (not (string-prefix? "." name))
-                                                (not (string-suffix? ".log" name))))))
+                                (filter (lambda (name)
+                                          (and (valid-dir-entry? name)
+                                               (not (member name ignore-patterns))
+                                               (not (string-prefix? "." name))
+                                               (not (string-suffix? ".log" name))))))
                            string<?)))
                     (let loop
                       ((items sorted) (current-acc acc))
-                        (if (or (null? items) (>= file-count max-files))
-                          current-acc
-                          (let*
-                              ((name (car items))
-                               (full (string-append dir "/" name))
-                               (is-dir? (and (file-exists? full) (file-is-directory? full))))
-                            (set! file-count (+ file-count 1))
-                            (if is-dir?
-                              (let*
-                                  ((entry-line (format #f "~a├── ~a/" prefix name))
-                                   (sub-acc
-                                     (scan-dir full
-                                               (+ depth 1)
-                                               (string-append prefix "│   ")
-                                               (cons entry-line current-acc))))
-                                (loop (cdr items) sub-acc))
-                              (let
-                                  ((entry-line (format #f "~a├── ~a" prefix name)))
-                                (loop (cdr items) (cons entry-line current-acc)))))))))
+                      (if (or (null? items) (>= file-count max-files))
+                        current-acc
+                        (let*
+                            ((name (car items))
+                             (full (string-append dir "/" name))
+                             (is-dir? (and (file-exists? full) (file-is-directory? full))))
+                          (set! file-count (+ file-count 1))
+                          (if is-dir?
+                            (let*
+                                ((entry-line (format #f "~a├── ~a/" prefix name))
+                                 (sub-acc
+                                   (scan-dir full
+                                             (+ depth 1)
+                                             (string-append prefix "│   ")
+                                             (cons entry-line current-acc))))
+                              (loop (cdr items) sub-acc))
+                            (let
+                                ((entry-line (format #f "~a├── ~a" prefix name)))
+                              (loop (cdr items) (cons entry-line current-acc)))))))))
                 (lambda _
                   acc))))
     (let
@@ -210,113 +210,113 @@ command exits non-zero."
 ;;; Environment Info
 ;;;
 (define (collect-environment-info)
-  "Collect host environment metadata."
-  `((os . "Linux")
-    (guile-version . ,(version))
-    (host . ,(or (gethostname) "localhost"))
-    (working-dir . ,(getcwd))))
+        "Collect host environment metadata."
+        `((os . "Linux")
+          (guile-version . ,(version))
+          (host . ,(or (gethostname) "localhost"))
+          (working-dir . ,(getcwd))))
 
 ;;;
 ;;; Project Rules Discovery
 ;;;
 (define %standard-rule-candidates
-  '(".badb/rules.scm"
-    "AGENTS.md"
-    ".cursorrules"
-    ".windsurfrules"
-    "CLAUDE.md"
-    ".github/copilot-instructions.md"))
+        '(".badb/rules.scm"
+          "AGENTS.md"
+          ".cursorrules"
+          ".windsurfrules"
+          "CLAUDE.md"
+          ".github/copilot-instructions.md"))
 
 (define (read-rule-file filepath)
-  "Safely read a project rule file. If it is a Scheme file (.scm), attempts to extract
+        "Safely read a project rule file. If it is a Scheme file (.scm), attempts to extract
 docstrings or expressions; otherwise returns the raw text content."
-  (catch #t
-    (lambda ()
-      (if (string-suffix? ".scm" filepath)
-          (call-with-input-file filepath
-            (lambda (port)
-              (let loop ((acc '()))
-                (let ((sexp (read port)))
-                  (if (eof-object? sexp)
-                      (string-join (reverse acc) "\n\n")
-                      (let ((chunk (cond
-                                    ((string? sexp) sexp)
-                                    ((and (pair? sexp) (eq? (car sexp) 'rules))
-                                     (format #f "~a" (cdr sexp)))
-                                    ((and (pair? sexp) (eq? (car sexp) 'instructions))
-                                     (format #f "~a" (cadr sexp)))
-                                    (else (format #f "~s" sexp)))))
-                        (loop (cons chunk acc))))))))
-          (file->string filepath)))
-    (lambda _ #f)))
+        (catch #t
+          (lambda ()
+            (if (string-suffix? ".scm" filepath)
+              (call-with-input-file filepath
+                                    (lambda (port)
+                                      (let loop ((acc '()))
+                                                (let ((sexp (read port)))
+                                                  (if (eof-object? sexp)
+                                                    (string-join (reverse acc) "\n\n")
+                                                    (let ((chunk (cond
+                                                                   ((string? sexp) sexp)
+                                                                   ((and (pair? sexp) (eq? (car sexp) 'rules))
+                                                                     (format #f "~a" (cdr sexp)))
+                                                                   ((and (pair? sexp) (eq? (car sexp) 'instructions))
+                                                                     (format #f "~a" (cadr sexp)))
+                                                                   (else (format #f "~s" sexp)))))
+                                                      (loop (cons chunk acc))))))))
+              (file->string filepath)))
+          (lambda _ #f)))
 
 (define* (discover-project-rules #:optional (workspace-dir (getcwd))
                                  #:key (candidates %standard-rule-candidates))
-  "Discover and read rule files residing in WORKSPACE-DIR.
+         "Discover and read rule files residing in WORKSPACE-DIR.
 Returns an alist: ((path . filename) (content . content-string))."
-  (let loop ((rest candidates)
-             (found '()))
-    (if (null? rest)
-        (reverse found)
-        (let* ((rel-path (car rest))
-               (full-path (if (string-prefix? "/" rel-path)
-                              rel-path
-                              (string-append workspace-dir "/" rel-path))))
-          (if (file-exists? full-path)
-              (let ((content (read-rule-file full-path)))
-                (if (non-empty-string? content)
-                    (loop (cdr rest)
-                          (cons `((path . ,rel-path)
-                                  (content . ,(string-trim-both content)))
-                                found))
-                    (loop (cdr rest) found)))
-              (loop (cdr rest) found))))))
+         (let loop ((rest candidates)
+                    (found '()))
+                   (if (null? rest)
+                     (reverse found)
+                     (let* ((rel-path (car rest))
+                            (full-path (if (string-prefix? "/" rel-path)
+                                         rel-path
+                                         (string-append workspace-dir "/" rel-path))))
+                       (if (file-exists? full-path)
+                         (let ((content (read-rule-file full-path)))
+                           (if (non-empty-string? content)
+                             (loop (cdr rest)
+                                   (cons `((path . ,rel-path)
+                                           (content . ,(string-trim-both content)))
+                                         found))
+                             (loop (cdr rest) found)))
+                         (loop (cdr rest) found))))))
 
 ;;;
 ;;; Tool Formatting
 ;;;
 (define* (format-tools-for-prompt tools #:key (style 'xml))
-  "Format available tool specifications for prompt reinforcement.
+         "Format available tool specifications for prompt reinforcement.
 STYLE can be 'xml (structured tags) or 'markdown."
-  (if (or (null? tools) (not (list? tools)))
-      ""
-      (case style
-        ((xml)
-         (let ((entries
-                (->> tools
-                      (map (lambda (tool)
-                             (let* ((f (assoc-ref tool "function"))
-                                    (name (assoc-ref f "name"))
-                                    (desc (or (assoc-ref f "description") "")))
-                               (format #f "<tool>\n  <name>~a</name>\n  <description>~a</description>\n</tool>"
-                                       name desc)))))))
-           (format #f "# Available Tools\n\nYou may invoke tools by emitting:\n<tool_call name=\"tool_name\">{\"arg\": \"val\"}</tool_call>\n\n~a\n"
-                   (string-join entries "\n"))))
-        (else
-         (let ((entries
-                (->> tools
-                      (map (lambda (tool)
-                             (let* ((f (assoc-ref tool "function"))
-                                    (name (assoc-ref f "name"))
-                                    (desc (or (assoc-ref f "description") "")))
-                               (format #f "- **~a**: ~a" name desc)))))))
-           (format #f "## Available Tools\n~a\n" (string-join entries "\n")))))))
+         (if (or (null? tools) (not (list? tools)))
+           ""
+           (case style
+             ((xml)
+               (let ((entries
+                       (->> tools
+                            (map (lambda (tool)
+                                   (let* ((f (assoc-ref tool "function"))
+                                          (name (assoc-ref f "name"))
+                                          (desc (or (assoc-ref f "description") "")))
+                                     (format #f "<tool>\n  <name>~a</name>\n  <description>~a</description>\n</tool>"
+                                             name desc)))))))
+                 (format #f "# Available Tools\n\nYou may invoke tools by emitting:\n<tool_call name=\"tool_name\">{\"arg\": \"val\"}</tool_call>\n\n~a\n"
+                         (string-join entries "\n"))))
+             (else
+               (let ((entries
+                       (->> tools
+                            (map (lambda (tool)
+                                   (let* ((f (assoc-ref tool "function"))
+                                          (name (assoc-ref f "name"))
+                                          (desc (or (assoc-ref f "description") "")))
+                                     (format #f "- **~a**: ~a" name desc)))))))
+                 (format #f "## Available Tools\n~a\n" (string-join entries "\n")))))))
 
 ;;;
 ;;; Prompt Composer Record
 ;;;
 (define-record-type <prompt-composer>
-  (%make-prompt-composer identity git? tree? depth max-files rule-files custom-rules tool-style limit)
-  prompt-composer?
-  (identity prompt-composer-system-identity set-prompt-composer-system-identity!)
-  (git? prompt-composer-include-git-status?)
-  (tree? prompt-composer-include-file-tree?)
-  (depth prompt-composer-file-tree-depth)
-  (max-files prompt-composer-file-tree-max-files)
-  (rule-files prompt-composer-rule-files)
-  (custom-rules prompt-composer-custom-rules set-prompt-composer-custom-rules!)
-  (tool-style prompt-composer-tool-style)
-  (limit prompt-composer-context-limit-chars))
+                    (%make-prompt-composer identity git? tree? depth max-files rule-files custom-rules tool-style limit)
+                    prompt-composer?
+                    (identity prompt-composer-system-identity set-prompt-composer-system-identity!)
+                    (git? prompt-composer-include-git-status?)
+                    (tree? prompt-composer-include-file-tree?)
+                    (depth prompt-composer-file-tree-depth)
+                    (max-files prompt-composer-file-tree-max-files)
+                    (rule-files prompt-composer-rule-files)
+                    (custom-rules prompt-composer-custom-rules set-prompt-composer-custom-rules!)
+                    (tool-style prompt-composer-tool-style)
+                    (limit prompt-composer-context-limit-chars))
 
 (define* (make-prompt-composer #:key
                                (system-identity #f)
@@ -328,76 +328,76 @@ STYLE can be 'xml (structured tags) or 'markdown."
                                (custom-rules '())
                                (tool-style 'native)
                                (context-limit-chars 16000))
-  "Construct a <prompt-composer> configuration record.  The default
+         "Construct a <prompt-composer> configuration record.  The default
 system identity comes from the persona-badb geasa bundle; pass
 #:system-identity to override it."
-  (%make-prompt-composer
-   (or system-identity (persona-identity))
-   include-git-status?
-   include-file-tree?
-   file-tree-depth
-   file-tree-max-files
-   rule-files
-   custom-rules
-   tool-style
-   context-limit-chars))
+         (%make-prompt-composer
+           (or system-identity (persona-identity))
+           include-git-status?
+           include-file-tree?
+           file-tree-depth
+           file-tree-max-files
+           rule-files
+           custom-rules
+           tool-style
+           context-limit-chars))
 
 ;;;
 ;;; Prompt Assembly
 ;;;
 (define (format-skill-catalog-section skills)
-  "Format a list of skills or a formatted skill string into a markdown section.
+        "Format a list of skills or a formatted skill string into a markdown section.
 SKILLS can be:
 - a string (pre-rendered catalog)
 - a list of skill alists, each having ((name . \"\") (description . \"\"))
 Returns a string (or #f if empty)."
-  (cond
-   ((and (string? skills) (not (string-null? (string-trim-both skills))))
-    (format #f "## Skills\n~a" (string-trim-both skills)))
-   ((and (pair? skills) (not (null? skills)))
-    (let ((lines (filter-map
-                  (lambda (s)
-                    (cond
-                     ((string? s) (format #f "- ~a" s))
-                     ((pair? s)
-                      (let ((name (or (assoc-ref s 'name) (assoc-ref s "name")))
-                            (desc (or (assoc-ref s 'description) (assoc-ref s "description") "")))
-                        (if name
-                            (format #f "- ~a: ~a" name desc)
-                            #f)))
-                     (else #f)))
-                  skills)))
-      (if (null? lines)
-          #f
-          (format #f "## Available Skills\n~a" (string-join lines "\n")))))
-   (else #f)))
+        (cond
+          ((and (string? skills) (not (string-null? (string-trim-both skills))))
+            (format #f "## Skills\n~a" (string-trim-both skills)))
+          ((and (pair? skills) (not (null? skills)))
+            (let ((lines (filter-map
+                           (lambda (s)
+                             (cond
+                               ((string? s) (format #f "- ~a" s))
+                               ((pair? s)
+                                 (let ((name (or (assoc-ref s 'name) (assoc-ref s "name")))
+                                       (desc (or (assoc-ref s 'description) (assoc-ref s "description") "")))
+                                   (if name
+                                     (format #f "- ~a: ~a" name desc)
+                                     #f)))
+                               (else #f)))
+                           skills)))
+              (if (null? lines)
+                #f
+                (format #f "## Available Skills\n~a" (string-join lines "\n")))))
+          (else #f)))
 
 (define (format-memory-catalog-section memories)
-  "Format a list of memories or a formatted memory string into a markdown section.
+        "Format a list of memories or a formatted memory string into a markdown section.
 MEMORIES can be:
 - a string (pre-rendered memories)
 - a list of memory alists or strings
 Returns a string (or #f if empty)."
-  (cond
-   ((and (string? memories) (not (string-null? (string-trim-both memories))))
-    (format #f "## Project Memories\n~a" (string-trim-both memories)))
-   ((and (pair? memories) (not (null? memories)))
-    (let ((lines (filter-map
-                  (lambda (m)
-                    (cond
-                     ((string? m) (format #f "- ~a" m))
-                     ((pair? m)
-                      (let ((title (or (prop-ref m 'title) (prop-ref m 'name)))
-                            (content (or (prop-ref m 'content) (prop-ref m 'description ""))))
-                        (if title
-                            (format #f "- ~a: ~a" title content)
-                            #f)))
-                     (else #f)))
-                  memories)))
-      (if (null? lines)
-          #f
-          (format #f "## Project Memories\n~a" (string-join lines "\n")))))
-   (else #f)))
+        (cond
+          ((and (string? memories) (not (string-null? (string-trim-both memories))))
+            (format #f "## Project Memories\n~a" (string-trim-both memories)))
+          ((and (pair? memories) (not (null? memories)))
+            (let ((lines (filter-map
+                           (lambda (m)
+                             (cond
+                               ((string? m) (format #f "- ~a" m))
+                               ((pair? m)
+                                 (let ((title (or (prop-ref m 'title) (prop-ref m 'name)))
+                                       (content (or (prop-ref m 'content) (prop-ref m 'description ""))))
+                                   (if title
+                                     (format #f "- ~a: ~a" title content)
+                                     #f)))
+                               (else #f)))
+                           memories)))
+              (if (null? lines)
+                #f
+                (format #f "## Project Memories\n~a" (string-join lines "\n")))))
+          (else #f)))
 
 (define*
   (assemble-system-prompt composer
@@ -441,75 +441,75 @@ header; when you need more than the default window, plan a few windowed reads
 a file you have already read in this session — retain what you learned and
 move forward.")
     (if static-only?
-        (string-join (reverse sections) "\n\n")
-        (begin
-    ;; 3. Environment & Workspace
-    (let*
-        ((env (collect-environment-info))
-         (env-str
-           (format #f
-                   "- OS: ~a\n- Guile: ~a\n- Directory: ~a"
-                   (assoc-ref env 'os)
-                   (assoc-ref env 'guile-version)
-                   workspace-dir)))
-      (add-sec! "Environment" env-str))
-    ;; 4. Git State
-    (when
-        (prompt-composer-include-git-status? composer)
-      (let
-          ((branch (get-git-branch workspace-dir))
-           (status (get-git-status-summary workspace-dir)))
-        (when (or branch status)
+      (string-join (reverse sections) "\n\n")
+      (begin
+        ;; 3. Environment & Workspace
+        (let*
+            ((env (collect-environment-info))
+             (env-str
+               (format #f
+                       "- OS: ~a\n- Guile: ~a\n- Directory: ~a"
+                       (assoc-ref env 'os)
+                       (assoc-ref env 'guile-version)
+                       workspace-dir)))
+          (add-sec! "Environment" env-str))
+        ;; 4. Git State
+        (when
+            (prompt-composer-include-git-status? composer)
           (let
-              ((git-str
-                 (format #f
-                         "- Branch: ~a\n- Status: ~a"
-                         (or branch "unknown")
-                         (or status "clean"))))
-            (add-sec! "Git State" git-str)))))
-    ;; 5. File Tree
-    (when
-        (prompt-composer-include-file-tree? composer)
-      (let
-          ((tree
-             (build-workspace-file-tree workspace-dir
-                                        #:max-depth
-                                        (prompt-composer-file-tree-depth composer)
-                                        #:max-files
-                                        (prompt-composer-file-tree-max-files composer))))
-        (when tree (add-sec! "Workspace Outline" (format #f "```\n~a\n```" tree)))))
-    ;; 6. Discovered Project Rules
-    (let
-        ((discovered
-           (discover-project-rules workspace-dir
-                                   #:candidates
-                                   (prompt-composer-rule-files composer))))
-      (for-each
-        (lambda (rule-entry)
+              ((branch (get-git-branch workspace-dir))
+               (status (get-git-status-summary workspace-dir)))
+            (when (or branch status)
+              (let
+                  ((git-str
+                     (format #f
+                             "- Branch: ~a\n- Status: ~a"
+                             (or branch "unknown")
+                             (or status "clean"))))
+                (add-sec! "Git State" git-str)))))
+        ;; 5. File Tree
+        (when
+            (prompt-composer-include-file-tree? composer)
           (let
-              ((path (assoc-ref rule-entry 'path)) (content (assoc-ref rule-entry 'content)))
-            (add-sec! (format #f "Project Rule: ~a" path) content)))
-        discovered))
-    ;; 7. Custom Rules
-    (let
-        ((custom (prompt-composer-custom-rules composer)))
-      (for-each
-        (lambda (cr)
-          (if (string? cr)
-            (add-sec! "Instruction" cr)
-            (when (pair? cr) (add-sec! (format #f "Rule: ~a" (car cr)) (cdr cr)))))
-        custom))
-    ;; 7b. Skills Catalog
-    (let ((sec (format-skill-catalog-section skills)))
-      (when sec (set! sections (cons sec sections))))
-    ;; 7c. Project Memories
-    (let ((sec (format-memory-catalog-section memories)))
-      (when sec (set! sections (cons sec sections))))
-    ;; 8. Tool Instructions (if non-native XML tool style)
-    (when
-        (and (eq? (prompt-composer-tool-style composer) 'xml) (pair? tools))
-      (set! sections (cons (format-tools-for-prompt tools #:style 'xml) sections)))
-    (string-join (reverse sections) "\n\n")))))
+              ((tree
+                 (build-workspace-file-tree workspace-dir
+                                            #:max-depth
+                                            (prompt-composer-file-tree-depth composer)
+                                            #:max-files
+                                            (prompt-composer-file-tree-max-files composer))))
+            (when tree (add-sec! "Workspace Outline" (format #f "```\n~a\n```" tree)))))
+        ;; 6. Discovered Project Rules
+        (let
+            ((discovered
+               (discover-project-rules workspace-dir
+                                       #:candidates
+                                       (prompt-composer-rule-files composer))))
+          (for-each
+            (lambda (rule-entry)
+              (let
+                  ((path (assoc-ref rule-entry 'path)) (content (assoc-ref rule-entry 'content)))
+                (add-sec! (format #f "Project Rule: ~a" path) content)))
+            discovered))
+        ;; 7. Custom Rules
+        (let
+            ((custom (prompt-composer-custom-rules composer)))
+          (for-each
+            (lambda (cr)
+              (if (string? cr)
+                (add-sec! "Instruction" cr)
+                (when (pair? cr) (add-sec! (format #f "Rule: ~a" (car cr)) (cdr cr)))))
+            custom))
+        ;; 7b. Skills Catalog
+        (let ((sec (format-skill-catalog-section skills)))
+          (when sec (set! sections (cons sec sections))))
+        ;; 7c. Project Memories
+        (let ((sec (format-memory-catalog-section memories)))
+          (when sec (set! sections (cons sec sections))))
+        ;; 8. Tool Instructions (if non-native XML tool style)
+        (when
+            (and (eq? (prompt-composer-tool-style composer) 'xml) (pair? tools))
+          (set! sections (cons (format-tools-for-prompt tools #:style 'xml) sections)))
+        (string-join (reverse sections) "\n\n")))))
 
 (define* (compile-system-prompt #:key
                                 (composer #f)
@@ -520,24 +520,24 @@ move forward.")
                                 (memories '())
                                 (custom-rules '())
                                 (static-only? #f))
-  "Compile a modular system prompt with support for static prefix caching."
-  (let ((comp (or composer (make-prompt-composer #:custom-rules custom-rules))))
-    (assemble-system-prompt comp
-                            #:workspace-dir workspace-dir
-                            #:tools tools
-                            #:mode mode
-                            #:skills skills
-                            #:memories memories
-                            #:static-only? static-only?)))
+         "Compile a modular system prompt with support for static prefix caching."
+         (let ((comp (or composer (make-prompt-composer #:custom-rules custom-rules))))
+           (assemble-system-prompt comp
+                                   #:workspace-dir workspace-dir
+                                   #:tools tools
+                                   #:mode mode
+                                   #:skills skills
+                                   #:memories memories
+                                   #:static-only? static-only?)))
 
 (define* (default-system-prompt #:key
                                 (workspace-dir (getcwd))
                                 (tools '())
                                 (mode 'code)
                                 (custom-rules '()))
-  "Convenience wrapper to construct and format default system prompt."
-  (let ((composer (make-prompt-composer #:custom-rules custom-rules)))
-    (assemble-system-prompt composer
-                            #:workspace-dir workspace-dir
-                            #:tools tools
-                            #:mode mode)))
+         "Convenience wrapper to construct and format default system prompt."
+         (let ((composer (make-prompt-composer #:custom-rules custom-rules)))
+           (assemble-system-prompt composer
+                                   #:workspace-dir workspace-dir
+                                   #:tools tools
+                                   #:mode mode)))

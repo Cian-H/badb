@@ -14,34 +14,34 @@
 (use-modules (web server) (web request) (web uri))
 
 (define %port
-  (or (and=> (getenv "E2E_FAKE_PORT") string->number) 18034))
+        (or (and=> (getenv "E2E_FAKE_PORT") string->number) 18034))
 
 (define %fake-response-content "e2e fake model ready.")
 
 (define %completion
-  (string-append
-    "{\"id\":\"fake-completion-1\","
-    "\"object\":\"chat.completion\","
-    "\"created\":0,"
-    "\"model\":\"fake-model\","
-    "\"choices\":[{\"index\":0,"
-    "\"message\":{\"role\":\"assistant\","
-    "\"content\":\"" %fake-response-content "\"},"
-    "\"finish_reason\":\"stop\"}],"
-    "\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":6,"
-    "\"total_tokens\":7}}"))
+        (string-append
+          "{\"id\":\"fake-completion-1\","
+          "\"object\":\"chat.completion\","
+          "\"created\":0,"
+          "\"model\":\"fake-model\","
+          "\"choices\":[{\"index\":0,"
+          "\"message\":{\"role\":\"assistant\","
+          "\"content\":\"" %fake-response-content "\"},"
+          "\"finish_reason\":\"stop\"}],"
+          "\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":6,"
+          "\"total_tokens\":7}}"))
 
 (define %models
-  (string-append
-    "{\"object\":\"list\","
-    "\"data\":[{\"id\":\"fake-model\",\"object\":\"model\","
-    "\"created\":0,\"owned_by\":\"e2e\"}]}"))
+        (string-append
+          "{\"object\":\"list\","
+          "\"data\":[{\"id\":\"fake-model\",\"object\":\"model\","
+          "\"created\":0,\"owned_by\":\"e2e\"}]}"))
 
 (define (handler request body)
-  (let ((path (uri-path (request-uri request))))
-    (values
-      '((content-type . (application/json)))
-      (if (string-suffix? "/models" path) %models %completion))))
+        (let ((path (uri-path (request-uri request))))
+          (values
+            '((content-type . (application/json)))
+            (if (string-suffix? "/models" path) %models %completion))))
 
 (format (current-error-port)
         "fake endpoint on 127.0.0.1:~a (model: fake-model)~%"

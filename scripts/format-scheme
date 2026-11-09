@@ -1,0 +1,174 @@
+#!/usr/bin/env -S guile -e main -s
+!#
+;;; format-scheme — Format Scheme source files using cl-indentify and manage Geasa bundle integrity.
+
+(define %script-path
+  (canonicalize-path (car (command-line))))
+
+(define %root-dir
+  (canonicalize-path (string-append (dirname %script-path) "/..")))
+
+;; Re-exec through devenv if cl-indentify is not on PATH
+(unless (search-path (parse-path (or (getenv "PATH") "")) "cl-indentify")
+  (let ((devenv (string-append %root-dir "/scripts/devenv")))
+    (apply execl devenv devenv "--" %script-path (cdr (command-line)))))
+
+;; Ensure root and src are on the load path
+(set! %load-path (cons (string-append %root-dir "/src") %load-path))
+(set! %load-path (cons %root-dir %load-path))
+
+(use-modules (ice-9 popen)
+             (ice-9 rdelim)
+             (ice-9 match)
+             (ice-9 ftw)
+             (srfi srfi-1)
+             (srfi srfi-11))
+
+(define (show-help)
+  (display "Usage: scripts/format-scheme [--all | --check | FILE...]\n")
+  (display "Format Scheme files using cl-indentify.\n\n")
+  (display "Options:\n")
+  (display "  --all    Format all Scheme files in the repository and re-pin Geasa bundles\n")
+  (display "  --check  Check if all Scheme files are formatted (exits 1 if unformatted)\n")
+  (display "  (default) When invoked with no arguments, formats and re-stages staged Scheme files\n"))
+
+(define (run-command-lines cmd . args)
+  (let* ((pipe (apply open-pipe* OPEN_READ cmd args))
+         (lines (let loop ((acc '()))
+                  (let ((line (read-line pipe)))
+                    (if (eof-object? line)
+                        (reverse acc)
+                        (loop (cons line acc)))))))
+    (close-pipe pipe)
+    lines))
+
+(define (scheme-file-to-format? path)
+  (and (string-suffix? ".scm" path)
+       (file-exists? path)
+       (not (and (string-prefix? "src/geasa/" path)
+                 (string-suffix? "/manifest.scm" path)))))
+
+(define (file->geasa-bundle path)
+  (and (string-prefix? "src/geasa/" path)
+       (let ((parts (string-split path #\/)))
+         (and (>= (length parts) 3)
+              (string-append (list-ref parts 0) "/"
+                             (list-ref parts 1) "/"
+                             (list-ref parts 2))))))
+
+(define (all-geasa-bundles)
+  (let ((geasa-dir (string-append %root-dir "/src/geasa")))
+    (if (file-exists? geasa-dir)
+        (filter
+         (lambda (dir)
+           (file-exists? (string-append dir "/manifest.scm")))
+         (map (lambda (name) (string-append "src/geasa/" name))
+              (scandir geasa-dir
+                       (lambda (name)
+                         (not (member name '("." "..")))))))
+        '())))
+
+(define (staged-scheme-files)
+  (filter scheme-file-to-format?
+          (run-command-lines "git" "diff" "--cached" "--name-only" "--diff-filter=d")))
+
+(define (all-scheme-files)
+  (let ((tracked (filter scheme-file-to-format?
+                         (run-command-lines "git" "ls-files" "*.scm"))))
+    (if (and (file-exists? "guix/badb/packages/cl-indentify.scm")
+             (not (member "guix/badb/packages/cl-indentify.scm" tracked)))
+        (cons "guix/badb/packages/cl-indentify.scm" tracked)
+        tracked)))
+
+(define (format-files files)
+  (unless (null? files)
+    (format #t "Formatting ~a Scheme file(s) with cl-indentify...~%" (length files))
+    (let ((status (apply system* "cl-indentify" "-r" files)))
+      (unless (zero? status)
+        (error "cl-indentify failed with status" status)))))
+
+(define (stage-files files)
+  (unless (null? files)
+    (apply system* "git" "add" files)))
+
+(define (pin-bundle! bundle)
+  (let* ((mod (resolve-interface '(badb geis bundle)))
+         (pin! (module-ref mod 'geis-bundle-pin!)))
+    (pin! bundle)))
+
+(define (repin-bundles bundles)
+  (for-each
+   (lambda (bundle)
+     (let ((manifest (string-append bundle "/manifest.scm")))
+       (when (file-exists? manifest)
+         (format #t "Re-pinning Geasa bundle: ~a~%" bundle)
+         (pin-bundle! bundle)
+         (system* "git" "add" manifest))))
+   bundles))
+
+(define (check-formatting files)
+  (if (null? files)
+      '()
+      (let ((tmp (mkdtemp "/tmp/badb-check-fmt-XXXXXX"))
+            (orig-dir (getcwd)))
+        (dynamic-wind
+          (lambda () #t)
+          (lambda ()
+            (for-each
+             (lambda (file)
+               (let ((dir (string-append tmp "/" (dirname file))))
+                 (system* "mkdir" "-p" dir)
+                 (system* "cp" file (string-append tmp "/" file))))
+             files)
+            (chdir tmp)
+            (apply system* "cl-indentify" "-r" files)
+            (chdir orig-dir)
+            (filter
+             (lambda (file)
+               (not (zero? (system* "cmp" "-s" file (string-append tmp "/" file)))))
+             files))
+          (lambda ()
+            (chdir orig-dir)
+            (system* "rm" "-rf" tmp))))))
+
+(define (main args)
+  (chdir %root-dir)
+  (let-values (((mode explicit-files)
+                (let loop ((rest (cdr args))
+                           (m 'staged)
+                           (fs '()))
+                  (match rest
+                    (() (values m (reverse fs)))
+                    (("--all" . tl) (loop tl 'all fs))
+                    (("--check" . tl) (loop tl 'check fs))
+                    (("-h" . _) (show-help) (exit 0))
+                    (("--help" . _) (show-help) (exit 0))
+                    ((f . tl) (loop tl 'explicit (cons f fs)))))))
+    (case mode
+      ((all)
+       (let ((files (all-scheme-files)))
+         (format-files files)
+         (format #t "Re-pinning all Geasa bundles...~%")
+         (repin-bundles (all-geasa-bundles))))
+      ((check)
+       (let* ((files (all-scheme-files))
+              (unformatted (check-formatting files)))
+         (if (null? unformatted)
+             (begin
+               (display "All Scheme files are properly formatted.\n")
+               (exit 0))
+             (begin
+               (display "The following Scheme files are not properly formatted with cl-indentify:\n")
+               (for-each (lambda (f) (format #t "  ~a~%" f)) unformatted)
+               (exit 1)))))
+      ((staged)
+       (let ((files (staged-scheme-files)))
+         (unless (null? files)
+           (format-files files)
+           (stage-files files)
+           (let ((bundles (delete-duplicates
+                           (filter-map file->geasa-bundle files))))
+             (repin-bundles bundles)))))
+      ((explicit)
+       (let ((valid-files (filter scheme-file-to-format? explicit-files)))
+         (format-files valid-files))))))

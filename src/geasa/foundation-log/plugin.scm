@@ -26,12 +26,12 @@
                                        log-exception!))
 
 (define (ensure-directory! dir)
-  "Create DIR and any missing parent directories. Never throws."
-  (catch #t
-    (lambda ()
-      (mkdir-p dir))
-    (lambda _
-      #f)))
+        "Create DIR and any missing parent directories. Never throws."
+        (catch #t
+          (lambda ()
+            (mkdir-p dir))
+          (lambda _
+            #f)))
 
 (define (default-error-log-path)
         "Return the default error log path inside the local .badb directory."
@@ -47,11 +47,11 @@
   (format #f "[~a] [~a] ~a" timestamp context message))
 
 (define (debug-logging-enabled?)
-  "Return #t when the BADB_DEBUG environment variable is set to any
+        "Return #t when the BADB_DEBUG environment variable is set to any
 non-empty value. Checked on every write so callers and tests can toggle
 debug logging at runtime."
-  (let ((value (getenv "BADB_DEBUG")))
-    (and (string? value) (> (string-length value) 0))))
+        (let ((value (getenv "BADB_DEBUG")))
+          (and (string? value) (> (string-length value) 0))))
 
 (define*
   (log-error! message #:optional (context "badb") (path (default-error-log-path)))
@@ -62,18 +62,18 @@ successful no-op that never touches the filesystem. Never throws:
 returns #t on success and #f on any failure (unwritable path, encoding
 error, ...)."
   (if (debug-logging-enabled?)
-      (catch #t
-        (lambda ()
-          (let ((dir (dirname path)))
-            (ensure-directory! dir))
-          (let ((port (open-file path "a")))
-            (display (format-error-entry (current-iso8601-timestamp) context message) port)
-            (newline port)
-            (close-port port))
-          #t)
-        (lambda _
-          #f))
-      #t))
+    (catch #t
+      (lambda ()
+        (let ((dir (dirname path)))
+          (ensure-directory! dir))
+        (let ((port (open-file path "a")))
+          (display (format-error-entry (current-iso8601-timestamp) context message) port)
+          (newline port)
+          (close-port port))
+        #t)
+      (lambda _
+        #f))
+    #t))
 
 (define*
   (log-exception! key

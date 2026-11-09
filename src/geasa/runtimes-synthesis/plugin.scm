@@ -75,213 +75,213 @@
 ;;; Binary and workflow path discovery
 ;;;
 (define (find-sema-executable)
-  "Locate the sema binary: honors $SEMA_BIN, then search PATH,
+        "Locate the sema binary: honors $SEMA_BIN, then search PATH,
 then inspects standard GNU Guix profile locations."
-  (or (let ((bin (getenv "SEMA_BIN")))
-        (and bin (file-exists? bin) bin))
-      (search-path (parse-path (or (getenv "PATH") "")) "sema")
-      (let ((guix-env (getenv "GUIX_ENVIRONMENT")))
-        (and guix-env
-             (let ((bin (string-append guix-env "/bin/sema")))
-               (and (file-exists? bin) bin))))
-      (let ((home-prof (and (getenv "HOME") (string-append (getenv "HOME") "/.guix-profile/bin/sema"))))
-        (and home-prof (file-exists? home-prof) home-prof))
-      (let ((sys-prof "/run/current-system/profile/bin/sema"))
-        (and (file-exists? sys-prof) sys-prof))
-      "sema"))
+        (or (let ((bin (getenv "SEMA_BIN")))
+              (and bin (file-exists? bin) bin))
+            (search-path (parse-path (or (getenv "PATH") "")) "sema")
+            (let ((guix-env (getenv "GUIX_ENVIRONMENT")))
+              (and guix-env
+                   (let ((bin (string-append guix-env "/bin/sema")))
+                     (and (file-exists? bin) bin))))
+            (let ((home-prof (and (getenv "HOME") (string-append (getenv "HOME") "/.guix-profile/bin/sema"))))
+              (and home-prof (file-exists? home-prof) home-prof))
+            (let ((sys-prof "/run/current-system/profile/bin/sema"))
+              (and (file-exists? sys-prof) sys-prof))
+            "sema"))
 
 (define (default-workflow-path)
-  "Return the default path to the plugin synthesis workflow file."
-  (let ((env-path (getenv "BADB_SYNTHESIS_WORKFLOW")))
-    (if (and env-path (file-exists? env-path))
-        env-path
-        (or (search-path %load-path "workflows/plugin-synthesis.sema")
-            (let* ((candidate "workflows/plugin-synthesis.sema"))
-              (if (file-exists? candidate)
-                  candidate
-                  "workflows/plugin-synthesis.sema"))))))
+        "Return the default path to the plugin synthesis workflow file."
+        (let ((env-path (getenv "BADB_SYNTHESIS_WORKFLOW")))
+          (if (and env-path (file-exists? env-path))
+            env-path
+            (or (search-path %load-path "workflows/plugin-synthesis.sema")
+                (let* ((candidate "workflows/plugin-synthesis.sema"))
+                  (if (file-exists? candidate)
+                    candidate
+                    "workflows/plugin-synthesis.sema"))))))
 
 ;;;
 ;;; Spec locking helper
 ;;;
 (define (lock-feature-spec spec-path feature-id)
-  "Lock the authored spec at SPEC-PATH for FEATURE-ID into the
+        "Lock the authored spec at SPEC-PATH for FEATURE-ID into the
 kernel locked spec store. Returns the SHA-256 spec hash."
-  (lock-spec spec-path (ensure-string feature-id)))
+        (lock-spec spec-path (ensure-string feature-id)))
 
 ;;;
 ;;; Kernel transaction commit for synthesized modules
 ;;;
 (define* (commit-synthesized-module! mgr feature-id target-path #:key (metadata '()))
-  "Read the synthesized module from TARGET-PATH and apply an atomic
+         "Read the synthesized module from TARGET-PATH and apply an atomic
 transaction to commit it into MGR. The kernel spec gate replays the
 locked spec copy; on pass, identity pins are recorded into the journal
 and the implementation is hot-attached to the registry."
-  (unless (transaction-manager? mgr)
-    (error "commit-synthesized-module!: expected <transaction-manager>" mgr))
-  (unless (file-exists? target-path)
-    (error (format #f "commit-synthesized-module!: target file '~a' does not exist" target-path)))
-  (let* ((content (call-with-input-file target-path
-                    (lambda (port)
-                      (set-port-encoding! port "UTF-8")
-                      (get-string-all port))))
-         (feature-str (ensure-string feature-id))
-         (res (apply-transaction! mgr feature-str content (lambda (_mod) #t)
-                                 #:metadata metadata)))
-    res))
+         (unless (transaction-manager? mgr)
+           (error "commit-synthesized-module!: expected <transaction-manager>" mgr))
+         (unless (file-exists? target-path)
+           (error (format #f "commit-synthesized-module!: target file '~a' does not exist" target-path)))
+         (let* ((content (call-with-input-file target-path
+                                               (lambda (port)
+                                                 (set-port-encoding! port "UTF-8")
+                                                 (get-string-all port))))
+                (feature-str (ensure-string feature-id))
+                (res (apply-transaction! mgr feature-str content (lambda (_mod) #t)
+                                         #:metadata metadata)))
+           res))
 
 (define (commit-synthesized-module-cli feature-id target-path . args)
-  "CLI helper invoked by external processes (e.g. Sema workflow commit phase)
+        "CLI helper invoked by external processes (e.g. Sema workflow commit phase)
 to perform a gated kernel commit. Prints JSON result and exits with 0 on
 commit or 1 on revert/error."
-  (catch #t
-    (lambda ()
-      (let* ((feature-str (ensure-string feature-id))
-             (target-str (ensure-string target-path))
-             (jrn-path (or (getenv "BADB_JOURNAL_PATH") ".badb/journal.jsonl"))
-             (reg (make-registry))
-             (jrn (make-journal jrn-path))
-             (mgr (make-transaction-manager reg jrn))
-             (res (commit-synthesized-module! mgr feature-str target-str)))
-        (if (string=? (or (assoc-ref res 'status) "") "committed")
-            (let* ((latest (or (journal-latest jrn) '()))
-                   (output `((status . "committed")
-                             (feature-id . ,feature-str)
-                             (ast-diff-hash . ,(or (assoc-ref latest "ast-diff-hash") ""))
-                             (spec-hash . ,(or (assoc-ref latest "spec-hash") ""))
-                             (quickcheck-seed . ,(or (assoc-ref latest "quickcheck-seed") ""))
-                             (quickcheck-verdict . ,(or (assoc-ref latest "quickcheck-verdict") ""))
-                             (kernel-replay-verdict . ,(or (assoc-ref latest "kernel-replay-verdict") "")))))
-              (display (scm->json-string output))
-              (newline)
-              (exit 0))
-            (begin
-              (display (scm->json-string res))
-              (newline)
-              (exit 1)))))
-    (lambda (key . err-args)
-      (if (eq? key 'quit)
-          (apply throw key err-args)
-          (begin
-            (display (scm->json-string `((status . "error")
-                                        (error . ,(format #f "commit-synthesized-module-cli failed (~a): ~s" key err-args)))))
-            (newline)
-            (exit 1))))))
+        (catch #t
+          (lambda ()
+            (let* ((feature-str (ensure-string feature-id))
+                   (target-str (ensure-string target-path))
+                   (jrn-path (or (getenv "BADB_JOURNAL_PATH") ".badb/journal.jsonl"))
+                   (reg (make-registry))
+                   (jrn (make-journal jrn-path))
+                   (mgr (make-transaction-manager reg jrn))
+                   (res (commit-synthesized-module! mgr feature-str target-str)))
+              (if (string=? (or (assoc-ref res 'status) "") "committed")
+                (let* ((latest (or (journal-latest jrn) '()))
+                       (output `((status . "committed")
+                                 (feature-id . ,feature-str)
+                                 (ast-diff-hash . ,(or (assoc-ref latest "ast-diff-hash") ""))
+                                 (spec-hash . ,(or (assoc-ref latest "spec-hash") ""))
+                                 (quickcheck-seed . ,(or (assoc-ref latest "quickcheck-seed") ""))
+                                 (quickcheck-verdict . ,(or (assoc-ref latest "quickcheck-verdict") ""))
+                                 (kernel-replay-verdict . ,(or (assoc-ref latest "kernel-replay-verdict") "")))))
+                  (display (scm->json-string output))
+                  (newline)
+                  (exit 0))
+                (begin
+                  (display (scm->json-string res))
+                  (newline)
+                  (exit 1)))))
+          (lambda (key . err-args)
+            (if (eq? key 'quit)
+              (apply throw key err-args)
+              (begin
+                (display (scm->json-string `((status . "error")
+                                             (error . ,(format #f "commit-synthesized-module-cli failed (~a): ~s" key err-args)))))
+                (newline)
+                (exit 1))))))
 
 ;;;
 ;;; Subprocess runner helper
 ;;;
 (define (extract-last-nonempty-line text)
-  (let ((lines (filter (lambda (l) (not (string-null? (string-trim-both l))))
-                       (string-split text #\newline))))
-    (if (pair? lines)
-        (last lines)
-        "")))
+        (let ((lines (filter (lambda (l) (not (string-null? (string-trim-both l))))
+                             (string-split text #\newline))))
+          (if (pair? lines)
+            (last lines)
+            "")))
 
 (define (run-command-capture cmd)
-  "Run CMD in a subprocess and return (EXIT-CODE STDOUT-STRING STDERR-STRING)."
-  (let* ((pipe (open-pipe cmd OPEN_READ))
-         (out (get-string-all pipe))
-         (status (close-pipe pipe))
-         (exit-code (if (status:exit-val status) (status:exit-val status) 127)))
-    (list exit-code (or out "") "")))
+        "Run CMD in a subprocess and return (EXIT-CODE STDOUT-STRING STDERR-STRING)."
+        (let* ((pipe (open-pipe cmd OPEN_READ))
+               (out (get-string-all pipe))
+               (status (close-pipe pipe))
+               (exit-code (if (status:exit-val status) (status:exit-val status) 127)))
+          (list exit-code (or out "") "")))
 
 ;;;
 ;;; Synthesis agent role resolution
 ;;;
 (define (persona-prompt-text persona-id)
-  "Serve the composed persona prompt of the PERSONA-ID geasa bundle
+        "Serve the composed persona prompt of the PERSONA-ID geasa bundle
 (identity plus its declared directives), falling back to the bare
 identity when the bundle exports no persona-prompt.  Throws when the
 bundle is not resolvable."
-  (let* ((mod (resolve-interface `(geasa ,(string->symbol persona-id) plugin)))
-         (prompt-fn (module-ref mod 'persona-prompt #f))
-         (identity-fn (module-ref mod 'persona-identity)))
-    (if prompt-fn (prompt-fn) (identity-fn))))
+        (let* ((mod (resolve-interface `(geasa ,(string->symbol persona-id) plugin)))
+               (prompt-fn (module-ref mod 'persona-prompt #f))
+               (identity-fn (module-ref mod 'persona-identity)))
+          (if prompt-fn (prompt-fn) (identity-fn))))
 
 (define (resolve-synthesis-role config)
-  "Resolve the 'synthesis' agent role from CONFIG into an alist:
+        "Resolve the 'synthesis' agent role from CONFIG into an alist:
 ((persona-id . id) (persona-text . composed-prompt) (provider . name)
  (endpoint . url) (api-key . key) (model . name)).  Defaults: persona
 persona-synthesizer; provider/model from the role entry; endpoint and
 api-key from the named provider preset when it exists."
-  (let* ((role (or (badb-config-get-agent config "synthesis") '()))
-         (persona-id (or (get-prop role 'persona #f) "persona-synthesizer"))
-         (provider-name (get-prop role 'provider #f))
-         (preset (and provider-name (badb-config-get-provider config provider-name))))
-    `((persona-id . ,persona-id)
-      (persona-text . ,(persona-prompt-text persona-id))
-      (provider . ,provider-name)
-      (endpoint . ,(and preset (get-prop preset 'endpoint #f)))
-      (api-key . ,(and preset (get-prop preset 'api-key #f)))
-      (model . ,(get-prop role 'model #f)))))
+        (let* ((role (or (badb-config-get-agent config "synthesis") '()))
+               (persona-id (or (get-prop role 'persona #f) "persona-synthesizer"))
+               (provider-name (get-prop role 'provider #f))
+               (preset (and provider-name (badb-config-get-provider config provider-name))))
+          `((persona-id . ,persona-id)
+            (persona-text . ,(persona-prompt-text persona-id))
+            (provider . ,provider-name)
+            (endpoint . ,(and preset (get-prop preset 'endpoint #f)))
+            (api-key . ,(and preset (get-prop preset 'api-key #f)))
+            (model . ,(get-prop role 'model #f)))))
 
 (define (synthesis-env-alist role)
-  "Environment variables to export for the sema subprocess, derived from
+        "Environment variables to export for the sema subprocess, derived from
 the resolved ROLE: when the role's provider endpoint is Mistral's API
 and MISTRAL_API_KEY is not already set in the environment, provide it
 from the preset's api-key (sema reads provider credentials from its own
 environment).  Returns an alist ((NAME . VALUE) ...)."
-  (let ((ep (assoc-ref role 'endpoint))
-        (key (assoc-ref role 'api-key)))
-    (if (and (string? ep) (string? key)
-             (string-contains ep "api.mistral.ai")
-             (not (getenv "MISTRAL_API_KEY")))
-        `(("MISTRAL_API_KEY" . ,key))
-        '())))
+        (let ((ep (assoc-ref role 'endpoint))
+              (key (assoc-ref role 'api-key)))
+          (if (and (string? ep) (string? key)
+                   (string-contains ep "api.mistral.ai")
+                   (not (getenv "MISTRAL_API_KEY")))
+            `(("MISTRAL_API_KEY" . ,key))
+            '())))
 
 ;; Hosts sema routes natively; everything else is OpenAI-compatible and
 ;; must be passed to the workflow for llm/configure.
 (define %sema-native-endpoints
-  (list "api.mistral.ai" "api.openai.com" "api.anthropic.com"
-        "generativelanguage.googleapis.com" "api.groq.com" "api.x.ai"
-        "api.moonshot.ai" "localhost:11434" "127.0.0.1:11434"))
+        (list "api.mistral.ai" "api.openai.com" "api.anthropic.com"
+              "generativelanguage.googleapis.com" "api.groq.com" "api.x.ai"
+              "api.moonshot.ai" "localhost:11434" "127.0.0.1:11434"))
 
 (define (synthesis-llm-args role)
-  "Workflow args threading the resolved ROLE's provider endpoint to
+        "Workflow args threading the resolved ROLE's provider endpoint to
 the sema engine: ((llm-endpoint . URL) (llm-api-key . KEY)) when the
 endpoint is an OpenAI-compatible server sema does not route natively
 (local servers like LM Studio), or '() when sema's own providers cover
 it (e.g. api.mistral.ai via the MISTRAL_API_KEY env bridge)."
-  (let ((ep (assoc-ref role 'endpoint))
-        (key (assoc-ref role 'api-key)))
-    (if (and (string? ep) (string? key)
-             (not (any (lambda (host) (string-contains ep host))
-                       %sema-native-endpoints)))
-        `((llm-endpoint . ,ep) (llm-api-key . ,key))
-        '())))
+        (let ((ep (assoc-ref role 'endpoint))
+              (key (assoc-ref role 'api-key)))
+          (if (and (string? ep) (string? key)
+                   (not (any (lambda (host) (string-contains ep host))
+                             %sema-native-endpoints)))
+            `((llm-endpoint . ,ep) (llm-api-key . ,key))
+            '())))
 
 (define (default-synthesis-root)
-  "Directory where synthesized geasa land for the CURRENT PROJECT: the
+        "Directory where synthesized geasa land for the CURRENT PROJECT: the
 first BADB_GEIS_PATH root when set, else the project-local geis/
 directory (never the harness's own source tree)."
-  (let ((path (getenv "BADB_GEIS_PATH")))
-    (if (and (string? path) (not (string-null? path)))
-        (car (string-split path #\:))
-        "geis")))
+        (let ((path (getenv "BADB_GEIS_PATH")))
+          (if (and (string? path) (not (string-null? path)))
+            (car (string-split path #\:))
+            "geis")))
 
 (define (default-synthesis-target feature-id)
-  "Default target path for a synthesized module: <project geis
+        "Default target path for a synthesized module: <project geis
 root>/<sanitized feature-id>/plugin.scm."
-  (format #f "~a/~a/plugin.scm"
-          (default-synthesis-root)
-          (sanitize-feature-id (ensure-string feature-id))))
+        (format #f "~a/~a/plugin.scm"
+                (default-synthesis-root)
+                (sanitize-feature-id (ensure-string feature-id))))
 
 (define (synthesis-bundle-dir feature-id target-path)
-  "Project-local bundle directory for a synthesized FEATURE-ID: the
+        "Project-local bundle directory for a synthesized FEATURE-ID: the
 directory of TARGET-PATH when it is a plugin module, else the default
 synthesis target's directory (or <geis root>/<fid> for non-plugin
 targets).  Never lands in the harness's own source tree."
-  (let* ((fid (ensure-string feature-id))
-         (target (or (and (string? target-path) target-path)
-                     (default-synthesis-target fid))))
-    (if (string-suffix? "/plugin.scm" target)
-        (dirname target)
-        (string-append (default-synthesis-root) "/"
-                       (sanitize-feature-id fid)))))
+        (let* ((fid (ensure-string feature-id))
+               (target (or (and (string? target-path) target-path)
+                           (default-synthesis-target fid))))
+          (if (string-suffix? "/plugin.scm" target)
+            (dirname target)
+            (string-append (default-synthesis-root) "/"
+                           (sanitize-feature-id fid)))))
 
 (define (install-synthesized-bundle! feature-id target-path)
-  "Add the synthesized bundle for FEATURE-ID to the CURRENT PROJECT:
+        "Add the synthesized bundle for FEATURE-ID to the CURRENT PROJECT:
 assemble its provenance (locked spec copy, synthesis workflow, manifest
 pins) into the project-local bundle directory derived from
 TARGET-PATH, then lock and verify it into the project's kernel gate
@@ -289,24 +289,24 @@ TARGET-PATH, then lock and verify it into the project's kernel gate
 copy).  Returns the install report alist, or
 ((feature-id . fid) (install-status . error) (error . msg)) on
 failure — never throws."
-  (let* ((fid (ensure-string feature-id))
-         (bundle-dir (synthesis-bundle-dir fid target-path))
-         (bundle (resolve-interface '(badb geis bundle))))
-    (catch #t
-      (lambda ()
-        ((module-ref bundle 'geis-bundle-assemble!)
-         fid
-         #:target-path target-path
-         #:bundle-dir bundle-dir
-         #:workflow-path (default-workflow-path))
-        (let ((report ((module-ref bundle 'geis-bundle-install) bundle-dir)))
-          (cons (cons 'feature-id fid) report)))
-      (lambda (key . args)
-        `((feature-id . ,fid)
-          (install-status . "error")
-          (error . ,(if (and (pair? args) (string? (car args)))
-                        (car args)
-                        "bundle assembly or install failed")))))))
+        (let* ((fid (ensure-string feature-id))
+               (bundle-dir (synthesis-bundle-dir fid target-path))
+               (bundle (resolve-interface '(badb geis bundle))))
+          (catch #t
+            (lambda ()
+              ((module-ref bundle 'geis-bundle-assemble!)
+               fid
+               #:target-path target-path
+               #:bundle-dir bundle-dir
+               #:workflow-path (default-workflow-path))
+              (let ((report ((module-ref bundle 'geis-bundle-install) bundle-dir)))
+                (cons (cons 'feature-id fid) report)))
+            (lambda (key . args)
+              `((feature-id . ,fid)
+                (install-status . "error")
+                (error . ,(if (and (pair? args) (string? (car args)))
+                            (car args)
+                            "bundle assembly or install failed")))))))
 
 ;;;
 ;;; Sema synthesis workflow runner
@@ -514,8 +514,8 @@ hot-attached to MGR's registry on completion."
 ;;; CLI presentation and dispatch
 ;;;
 (define (print-synthesis-usage port)
-  (format port
-          "Usage: badb synthesize <feature-id> [OPTIONS]
+        (format port
+                "Usage: badb synthesize <feature-id> [OPTIONS]
 
 Synthesize a Guile module to satisfy a locked contract specification
 using the Sema workflow engine.
@@ -586,16 +586,16 @@ Options:
                                                         (assoc-ref role 'persona-text))
                                                    #:env
                                                    (if role
-                                                       (synthesis-env-alist role)
-                                                       '())
+                                                     (synthesis-env-alist role)
+                                                     '())
                                                    #:llm-endpoint
                                                    (if role
-                                                       (assoc-ref (synthesis-llm-args role) 'llm-endpoint)
-                                                       #f)
+                                                     (assoc-ref (synthesis-llm-args role) 'llm-endpoint)
+                                                     #f)
                                                    #:llm-api-key
                                                    (if role
-                                                       (assoc-ref (synthesis-llm-args role) 'llm-api-key)
-                                                       #f)
+                                                     (assoc-ref (synthesis-llm-args role) 'llm-api-key)
+                                                     #f)
                                                    #:budget
                                                    budget
                                                    #:cassette
@@ -616,8 +616,8 @@ Options:
                           #f))
                       (when (string=? (or status "") "success")
                         (let ((report (install-synthesized-bundle!
-                                       feature-id
-                                       (or target-path (default-synthesis-target feature-id)))))
+                                        feature-id
+                                        (or target-path (default-synthesis-target feature-id)))))
                           (format #t "Installed geis for project: ~a verdict: ~a~%"
                                   (assoc-ref report 'feature-id)
                                   (or (assoc-ref report 'verify-verdict)

@@ -11,33 +11,33 @@
 ;;; build: guix cannot reproduce these bytes from source.
 
 (define-module (badb packages tui-test)
-  #:use-module (guix packages)
-  #:use-module (guix download)
-  #:use-module (guix build-system copy)
-  #:use-module ((guix licenses) #:prefix license:))
+               #:use-module (guix packages)
+               #:use-module (guix download)
+               #:use-module (guix build-system copy)
+               #:use-module ((guix licenses) #:prefix license:))
 
 (define-public tui-test
-  (package
-    (name "tui-test")
-    (version "0.1.1")
-    (source
-     (origin
-       (method url-fetch)
-       (uri (string-append
-             "https://github.com/microsoft/tui-test/releases/download/"
-             version "/tui-test-x86_64-unknown-linux-musl.tar.gz"))
-       (sha256
-        (base32 "15bp6wnldh671bc68m9rv9209i1rdvb3xja3f07qni5cmc3bgi3v"))))
-    (build-system copy-build-system)
-    (arguments
-     '(#:install-plan '(("tui-test" "bin/"))))
-    (home-page "https://github.com/microsoft/tui-test")
-    (synopsis
-     "Control, inspect, test, and record real shell sessions and TUI apps")
-    (description
-     "tui-test controls, inspects, tests, and records real shell sessions
+               (package
+                 (name "tui-test")
+                 (version "0.1.1")
+                 (source
+                   (origin
+                     (method url-fetch)
+                     (uri (string-append
+                            "https://github.com/microsoft/tui-test/releases/download/"
+                            version "/tui-test-x86_64-unknown-linux-musl.tar.gz"))
+                     (sha256
+                       (base32 "15bp6wnldh671bc68m9rv9209i1rdvb3xja3f07qni5cmc3bgi3v"))))
+                 (build-system copy-build-system)
+                 (arguments
+                   '(#:install-plan '(("tui-test" "bin/"))))
+                 (home-page "https://github.com/microsoft/tui-test")
+                 (synopsis
+                   "Control, inspect, test, and record real shell sessions and TUI apps")
+                 (description
+                   "tui-test controls, inspects, tests, and records real shell sessions
 and full-screen terminal applications.  The CLI spawns sessions backed by
 a daemon, drives them headlessly, and reports terminal text, state, and
 screenshots (text, SVG, or PNG), plus animated recordings of the session.")
-    (supported-systems '("x86_64-linux"))
-    (license license:expat)))
+                 (supported-systems '("x86_64-linux"))
+                 (license license:expat)))

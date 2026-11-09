@@ -4,7 +4,7 @@
 ;;; structured "not a procedure" failure.
 
 (define-module (test fixtures lib nonproc-fixture)
-  #:export (a-number a-string))
+               #:export (a-number a-string))
 
 (define a-number 42)
 (define a-string "hello")

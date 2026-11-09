@@ -10,7 +10,7 @@
 
 (define-module (test test-log) #:use-module
                (srfi srfi-64)
-  #:use-module (badb spec)
+               #:use-module (badb spec)
                #:use-module
                (ice-9 rdelim)
                #:use-module
@@ -101,8 +101,8 @@
                                                        (string-contains (read-line port) "misc-error")))))))
   (lambda ()
     (if %saved-badb-debug
-        (setenv "BADB_DEBUG" %saved-badb-debug)
-        (unsetenv "BADB_DEBUG"))))
+      (setenv "BADB_DEBUG" %saved-badb-debug)
+      (unsetenv "BADB_DEBUG"))))
 
 ;;; With BADB_DEBUG unset, LOG-ERROR! must report success without
 ;;; creating or touching any file.
@@ -125,8 +125,8 @@
                                (not (file-exists? path))))
                 (lambda ()
                   (if %saved-badb-debug
-                      (setenv "BADB_DEBUG" %saved-badb-debug)
-                      (unsetenv "BADB_DEBUG"))))))
+                    (setenv "BADB_DEBUG" %saved-badb-debug)
+                    (unsetenv "BADB_DEBUG"))))))
 
 (spec-end)
 (spec-exit)

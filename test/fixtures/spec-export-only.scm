@@ -13,8 +13,8 @@
 (spec-begin "fixture-export-only")
 
 (define-module-spec (test fixtures lib math-utils)
-  ((double 1)
-   (clamp 3 3)))
+                    ((double 1)
+                     (clamp 3 3)))
 
 (spec-end)
 (spec-exit)

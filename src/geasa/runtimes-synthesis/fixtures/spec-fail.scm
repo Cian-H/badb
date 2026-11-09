@@ -15,12 +15,12 @@
 (spec-begin "fixture-fail")
 
 (define-module-spec (test fixtures lib math-utils)
-  ((double 1)
-   (clamp 4)))
+                    ((double 1)
+                     (clamp 4)))
 
 (define-contract-spec double
-  ((x $integer))
-  -> (result (= result (+ x x 1))))
+                      ((x $integer))
+                      -> (result (= result (+ x x 1))))
 
 (spec-end)
 (spec-exit)

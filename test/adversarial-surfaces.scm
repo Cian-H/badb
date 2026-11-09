@@ -6,36 +6,36 @@
 ;;; 3. TUI State & Engine: (geasa surfaces-tui plugin), (geasa surfaces-tui nc)
 
 (define-module (test adversarial-surfaces)
-  #:use-module (srfi srfi-64)
-  #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-9)
-  #:use-module (ice-9 rdelim)
-  #:use-module (ice-9 format)
-  #:use-module (ice-9 popen)
-  #:use-module (ice-9 optargs)
-  #:use-module (badb main)
-  #:use-module (geasa foundation-config plugin)
-  #:use-module (badb surfaces cli)
-  #:use-module (geasa surfaces-theme plugin)
-  #:use-module (geasa surfaces-tui plugin))
+               #:use-module (srfi srfi-64)
+               #:use-module (srfi srfi-1)
+               #:use-module (srfi srfi-9)
+               #:use-module (ice-9 rdelim)
+               #:use-module (ice-9 format)
+               #:use-module (ice-9 popen)
+               #:use-module (ice-9 optargs)
+               #:use-module (badb main)
+               #:use-module (geasa foundation-config plugin)
+               #:use-module (badb surfaces cli)
+               #:use-module (geasa surfaces-theme plugin)
+               #:use-module (geasa surfaces-tui plugin))
 
 (test-begin "adversarial-surfaces")
 
 ;; Helper to run a command and capture exit code, stdout, and stderr
 (define (run-cmd-capture cmd-str)
-  (let* ((tmp-out (string-append "/tmp/badb-challenger-out-" (number->string (getpid)) "-" (number->string (random 1000000))))
-         (tmp-err (string-append "/tmp/badb-challenger-err-" (number->string (getpid)) "-" (number->string (random 1000000))))
-         (full-cmd (string-append cmd-str " > " tmp-out " 2> " tmp-err))
-         (status (status:exit-val (system full-cmd)))
-         (stdout (if (file-exists? tmp-out)
-                     (call-with-input-file tmp-out read-string)
-                     ""))
-         (stderr (if (file-exists? tmp-err)
-                     (call-with-input-file tmp-err read-string)
-                     "")))
-    (when (file-exists? tmp-out) (delete-file tmp-out))
-    (when (file-exists? tmp-err) (delete-file tmp-err))
-    (values status (or stdout "") (or stderr ""))))
+        (let* ((tmp-out (string-append "/tmp/badb-challenger-out-" (number->string (getpid)) "-" (number->string (random 1000000))))
+               (tmp-err (string-append "/tmp/badb-challenger-err-" (number->string (getpid)) "-" (number->string (random 1000000))))
+               (full-cmd (string-append cmd-str " > " tmp-out " 2> " tmp-err))
+               (status (status:exit-val (system full-cmd)))
+               (stdout (if (file-exists? tmp-out)
+                         (call-with-input-file tmp-out read-string)
+                         ""))
+               (stderr (if (file-exists? tmp-err)
+                         (call-with-input-file tmp-err read-string)
+                         "")))
+          (when (file-exists? tmp-out) (delete-file tmp-out))
+          (when (file-exists? tmp-err) (delete-file tmp-err))
+          (values status (or stdout "") (or stderr ""))))
 
 ;;; =========================================================================
 ;;; 1. CLI PARSING & ROOT LAUNCHER STRESS TESTING
@@ -228,127 +228,127 @@
                        (string-contains c "\x1b[36m")
                        (string-contains g "\x1b[32m")
                        (string-contains r "\x1b[31m")))))
-)
+            )
 
 ;;; =========================================================================
 ;;; 2. THEME & COLOR PROFILE ADVERSARIAL STRESS TESTING
 ;;; =========================================================================
 (test-group "challenger-theme-stress"
 
-  ;; --- 2.1 Custom themes with hex colors and edge-case specs ---
-  (test-assert "theme-supports-custom-hex-colors"
-    (let ((th (make-theme #:name "tokyo-custom"
-                          #:roles '((header "#7aa2f7" black bold)
-                                    (accent "#bb9af7" "#1a1b26" none)))))
-      (and (equal? (theme-ref th 'header) '("#7aa2f7" black bold))
-           (equal? (theme-ref th 'accent) '("#bb9af7" "#1a1b26" none)))))
+            ;; --- 2.1 Custom themes with hex colors and edge-case specs ---
+            (test-assert "theme-supports-custom-hex-colors"
+                         (let ((th (make-theme #:name "tokyo-custom"
+                                               #:roles '((header "#7aa2f7" black bold)
+                                                         (accent "#bb9af7" "#1a1b26" none)))))
+                           (and (equal? (theme-ref th 'header) '("#7aa2f7" black bold))
+                                (equal? (theme-ref th 'accent) '("#bb9af7" "#1a1b26" none)))))
 
-  (test-assert "theme-coerces-short-spec-to-full-triplet"
-    (let ((th (make-theme #:name "short-specs"
-                          #:roles '((header cyan)
-                                    (accent yellow black)
-                                    (notice red)))))
-      (and (equal? (theme-ref th 'header) '(cyan default none))
-           (equal? (theme-ref th 'accent) '(yellow black none))
-           (equal? (theme-ref th 'notice) '(red default none)))))
+            (test-assert "theme-coerces-short-spec-to-full-triplet"
+                         (let ((th (make-theme #:name "short-specs"
+                                               #:roles '((header cyan)
+                                                         (accent yellow black)
+                                                         (notice red)))))
+                           (and (equal? (theme-ref th 'header) '(cyan default none))
+                                (equal? (theme-ref th 'accent) '(yellow black none))
+                                (equal? (theme-ref th 'notice) '(red default none)))))
 
-  (test-assert "theme-normalizes-invalid-colors-to-default"
-    (let ((th (make-theme #:name "bogus-colors"
-                          #:roles '((header bogus-nonexistent-color black bold)
-                                    (accent "#xyz123" black none)
-                                    (status 12345 black none)))))
-      (and (equal? (theme-ref th 'header) '(default black bold))
-           (equal? (theme-ref th 'accent) '(default black none))
-           (equal? (theme-ref th 'status) '(default black none)))))
+            (test-assert "theme-normalizes-invalid-colors-to-default"
+                         (let ((th (make-theme #:name "bogus-colors"
+                                               #:roles '((header bogus-nonexistent-color black bold)
+                                                         (accent "#xyz123" black none)
+                                                         (status 12345 black none)))))
+                           (and (equal? (theme-ref th 'header) '(default black bold))
+                                (equal? (theme-ref th 'accent) '(default black none))
+                                (equal? (theme-ref th 'status) '(default black none)))))
 
-  (test-assert "theme-normalizes-invalid-attributes-to-none"
-    (let ((th (make-theme #:name "bogus-attrs"
-                          #:roles '((header cyan black invalid-attr)
-                                    (accent cyan black (bold not-an-attr))))))
-      (and (equal? (theme-ref th 'header) '(cyan black none))
-           (equal? (theme-ref th 'accent) '(cyan black none)))))
+            (test-assert "theme-normalizes-invalid-attributes-to-none"
+                         (let ((th (make-theme #:name "bogus-attrs"
+                                               #:roles '((header cyan black invalid-attr)
+                                                         (accent cyan black (bold not-an-attr))))))
+                           (and (equal? (theme-ref th 'header) '(cyan black none))
+                                (equal? (theme-ref th 'accent) '(cyan black none)))))
 
-  (test-assert "theme-accepts-valid-attribute-lists"
-    (let ((th (make-theme #:name "multi-attrs"
-                          #:roles '((header cyan black (bold dim))
-                                    (error red black (bold reverse))))))
-      (and (equal? (theme-ref th 'header) '(cyan black (bold dim)))
-           (equal? (theme-ref th 'error) '(red black (bold reverse))))))
+            (test-assert "theme-accepts-valid-attribute-lists"
+                         (let ((th (make-theme #:name "multi-attrs"
+                                               #:roles '((header cyan black (bold dim))
+                                                         (error red black (bold reverse))))))
+                           (and (equal? (theme-ref th 'header) '(cyan black (bold dim)))
+                                (equal? (theme-ref th 'error) '(red black (bold reverse))))))
 
-  (test-assert "theme-coerces-string-and-keyword-role-keys"
-    (let ((th (make-theme #:name "key-types"
-                          #:roles '(("header" cyan black bold)
-                                    (#:accent yellow black none)))))
-      (and (equal? (theme-ref th 'header) '(cyan black bold))
-           (equal? (theme-ref th 'accent) '(yellow black none)))))
+            (test-assert "theme-coerces-string-and-keyword-role-keys"
+                         (let ((th (make-theme #:name "key-types"
+                                               #:roles '(("header" cyan black bold)
+                                                         (#:accent yellow black none)))))
+                           (and (equal? (theme-ref th 'header) '(cyan black bold))
+                                (equal? (theme-ref th 'accent) '(yellow black none)))))
 
-  ;; --- 2.2 Missing keys & fallback resilience ---
-  (test-assert "theme-missing-role-falls-back-to-default-role"
-    (let ((th (make-theme #:name "has-default"
-                          #:roles '((default white black none)
-                                    (header cyan black bold)))))
-      (equal? (theme-ref th 'completely-unknown-role) '(white black none))))
+            ;; --- 2.2 Missing keys & fallback resilience ---
+            (test-assert "theme-missing-role-falls-back-to-default-role"
+                         (let ((th (make-theme #:name "has-default"
+                                               #:roles '((default white black none)
+                                                         (header cyan black bold)))))
+                           (equal? (theme-ref th 'completely-unknown-role) '(white black none))))
 
-  (test-assert "theme-missing-both-role-and-default-yields-neutral-triplet"
-    (let ((th (make-theme #:name "no-default"
-                          #:roles '((header cyan black bold)))))
-      (equal? (theme-ref th 'completely-unknown-role) '(default default none))))
+            (test-assert "theme-missing-both-role-and-default-yields-neutral-triplet"
+                         (let ((th (make-theme #:name "no-default"
+                                               #:roles '((header cyan black bold)))))
+                           (equal? (theme-ref th 'completely-unknown-role) '(default default none))))
 
-  (test-assert "theme-ref-handles-null-or-invalid-theme-safely"
-    (and (pair? (theme-ref #f 'header))
-         (pair? (theme-ref "not-a-theme" 'header))
-         (pair? (theme-ref 999 'header))))
+            (test-assert "theme-ref-handles-null-or-invalid-theme-safely"
+                         (and (pair? (theme-ref #f 'header))
+                              (pair? (theme-ref "not-a-theme" 'header))
+                              (pair? (theme-ref 999 'header))))
 
-  (test-assert "theme-ref-accepts-string-or-keyword-for-role-query"
-    (let ((th (make-theme #:name "test-query"
-                          #:roles '((header cyan black bold)))))
-      (and (equal? (theme-ref th "header") '(cyan black bold))
-           (equal? (theme-ref th #:header) '(cyan black bold)))))
+            (test-assert "theme-ref-accepts-string-or-keyword-for-role-query"
+                         (let ((th (make-theme #:name "test-query"
+                                               #:roles '((header cyan black bold)))))
+                           (and (equal? (theme-ref th "header") '(cyan black bold))
+                                (equal? (theme-ref th #:header) '(cyan black bold)))))
 
-  ;; --- 2.3 Theme lookup and catalog integrity ---
-  (test-assert "theme-lookup-is-case-insensitive-and-accepts-symbol"
-    (let ((t1 (lookup-theme "Dracula"))
-          (t2 (lookup-theme 'DRACULA))
-          (t3 (lookup-theme "dRaCuLa")))
-      (and (theme? t1)
-           (eq? t1 t2)
-           (eq? t1 t3))))
+            ;; --- 2.3 Theme lookup and catalog integrity ---
+            (test-assert "theme-lookup-is-case-insensitive-and-accepts-symbol"
+                         (let ((t1 (lookup-theme "Dracula"))
+                               (t2 (lookup-theme 'DRACULA))
+                               (t3 (lookup-theme "dRaCuLa")))
+                           (and (theme? t1)
+                                (eq? t1 t2)
+                                (eq? t1 t3))))
 
-  (test-assert "theme-lookup-returns-false-for-unknown"
-    (and (not (lookup-theme "non-existent-theme-xyz"))
-         (not (lookup-theme 'unknown-theme-123))
-         (not (lookup-theme ""))))
+            (test-assert "theme-lookup-returns-false-for-unknown"
+                         (and (not (lookup-theme "non-existent-theme-xyz"))
+                              (not (lookup-theme 'unknown-theme-123))
+                              (not (lookup-theme ""))))
 
-  (test-assert "theme-all-19-builtins-define-required-canonical-roles"
-    (every
-      (lambda (name)
-        (let ((th (lookup-theme name)))
-          (and (theme? th)
-               (every (lambda (role)
-                        (let ((spec (theme-ref th role)))
-                          (and (list? spec)
-                               (= (length spec) 3)
-                               (valid-theme-color? (car spec))
-                               (valid-theme-color? (cadr spec)))))
-                      theme-role-names))))
-      (all-theme-names)))
+            (test-assert "theme-all-19-builtins-define-required-canonical-roles"
+                         (every
+                           (lambda (name)
+                             (let ((th (lookup-theme name)))
+                               (and (theme? th)
+                                    (every (lambda (role)
+                                             (let ((spec (theme-ref th role)))
+                                               (and (list? spec)
+                                                    (= (length spec) 3)
+                                                    (valid-theme-color? (car spec))
+                                                    (valid-theme-color? (cadr spec)))))
+                                           theme-role-names))))
+                           (all-theme-names)))
 
-  ;; --- 2.4 Color conversion to curses constants ---
-  (test-assert "color-symbol->ncurses-constant-maps-safely"
-    (and (eq? (color-symbol->ncurses-constant 'black) 'COLOR_BLACK)
-         (eq? (color-symbol->ncurses-constant 'red) 'COLOR_RED)
-         (eq? (color-symbol->ncurses-constant 'green) 'COLOR_GREEN)
-         (eq? (color-symbol->ncurses-constant 'yellow) 'COLOR_YELLOW)
-         (eq? (color-symbol->ncurses-constant 'blue) 'COLOR_BLUE)
-         (eq? (color-symbol->ncurses-constant 'magenta) 'COLOR_MAGENTA)
-         (eq? (color-symbol->ncurses-constant 'cyan) 'COLOR_CYAN)
-         (eq? (color-symbol->ncurses-constant 'white) 'COLOR_WHITE)
-         ;; Hex colors or unknown symbols safely map to COLOR_WHITE fallback
-         (eq? (color-symbol->ncurses-constant "#7aa2f7") 'COLOR_WHITE)
-         (eq? (color-symbol->ncurses-constant 'unknown-color) 'COLOR_WHITE)
-         (eq? (color-symbol->ncurses-constant #f) 'COLOR_WHITE)))
+            ;; --- 2.4 Color conversion to curses constants ---
+            (test-assert "color-symbol->ncurses-constant-maps-safely"
+                         (and (eq? (color-symbol->ncurses-constant 'black) 'COLOR_BLACK)
+                              (eq? (color-symbol->ncurses-constant 'red) 'COLOR_RED)
+                              (eq? (color-symbol->ncurses-constant 'green) 'COLOR_GREEN)
+                              (eq? (color-symbol->ncurses-constant 'yellow) 'COLOR_YELLOW)
+                              (eq? (color-symbol->ncurses-constant 'blue) 'COLOR_BLUE)
+                              (eq? (color-symbol->ncurses-constant 'magenta) 'COLOR_MAGENTA)
+                              (eq? (color-symbol->ncurses-constant 'cyan) 'COLOR_CYAN)
+                              (eq? (color-symbol->ncurses-constant 'white) 'COLOR_WHITE)
+                              ;; Hex colors or unknown symbols safely map to COLOR_WHITE fallback
+                              (eq? (color-symbol->ncurses-constant "#7aa2f7") 'COLOR_WHITE)
+                              (eq? (color-symbol->ncurses-constant 'unknown-color) 'COLOR_WHITE)
+                              (eq? (color-symbol->ncurses-constant #f) 'COLOR_WHITE)))
 
-)
+            )
 
 ;;; =========================================================================
 ;;; 3. TUI STATE, RESIZING, MENU SCROLLING & KEYBINDING STRESS TESTING
@@ -668,8 +668,8 @@
                     (and (not th) (string=? ct ""))))))
             (test-assert
               ;; DEV-DEBT [env-dependent]: assumes libnotcurses is ABSENT; fails in any env where
-;; guile-ncurses is installed (pre-existing). Should skip when the module loads.
-"nc-module-fails-gracefully-with-devenv-hint-when-libnotcurses-absent"
+              ;; guile-ncurses is installed (pre-existing). Should skip when the module loads.
+              "nc-module-fails-gracefully-with-devenv-hint-when-libnotcurses-absent"
               (catch #t
                 (lambda ()
                   (resolve-module '(geasa surfaces-tui nc))
@@ -684,127 +684,127 @@
 ;;; 4. SCHEME EVAL & SHELL EXECUTION ADVERSARIAL STRESS TESTING
 ;;; =========================================================================
 (test-group "challenger-scheme-eval-and-shell-stress"
-  (let ((repl-mod (make-fresh-user-module)))
+            (let ((repl-mod (make-fresh-user-module)))
 
-    (test-assert "eval-scheme-code-valid-arithmetic-succeeds"
-      (call-with-values
-        (lambda () (eval-scheme-code "(+ 100 200)" repl-mod))
-        (lambda (res err)
-          (and (not err)
-               (string-contains res "300")))))
+              (test-assert "eval-scheme-code-valid-arithmetic-succeeds"
+                           (call-with-values
+                             (lambda () (eval-scheme-code "(+ 100 200)" repl-mod))
+                             (lambda (res err)
+                               (and (not err)
+                                    (string-contains res "300")))))
 
-    (test-assert "eval-scheme-code-handles-division-by-zero"
-      (call-with-values
-        (lambda () (eval-scheme-code "(/ 1 0)" repl-mod))
-        (lambda (res err)
-          (and (not res)
-               (string? err)
-               (string-contains err "numerical-overflow")))))
+              (test-assert "eval-scheme-code-handles-division-by-zero"
+                           (call-with-values
+                             (lambda () (eval-scheme-code "(/ 1 0)" repl-mod))
+                             (lambda (res err)
+                               (and (not res)
+                                    (string? err)
+                                    (string-contains err "numerical-overflow")))))
 
-    (test-assert "eval-scheme-code-handles-unbound-variable"
-      (call-with-values
-        (lambda () (eval-scheme-code "unbound_variable_xyz999" repl-mod))
-        (lambda (res err)
-          (and (not res)
-               (string? err)
-               (string-contains err "unbound-variable")))))
+              (test-assert "eval-scheme-code-handles-unbound-variable"
+                           (call-with-values
+                             (lambda () (eval-scheme-code "unbound_variable_xyz999" repl-mod))
+                             (lambda (res err)
+                               (and (not res)
+                                    (string? err)
+                                    (string-contains err "unbound-variable")))))
 
-    (test-assert "eval-scheme-code-handles-syntax-error"
-      (call-with-values
-        (lambda () (eval-scheme-code "(+ 1 2" repl-mod)) ; unclosed paren
-        (lambda (res err)
-          (and (not res)
-               (string? err)
-               (string-contains err "read-error")))))
+              (test-assert "eval-scheme-code-handles-syntax-error"
+                           (call-with-values
+                             (lambda () (eval-scheme-code "(+ 1 2" repl-mod)) ; unclosed paren
+                             (lambda (res err)
+                               (and (not res)
+                                    (string? err)
+                                    (string-contains err "read-error")))))
 
-    (test-assert "execute-shell-command-succeeds-exit-0"
-      (call-with-values
-        (lambda () (execute-shell-command "echo 'badb-test-output'"))
-        (lambda (out code err)
-          (and (not err)
-               (= code 0)
-               (string-contains out "badb-test-output")))))
+              (test-assert "execute-shell-command-succeeds-exit-0"
+                           (call-with-values
+                             (lambda () (execute-shell-command "echo 'badb-test-output'"))
+                             (lambda (out code err)
+                               (and (not err)
+                                    (= code 0)
+                                    (string-contains out "badb-test-output")))))
 
-    (test-assert "execute-shell-command-captures-nonzero-exit"
-      (call-with-values
-        (lambda () (execute-shell-command "exit 42"))
-        (lambda (out code err)
-          (and (not err)
-               (= code 42)))))
+              (test-assert "execute-shell-command-captures-nonzero-exit"
+                           (call-with-values
+                             (lambda () (execute-shell-command "exit 42"))
+                             (lambda (out code err)
+                               (and (not err)
+                                    (= code 42)))))
 
-    (test-assert "execute-shell-command-captures-stderr"
-      (call-with-values
-        (lambda () (execute-shell-command "sh -c 'echo error-msg >&2; exit 7'"))
-        (lambda (out code err)
-          (and (not err)
-               (= code 7)
-               (string-contains out "error-msg")))))
-))
+              (test-assert "execute-shell-command-captures-stderr"
+                           (call-with-values
+                             (lambda () (execute-shell-command "sh -c 'echo error-msg >&2; exit 7'"))
+                             (lambda (out code err)
+                               (and (not err)
+                                    (= code 7)
+                                    (string-contains out "error-msg")))))
+              ))
 
 ;;; =========================================================================
 ;;; 5. SCALABILITY & LARGE PAYLOAD STRESS TESTING
 ;;; =========================================================================
 (test-group "challenger-scalability-and-large-payload-stress"
 
-  ;; Long word wrapping (10,000 characters)
-  (test-assert "wrap-line-10k-characters-stress"
-    (let* ((huge-word (make-string 10000 #\x))
-           (chunks (wrap-line huge-word 80)))
-      (and (> (length chunks) 100)
-           (every (lambda (c) (<= (string-length c) 80)) chunks)
-           (string=? (apply string-append chunks) huge-word))))
+            ;; Long word wrapping (10,000 characters)
+            (test-assert "wrap-line-10k-characters-stress"
+                         (let* ((huge-word (make-string 10000 #\x))
+                                (chunks (wrap-line huge-word 80)))
+                           (and (> (length chunks) 100)
+                                (every (lambda (c) (<= (string-length c) 80)) chunks)
+                                (string=? (apply string-append chunks) huge-word))))
 
-  ;; Huge menu (10,000 items) navigation and visible slice
-  (test-assert "menu-10k-items-scalability-and-windowing"
-    (let* ((huge-items (map (lambda (i)
-                              (cons (format #f "Entry-~a" i) i))
-                            (iota 10000)))
-           (m (make-menu "Huge" huge-items #:selected-index 0))
-           (m-moved (menu-move m 5000))
-           (m-wrapped (menu-move m -1)))
-      (and (= (menu-count m) 10000)
-           (= (menu-selected-index m-moved) 5000)
-           (= (menu-selected-index m-wrapped) 9999)
-           ;; Visible slice correctly returns at most 12 items containing the selected item
-           (call-with-values
-             (lambda () (menu-visible-slice m-moved 12))
-             (lambda (slice offset)
-               (and (= (length slice) 12)
-                    (<= offset 5000)
-                    (< 5000 (+ offset 12))
-                    (member (menu-selected-item m-moved) slice)))))))
+            ;; Huge menu (10,000 items) navigation and visible slice
+            (test-assert "menu-10k-items-scalability-and-windowing"
+                         (let* ((huge-items (map (lambda (i)
+                                                   (cons (format #f "Entry-~a" i) i))
+                                                 (iota 10000)))
+                                (m (make-menu "Huge" huge-items #:selected-index 0))
+                                (m-moved (menu-move m 5000))
+                                (m-wrapped (menu-move m -1)))
+                           (and (= (menu-count m) 10000)
+                                (= (menu-selected-index m-moved) 5000)
+                                (= (menu-selected-index m-wrapped) 9999)
+                                ;; Visible slice correctly returns at most 12 items containing the selected item
+                                (call-with-values
+                                  (lambda () (menu-visible-slice m-moved 12))
+                                  (lambda (slice offset)
+                                    (and (= (length slice) 12)
+                                         (<= offset 5000)
+                                         (< 5000 (+ offset 12))
+                                         (member (menu-selected-item m-moved) slice)))))))
 
-  ;; Nested and corrupted thought tags
-  (test-assert "split-thoughts-nested-and-malformed-tags"
-    (call-with-values
-      (lambda () (split-thoughts-and-content "<think>level 1 <thought>level 2</thought> level 1 rest</think> final answer"))
-      (lambda (th ct)
-        (and (string? th)
-             (string-contains th "level 1")
-             (string-contains ct "final answer")))))
-)
+            ;; Nested and corrupted thought tags
+            (test-assert "split-thoughts-nested-and-malformed-tags"
+                         (call-with-values
+                           (lambda () (split-thoughts-and-content "<think>level 1 <thought>level 2</thought> level 1 rest</think> final answer"))
+                           (lambda (th ct)
+                             (and (string? th)
+                                  (string-contains th "level 1")
+                                  (string-contains ct "final answer")))))
+            )
 
 ;;; =========================================================================
 ;;; 6. CONFIG THEME INTEGRATION
 ;;; =========================================================================
 (test-group "challenger-config-theme-integration"
 
-  (test-assert "config-ui-theme-resolves-valid-theme"
-    (let* ((cfg (make-badb-config #:ui-theme "tokyo-night"))
-           (cfg-theme (badb-config-ui-theme cfg))
-           (resolved (lookup-theme cfg-theme)))
-      (and (string=? cfg-theme "tokyo-night")
-           (theme? resolved)
-           (string=? (theme-name resolved) "tokyo-night"))))
+            (test-assert "config-ui-theme-resolves-valid-theme"
+                         (let* ((cfg (make-badb-config #:ui-theme "tokyo-night"))
+                                (cfg-theme (badb-config-ui-theme cfg))
+                                (resolved (lookup-theme cfg-theme)))
+                           (and (string=? cfg-theme "tokyo-night")
+                                (theme? resolved)
+                                (string=? (theme-name resolved) "tokyo-night"))))
 
-  (test-assert "config-ui-theme-fallback-when-missing-or-invalid"
-    (let* ((cfg (make-badb-config #:ui-theme "non-existent-theme-xyz"))
-           (cfg-theme (badb-config-ui-theme cfg))
-           (resolved (lookup-theme cfg-theme)))
-      (and (not resolved)
-           ;; default-theme parameter remains safe fallback
-           (theme? (default-theme))
-           (string=? (theme-name (default-theme)) "badb-dark"))))
-)
+            (test-assert "config-ui-theme-fallback-when-missing-or-invalid"
+                         (let* ((cfg (make-badb-config #:ui-theme "non-existent-theme-xyz"))
+                                (cfg-theme (badb-config-ui-theme cfg))
+                                (resolved (lookup-theme cfg-theme)))
+                           (and (not resolved)
+                                ;; default-theme parameter remains safe fallback
+                                (theme? (default-theme))
+                                (string=? (theme-name (default-theme)) "badb-dark"))))
+            )
 
 (test-end "adversarial-surfaces")

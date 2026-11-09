@@ -6,13 +6,13 @@
 ;;; distinct arities: clamp 3, double 1).
 
 (define-module (test fixtures lib math-utils)
-  #:export (clamp double))
+               #:export (clamp double))
 
 (define (clamp lo hi x)
-  "Clamp X into the closed interval [LO, HI] (or [HI, LO] when the
+        "Clamp X into the closed interval [LO, HI] (or [HI, LO] when the
 bounds are swapped)."
-  (min hi (max lo x)))
+        (min hi (max lo x)))
 
 (define (double x)
-  "Return X added to itself."
-  (+ x x))
+        "Return X added to itself."
+        (+ x x))

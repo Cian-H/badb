@@ -6,10 +6,10 @@
 ;;; fast "System 1" models evaluating risk in real-time.
 
 (define-module (geasa policies-guardrail plugin)
-  #:use-module (geasa foundation-util plugin)
-  #:use-module (geasa providers-model openai)
-  #:use-module (badb kernel journal)
-  #:use-module (json)
+               #:use-module (geasa foundation-util plugin)
+               #:use-module (geasa providers-model openai)
+               #:use-module (badb kernel journal)
+               #:use-module (json)
                #:use-module
                (ice-9 format)
                #:use-module
@@ -50,11 +50,11 @@
 ;;; Guardrail Levels & Ranking
 ;;;
 (define %guardrail-levels
-  '((disabled   . 0)
-    (permissive . 1)
-    (cautious   . 2)
-    (strict     . 3)
-    (paranoid   . 4)))
+        '((disabled   . 0)
+          (permissive . 1)
+          (cautious   . 2)
+          (strict     . 3)
+          (paranoid   . 4)))
 
 (define (guardrail-level-rank level)
         "Return numeric security rank for LEVEL symbol (higher is stricter)."
@@ -75,17 +75,17 @@
           (else pat)))
 
 (define* (make-pattern-rule name-pattern args-pattern verdict #:optional (reason #f))
-  "Create a declarative rule matching tool name and argument strings.
+         "Create a declarative rule matching tool name and argument strings.
 VERDICT must be 'allow, 'deny, or 'ask.
 NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wildcard)."
-  `((name-pattern . ,(compile-guardrail-pattern name-pattern))
-    (raw-name-pattern . ,name-pattern)
-    (args-pattern . ,(compile-guardrail-pattern args-pattern))
-    (raw-args-pattern . ,args-pattern)
-    (verdict . ,verdict)
-    (reason .
-            ,(or reason
-                 (format #f "Matched pattern rule: ~a / ~a" name-pattern args-pattern)))))
+         `((name-pattern . ,(compile-guardrail-pattern name-pattern))
+           (raw-name-pattern . ,name-pattern)
+           (args-pattern . ,(compile-guardrail-pattern args-pattern))
+           (raw-args-pattern . ,args-pattern)
+           (verdict . ,verdict)
+           (reason .
+                   ,(or reason
+                        (format #f "Matched pattern rule: ~a / ~a" name-pattern args-pattern)))))
 
 (define (matches-pattern? pattern text)
         (cond
@@ -105,57 +105,57 @@ NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wild
 ;;; Pre-built Evaluator Strategies
 ;;;
 (define* (dangerous-operation? tool-name #:optional (args '()))
-  "Return #t if TOOL-NAME and ARGS constitute a dangerous destructive operation."
-  (let ((name-str (string-downcase (ensure-string tool-name))))
-    (cond
-     ((string-contains name-str "danger") #t)
-     ;; Read-only inspection tools are not destructive commands
-     ((member name-str '("read_file" "fs-read-file" "ctx_search" "find_symbol" "symbols_overview")) #f)
-     (else
-      (let ((args-str
-             (string-downcase
-              (if (string? args)
-                  args
-                  (object->string args)))))
-        (and
-         (or (string-contains args-str "rm -rf")
-             (string-contains args-str "rm  -rf")
-             (string-contains args-str "rm -fr")
-             (string-contains args-str "rm -r -f")
-             (string-contains args-str "rm -f -r")
-             (string-contains args-str "rm --recursive")
-             (string-contains args-str "rm -r --force")
-             (string-contains args-str "rm --force -r")
-             (string-contains args-str "drop table")
-             (string-contains args-str "drop database")
-             (string-contains args-str "truncate table")
-             (string-contains args-str "format disk")
-             (string-contains args-str "mkfs")
-             (string-contains args-str "> /dev/sd")
-             (string-contains args-str "dd if="))
-         #t))))))
+         "Return #t if TOOL-NAME and ARGS constitute a dangerous destructive operation."
+         (let ((name-str (string-downcase (ensure-string tool-name))))
+           (cond
+             ((string-contains name-str "danger") #t)
+             ;; Read-only inspection tools are not destructive commands
+             ((member name-str '("read_file" "fs-read-file" "ctx_search" "find_symbol" "symbols_overview")) #f)
+             (else
+               (let ((args-str
+                       (string-downcase
+                         (if (string? args)
+                           args
+                           (object->string args)))))
+                 (and
+                   (or (string-contains args-str "rm -rf")
+                       (string-contains args-str "rm  -rf")
+                       (string-contains args-str "rm -fr")
+                       (string-contains args-str "rm -r -f")
+                       (string-contains args-str "rm -f -r")
+                       (string-contains args-str "rm --recursive")
+                       (string-contains args-str "rm -r --force")
+                       (string-contains args-str "rm --force -r")
+                       (string-contains args-str "drop table")
+                       (string-contains args-str "drop database")
+                       (string-contains args-str "truncate table")
+                       (string-contains args-str "format disk")
+                       (string-contains args-str "mkfs")
+                       (string-contains args-str "> /dev/sd")
+                       (string-contains args-str "dd if="))
+                   #t))))))
 
 (define* (mutating-operation? tool-name #:optional (_args '()))
-  "Return #t if TOOL-NAME represents a state-mutating operation."
-  (let
-      ((name-str (string-downcase (ensure-string tool-name))))
-    (and
-      (or (and (member name-str '("bash" "sh" "zsh" "ksh" "cmd" "command")) #t)
-          (string-prefix? "write" name-str)
-          (string-prefix? "edit" name-str)
-          (string-prefix? "delete" name-str)
-          (string-prefix? "remove" name-str)
-          (string-prefix? "unlink" name-str)
-          (string-prefix? "create" name-str)
-          (string-prefix? "shell" name-str)
-          (string-prefix? "run_" name-str)
-          (string-prefix? "run-" name-str)
-          (string-prefix? "patch" name-str)
-          (string-prefix? "modify" name-str)
-          (string-contains name-str "exec")
-          (string-contains name-str "mutate")
-          (string-contains name-str "eval"))
-      #t)))
+         "Return #t if TOOL-NAME represents a state-mutating operation."
+         (let
+             ((name-str (string-downcase (ensure-string tool-name))))
+           (and
+             (or (and (member name-str '("bash" "sh" "zsh" "ksh" "cmd" "command")) #t)
+                 (string-prefix? "write" name-str)
+                 (string-prefix? "edit" name-str)
+                 (string-prefix? "delete" name-str)
+                 (string-prefix? "remove" name-str)
+                 (string-prefix? "unlink" name-str)
+                 (string-prefix? "create" name-str)
+                 (string-prefix? "shell" name-str)
+                 (string-prefix? "run_" name-str)
+                 (string-prefix? "run-" name-str)
+                 (string-prefix? "patch" name-str)
+                 (string-prefix? "modify" name-str)
+                 (string-contains name-str "exec")
+                 (string-contains name-str "mutate")
+                 (string-contains name-str "eval"))
+             #t)))
 
 ;;;
 ;;; Quoting-Layer Sanity: guile -c Paren Balance
@@ -168,158 +168,158 @@ NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wild
 ;;; the agent receives the exact diagnosis instead of a stack trace.
 ;;;
 (define %guile-c-regexp
-  (make-regexp "\\bguile\\b[^;|&\n]*[ 	]-c\\b[ 	]*['\"]"))
+        (make-regexp "\\bguile\\b[^;|&\n]*[ 	]-c\\b[ 	]*['\"]"))
 
 (define %shell-like-tool-names
-  '("bash" "sh" "zsh" "ksh" "cmd" "command"
-    "execute_command" "execute-command" "shell"))
+        '("bash" "sh" "zsh" "ksh" "cmd" "command"
+          "execute_command" "execute-command" "shell"))
 
 (define (%shell-like-tool? tool-name)
-  (let ((name-str (string-downcase (ensure-string tool-name))))
-    (or (member name-str %shell-like-tool-names)
-        (string-contains name-str "shell")
-        (string-contains name-str "exec")
-        (string-contains name-str "command"))))
+        (let ((name-str (string-downcase (ensure-string tool-name))))
+          (or (member name-str %shell-like-tool-names)
+              (string-contains name-str "shell")
+              (string-contains name-str "exec")
+              (string-contains name-str "command"))))
 
 (define (guardrail-command-string args)
-  "Extract the shell command string from tool ARGS: ARGS itself when it
+        "Extract the shell command string from tool ARGS: ARGS itself when it
 is a string, the command/cmd field when it is an alist, else #f."
-  (cond
-    ((string? args) args)
-    ((and (pair? args) (pair? (car args)))
-     (or (assoc-ref args "command")
-         (assoc-ref args 'command)
-         (assoc-ref args "cmd")
-         (assoc-ref args 'cmd)))
-    (else #f)))
+        (cond
+          ((string? args) args)
+          ((and (pair? args) (pair? (car args)))
+            (or (assoc-ref args "command")
+                (assoc-ref args 'command)
+                (assoc-ref args "cmd")
+                (assoc-ref args 'cmd)))
+          (else #f)))
 
 (define (%payload-after cmd start open)
-  "Return the -c payload beginning at index START in CMD, delimited by
+        "Return the -c payload beginning at index START in CMD, delimited by
 the OPEN quote character (' or \").  Single-quoted payloads end at the
 next single quote (shell single quotes cannot nest); double-quoted
 payloads honor backslash escapes.  #f when unterminated."
-  (let ((n (string-length cmd)))
-    (let loop ((i start))
-      (cond
-        ((>= i n) #f)
-        ((char=? open #\")
-         (cond ((char=? (string-ref cmd i) #\\)
-                (if (>= (+ i 1) n) #f (loop (+ i 2))))
-               ((char=? (string-ref cmd i) #\") (substring cmd start i))
-               (else (loop (1+ i)))))
-        (else (if (char=? (string-ref cmd i) #\')
-                (substring cmd start i)
-                (loop (1+ i))))))))
+        (let ((n (string-length cmd)))
+          (let loop ((i start))
+                    (cond
+                      ((>= i n) #f)
+                      ((char=? open #\")
+                        (cond ((char=? (string-ref cmd i) #\\)
+                                (if (>= (+ i 1) n) #f (loop (+ i 2))))
+                              ((char=? (string-ref cmd i) #\") (substring cmd start i))
+                              (else (loop (1+ i)))))
+                      (else (if (char=? (string-ref cmd i) #\')
+                              (substring cmd start i)
+                              (loop (1+ i))))))))
 
 (define (scheme-paren-imbalance payload)
-  "Return #f when PAYLOAD's parentheses balance outside strings,
+        "Return #f when PAYLOAD's parentheses balance outside strings,
 line/block comments, and character literals; otherwise a string
 describing the imbalance."
-  (let ((n (string-length payload)))
-    (let loop ((i 0) (depth 0) (state 'normal) (block 0))
-      (if (>= i n)
-        (cond
-          ((eq? state 'string) "payload ends inside a string literal")
-          ((> block 0) "payload ends inside a block comment")
-          ((> depth 0)
-           (format #f "~a unclosed opening paren(s) at end of payload" depth))
-          ((< depth 0)
-           (format #f "~a extra closing paren(s)" (- depth)))
-          (else #f))
-        (let ((c (string-ref payload i)))
-          (cond
-            ((eq? state 'line-comment)
-             (if (char=? c #\newline)
-               (loop (1+ i) depth 'normal block)
-               (loop (1+ i) depth 'line-comment block)))
-            ((eq? state 'string)
-             (cond ((char=? c #\\) (if (>= (+ i 1) n)
-                                       (loop (+ i 1) depth 'string block)
-                                       (loop (+ i 2) depth 'string block)))
-                   ((char=? c #\") (loop (1+ i) depth 'normal block))
-                   (else (loop (1+ i) depth 'string block))))
-            ((eq? state 'block-comment)
-             (cond ((and (char=? c #\|) (< (+ i 1) n)
-                         (char=? (string-ref payload (+ i 1)) #\#))
-                    (if (= block 1)
-                      (loop (+ i 2) depth 'normal 0)
-                      (loop (+ i 2) depth 'block-comment (- block 1))))
-                   ((and (char=? c #\#) (< (+ i 1) n)
-                         (char=? (string-ref payload (+ i 1)) #\|))
-                    (loop (+ i 2) depth 'block-comment (+ block 1)))
-                   (else (loop (1+ i) depth 'block-comment block))))
-            (else
-             (cond
-               ((and (char=? c #\#) (< (+ i 1) n)
-                     (char=? (string-ref payload (+ i 1)) #\\))
-                ;; #\X char literal: the character after the backslash is
-                ;; literal data (#\( and #\) must not count as parens).
-                (loop (+ i 3) depth 'normal block))
-               ((and (char=? c #\#) (< (+ i 1) n)
-                     (char=? (string-ref payload (+ i 1)) #\|))
-                (loop (+ i 2) depth 'block-comment 1))
-               ((char=? c #\") (loop (1+ i) depth 'string block))
-               ((char=? c #\;) (loop (1+ i) depth 'line-comment block))
-               ((char=? c #\() (loop (1+ i) (+ depth 1) 'normal block))
-               ((char=? c #\)) (loop (1+ i) (- depth 1) 'normal block))
-               (else (loop (1+ i) depth 'normal block))))))))))
+        (let ((n (string-length payload)))
+          (let loop ((i 0) (depth 0) (state 'normal) (block 0))
+                    (if (>= i n)
+                      (cond
+                        ((eq? state 'string) "payload ends inside a string literal")
+                        ((> block 0) "payload ends inside a block comment")
+                        ((> depth 0)
+                          (format #f "~a unclosed opening paren(s) at end of payload" depth))
+                        ((< depth 0)
+                          (format #f "~a extra closing paren(s)" (- depth)))
+                        (else #f))
+                      (let ((c (string-ref payload i)))
+                        (cond
+                          ((eq? state 'line-comment)
+                            (if (char=? c #\newline)
+                              (loop (1+ i) depth 'normal block)
+                              (loop (1+ i) depth 'line-comment block)))
+                          ((eq? state 'string)
+                            (cond ((char=? c #\\) (if (>= (+ i 1) n)
+                                                    (loop (+ i 1) depth 'string block)
+                                                    (loop (+ i 2) depth 'string block)))
+                                  ((char=? c #\") (loop (1+ i) depth 'normal block))
+                                  (else (loop (1+ i) depth 'string block))))
+                          ((eq? state 'block-comment)
+                            (cond ((and (char=? c #\|) (< (+ i 1) n)
+                                        (char=? (string-ref payload (+ i 1)) #\#))
+                                    (if (= block 1)
+                                      (loop (+ i 2) depth 'normal 0)
+                                      (loop (+ i 2) depth 'block-comment (- block 1))))
+                                  ((and (char=? c #\#) (< (+ i 1) n)
+                                        (char=? (string-ref payload (+ i 1)) #\|))
+                                    (loop (+ i 2) depth 'block-comment (+ block 1)))
+                                  (else (loop (1+ i) depth 'block-comment block))))
+                          (else
+                            (cond
+                              ((and (char=? c #\#) (< (+ i 1) n)
+                                    (char=? (string-ref payload (+ i 1)) #\\))
+                                ;; #\X char literal: the character after the backslash is
+                                ;; literal data (#\( and #\) must not count as parens).
+                                (loop (+ i 3) depth 'normal block))
+                              ((and (char=? c #\#) (< (+ i 1) n)
+                                    (char=? (string-ref payload (+ i 1)) #\|))
+                                (loop (+ i 2) depth 'block-comment 1))
+                              ((char=? c #\") (loop (1+ i) depth 'string block))
+                              ((char=? c #\;) (loop (1+ i) depth 'line-comment block))
+                              ((char=? c #\() (loop (1+ i) (+ depth 1) 'normal block))
+                              ((char=? c #\)) (loop (1+ i) (- depth 1) 'normal block))
+                              (else (loop (1+ i) depth 'normal block))))))))))
 
 (define (guile-c-paren-imbalance tool-name args)
-  "Return a deny reason string when TOOL-NAME executes a shell command
+        "Return a deny reason string when TOOL-NAME executes a shell command
 embedding a guile -c payload with unbalanced parentheses; #f otherwise.
 Only shell-like tools are checked: file-writing tools may legitimately
 carry guile -c text as file content."
-  (and (%shell-like-tool? tool-name)
-       (let ((cmd (guardrail-command-string args)))
-         (and (string? cmd)
-              (let loop ((ms (list-matches %guile-c-regexp cmd)))
-                (if (null? ms)
-                  #f
-                  (let* ((m (car ms))
-                         (open (string-ref cmd (- (match:end m) 1)))
-                         (payload (%payload-after cmd (match:end m) open)))
-                    (cond
-                      ((not payload)
-                       "unterminated guile -c payload quoting in command")
-                      ((scheme-paren-imbalance payload)
-                       => (lambda (desc)
-                            (format #f
-                              "guile -c paren imbalance: ~a. The command was NOT executed; a character was likely lost or added crossing quoting layers. Re-issue the command balanced, or write the Scheme to a file and run 'guile <file>' instead of -c."
-                              desc)))
-                      (else (loop (cdr ms)))))))))))
+        (and (%shell-like-tool? tool-name)
+             (let ((cmd (guardrail-command-string args)))
+               (and (string? cmd)
+                    (let loop ((ms (list-matches %guile-c-regexp cmd)))
+                              (if (null? ms)
+                                #f
+                                (let* ((m (car ms))
+                                       (open (string-ref cmd (- (match:end m) 1)))
+                                       (payload (%payload-after cmd (match:end m) open)))
+                                  (cond
+                                    ((not payload)
+                                      "unterminated guile -c payload quoting in command")
+                                    ((scheme-paren-imbalance payload)
+                                      => (lambda (desc)
+                                           (format #f
+                                                   "guile -c paren imbalance: ~a. The command was NOT executed; a character was likely lost or added crossing quoting layers. Re-issue the command balanced, or write the Scheme to a file and run 'guile <file>' instead of -c."
+                                                   desc)))
+                                    (else (loop (cdr ms)))))))))))
 
 (define* (default-cautious-evaluator tool-name args level #:optional (context '()))
-  "Default built-in evaluator applying standard cautious/permissive/strict policies.
+         "Default built-in evaluator applying standard cautious/permissive/strict policies.
 A shell command embedding an unbalanced guile -c payload is denied
 before any level-specific decision (except at 'disabled): a
 syntactically broken command cannot succeed, and the denial reason
 replaces the cryptic reader error the subprocess would produce."
-  (if (eq? level 'disabled)
-    (cons 'allow "Guardrails disabled")
-    (let ((imbalance (guile-c-paren-imbalance tool-name args)))
-      (if imbalance
-        (cons 'deny imbalance)
-        (case level
-    ((permissive)
-      (if (dangerous-operation? tool-name args)
-        (cons 'ask "High-risk command detected in permissive mode")
-        (cons 'allow "Permissive mode auto-approved")))
-    ((cautious)
-      (cond
-        ((dangerous-operation? tool-name args)
-          (cons 'deny "Dangerous destructive operation blocked in cautious mode"))
-        ((mutating-operation? tool-name args)
-          (cons 'ask "State mutation requires confirmation in cautious mode"))
-        (else (cons 'allow "Read-only inspection permitted"))))
-    ((strict)
-      (if (dangerous-operation? tool-name args)
-        (cons 'deny "Dangerous operation blocked in strict mode")
-        (cons 'ask "All operations require confirmation in strict mode")))
-    ((paranoid)
-      (if (mutating-operation? tool-name args)
-        (cons 'deny "All mutations prohibited in paranoid mode")
-        (cons 'ask "Inspection requires confirmation in paranoid mode")))
-    (else (cons 'ask "Unrecognized security level; defaulting to ask")))))))
+         (if (eq? level 'disabled)
+           (cons 'allow "Guardrails disabled")
+           (let ((imbalance (guile-c-paren-imbalance tool-name args)))
+             (if imbalance
+               (cons 'deny imbalance)
+               (case level
+                 ((permissive)
+                   (if (dangerous-operation? tool-name args)
+                     (cons 'ask "High-risk command detected in permissive mode")
+                     (cons 'allow "Permissive mode auto-approved")))
+                 ((cautious)
+                   (cond
+                     ((dangerous-operation? tool-name args)
+                       (cons 'deny "Dangerous destructive operation blocked in cautious mode"))
+                     ((mutating-operation? tool-name args)
+                       (cons 'ask "State mutation requires confirmation in cautious mode"))
+                     (else (cons 'allow "Read-only inspection permitted"))))
+                 ((strict)
+                   (if (dangerous-operation? tool-name args)
+                     (cons 'deny "Dangerous operation blocked in strict mode")
+                     (cons 'ask "All operations require confirmation in strict mode")))
+                 ((paranoid)
+                   (if (mutating-operation? tool-name args)
+                     (cons 'deny "All mutations prohibited in paranoid mode")
+                     (cons 'ask "Inspection requires confirmation in paranoid mode")))
+                 (else (cons 'ask "Unrecognized security level; defaulting to ask")))))))
 
 (define
   (make-scheme-predicate-evaluator predicate-fn)
@@ -371,71 +371,71 @@ Falls back to FALLBACK-EVALUATOR if the model call fails."
 ;;; Guardrail Policy Record
 ;;;
 (define-record-type <guardrail-policy>
-  (%make-guardrail-policy level rules evaluator journal)
-  guardrail-policy?
-  (level guardrail-policy-level set-guardrail-policy-level!)
-  (rules guardrail-policy-rules set-guardrail-policy-rules!)
-  (evaluator guardrail-policy-evaluator set-guardrail-policy-evaluator!)
-  (journal guardrail-policy-journal set-guardrail-policy-journal!))
+                    (%make-guardrail-policy level rules evaluator journal)
+                    guardrail-policy?
+                    (level guardrail-policy-level set-guardrail-policy-level!)
+                    (rules guardrail-policy-rules set-guardrail-policy-rules!)
+                    (evaluator guardrail-policy-evaluator set-guardrail-policy-evaluator!)
+                    (journal guardrail-policy-journal set-guardrail-policy-journal!))
 
 (define* (make-guardrail-policy #:key
                                 (level 'cautious)
                                 (rules '())
                                 (evaluator default-cautious-evaluator)
                                 (journal #f))
-  "Construct an extensible <guardrail-policy> instance."
-  (%make-guardrail-policy level rules evaluator journal))
+         "Construct an extensible <guardrail-policy> instance."
+         (%make-guardrail-policy level rules evaluator journal))
 
 ;;;
 ;;; Evaluation Pipeline
 ;;;
 (define* (evaluate-guardrail policy tool-name args #:optional (context '()))
-  "Evaluate TOOL-NAME and ARGS against POLICY.
+         "Evaluate TOOL-NAME and ARGS against POLICY.
 Returns a pair: (verdict-symbol . reason-string), e.g. '(allow . \"...\") or '(deny . \"...\")."
-  (let* ((level (guardrail-policy-level policy))
-         (rules (guardrail-policy-rules policy))
-         (evaluator (guardrail-policy-evaluator policy))
-         (jrn (guardrail-policy-journal policy))
-         (name-str (if (symbol? tool-name) (symbol->string tool-name) tool-name))
-         (args-str (object->string args))
+         (let* ((level (guardrail-policy-level policy))
+                (rules (guardrail-policy-rules policy))
+                (evaluator (guardrail-policy-evaluator policy))
+                (jrn (guardrail-policy-journal policy))
+                (name-str (if (symbol? tool-name) (symbol->string tool-name) tool-name))
+                (args-str (object->string args))
 
-         ;; 1. Check explicit pattern rules first
-         (matching-rule
-          (find (lambda (r)
-                  (let ((np (assoc-ref r 'name-pattern))
-                        (ap (assoc-ref r 'args-pattern)))
-                    (and (matches-pattern? np name-str)
-                         (matches-pattern? ap args-str))))
-                rules))
+                ;; 1. Check explicit pattern rules first
+                (matching-rule
+                  (find (lambda (r)
+                          (let ((np (assoc-ref r 'name-pattern))
+                                (ap (assoc-ref r 'args-pattern)))
+                            (and (matches-pattern? np name-str)
+                                 (matches-pattern? ap args-str))))
+                        rules))
 
-         ;; 2. Determine verdict
-         (decision
-          (if matching-rule
-              (cons (assoc-ref matching-rule 'verdict)
-                    (or (assoc-ref matching-rule 'reason) "Matched explicit rule"))
-              (if (procedure? evaluator)
-                  (evaluator name-str args level context)
-                  (cons 'allow "No evaluator configured"))))
+                ;; 2. Determine verdict
+                (decision
+                  (if matching-rule
+                    (cons (assoc-ref matching-rule 'verdict)
+                          (or (assoc-ref matching-rule 'reason) "Matched explicit rule"))
+                    (if (procedure? evaluator)
+                      (evaluator name-str args level context)
+                      (cons 'allow "No evaluator configured"))))
 
-         (verdict (car decision))
-         (reason (cdr decision)))
+                (verdict (car decision))
+                (reason (cdr decision)))
 
-    ;; 3. Log provenance to journal if attached
-    (safe-journal-append! jrn
-                           `((feature-id . "guardrail")
-                             (checkpoint . ,(format #f "guardrail:~a" name-str))
-                             (tool-name . ,name-str)
-                             (level . ,(symbol->string level))
-                             (verdict . ,(symbol->string verdict))
-                             (reason . ,reason)))
+           ;; 3. Log provenance to journal if attached
+           (safe-journal-append! jrn
+                                 `((feature-id . "guardrail")
+                                   (checkpoint . ,(format #f "guardrail:~a" name-str))
+                                   (tool-name . ,name-str)
+                                   (level . ,(symbol->string level))
+                                   (verdict . ,(symbol->string verdict))
+                                   (reason . ,reason)))
 
-    decision))
+           decision))
 
 (define (guardrail-allow? decision)
-  (eq? (car decision) 'allow))
+        (eq? (car decision) 'allow))
 
 (define (guardrail-deny? decision)
-  (eq? (car decision) 'deny))
+        (eq? (car decision) 'deny))
 
 (define (guardrail-ask? decision)
-  (eq? (car decision) 'ask))
+        (eq? (car decision) 'ask))

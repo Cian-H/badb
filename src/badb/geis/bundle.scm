@@ -26,8 +26,8 @@
                #:use-module
                (semver ranges)
                ;; DEV-DEBT [accepted-layering]: bundle tooling imports the synthesis plugin for
-;; replay; the reverse direction is broken via synthesis-assemble-hook in the plugin.
-#:use-module
+               ;; replay; the reverse direction is broken via synthesis-assemble-hook in the plugin.
+               #:use-module
                (geasa runtimes-synthesis plugin)
                #:use-module
                (json)
@@ -51,105 +51,105 @@
                                         geis-bundle-pin!))
 
 (define (%string-split-char s delim)
-  "Split S on single-character DELIM into a list of substrings."
-  (let loop ((rest (string->list s)) (acc '()) (cur '()))
-    (cond
-     ((null? rest)
-      (reverse (cons (list->string (reverse cur)) acc)))
-     ((char=? (car rest) delim)
-      (loop (cdr rest) (cons (list->string (reverse cur)) acc) '()))
-     (else
-      (loop (cdr rest) acc (cons (car rest) cur))))))
+        "Split S on single-character DELIM into a list of substrings."
+        (let loop ((rest (string->list s)) (acc '()) (cur '()))
+                  (cond
+                    ((null? rest)
+                      (reverse (cons (list->string (reverse cur)) acc)))
+                    ((char=? (car rest) delim)
+                      (loop (cdr rest) (cons (list->string (reverse cur)) acc) '()))
+                    (else
+                      (loop (cdr rest) acc (cons (car rest) cur))))))
 
 (define (%read-file-string path)
-  "Read all of PATH as a UTF-8 string.  Throws on I/O errors."
-  (call-with-input-file path
-    (lambda (port)
-      (set-port-encoding! port "UTF-8")
-      (get-string-all port))))
+        "Read all of PATH as a UTF-8 string.  Throws on I/O errors."
+        (call-with-input-file path
+                              (lambda (port)
+                                (set-port-encoding! port "UTF-8")
+                                (get-string-all port))))
 
 (define (%directory? path)
-  "Return #t when PATH names an existing directory."
-  (catch #t
-    (lambda () (eq? (stat:type (stat path)) 'directory))
-    (lambda _ #f)))
+        "Return #t when PATH names an existing directory."
+        (catch #t
+          (lambda () (eq? (stat:type (stat path)) 'directory))
+          (lambda _ #f)))
 
 (define (%feature-id-char? c)
-  (or (char-alphabetic? c)
-      (char-numeric? c)
-      (memv c '(#\. #\_ #\-))))
+        (or (char-alphabetic? c)
+            (char-numeric? c)
+            (memv c '(#\. #\_ #\-))))
 
 (define (%valid-feature-id? fid)
-  (and (string? fid)
-       (not (string-null? fid))
-       (let loop ((chars (string->list fid)))
-         (cond ((null? chars) #t)
-               ((%feature-id-char? (car chars)) (loop (cdr chars)))
-               (else #f)))))
+        (and (string? fid)
+             (not (string-null? fid))
+             (let loop ((chars (string->list fid)))
+                       (cond ((null? chars) #t)
+                             ((%feature-id-char? (car chars)) (loop (cdr chars)))
+                             (else #f)))))
 
 (define (%safe-relative-path? path)
-  "PATH is a non-empty relative path with no '..' component."
-  (and (string? path)
-       (not (string-null? path))
-       (not (string-prefix? "/" path))
-       (not (member ".." (%string-split-char path #\/)))))
+        "PATH is a non-empty relative path with no '..' component."
+        (and (string? path)
+             (not (string-null? path))
+             (not (string-prefix? "/" path))
+             (not (member ".." (%string-split-char path #\/)))))
 
 (define (%bundle-member-exists? bundle-dir rel-path)
-  (file-exists? (string-append bundle-dir "/" rel-path)))
+        (file-exists? (string-append bundle-dir "/" rel-path)))
 
 (define (%all-hex? s)
-  (let loop ((chars (string->list s)))
-    (cond ((null? chars) #t)
-          ((memv (char-downcase (car chars))
-                 '(#\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7 #\8 #\9
-                   #\a #\b #\c #\d #\e #\f))
-           (loop (cdr chars)))
-          (else #f))))
+        (let loop ((chars (string->list s)))
+                  (cond ((null? chars) #t)
+                        ((memv (char-downcase (car chars))
+                               '(#\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7 #\8 #\9
+                                 #\a #\b #\c #\d #\e #\f))
+                          (loop (cdr chars)))
+                        (else #f))))
 
 ;;;
 ;;; Search path and discovery
 ;;;
 (define (geis-bundle-search-path)
-  "Return the bundle search roots: BADB_GEIS_PATH split on colons, or
+        "Return the bundle search roots: BADB_GEIS_PATH split on colons, or
 '(\"src/geasa\") when unset or empty."
-  (let ((path (getenv "BADB_GEIS_PATH")))
-    (if (or (not path) (string-null? path))
-        '("src/geasa" "geis")
-        (%string-split-char path #\:))))
+        (let ((path (getenv "BADB_GEIS_PATH")))
+          (if (or (not path) (string-null? path))
+            '("src/geasa" "geis")
+            (%string-split-char path #\:))))
 
 (define (%fid->string fid)
-  "Normalize a feature id (symbol from manifest data, or string) to a string."
-  (if (symbol? fid) (symbol->string fid) fid))
+        "Normalize a feature id (symbol from manifest data, or string) to a string."
+        (if (symbol? fid) (symbol->string fid) fid))
 
 (define (find-geis-bundle feature-id)
-  "Return the directory of FEATURE-ID (symbol or string) from the first
+        "Return the directory of FEATURE-ID (symbol or string) from the first
 search root holding <root>/<feature-id>/manifest.scm, or #f when no bundle
 is found."
-  (let ((fid (%fid->string feature-id)))
-    (let loop ((roots (geis-bundle-search-path)))
-      (cond
-       ((null? roots) #f)
-       ((file-exists? (string-append (car roots) "/" fid "/manifest.scm"))
-        (string-append (car roots) "/" fid))
-       (else (loop (cdr roots)))))))
+        (let ((fid (%fid->string feature-id)))
+          (let loop ((roots (geis-bundle-search-path)))
+                    (cond
+                      ((null? roots) #f)
+                      ((file-exists? (string-append (car roots) "/" fid "/manifest.scm"))
+                        (string-append (car roots) "/" fid))
+                      (else (loop (cdr roots)))))))
 
 ;;;
 ;;; Manifest reading
 ;;;
 (define (read-geis-manifest path)
-  "Read the manifest at PATH as one data sexp.  Return the alist, or #f on
+        "Read the manifest at PATH as one data sexp.  Return the alist, or #f on
 missing file, unreadable content, or a non-list result.  Never evaluates."
-  (catch #t
-    (lambda ()
-      (call-with-input-file path
-        (lambda (port)
-          (let ((sexp (read port)))
-            (and (list? sexp) sexp)))))
-    (lambda _ #f)))
+        (catch #t
+          (lambda ()
+            (call-with-input-file path
+                                  (lambda (port)
+                                    (let ((sexp (read port)))
+                                      (and (list? sexp) sexp)))))
+          (lambda _ #f)))
 
 (define (manifest-field manifest key)
-  "Look up KEY in the manifest alist MANIFEST; #f when absent."
-  (assoc-ref manifest key))
+        "Look up KEY in the manifest alist MANIFEST; #f when absent."
+        (assoc-ref manifest key))
 
 ;;;
 ;;; Manifest validation
@@ -158,154 +158,154 @@ missing file, unreadable content, or a non-list result.  Never evaluates."
 ;; (even a comment) invalidates the manifest until pins are recomputed. No automated
 ;; check exists — add one to CI before ./scripts/test.
 (define (%validate-sha256-pins! errors-cell bundle-dir pins)
-  (define (add! reason)
-    (set-car! errors-cell (cons reason (car errors-cell))))
-  (for-each
-   (lambda (pin)
-     (let ((file (and (pair? pin) (car pin)))
-           (hash (and (pair? pin) (cdr pin))))
-       (cond
-        ((not (and (string? file) (string? hash)))
-         (add! (format #f "malformed sha256 pin entry: ~s" pin)))
-        ((not (= 64 (string-length hash)))
-         (add! (format #f "sha256 pin for '~a' is not 64 hex chars" file)))
-        ((not (%all-hex? hash))
-         (add! (format #f "sha256 pin for '~a' is not hexadecimal" file)))
-        ((not (%bundle-member-exists? bundle-dir file))
-         (add! (format #f "sha256 pin for '~a' but file does not exist" file)))
-        (else
-         (catch #t
-           (lambda ()
-             (unless (string= (sha256-hex (%read-file-string
-                                           (string-append bundle-dir "/" file)))
-                              hash)
-               (add! (format #f "sha256 pin mismatch for file '~a'" file))))
-           (lambda _ #f))))))
-   pins))
+        (define (add! reason)
+                (set-car! errors-cell (cons reason (car errors-cell))))
+        (for-each
+          (lambda (pin)
+            (let ((file (and (pair? pin) (car pin)))
+                  (hash (and (pair? pin) (cdr pin))))
+              (cond
+                ((not (and (string? file) (string? hash)))
+                  (add! (format #f "malformed sha256 pin entry: ~s" pin)))
+                ((not (= 64 (string-length hash)))
+                  (add! (format #f "sha256 pin for '~a' is not 64 hex chars" file)))
+                ((not (%all-hex? hash))
+                  (add! (format #f "sha256 pin for '~a' is not hexadecimal" file)))
+                ((not (%bundle-member-exists? bundle-dir file))
+                  (add! (format #f "sha256 pin for '~a' but file does not exist" file)))
+                (else
+                  (catch #t
+                    (lambda ()
+                      (unless (string= (sha256-hex (%read-file-string
+                                                     (string-append bundle-dir "/" file)))
+                                       hash)
+                        (add! (format #f "sha256 pin mismatch for file '~a'" file))))
+                    (lambda _ #f))))))
+          pins))
 
 ;; DEV-DEBT [complexity]: cyclomatic ~41 — each manifest field is a hand-rolled
 ;; check; a declarative field schema would shrink this.
 (define (geis-manifest-valid? bundle-dir)
-  "Validate the bundle at BUNDLE-DIR.  Return '() when the manifest is valid,
+        "Validate the bundle at BUNDLE-DIR.  Return '() when the manifest is valid,
 otherwise a non-empty list of human-readable reason strings."
-  (let ((errors-cell (list '()))
-        (manifest (read-geis-manifest (string-append bundle-dir "/manifest.scm"))))
-    (define (add! reason)
-      (set-car! errors-cell (cons reason (car errors-cell))))
-    (cond
-     ((not manifest)
-      (add! "manifest.scm is missing or unreadable"))
-     (else
-      (unless (equal? 1 (manifest-field manifest 'bundle-version))
-        (add! "bundle-version must be exactly 1"))
-      (let ((fid (manifest-field manifest 'feature-id)))
-        (unless (%valid-feature-id? fid)
-          (add! (format #f "feature-id '~a' is missing or not sanitized" fid)))
-        (when (and (string? fid) (not (string= fid (basename bundle-dir))))
-          (add! (format #f "feature-id '~a' does not match directory name '~a'"
-                        fid (basename bundle-dir)))))
-      (let ((ver (manifest-field manifest 'version)))
-        (unless (and (string? ver) (not (string-null? ver)))
-          (add! "version must be a non-empty string")))
-      (let ((spec (manifest-field manifest 'spec)))
-        (unless spec (add! "spec field is missing"))
-        (when (and (string? spec) (not (%safe-relative-path? spec)))
-          (add! (format #f "spec path '~a' is not a safe relative path" spec)))
-        (when (and (string? spec) (not (%bundle-member-exists? bundle-dir spec)))
-          (add! (format #f "spec file '~a' does not exist in bundle" spec))))
-      (let ((plugin (manifest-field manifest 'plugin)))
-        (when plugin
-          (let ((module (and (list? plugin) (manifest-field plugin 'module)))
-                (file (and (list? plugin) (manifest-field plugin 'file))))
-            (unless (and (list? module) (every symbol? module))
-              (add! "plugin field must carry (module . list-of-symbols)"))
-            (unless (string? file)
-              (add! "plugin field must carry (file . string)"))
-            (when (string? file)
-              (unless (%safe-relative-path? file)
-                (add! (format #f "plugin file path '~a' is not a safe relative path" file)))
-              (unless (%bundle-member-exists? bundle-dir file)
-                (add! (format #f "plugin file '~a' does not exist in bundle" file)))))))
-      (let ((workflow (manifest-field manifest 'workflow)))
-        (when workflow
-          (unless (%safe-relative-path? workflow)
-            (add! (format #f "workflow path '~a' is not a safe relative path" workflow)))
-          (unless (%bundle-member-exists? bundle-dir workflow)
-            (add! (format #f "workflow file '~a' does not exist in bundle" workflow)))))
-      (let ((prompts (manifest-field manifest 'prompts)))
-        (when prompts
-          (unless (and (list? prompts) (every string? prompts))
-            (add! "prompts field must be a list of file paths"))
-          (for-each
-           (lambda (p)
-             (unless (%safe-relative-path? p)
-               (add! (format #f "prompt path '~a' is not a safe relative path" p)))
-             (unless (%bundle-member-exists? bundle-dir p)
-               (add! (format #f "prompt file '~a' does not exist in bundle" p))))
-           (if (list? prompts) prompts '()))))
-      (let ((fixtures (manifest-field manifest 'fixtures)))
-        (when fixtures
-          (unless (%safe-relative-path? fixtures)
-            (add! (format #f "fixtures path '~a' is not a safe relative path" fixtures)))
-          (unless (%bundle-member-exists? bundle-dir fixtures)
-            (add! (format #f "fixtures directory '~a' does not exist in bundle" fixtures)))))
-      (let ((cassettes (manifest-field manifest 'cassettes)))
-        (when cassettes
-          (unless (%safe-relative-path? cassettes)
-            (add! (format #f "cassettes path '~a' is not a safe relative path" cassettes)))
-          (unless (%bundle-member-exists? bundle-dir cassettes)
-            (add! (format #f "cassettes directory '~a' does not exist in bundle" cassettes)))))
-      (let ((tools (manifest-field manifest 'tools)))
-        (when tools
-          (unless (and (list? tools)
-                       (every (lambda (t)
-                                (or (string? t)
-                                    (symbol? t)
-                                    (and (pair? t) (or (symbol? (car t)) (string? (car t))))))
-                              tools))
-            (add! "tools field must be a list of tool names or specifications"))))
-      (let ((wf-exports (manifest-field manifest 'workflow-exports)))
-        (when wf-exports
-          (unless (and (list? wf-exports) (every string? wf-exports))
-            (add! "workflow-exports field must be a list of workflow name strings"))))
-      (let ((pins (manifest-field manifest 'sha256)))
-        (when pins
-          (unless (list? pins)
-            (add! "sha256 field must be a list of (file . hash) pins"))
-          (when (list? pins)
-            (%validate-sha256-pins! errors-cell bundle-dir pins))))))
-    (reverse (car errors-cell))))
+        (let ((errors-cell (list '()))
+              (manifest (read-geis-manifest (string-append bundle-dir "/manifest.scm"))))
+          (define (add! reason)
+                  (set-car! errors-cell (cons reason (car errors-cell))))
+          (cond
+            ((not manifest)
+              (add! "manifest.scm is missing or unreadable"))
+            (else
+              (unless (equal? 1 (manifest-field manifest 'bundle-version))
+                (add! "bundle-version must be exactly 1"))
+              (let ((fid (manifest-field manifest 'feature-id)))
+                (unless (%valid-feature-id? fid)
+                  (add! (format #f "feature-id '~a' is missing or not sanitized" fid)))
+                (when (and (string? fid) (not (string= fid (basename bundle-dir))))
+                  (add! (format #f "feature-id '~a' does not match directory name '~a'"
+                                fid (basename bundle-dir)))))
+              (let ((ver (manifest-field manifest 'version)))
+                (unless (and (string? ver) (not (string-null? ver)))
+                  (add! "version must be a non-empty string")))
+              (let ((spec (manifest-field manifest 'spec)))
+                (unless spec (add! "spec field is missing"))
+                (when (and (string? spec) (not (%safe-relative-path? spec)))
+                  (add! (format #f "spec path '~a' is not a safe relative path" spec)))
+                (when (and (string? spec) (not (%bundle-member-exists? bundle-dir spec)))
+                  (add! (format #f "spec file '~a' does not exist in bundle" spec))))
+              (let ((plugin (manifest-field manifest 'plugin)))
+                (when plugin
+                  (let ((module (and (list? plugin) (manifest-field plugin 'module)))
+                        (file (and (list? plugin) (manifest-field plugin 'file))))
+                    (unless (and (list? module) (every symbol? module))
+                      (add! "plugin field must carry (module . list-of-symbols)"))
+                    (unless (string? file)
+                      (add! "plugin field must carry (file . string)"))
+                    (when (string? file)
+                      (unless (%safe-relative-path? file)
+                        (add! (format #f "plugin file path '~a' is not a safe relative path" file)))
+                      (unless (%bundle-member-exists? bundle-dir file)
+                        (add! (format #f "plugin file '~a' does not exist in bundle" file)))))))
+              (let ((workflow (manifest-field manifest 'workflow)))
+                (when workflow
+                  (unless (%safe-relative-path? workflow)
+                    (add! (format #f "workflow path '~a' is not a safe relative path" workflow)))
+                  (unless (%bundle-member-exists? bundle-dir workflow)
+                    (add! (format #f "workflow file '~a' does not exist in bundle" workflow)))))
+              (let ((prompts (manifest-field manifest 'prompts)))
+                (when prompts
+                  (unless (and (list? prompts) (every string? prompts))
+                    (add! "prompts field must be a list of file paths"))
+                  (for-each
+                    (lambda (p)
+                      (unless (%safe-relative-path? p)
+                        (add! (format #f "prompt path '~a' is not a safe relative path" p)))
+                      (unless (%bundle-member-exists? bundle-dir p)
+                        (add! (format #f "prompt file '~a' does not exist in bundle" p))))
+                    (if (list? prompts) prompts '()))))
+              (let ((fixtures (manifest-field manifest 'fixtures)))
+                (when fixtures
+                  (unless (%safe-relative-path? fixtures)
+                    (add! (format #f "fixtures path '~a' is not a safe relative path" fixtures)))
+                  (unless (%bundle-member-exists? bundle-dir fixtures)
+                    (add! (format #f "fixtures directory '~a' does not exist in bundle" fixtures)))))
+              (let ((cassettes (manifest-field manifest 'cassettes)))
+                (when cassettes
+                  (unless (%safe-relative-path? cassettes)
+                    (add! (format #f "cassettes path '~a' is not a safe relative path" cassettes)))
+                  (unless (%bundle-member-exists? bundle-dir cassettes)
+                    (add! (format #f "cassettes directory '~a' does not exist in bundle" cassettes)))))
+              (let ((tools (manifest-field manifest 'tools)))
+                (when tools
+                  (unless (and (list? tools)
+                               (every (lambda (t)
+                                        (or (string? t)
+                                            (symbol? t)
+                                            (and (pair? t) (or (symbol? (car t)) (string? (car t))))))
+                                      tools))
+                    (add! "tools field must be a list of tool names or specifications"))))
+              (let ((wf-exports (manifest-field manifest 'workflow-exports)))
+                (when wf-exports
+                  (unless (and (list? wf-exports) (every string? wf-exports))
+                    (add! "workflow-exports field must be a list of workflow name strings"))))
+              (let ((pins (manifest-field manifest 'sha256)))
+                (when pins
+                  (unless (list? pins)
+                    (add! "sha256 field must be a list of (file . hash) pins"))
+                  (when (list? pins)
+                    (%validate-sha256-pins! errors-cell bundle-dir pins))))))
+          (reverse (car errors-cell))))
 
 ;;;
 ;;; Bundle file enumeration and hashing
 ;;;
 (define (%walk-files root rel-dir)
-  (let ((entries (scandir (if (string-null? rel-dir)
-                               root
-                               (string-append root "/" rel-dir))
-                          (lambda (n) (not (member n '("." "..")))))))
-    (append-map!
-     (lambda (entry)
-       (let ((rel (if (string-null? rel-dir) entry (string-append rel-dir "/" entry))))
-         (if (%directory? (string-append root "/" rel))
-             (%walk-files root rel)
-             (list rel))))
-     (or entries '()))))
+        (let ((entries (scandir (if (string-null? rel-dir)
+                                  root
+                                  (string-append root "/" rel-dir))
+                                (lambda (n) (not (member n '("." "..")))))))
+          (append-map!
+            (lambda (entry)
+              (let ((rel (if (string-null? rel-dir) entry (string-append rel-dir "/" entry))))
+                (if (%directory? (string-append root "/" rel))
+                  (%walk-files root rel)
+                  (list rel))))
+            (or entries '()))))
 
 (define (%find-files dir)
-  "Absolute paths of every file under DIR recursively (all files included)."
-  (let ((result '()))
-    (define (scan! d)
-      (let ((entries (scandir d (lambda (n) (not (member n '("." "..")))))))
-        (for-each
-         (lambda (entry)
-           (let ((full-path (string-append d "/" entry)))
-             (if (%directory? full-path)
-                 (scan! full-path)
-                 (set! result (cons full-path result)))))
-         (or entries '()))))
-    (scan! dir)
-    (reverse result)))
+        "Absolute paths of every file under DIR recursively (all files included)."
+        (let ((result '()))
+          (define (scan! d)
+                  (let ((entries (scandir d (lambda (n) (not (member n '("." "..")))))))
+                    (for-each
+                      (lambda (entry)
+                        (let ((full-path (string-append d "/" entry)))
+                          (if (%directory? full-path)
+                            (scan! full-path)
+                            (set! result (cons full-path result)))))
+                      (or entries '()))))
+          (scan! dir)
+          (reverse result)))
 
 (define (%delete-tree! path)
         "Recursively delete the file or directory tree at PATH (best effort)."
@@ -336,49 +336,49 @@ otherwise a non-empty list of human-readable reason strings."
                 #f)))))
 
 (define (%mkdir-p path)
-  "Create directory PATH and any missing parents."
-  (let ((parts (%string-split-char path #\/)))
-    (let loop ((rest parts)
-               (built (if (string-prefix? "/" path) "/" "")))
-      (unless (null? rest)
-        (let ((cur (cond
-                    ((string-null? built) (car rest))
-                    ((string= built "/") (string-append "/" (car rest)))
-                    (else (string-append built "/" (car rest))))))
-          (unless (or (string-null? cur) (file-exists? cur))
-            (mkdir cur))
-          (loop (cdr rest) cur))))))
+        "Create directory PATH and any missing parents."
+        (let ((parts (%string-split-char path #\/)))
+          (let loop ((rest parts)
+                     (built (if (string-prefix? "/" path) "/" "")))
+                    (unless (null? rest)
+                      (let ((cur (cond
+                                   ((string-null? built) (car rest))
+                                   ((string= built "/") (string-append "/" (car rest)))
+                                   (else (string-append built "/" (car rest))))))
+                        (unless (or (string-null? cur) (file-exists? cur))
+                          (mkdir cur))
+                        (loop (cdr rest) cur))))))
 
 (define (geis-bundle-files bundle-dir)
-  "Return the sorted relative paths of every file under BUNDLE-DIR
+        "Return the sorted relative paths of every file under BUNDLE-DIR
 recursively, excluding manifest.scm."
-  (sort (delete "manifest.scm" (%walk-files bundle-dir "") string=)
-        string<?))
+        (sort (delete "manifest.scm" (%walk-files bundle-dir "") string=)
+              string<?))
 
 (define (compute-geis-sha256-pins bundle-dir)
-  "Return ((file . sha256hex) ...) for every file from geis-bundle-files."
-  (map (lambda (rel)
-         (cons rel (sha256-hex (%read-file-string
-                                 (string-append bundle-dir "/" rel)))))
-       (geis-bundle-files bundle-dir)))
+        "Return ((file . sha256hex) ...) for every file from geis-bundle-files."
+        (map (lambda (rel)
+               (cons rel (sha256-hex (%read-file-string
+                                       (string-append bundle-dir "/" rel)))))
+             (geis-bundle-files bundle-dir)))
 
 (define (geis-bundle-hash bundle-dir)
-  "Return the deterministic content identity of BUNDLE-DIR: the sha256 over
+        "Return the deterministic content identity of BUNDLE-DIR: the sha256 over
 sorted \"<file> <hash>\\n\" lines for every pinned file."
-  (sha256-hex
-   (apply string-append
-          (map (lambda (pin) (format #f "~a ~a\n" (car pin) (cdr pin)))
-               (compute-geis-sha256-pins bundle-dir)))))
+        (sha256-hex
+          (apply string-append
+                 (map (lambda (pin) (format #f "~a ~a\n" (car pin) (cdr pin)))
+                      (compute-geis-sha256-pins bundle-dir)))))
 
 ;;;
 ;;; Dependency resolution
 ;;;
 (define (%geis-deps manifest)
-  "Extract the ((fid . ((version . v) (bundle-sha256 . h))) ...) alist from MANIFEST."
-  (let ((depends (manifest-field manifest 'depends)))
-    (if (list? depends)
-        (or (manifest-field depends 'geis) '())
-        '())))
+        "Extract the ((fid . ((version . v) (bundle-sha256 . h))) ...) alist from MANIFEST."
+        (let ((depends (manifest-field manifest 'depends)))
+          (if (list? depends)
+            (or (manifest-field depends 'geis) '())
+            '())))
 
 (define (%verify-dep-edge! dep-fid spec)
         "Verify that dependency DEP-FID (with pinned SPEC) exists with the pinned
@@ -411,83 +411,83 @@ version and bundle hash; throw 'geis-bundle-error otherwise."
                      (format #f "bundle-sha256 mismatch for dependency '~a'" dep-fid))))))
 
 (define (%semver-match? have want)
-  "Return #t if version HAVE satisfies version constraint WANT using semver."
-  (catch #t
-    (lambda ()
-      (let ((have-sv (string->semver have)))
-        (or (and (semver? have-sv)
-                 (let ((want-sv (catch #t (lambda () (string->semver want)) (lambda _ #f))))
-                   (and want-sv (semver=? have-sv want-sv))))
-            (let ((range (string->semver-range want)))
-              (semver-range-contains? range have-sv)))))
-    (lambda _
-      (and (string? have) (string? want) (string= have want)))))
+        "Return #t if version HAVE satisfies version constraint WANT using semver."
+        (catch #t
+          (lambda ()
+            (let ((have-sv (string->semver have)))
+              (or (and (semver? have-sv)
+                       (let ((want-sv (catch #t (lambda () (string->semver want)) (lambda _ #f))))
+                         (and want-sv (semver=? have-sv want-sv))))
+                  (let ((range (string->semver-range want)))
+                    (semver-range-contains? range have-sv)))))
+          (lambda _
+            (and (string? have) (string? want) (string= have want)))))
 
 (define (resolve-geis-load-path feature-id)
-  "Return the absolute bundle directories FEATURE-ID needs, dependencies
+        "Return the absolute bundle directories FEATURE-ID needs, dependencies
 first and the target bundle last.  Throw 'geis-bundle-error on missing
 bundles, invalid manifests, version mismatches, bundle-sha256 mismatches,
 or dependency cycles.  Shared dependencies appear exactly once."
-  (let* ((fid (%fid->string feature-id))
-         (dir (find-geis-bundle fid)))
-    (unless dir
-      (throw 'geis-bundle-error (format #f "missing bundle '~a'" fid)))
-    (let ((manifest (read-geis-manifest (string-append dir "/manifest.scm"))))
-      (unless manifest
-        (throw 'geis-bundle-error (format #f "invalid manifest for bundle '~a'" fid)))
-      
-      ;; Build dependency graph in SRFI-234 format: ((node (dep1 dep2 ...)) ...)
-      (let ((graph '()))
-        (letrec ((collect! (lambda (current-fid)
-                             (let* ((current-str (%fid->string current-fid))
-                                    (current-dir (find-geis-bundle current-str)))
-                               (unless current-dir
-                                 (throw 'geis-bundle-error
-                                        (format #f "missing dependency bundle '~a'" current-str)))
-                               (let ((current-manifest (read-geis-manifest (string-append current-dir "/manifest.scm"))))
-                                 (unless current-manifest
-                                   (throw 'geis-bundle-error (format #f "invalid manifest for bundle '~a'" current-str)))
-                                 
-                                 ;; Add current node to graph if not already present
-                                 (unless (assoc current-str graph)
-                                   (set! graph (cons (list current-str) graph)))
-                                 
-                                 ;; Process dependencies
-                                 (for-each
-                                  (lambda (dep)
-                                    (let* ((dep-fid (and (pair? dep) (car dep)))
-                                           (spec (and (pair? dep) (cdr dep)))
-                                           (dep-str (%fid->string dep-fid)))
-                                      (%verify-dep-edge! dep-fid spec)
-                                      (unless (assoc dep-str graph)
-                                        (collect! dep-fid))
-                                      ;; Add dependency to current node's neighbor list
-                                      (let ((node-entry (assoc current-str graph)))
-                                        (unless (member dep-str (cdr node-entry))
-                                          (set-cdr! node-entry (cons dep-str (cdr node-entry)))))))
-                                  (%geis-deps current-manifest)))))))
-          
-          (collect! fid)
-        
-        ;; Perform topological sort
-        (let-values (((result cycle? cycle-nodes) (topological-sort/details graph)))
-          (if cycle?
-              ;; Map cycle detection to existing error format
-              (let ((cycle-fid (car cycle-nodes)))
-                (throw 'geis-bundle-error (format #f "dependency cycle detected at '~a'" cycle-fid)))
-              ;; Success: reverse to get dependencies first, then map to directories
-              (map (lambda (node-fid)
-                     (canonicalize-path (find-geis-bundle node-fid)))
-                   (reverse result)))))))))
+        (let* ((fid (%fid->string feature-id))
+               (dir (find-geis-bundle fid)))
+          (unless dir
+            (throw 'geis-bundle-error (format #f "missing bundle '~a'" fid)))
+          (let ((manifest (read-geis-manifest (string-append dir "/manifest.scm"))))
+            (unless manifest
+              (throw 'geis-bundle-error (format #f "invalid manifest for bundle '~a'" fid)))
+
+            ;; Build dependency graph in SRFI-234 format: ((node (dep1 dep2 ...)) ...)
+            (let ((graph '()))
+              (letrec ((collect! (lambda (current-fid)
+                                   (let* ((current-str (%fid->string current-fid))
+                                          (current-dir (find-geis-bundle current-str)))
+                                     (unless current-dir
+                                       (throw 'geis-bundle-error
+                                              (format #f "missing dependency bundle '~a'" current-str)))
+                                     (let ((current-manifest (read-geis-manifest (string-append current-dir "/manifest.scm"))))
+                                       (unless current-manifest
+                                         (throw 'geis-bundle-error (format #f "invalid manifest for bundle '~a'" current-str)))
+
+                                       ;; Add current node to graph if not already present
+                                       (unless (assoc current-str graph)
+                                         (set! graph (cons (list current-str) graph)))
+
+                                       ;; Process dependencies
+                                       (for-each
+                                         (lambda (dep)
+                                           (let* ((dep-fid (and (pair? dep) (car dep)))
+                                                  (spec (and (pair? dep) (cdr dep)))
+                                                  (dep-str (%fid->string dep-fid)))
+                                             (%verify-dep-edge! dep-fid spec)
+                                             (unless (assoc dep-str graph)
+                                               (collect! dep-fid))
+                                             ;; Add dependency to current node's neighbor list
+                                             (let ((node-entry (assoc current-str graph)))
+                                               (unless (member dep-str (cdr node-entry))
+                                                 (set-cdr! node-entry (cons dep-str (cdr node-entry)))))))
+                                         (%geis-deps current-manifest)))))))
+
+                      (collect! fid)
+
+                      ;; Perform topological sort
+                      (let-values (((result cycle? cycle-nodes) (topological-sort/details graph)))
+                                  (if cycle?
+                                    ;; Map cycle detection to existing error format
+                                    (let ((cycle-fid (car cycle-nodes)))
+                                      (throw 'geis-bundle-error (format #f "dependency cycle detected at '~a'" cycle-fid)))
+                                    ;; Success: reverse to get dependencies first, then map to directories
+                                    (map (lambda (node-fid)
+                                           (canonicalize-path (find-geis-bundle node-fid)))
+                                         (reverse result)))))))))
 
 ;;;
 ;;; Bundle packing
 ;;;
 (define (%clean-path path)
-  "PATH with a trailing slash removed (except \"/\" itself)."
-  (if (and (> (string-length path) 1) (string-suffix? "/" path))
-      (substring path 0 (- (string-length path) 1))
-      path))
+        "PATH with a trailing slash removed (except \"/\" itself)."
+        (if (and (> (string-length path) 1) (string-suffix? "/" path))
+          (substring path 0 (- (string-length path) 1))
+          path))
 
 (define (geis-bundle-pack feature-id)
         "Pack the bundle FEATURE-ID for sharing: copy it to a fresh temp dir,
@@ -563,41 +563,41 @@ holding the copy's bundle hash.  Return ((tarball . path)
 ;;; Bundle installation
 ;;;
 (define (geis-bundle-install bundle-dir)
-  "Install the bundle at BUNDLE-DIR: validate its manifest, resolve its
+        "Install the bundle at BUNDLE-DIR: validate its manifest, resolve its
 geis dependencies, lock every dependency and the target (dependencies
 first) into the gate's read-only store, verify the target against the
 locked copy, and return a report alist:
 ((feature-id . fid) (bundle-sha256 . hash) (locked . (fid ...))
  (verify-verdict . \"pass\"|\"fail\") (verify-reason . \"...\")).
 Throw 'geis-bundle-error when validation fails."
-  (let ((manifest (read-geis-manifest
-                   (string-append bundle-dir "/manifest.scm"))))
-    (unless manifest
-      (throw 'geis-bundle-error
-             (format #f "invalid manifest in bundle at '~a'" bundle-dir)))
-    (let ((errors (geis-manifest-valid? bundle-dir)))
-      (unless (null? errors)
-        (throw 'geis-bundle-error
-               (format #f "manifest validation failed: ~a"
-                       (string-join errors "; ")))))
-    (let* ((fid (manifest-field manifest 'feature-id))
-           (dep-dirs (resolve-geis-load-path fid))
-           (target-hash (geis-bundle-hash bundle-dir))
-           (locked-fids '()))
-      (for-each
-       (lambda (dir)
-         (let* ((dep-manifest (read-geis-manifest
-                               (string-append dir "/manifest.scm")))
-                (dep-fid (manifest-field dep-manifest 'feature-id)))
-           (lock-geis-bundle (%clean-path dir) dep-fid)
-           (set! locked-fids (append locked-fids (list dep-fid)))))
-       dep-dirs)
-      (let ((verdict (verify-locked-geis-bundle fid)))
-        (list (cons 'feature-id fid)
-              (cons 'bundle-sha256 target-hash)
-              (cons 'locked locked-fids)
-              (cons 'verify-verdict (assoc-ref verdict 'verdict))
-              (cons 'verify-reason (assoc-ref verdict 'reason)))))))
+        (let ((manifest (read-geis-manifest
+                          (string-append bundle-dir "/manifest.scm"))))
+          (unless manifest
+            (throw 'geis-bundle-error
+                   (format #f "invalid manifest in bundle at '~a'" bundle-dir)))
+          (let ((errors (geis-manifest-valid? bundle-dir)))
+            (unless (null? errors)
+              (throw 'geis-bundle-error
+                     (format #f "manifest validation failed: ~a"
+                             (string-join errors "; ")))))
+          (let* ((fid (manifest-field manifest 'feature-id))
+                 (dep-dirs (resolve-geis-load-path fid))
+                 (target-hash (geis-bundle-hash bundle-dir))
+                 (locked-fids '()))
+            (for-each
+              (lambda (dir)
+                (let* ((dep-manifest (read-geis-manifest
+                                       (string-append dir "/manifest.scm")))
+                       (dep-fid (manifest-field dep-manifest 'feature-id)))
+                  (lock-geis-bundle (%clean-path dir) dep-fid)
+                  (set! locked-fids (append locked-fids (list dep-fid)))))
+              dep-dirs)
+            (let ((verdict (verify-locked-geis-bundle fid)))
+              (list (cons 'feature-id fid)
+                    (cons 'bundle-sha256 target-hash)
+                    (cons 'locked locked-fids)
+                    (cons 'verify-verdict (assoc-ref verdict 'verdict))
+                    (cons 'verify-reason (assoc-ref verdict 'reason)))))))
 (define (%list-dir d)
         " scandir without the dot entries; empty list on error."
         (or
@@ -839,7 +839,7 @@ modified by the replay (cassette mode re-runs the edits)."
                                              ;; independent of local config.
                                              #:persona
                                              (persona-prompt-text
-                                              "persona-synthesizer")
+                                               "persona-synthesizer")
                                              #:cassette
                                              cassette
                                              #:cassette-mode
@@ -885,21 +885,21 @@ modified by the replay (cassette mode re-runs the edits)."
              (format #f "bundle not found for feature-id '~a'" fid)))))
 
 (define (geis-bundle-pin! bundle-dir)
-  "Recompute sha256 pins for BUNDLE-DIR, update its manifest.scm, and validate."
-  (let ((manifest-path (string-append bundle-dir "/manifest.scm")))
-    (unless (file-exists? manifest-path)
-      (throw 'geis-bundle-error (format #f "manifest not found at '~a'" manifest-path)))
-    (let ((manifest (read-geis-manifest manifest-path)))
-      (unless manifest
-        (throw 'geis-bundle-error (format #f "failed to read manifest at '~a'" manifest-path)))
-      (let* ((pins (compute-geis-sha256-pins bundle-dir))
-             (updated (%manifest-with manifest 'sha256 pins)))
-        (call-with-output-file manifest-path
-          (lambda (port)
-            (write updated port)
-            (newline port)))
-        (let ((errors (geis-manifest-valid? bundle-dir)))
-          (unless (null? errors)
-            (throw 'geis-bundle-error
-                   (format #f "manifest invalid after re-pinning '~a': ~s" bundle-dir errors)))
-          pins)))))
+        "Recompute sha256 pins for BUNDLE-DIR, update its manifest.scm, and validate."
+        (let ((manifest-path (string-append bundle-dir "/manifest.scm")))
+          (unless (file-exists? manifest-path)
+            (throw 'geis-bundle-error (format #f "manifest not found at '~a'" manifest-path)))
+          (let ((manifest (read-geis-manifest manifest-path)))
+            (unless manifest
+              (throw 'geis-bundle-error (format #f "failed to read manifest at '~a'" manifest-path)))
+            (let* ((pins (compute-geis-sha256-pins bundle-dir))
+                   (updated (%manifest-with manifest 'sha256 pins)))
+              (call-with-output-file manifest-path
+                                     (lambda (port)
+                                       (write updated port)
+                                       (newline port)))
+              (let ((errors (geis-manifest-valid? bundle-dir)))
+                (unless (null? errors)
+                  (throw 'geis-bundle-error
+                         (format #f "manifest invalid after re-pinning '~a': ~s" bundle-dir errors)))
+                pins)))))

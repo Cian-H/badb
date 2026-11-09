@@ -34,15 +34,15 @@
 ;;; Client Record Type
 ;;;
 (define-record-type <model-client>
-  (%make-model-client endpoint api-key model allow-missing-thinking?)
-  model-client?
-  (endpoint model-client-endpoint)
-  (api-key  model-client-api-key)
-  (model    model-client-model)
-  (allow-missing-thinking? model-client-allow-missing-thinking?))
+                    (%make-model-client endpoint api-key model allow-missing-thinking?)
+                    model-client?
+                    (endpoint model-client-endpoint)
+                    (api-key  model-client-api-key)
+                    (model    model-client-model)
+                    (allow-missing-thinking? model-client-allow-missing-thinking?))
 
 (define (make-model-client . args)
-  "Create a model client record.
+        "Create a model client record.
 Can be invoked with keyword arguments:
   #:endpoint - HTTP(S) endpoint URL (string)
   #:api-key  - Optional API key string (or #f)
@@ -53,29 +53,29 @@ Can be invoked with keyword arguments:
     body fields.
 or with positional arguments:
   (make-model-client endpoint [api-key [model]])"
-  (let loop ((rest args)
-             (endpoint "http://localhost:11434/v1/chat/completions")
-             (api-key #f)
-             (model "default")
-             (amt? #t))
-    (cond
-     ((null? rest)
-      (%make-model-client endpoint api-key model amt?))
-     ((keyword? (car rest))
-      (let ((k (car rest))
-            (v (if (pair? (cdr rest)) (cadr rest) #f))
-            (tail (if (pair? (cdr rest)) (cddr rest) '())))
-        (case k
-          ((#:endpoint) (loop tail v api-key model amt?))
-          ((#:api-key)  (loop tail endpoint v model amt?))
-          ((#:model)    (loop tail endpoint api-key v amt?))
-          ((#:allow-missing-thinking?) (loop tail endpoint api-key model (and v #t)))
-          (else (loop tail endpoint api-key model amt?)))))
-     (else
-      (let ((ep (car args))
-            (ak (if (pair? (cdr args)) (cadr args) #f))
-            (md (if (and (pair? (cdr args)) (pair? (cddr args))) (caddr args) "default")))
-        (%make-model-client ep ak md #t))))))
+        (let loop ((rest args)
+                   (endpoint "http://localhost:11434/v1/chat/completions")
+                   (api-key #f)
+                   (model "default")
+                   (amt? #t))
+                  (cond
+                    ((null? rest)
+                      (%make-model-client endpoint api-key model amt?))
+                    ((keyword? (car rest))
+                      (let ((k (car rest))
+                            (v (if (pair? (cdr rest)) (cadr rest) #f))
+                            (tail (if (pair? (cdr rest)) (cddr rest) '())))
+                        (case k
+                          ((#:endpoint) (loop tail v api-key model amt?))
+                          ((#:api-key)  (loop tail endpoint v model amt?))
+                          ((#:model)    (loop tail endpoint api-key v amt?))
+                          ((#:allow-missing-thinking?) (loop tail endpoint api-key model (and v #t)))
+                          (else (loop tail endpoint api-key model amt?)))))
+                    (else
+                      (let ((ep (car args))
+                            (ak (if (pair? (cdr args)) (cadr args) #f))
+                            (md (if (and (pair? (cdr args)) (pair? (cddr args))) (caddr args) "default")))
+                        (%make-model-client ep ak md #t))))))
 
 ;;;
 ;;; Message Validation & Normalization
@@ -91,24 +91,24 @@ or with positional arguments:
 (define (message-alist? x) (and (pair? x) (pair? (car x))))
 (define (role-content-pair? x) (and (pair? x) (not (pair? (car x)))))
 (define (single-message-alist? x)
-  (and (message-alist? x) (or (prop-ref x "role") (prop-ref x "content"))))
+        (and (message-alist? x) (or (prop-ref x "role") (prop-ref x "content"))))
 
 (define (valid-api-message? msg)
-  "Predicate to check if MSG is a valid OpenAI/Anthropic chat protocol message.
+        "Predicate to check if MSG is a valid OpenAI/Anthropic chat protocol message.
 Rejects internal UI logs or tool responses missing required tool_call_id."
-  (cond
-   ((role-content-pair? msg)
-    (let ((r (ensure-string (car msg))))
-      (and (member r '("system" "user" "assistant")) #t)))
-   ((message-alist? msg)
-    (let* ((role (prop-ref msg 'role))
-           (role-str (if role (ensure-string role) "")))
-      (cond
-       ((member role-str '("system" "user" "assistant")) #t)
-       ((string=? role-str "tool") (non-empty-string? (prop-ref msg 'tool_call_id)))
-       (else #f))))
-   ((string? msg) #t)
-   (else #f)))
+        (cond
+          ((role-content-pair? msg)
+            (let ((r (ensure-string (car msg))))
+              (and (member r '("system" "user" "assistant")) #t)))
+          ((message-alist? msg)
+            (let* ((role (prop-ref msg 'role))
+                   (role-str (if role (ensure-string role) "")))
+              (cond
+                ((member role-str '("system" "user" "assistant")) #t)
+                ((string=? role-str "tool") (non-empty-string? (prop-ref msg 'tool_call_id)))
+                (else #f))))
+          ((string? msg) #t)
+          (else #f)))
 
 (define (normalize-message msg)
         (cond
@@ -146,117 +146,117 @@ Rejects internal UI logs or tool responses missing required tool_call_id."
           (else msg)))
 
 (define (normalize-messages msgs)
-  (cond
-   ((vector? msgs)
-    (list->vector (map normalize-message (filter valid-api-message? (vector->list msgs)))))
-   ((single-message-alist? msgs)
-    (if (valid-api-message? msgs)
-        (vector (normalize-message msgs))
-        (vector)))
-   ((list? msgs)
-    (list->vector (map normalize-message (filter valid-api-message? msgs))))
-   ((string? msgs)
-    (vector (list (cons "role" "user") (cons "content" msgs))))
-   (else msgs)))
+        (cond
+          ((vector? msgs)
+            (list->vector (map normalize-message (filter valid-api-message? (vector->list msgs)))))
+          ((single-message-alist? msgs)
+            (if (valid-api-message? msgs)
+              (vector (normalize-message msgs))
+              (vector)))
+          ((list? msgs)
+            (list->vector (map normalize-message (filter valid-api-message? msgs))))
+          ((string? msgs)
+            (vector (list (cons "role" "user") (cons "content" msgs))))
+          (else msgs)))
 
 ;;;
 ;;; Server-Sent Events (SSE) Parsing
 ;;;
 (define (clean-sse-line line)
-  (if (string? line)
-      (string-trim-right line (lambda (c) (or (char=? c #\return) (char=? c #\newline))))
-      ""))
+        (if (string? line)
+          (string-trim-right line (lambda (c) (or (char=? c #\return) (char=? c #\newline))))
+          ""))
 
 (define (parse-sse-line line)
-  "Parse a single SSE line.
+        "Parse a single SSE line.
 Returns:
   - 'done if the line indicates stream completion ([DONE])
   - string payload if the line is a data event (\"data: ...\")
   - #f for empty lines, comments (\": ...\"), or non-data lines."
-  (let ((cleaned (clean-sse-line line)))
-    (cond
-     ;; Empty line
-     ((string-null? cleaned) #f)
-     ;; Comment line (starts with colon per SSE spec)
-     ((string-prefix? ":" cleaned) #f)
-     ;; Detect bare [DONE]
-     ((string=? cleaned "[DONE]") 'done)
-     ;; Data lines
-     ((string-prefix? "data:" cleaned)
-      (let* ((rest (substring cleaned 5))
-             (payload (if (and (> (string-length rest) 0)
-                               (char=? (string-ref rest 0) #\space))
-                          (substring rest 1)
-                          rest)))
-        (if (string=? payload "[DONE]")
-            'done
-            payload)))
-     ;; Other SSE fields (event, id, retry)
-     (else #f))))
+        (let ((cleaned (clean-sse-line line)))
+          (cond
+            ;; Empty line
+            ((string-null? cleaned) #f)
+            ;; Comment line (starts with colon per SSE spec)
+            ((string-prefix? ":" cleaned) #f)
+            ;; Detect bare [DONE]
+            ((string=? cleaned "[DONE]") 'done)
+            ;; Data lines
+            ((string-prefix? "data:" cleaned)
+              (let* ((rest (substring cleaned 5))
+                     (payload (if (and (> (string-length rest) 0)
+                                       (char=? (string-ref rest 0) #\space))
+                                (substring rest 1)
+                                rest)))
+                (if (string=? payload "[DONE]")
+                  'done
+                  payload)))
+            ;; Other SSE fields (event, id, retry)
+            (else #f))))
 
 (define (sse-event-generator port)
-  "Return a lazy (srfi-158) generator that yields parsed SSE events
+        "Return a lazy (srfi-158) generator that yields parsed SSE events
 from PORT.  Each yield is one of:
   (data . OBJ-OR-STRING)  a 'data: ' SSE event payload
   (body . ALIST)          a non-SSE complete JSON completion response
   done                      '[DONE]' was seen
   eof                       the port reached end of file"
-  (make-coroutine-generator
-   (lambda (yield)
-     (let loop ()
-       (let ((line (read-line port)))
-         (cond
-          ((eof-object? line) (yield 'eof))
-          (else
-           (let* ((cleaned (clean-sse-line line))
-                  (parsed (parse-sse-line line)))
-             (cond
-              ((eq? parsed 'done) (yield 'done))
-              ((string? parsed)
-               (let ((data (catch #t
-                             (lambda () (json-string->scm parsed))
-                             (lambda _ parsed))))
-                 (yield (cons 'data data))
-                 (loop)))
-              ((and (string-prefix? "{" cleaned)
-                    (or (string-contains cleaned "\"error\"")
-                        (string-contains cleaned "'error'")))
-               (let ((err-obj (catch #t
-                              (lambda () (json-string->scm cleaned))
-                              (lambda _ #f))))
-                 (error "SSE stream received error response"
-                        (or (and (pair? err-obj)
-                                 (let ((err-inner (assoc-ref err-obj "error")))
-                                   (and (pair? err-inner) (assoc-ref err-inner "message"))))
-                            cleaned))))
-              ;; Non-SSE complete JSON response: some endpoints ignore
-              ;; stream:true and answer with a normal completion body.
-              ;; Yield it as a terminal event.
-              ((and (string-prefix? "{" cleaned)
-                    (catch #t
-                      (lambda () (json-string->scm cleaned))
-                      (lambda _ #f)))
-               => (lambda (obj)
-                    (if (and (pair? obj) (json-ref obj "choices"))
-                        (yield (cons 'body obj))
-                        (loop))))
-              (else (loop)))))))))))
+        (make-coroutine-generator
+          (lambda (yield)
+            (let loop ()
+                      (let ((line (read-line port)))
+                        (cond
+                          ((eof-object? line) (yield 'eof))
+                          (else
+                            (let* ((cleaned (clean-sse-line line))
+                                   (parsed (parse-sse-line line)))
+                              (cond
+                                ((eq? parsed 'done) (yield 'done))
+                                ((string? parsed)
+                                  (let ((data (catch #t
+                                                (lambda () (json-string->scm parsed))
+                                                (lambda _ parsed))))
+                                    (yield (cons 'data data))
+                                    (loop)))
+                                ((and (string-prefix? "{" cleaned)
+                                      (or (string-contains cleaned "\"error\"")
+                                          (string-contains cleaned "'error'")))
+                                  (let ((err-obj (catch #t
+                                                   (lambda () (json-string->scm cleaned))
+                                                   (lambda _ #f))))
+                                    (error "SSE stream received error response"
+                                           (or (and (pair? err-obj)
+                                                    (let ((err-inner (assoc-ref err-obj "error")))
+                                                      (and (pair? err-inner) (assoc-ref err-inner "message"))))
+                                               cleaned))))
+                                ;; Non-SSE complete JSON response: some endpoints ignore
+                                ;; stream:true and answer with a normal completion body.
+                                ;; Yield it as a terminal event.
+                                ((and (string-prefix? "{" cleaned)
+                                      (catch #t
+                                        (lambda () (json-string->scm cleaned))
+                                        (lambda _ #f)))
+                                  => (lambda (obj)
+                                       (if (and (pair? obj) (json-ref obj "choices"))
+                                         (yield (cons 'body obj))
+                                         (loop))))
+                                (else (loop)))))))))))
 
 (define (read-sse-events port callback)
-  "Read lines from PORT, parse SSE 'data: ' events, and invoke
+        "Read lines from PORT, parse SSE 'data: ' events, and invoke
 (CALLBACK data-json-or-string) for each event until EOF or '[DONE]'.
 Returns 'done when [DONE] is encountered, 'eof upon reaching EOF, or the
 parsed alist when the body is a non-SSE complete JSON response (an
 endpoint that ignored stream:true)."
-  (let ((gen (sse-event-generator port)))
-    (let loop ()
-      (let ((event (gen)))
-        (cond
-         ((eq? event 'eof) 'eof)
-         ((eq? event 'done) 'done)
-         ((and (pair? event) (eq? (car event) 'data))
-          (callback (cdr event))
-          (loop))
-         ((and (pair? event) (eq? (car event) 'body))
-          (cdr event))
-         (else (loop)))))))
+        (let ((gen (sse-event-generator port)))
+          (let loop ()
+                    (let ((event (gen)))
+                      (cond
+                        ((eq? event 'eof) 'eof)
+                        ((eq? event 'done) 'done)
+                        ((and (pair? event) (eq? (car event) 'data))
+                          (callback (cdr event))
+                          (loop))
+                        ((and (pair? event) (eq? (car event) 'body))
+                          (cdr event))
+                        (else (loop)))))))

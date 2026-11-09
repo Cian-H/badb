@@ -99,11 +99,11 @@
 ;;; for DIR, returning #f when there was none to remove.
 
 (define-module (test test-freshness)
-  #:use-module (srfi srfi-64)
-  #:use-module (badb spec)
-  #:use-module (srfi srfi-1)
-  #:use-module (badb kernel digest)
-  #:use-module (geasa runtimes-freshness plugin))
+               #:use-module (srfi srfi-64)
+               #:use-module (badb spec)
+               #:use-module (srfi srfi-1)
+               #:use-module (badb kernel digest)
+               #:use-module (geasa runtimes-freshness plugin))
 
 (spec-begin "runtimes-freshness")
 
@@ -118,50 +118,50 @@
 (define %spec-content ";; fixture spec content\n")
 
 (define (write-string-file path str)
-  (call-with-output-file path (lambda (p) (display str p))))
+        (call-with-output-file path (lambda (p) (display str p))))
 
 (define (write-manifest path fid pins)
-  (call-with-output-file path
-    (lambda (p)
-      (write `((bundle-version . 1)
-               (feature-id . ,fid)
-               (version . "1.0.0")
-               (spec . "spec.geis.scm")
-               (sha256 ,@pins))
-             p))))
+        (call-with-output-file path
+                               (lambda (p)
+                                 (write `((bundle-version . 1)
+                                          (feature-id . ,fid)
+                                          (version . "1.0.0")
+                                          (spec . "spec.geis.scm")
+                                          (sha256 ,@pins))
+                                        p))))
 
 (define (make-fixture! fid)
-  "Create an honest fixture bundle with correct pins; return its directory."
-  (let ((dir (string-append %fixture-root "/" fid)))
-    (mkdir dir)
-    (set! %fixture-dirs (cons dir %fixture-dirs))
-    (write-string-file (string-append dir "/plugin.scm") %plugin-content)
-    (write-string-file (string-append dir "/spec.geis.scm") %spec-content)
-    (write-manifest (string-append dir "/manifest.scm") fid
-                    (list (cons "plugin.scm" (sha256-hex %plugin-content))
-                          (cons "spec.geis.scm" (sha256-hex %spec-content))))
-    dir))
+        "Create an honest fixture bundle with correct pins; return its directory."
+        (let ((dir (string-append %fixture-root "/" fid)))
+          (mkdir dir)
+          (set! %fixture-dirs (cons dir %fixture-dirs))
+          (write-string-file (string-append dir "/plugin.scm") %plugin-content)
+          (write-string-file (string-append dir "/spec.geis.scm") %spec-content)
+          (write-manifest (string-append dir "/manifest.scm") fid
+                          (list (cons "plugin.scm" (sha256-hex %plugin-content))
+                                (cons "spec.geis.scm" (sha256-hex %spec-content))))
+          dir))
 
 (define (tamper-plugin-pin! dir)
-  "Alter the plugin.scm pin in DIR's manifest (content untouched).
+        "Alter the plugin.scm pin in DIR's manifest (content untouched).
 Return the tampered hash."
-  (let* ((path (string-append dir "/manifest.scm"))
-         (manifest (call-with-input-file path read))
-         (pins (assoc-ref manifest 'sha256))
-         (hash (cdr (assoc "plugin.scm" pins)))
-         (bad (string-append
-               (string (if (char=? (string-ref hash 0) #\0) #\1 #\0))
-               (substring hash 1))))
-    (write-manifest path (basename dir)
-                    (map (lambda (pin)
-                           (if (string=? (car pin) "plugin.scm")
-                               (cons "plugin.scm" bad)
-                               pin))
-                         pins))
-    bad))
+        (let* ((path (string-append dir "/manifest.scm"))
+               (manifest (call-with-input-file path read))
+               (pins (assoc-ref manifest 'sha256))
+               (hash (cdr (assoc "plugin.scm" pins)))
+               (bad (string-append
+                      (string (if (char=? (string-ref hash 0) #\0) #\1 #\0))
+                      (substring hash 1))))
+          (write-manifest path (basename dir)
+                          (map (lambda (pin)
+                                 (if (string=? (car pin) "plugin.scm")
+                                   (cons "plugin.scm" bad)
+                                   pin))
+                               pins))
+          bad))
 
 (define (entry-for file entries)
-  (find (lambda (e) (string=? file (freshness-entry-file e))) entries))
+        (find (lambda (e) (string=? file (freshness-entry-file e))) entries))
 
 ;;;
 ;;; Tier 1 — pin check
@@ -241,47 +241,47 @@ Return the tampered hash."
 ;;;
 (test-group "tier 2: lazy verdict cache"
 
-  (test-assert "cache predicate accepts a cache" (freshness-cache? (make-freshness-cache)))
-  (test-assert "cache predicate rejects non-caches" (not (freshness-cache? 'nope)))
+            (test-assert "cache predicate accepts a cache" (freshness-cache? (make-freshness-cache)))
+            (test-assert "cache predicate rejects non-caches" (not (freshness-cache? 'nope)))
 
-  (let* ((bundle (make-fixture! "fresh-cache"))
-         (cache (make-freshness-cache))
-         (calls 0))
-    (define (counting-thunk)
-      (set! calls (+ calls 1))
-      '(verdict pass))
-    (test-equal "cache starts empty" 0 (freshness-cache-size cache))
-    (let ((v1 (freshness-verify cache bundle counting-thunk)))
-      (test-equal "first call replays" 1 calls)
-      (test-equal "verdict returned on first call" '(verdict pass) v1))
-    (let ((v2 (freshness-verify cache bundle counting-thunk)))
-      (test-equal "second call does NOT replay" 1 calls)
-      (test-equal "cached verdict equal" '(verdict pass) v2))
-    (test-equal "cache holds one entry" 1 (freshness-cache-size cache))
-    (let ((entry (freshness-cache-entry cache bundle)))
-      (test-assert "entry exists" (and entry #t))
-      (test-assert "entry keyed by pins" (assoc 'pins entry))
-      (test-assert "entry keyed by a numeric timestamp"
-        (and (assoc 'timestamp entry) (number? (assoc-ref entry 'timestamp))))
-      (test-equal "entry pins match the manifest"
-        (freshness-bundle-pins bundle) (assoc-ref entry 'pins))
-      (test-equal "entry carries the verdict" '(verdict pass)
-        (assoc-ref entry 'verdict)))
-    (test-assert "invalidate removes the entry" (freshness-cache-invalidate! cache bundle))
-    (let ((v3 (freshness-verify cache bundle counting-thunk)))
-      (test-equal "re-verify after invalidation" 2 calls)
-      (test-equal "verdict after re-verify" '(verdict pass) v3))
-    (test-assert "invalidate again removes re-created entry"
-      (freshness-cache-invalidate! cache bundle))
-    (test-equal "invalidate on empty cache is #f"
-      #f (freshness-cache-invalidate! cache bundle))
-    (let ((v4 (freshness-verify cache bundle counting-thunk)))
-      (test-equal "re-verify after second invalidation" 3 calls)
-      (test-equal "verdict after second re-verify" '(verdict pass) v4))
-    (tamper-plugin-pin! bundle)
-    (let ((v5 (freshness-verify cache bundle counting-thunk)))
-      (test-equal "changed pins force a replay" 4 calls)
-      (test-equal "verdict after pins change" '(verdict pass) v5))))
+            (let* ((bundle (make-fixture! "fresh-cache"))
+                   (cache (make-freshness-cache))
+                   (calls 0))
+              (define (counting-thunk)
+                      (set! calls (+ calls 1))
+                      '(verdict pass))
+              (test-equal "cache starts empty" 0 (freshness-cache-size cache))
+              (let ((v1 (freshness-verify cache bundle counting-thunk)))
+                (test-equal "first call replays" 1 calls)
+                (test-equal "verdict returned on first call" '(verdict pass) v1))
+              (let ((v2 (freshness-verify cache bundle counting-thunk)))
+                (test-equal "second call does NOT replay" 1 calls)
+                (test-equal "cached verdict equal" '(verdict pass) v2))
+              (test-equal "cache holds one entry" 1 (freshness-cache-size cache))
+              (let ((entry (freshness-cache-entry cache bundle)))
+                (test-assert "entry exists" (and entry #t))
+                (test-assert "entry keyed by pins" (assoc 'pins entry))
+                (test-assert "entry keyed by a numeric timestamp"
+                             (and (assoc 'timestamp entry) (number? (assoc-ref entry 'timestamp))))
+                (test-equal "entry pins match the manifest"
+                            (freshness-bundle-pins bundle) (assoc-ref entry 'pins))
+                (test-equal "entry carries the verdict" '(verdict pass)
+                            (assoc-ref entry 'verdict)))
+              (test-assert "invalidate removes the entry" (freshness-cache-invalidate! cache bundle))
+              (let ((v3 (freshness-verify cache bundle counting-thunk)))
+                (test-equal "re-verify after invalidation" 2 calls)
+                (test-equal "verdict after re-verify" '(verdict pass) v3))
+              (test-assert "invalidate again removes re-created entry"
+                           (freshness-cache-invalidate! cache bundle))
+              (test-equal "invalidate on empty cache is #f"
+                          #f (freshness-cache-invalidate! cache bundle))
+              (let ((v4 (freshness-verify cache bundle counting-thunk)))
+                (test-equal "re-verify after second invalidation" 3 calls)
+                (test-equal "verdict after second re-verify" '(verdict pass) v4))
+              (tamper-plugin-pin! bundle)
+              (let ((v5 (freshness-verify cache bundle counting-thunk)))
+                (test-equal "changed pins force a replay" 4 calls)
+                (test-equal "verdict after pins change" '(verdict pass) v5))))
 
 (let* ((bundle (make-fixture! "fresh-session"))
        (c1 (make-freshness-cache))
@@ -310,16 +310,16 @@ Return the tampered hash."
 ;;; Teardown — delete the private fixture root (files, then dirs).
 ;;;
 (for-each
- (lambda (dir)
-   (for-each
-    (lambda (file)
-      (let ((path (string-append dir "/" file)))
-        (catch #t
-          (lambda () (when (file-exists? path) (delete-file path)))
-          (lambda _ #f))))
-    '("manifest.scm" "plugin.scm" "spec.geis.scm"))
-   (catch #t (lambda () (rmdir dir)) (lambda _ #f)))
- %fixture-dirs)
+  (lambda (dir)
+    (for-each
+      (lambda (file)
+        (let ((path (string-append dir "/" file)))
+          (catch #t
+            (lambda () (when (file-exists? path) (delete-file path)))
+            (lambda _ #f))))
+      '("manifest.scm" "plugin.scm" "spec.geis.scm"))
+    (catch #t (lambda () (rmdir dir)) (lambda _ #f)))
+  %fixture-dirs)
 (catch #t (lambda () (rmdir %fixture-root)) (lambda _ #f))
 
 (spec-end)

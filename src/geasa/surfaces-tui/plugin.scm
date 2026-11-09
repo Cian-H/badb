@@ -17,145 +17,145 @@
 ;;; the running agent sees at the next iteration boundary.
 
 (define-module (geasa surfaces-tui plugin)
-  #:use-module (geasa providers-model common)
-  #:use-module (geasa providers-model openai)
-  #:use-module (badb kernel registry)
-  #:use-module (badb kernel transaction)
-  #:use-module (badb kernel journal)
-  #:use-module (badb kernel geis-gate)
-  #:use-module (badb geis bundle)
-  #:use-module (badb kernel digest)
-  #:use-module (geasa foundation-config plugin)
-  #:use-module (geasa capabilities-mcp plugin)
-  #:use-module (geasa capabilities-history-tools plugin)
-  #:use-module (geasa runtimes-react plugin)
-  #:use-module (geasa policies-guardrail plugin)
-  #:use-module (geasa runtimes-context plugin)
-  #:use-module (geasa runtimes-prompt plugin)
-  #:use-module (geasa runtimes-rollback plugin)
-  #:use-module (geasa capabilities-context-index plugin)
-  #:use-module (geasa capabilities-skills plugin)
-  #:use-module (geasa capabilities-code-nav plugin)
-  #:use-module (geasa runtimes-geis-loader plugin)
-  #:use-module (geasa runtimes-workflows plugin)
-  #:use-module (geasa runtimes-verify plugin)
-  #:use-module (geasa surfaces-theme plugin)
-  #:use-module (geasa foundation-log plugin)
-  #:use-module (geasa foundation-util plugin)
-  #:use-module (geasa surfaces-tui editor)
-  #:use-module (geasa surfaces-tui session)
-  #:use-module (geasa surfaces-tui transcript)
-  #:use-module (geasa surfaces-tui menus)
-  #:use-module (geasa surfaces-tui tools)
-  #:use-module (geasa surfaces-tui commands)
-  #:use-module (json)
-  #:use-module (ice-9 format)
-  #:use-module (ice-9 popen)
-  #:use-module (ice-9 rdelim)
-  #:use-module (ice-9 optargs)
-  #:use-module (ice-9 regex)
-  #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-9)
-  #:use-module (srfi srfi-11)
-  #:use-module (srfi srfi-19)
-  #:export (run-tui)
-  #:re-export (format-conversation-transcript
-               wrap-line
-               wrap-text
-               parse-command
-               classify-input
-               make-repl-mod
-               normalize-scheme-expr
-               eval-scheme-code
-               execute-shell-command
-               split-thoughts-and-content
-               %slash-commands
-               matching-slash-commands
-               detect-model-decision
-               build-model-menu-items
-               selector-active?
-               %selector-max-visible
-               selector-visible-slice
-               %menu-max-visible
-               make-menu
-               menu?
-               menu-title
-               menu-items
-               menu-selected-index
-               menu-count
-               menu-move
-               menu-selected-item
-               menu-visible-slice
-               menu-item-label
-               menu-item-description
-               menu-item-action
-               get-prompt-indicator
-               format-header-segments
-               format-rule-line
-               format-keymap-line
-               steering-key-handle
-               steering-pending-line
-               agent-run-active?
-               segment-line
-               clamp-cursor
-               insert-at
-               backspace-at
-               delete-at
-               input-visible-window
-               input-wrapped-rows
-               %max-input-rows
-               make-row-cache
-               row-cache?
-               row-cache-rows
-               row-cache-prune!
-               make-history
-               input-history?
-               %history-max-entries
-               history-cap-entries
-               history-entries
-               history-length
-               history-add
-               history-recall
-               history-recall-position
-               history-reset-nav
-               history-entry->jsonl-line
-               jsonl-line->history-entry
-               default-history-file-path
-               load-history-file
-               append-history-file-entry!
-               turn->jsonl-line
-               default-sessions-dir
-               session-file-path
-               persist-session-file!
-               load-session-file
-               recent-session-files
-               message-collapsed?
-               make-collapsed-message
-               message-with-collapsed
-               message-toggle-collapsed
-               default-collapsed-role?
-               message-collapsible?
-               default-collapse-message
-               thoughts-preview
-               format-collapsed-summary-line
-               message-role-label
-               message-role->theme-role
-               system-message-label
-               color-symbol->ncurses-constant
-               key->code
-               resolve-modified-key
-               spec-tool-lock
-               spec-tool-verify
-               spec-tool-status
-               register-spec-tools!
-               build-geis-add-prompt
-               format-message-entry
-               <input-history>
-               <row-cache>
-               <menu>
-               builtin-read-file
-               jsonl-line->turn
-               truncate-string))
+               #:use-module (geasa providers-model common)
+               #:use-module (geasa providers-model openai)
+               #:use-module (badb kernel registry)
+               #:use-module (badb kernel transaction)
+               #:use-module (badb kernel journal)
+               #:use-module (badb kernel geis-gate)
+               #:use-module (badb geis bundle)
+               #:use-module (badb kernel digest)
+               #:use-module (geasa foundation-config plugin)
+               #:use-module (geasa capabilities-mcp plugin)
+               #:use-module (geasa capabilities-history-tools plugin)
+               #:use-module (geasa runtimes-react plugin)
+               #:use-module (geasa policies-guardrail plugin)
+               #:use-module (geasa runtimes-context plugin)
+               #:use-module (geasa runtimes-prompt plugin)
+               #:use-module (geasa runtimes-rollback plugin)
+               #:use-module (geasa capabilities-context-index plugin)
+               #:use-module (geasa capabilities-skills plugin)
+               #:use-module (geasa capabilities-code-nav plugin)
+               #:use-module (geasa runtimes-geis-loader plugin)
+               #:use-module (geasa runtimes-workflows plugin)
+               #:use-module (geasa runtimes-verify plugin)
+               #:use-module (geasa surfaces-theme plugin)
+               #:use-module (geasa foundation-log plugin)
+               #:use-module (geasa foundation-util plugin)
+               #:use-module (geasa surfaces-tui editor)
+               #:use-module (geasa surfaces-tui session)
+               #:use-module (geasa surfaces-tui transcript)
+               #:use-module (geasa surfaces-tui menus)
+               #:use-module (geasa surfaces-tui tools)
+               #:use-module (geasa surfaces-tui commands)
+               #:use-module (json)
+               #:use-module (ice-9 format)
+               #:use-module (ice-9 popen)
+               #:use-module (ice-9 rdelim)
+               #:use-module (ice-9 optargs)
+               #:use-module (ice-9 regex)
+               #:use-module (srfi srfi-1)
+               #:use-module (srfi srfi-9)
+               #:use-module (srfi srfi-11)
+               #:use-module (srfi srfi-19)
+               #:export (run-tui)
+               #:re-export (format-conversation-transcript
+                             wrap-line
+                             wrap-text
+                             parse-command
+                             classify-input
+                             make-repl-mod
+                             normalize-scheme-expr
+                             eval-scheme-code
+                             execute-shell-command
+                             split-thoughts-and-content
+                             %slash-commands
+                             matching-slash-commands
+                             detect-model-decision
+                             build-model-menu-items
+                             selector-active?
+                             %selector-max-visible
+                             selector-visible-slice
+                             %menu-max-visible
+                             make-menu
+                             menu?
+                             menu-title
+                             menu-items
+                             menu-selected-index
+                             menu-count
+                             menu-move
+                             menu-selected-item
+                             menu-visible-slice
+                             menu-item-label
+                             menu-item-description
+                             menu-item-action
+                             get-prompt-indicator
+                             format-header-segments
+                             format-rule-line
+                             format-keymap-line
+                             steering-key-handle
+                             steering-pending-line
+                             agent-run-active?
+                             segment-line
+                             clamp-cursor
+                             insert-at
+                             backspace-at
+                             delete-at
+                             input-visible-window
+                             input-wrapped-rows
+                             %max-input-rows
+                             make-row-cache
+                             row-cache?
+                             row-cache-rows
+                             row-cache-prune!
+                             make-history
+                             input-history?
+                             %history-max-entries
+                             history-cap-entries
+                             history-entries
+                             history-length
+                             history-add
+                             history-recall
+                             history-recall-position
+                             history-reset-nav
+                             history-entry->jsonl-line
+                             jsonl-line->history-entry
+                             default-history-file-path
+                             load-history-file
+                             append-history-file-entry!
+                             turn->jsonl-line
+                             default-sessions-dir
+                             session-file-path
+                             persist-session-file!
+                             load-session-file
+                             recent-session-files
+                             message-collapsed?
+                             make-collapsed-message
+                             message-with-collapsed
+                             message-toggle-collapsed
+                             default-collapsed-role?
+                             message-collapsible?
+                             default-collapse-message
+                             thoughts-preview
+                             format-collapsed-summary-line
+                             message-role-label
+                             message-role->theme-role
+                             system-message-label
+                             color-symbol->ncurses-constant
+                             key->code
+                             resolve-modified-key
+                             spec-tool-lock
+                             spec-tool-verify
+                             spec-tool-status
+                             register-spec-tools!
+                             build-geis-add-prompt
+                             format-message-entry
+                             <input-history>
+                             <row-cache>
+                             <menu>
+                             builtin-read-file
+                             jsonl-line->turn
+                             truncate-string))
 
 ;;;
 ;;; Main TUI Controller (run-tui)
@@ -443,8 +443,8 @@ verbatim, and fails open to a verbatim truncation."
                          ,(string-append "badb microharness\n"
                                          "• ! shell · ( scheme · / commands · /help for keys"
                                          (if (file-exists? ".badb/geasa")
-                                             ""
-                                             "\n• Tip: run /geis onboard to detect project toolchain & synthesize geasa"))))))
+                                           ""
+                                           "\n• Tip: run /geis onboard to detect project toolchain & synthesize geasa"))))))
     (set! llm-history (list (make-system-turn)))
     ;; Session log for /resume: the whole llm-history is rewritten to
     ;; this JSONL file after every chat turn (system prompt first).
@@ -1584,65 +1584,65 @@ grown journal), which the per-frame header render must not pay."
                      '()
                      (cdr tokens))))
               (string-case (if (string-null? arg) "" subcmd)
-                (""
-                  (set! active-menu
-                        (make-menu "Configuration"
-                                   (config-menu-items-for-state cfg cur-model cur-endpoint policy))))
-                ("show"
-                  (add-sys-msg!
-                    (format-config-summary cfg cur-model cur-endpoint cur-journal-path)))
-                ("reload"
-                  (catch #t
-                    (lambda ()
-                      (set! cfg (load-config))
-                      (set! cur-model (badb-config-model-name cfg))
-                      (set! cur-endpoint (badb-config-model-endpoint cfg))
-                      (refresh-client!)
-                      (set! mcp-mgr (make-mcp-manager cfg))
-                      (module-define! repl-mod 'cfg cfg)
-                      (module-define! repl-mod 'mcp-mgr mcp-mgr)
-                      (add-sys-msg! "Configuration reloaded from disk successfully."))
-                    (lambda (k . a)
-                      (add-err-msg! (format #f "Failed to reload config: ~a ~s" k a)))))
-                ("save"
-                  (catch #t
-                    (lambda ()
-                      (save-local-config! cfg)
-                      (add-sys-msg!
-                        (format #f "Configuration saved to ~a" (default-local-config-path))))
-                    (lambda (k . a)
-                      (add-err-msg! (format #f "Failed to save config: ~a ~s" k a)))))
-                ("set"
-                  (if (< (length rest) 2)
-                    (add-err-msg! "Usage: /config set <model|endpoint|temperature> <value>")
-                    (let ((prop (car rest)) (val (cadr rest)))
-                      (string-case prop
-                        ("model"
-                          (set! cur-model val)
-                          (badb-config-set-model-name! cfg val)
-                          (refresh-client!)
-                          (try-save-config!)
-                          (add-sys-msg! (format #f "Model set to '~a' and saved." val)))
-                        ("endpoint"
-                          (set! cur-endpoint val)
-                          (badb-config-set-model-endpoint! cfg val)
-                          (refresh-client!)
-                          (try-save-config!)
-                          (add-sys-msg! (format #f "Endpoint set to '~a' and saved." val)))
-                        ("temperature"
-                          (let ((temp (string->number val)))
-                            (if (and temp (number? temp))
-                              (begin
-                                (badb-config-set-model-temperature! cfg temp)
-                                (try-save-config!)
-                                (add-sys-msg! (format #f "Temperature set to ~a and saved." temp)))
-                              (add-err-msg! "Invalid temperature: must be a number."))))
-                        (else (add-err-msg! (format #f "Unknown config property: ~a" prop)))))))
-                (else
-                  (add-err-msg!
-                    (format #f
-                            "Unknown /config subcommand '~a'. Valid: show, reload, save, set"
-                            subcmd))))))
+                           (""
+                            (set! active-menu
+                                  (make-menu "Configuration"
+                                             (config-menu-items-for-state cfg cur-model cur-endpoint policy))))
+                           ("show"
+                            (add-sys-msg!
+                              (format-config-summary cfg cur-model cur-endpoint cur-journal-path)))
+                           ("reload"
+                            (catch #t
+                              (lambda ()
+                                (set! cfg (load-config))
+                                (set! cur-model (badb-config-model-name cfg))
+                                (set! cur-endpoint (badb-config-model-endpoint cfg))
+                                (refresh-client!)
+                                (set! mcp-mgr (make-mcp-manager cfg))
+                                (module-define! repl-mod 'cfg cfg)
+                                (module-define! repl-mod 'mcp-mgr mcp-mgr)
+                                (add-sys-msg! "Configuration reloaded from disk successfully."))
+                              (lambda (k . a)
+                                (add-err-msg! (format #f "Failed to reload config: ~a ~s" k a)))))
+                           ("save"
+                            (catch #t
+                              (lambda ()
+                                (save-local-config! cfg)
+                                (add-sys-msg!
+                                  (format #f "Configuration saved to ~a" (default-local-config-path))))
+                              (lambda (k . a)
+                                (add-err-msg! (format #f "Failed to save config: ~a ~s" k a)))))
+                           ("set"
+                            (if (< (length rest) 2)
+                              (add-err-msg! "Usage: /config set <model|endpoint|temperature> <value>")
+                              (let ((prop (car rest)) (val (cadr rest)))
+                                (string-case prop
+                                             ("model"
+                                              (set! cur-model val)
+                                              (badb-config-set-model-name! cfg val)
+                                              (refresh-client!)
+                                              (try-save-config!)
+                                              (add-sys-msg! (format #f "Model set to '~a' and saved." val)))
+                                             ("endpoint"
+                                              (set! cur-endpoint val)
+                                              (badb-config-set-model-endpoint! cfg val)
+                                              (refresh-client!)
+                                              (try-save-config!)
+                                              (add-sys-msg! (format #f "Endpoint set to '~a' and saved." val)))
+                                             ("temperature"
+                                              (let ((temp (string->number val)))
+                                                (if (and temp (number? temp))
+                                                  (begin
+                                                    (badb-config-set-model-temperature! cfg temp)
+                                                    (try-save-config!)
+                                                    (add-sys-msg! (format #f "Temperature set to ~a and saved." temp)))
+                                                  (add-err-msg! "Invalid temperature: must be a number."))))
+                                             (else (add-err-msg! (format #f "Unknown config property: ~a" prop)))))))
+                           (else
+                             (add-err-msg!
+                               (format #f
+                                       "Unknown /config subcommand '~a'. Valid: show, reload, save, set"
+                                       subcmd))))))
     ;; Handle guardrail subcommands
     (define (handle-guardrail-cmd! arg)
             (let ((trimmed (string-trim-both arg)))
