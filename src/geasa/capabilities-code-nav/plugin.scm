@@ -345,6 +345,21 @@ CLASSIFY-NODE should return (list name type line) or #f. Returns list of symbols
                   (loop (cdr rest) (+ line-num 1)
                         (cons (list (match:substring m 1) 'function line-num) symbols))
                   (loop (cdr rest) (+ line-num 1) symbols))))
+           ((or (string=? line "(define") (string=? line "(define*"))
+            (if (pair? (cdr rest))
+                (let* ((next-line (string-trim-both (cadr rest)))
+                       (m-fn (string-match "^\\(([^ \t\n()]+)" next-line))
+                       (m-var (string-match "^([^ \t\n()]+)" next-line)))
+                  (cond
+                   (m-fn
+                    (loop (cddr rest) (+ line-num 2)
+                          (cons (list (match:substring m-fn 1) 'function line-num) symbols)))
+                   (m-var
+                    (loop (cddr rest) (+ line-num 2)
+                          (cons (list (match:substring m-var 1) 'variable line-num) symbols)))
+                   (else
+                    (loop (cdr rest) (+ line-num 1) symbols))))
+                (loop (cdr rest) (+ line-num 1) symbols)))
            ((or (string-prefix? "(define* " line) (string-prefix? "(define " line))
             (let ((m (string-match "\\(define\\*?[ \t]+([^ \t\n()]+)" line)))
               (if m

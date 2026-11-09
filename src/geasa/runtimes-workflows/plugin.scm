@@ -49,9 +49,7 @@ runs via the external sema CLI."
     (if (and (eq? engine 'sema) sema-bin)
         ;; External sema CLI runner
         (let* ((args-json (scm->json-string (or args '())))
-               (cmd (format #f "~a workflow run ~a --args '~a'"
-                            sema-bin workflow-path args-json))
-               (pipe (open-pipe* "r" "/bin/sh" "-c" cmd))
+               (pipe (open-pipe* "r" sema-bin "workflow" "run" workflow-path "--args" args-json))
                (output (read-string pipe))
                (status (close-pipe pipe)))
           `((status . ,(if (zero? (status:exit-val status)) 'ok 'error))

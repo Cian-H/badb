@@ -76,50 +76,30 @@
 ;;;
 (define (find-sema-executable)
   "Locate the sema binary: honors $SEMA_BIN, then search PATH,
-then inspects GNU Guix store profiles."
+then inspects standard GNU Guix profile locations."
   (or (let ((bin (getenv "SEMA_BIN")))
         (and bin (file-exists? bin) bin))
       (search-path (parse-path (or (getenv "PATH") "")) "sema")
-      (let ((store-matches
-             (catch #t
-               (lambda ()
-                 (scandir "/gnu/store"
-                          (lambda (f)
-                            (and (string-contains f "sema-2.0.0")
-                                 (not (string-suffix? ".lock" f))
-                                 (not (string-suffix? ".drv" f))
-                                 (not (string-suffix? "-builder" f))))))
-               (lambda _ #f))))
-        (and (pair? store-matches)
-             (let ((bin (string-append "/gnu/store/" (car store-matches) "/bin/sema")))
+      (let ((guix-env (getenv "GUIX_ENVIRONMENT")))
+        (and guix-env
+             (let ((bin (string-append guix-env "/bin/sema")))
                (and (file-exists? bin) bin))))
-      (let ((profile-matches
-             (catch #t
-               (lambda ()
-                 (scandir "/gnu/store"
-                          (lambda (f)
-                            (and (string-suffix? "-profile" f)
-                                 (file-exists? (string-append "/gnu/store/" f "/bin/sema"))))))
-               (lambda _ #f))))
-        (and (pair? profile-matches)
-             (string-append "/gnu/store/" (car profile-matches) "/bin/sema")))
+      (let ((home-prof (and (getenv "HOME") (string-append (getenv "HOME") "/.guix-profile/bin/sema"))))
+        (and home-prof (file-exists? home-prof) home-prof))
+      (let ((sys-prof "/run/current-system/profile/bin/sema"))
+        (and (file-exists? sys-prof) sys-prof))
       "sema"))
 
-;; DEV-DEBT [fragile-fallback]: the "src/badb/synthesis.scm" anchor no longer exists;
-;; it is pure dirname math (and always fires: current-filename is #f when this module
-;; loads via -L src). Works only when cwd is the repo root — resolve via module path
-;; or an env override instead.
 (define (default-workflow-path)
   "Return the default path to the plugin synthesis workflow file."
   (let ((env-path (getenv "BADB_SYNTHESIS_WORKFLOW")))
     (if (and env-path (file-exists? env-path))
         env-path
-        (let* ((here (or (current-filename) "src/badb/synthesis.scm"))
-               (root (canonicalize-path (string-append (dirname here) "/../..")))
-               (candidate (string-append root "/workflows/plugin-synthesis.sema")))
-          (if (file-exists? candidate)
-              candidate
-              "workflows/plugin-synthesis.sema")))))
+        (or (search-path %load-path "workflows/plugin-synthesis.sema")
+            (let* ((candidate "workflows/plugin-synthesis.sema"))
+              (if (file-exists? candidate)
+                  candidate
+                  "workflows/plugin-synthesis.sema"))))))
 
 ;;;
 ;;; Spec locking helper

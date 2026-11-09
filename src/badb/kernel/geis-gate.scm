@@ -326,15 +326,24 @@ verify-locked-geis."
             (if (<= remaining 0) 'timeout
                 (let* ((candidates (append (if out-done? '() (list out-port))
                                            (if err-done? '() (list err-port))))
-                       (sel (catch #t (lambda () (select candidates '() '() remaining)) (lambda _ #f)))
-                       (ready (if sel (car sel) #f)))
-                  (if (or (not ready) (null? ready)) 'timeout
-                      (let gather ((ports ready) (od out-done?) (ed err-done?))
-                        (if (null? ports) (loop od ed)
-                            (let ((p (car ports)))
-                              (if (eq? p out-port)
-                                  (gather (cdr ports) (drain-available! p out-acc) ed)
-                                  (gather (cdr ports) od (drain-available! p err-acc))))))))))))))
+                       (sel (catch #t
+                              (lambda () (select candidates '() '() remaining))
+                              (lambda (k . args)
+                                (if (and (eq? k 'system-error)
+                                         (pair? (cddr args))
+                                         (= (caddr args) EINTR))
+                                    'eintr
+                                    #f)))))
+                  (cond
+                   ((eq? sel 'eintr) (loop out-done? err-done?))
+                   ((or (not sel) (not (car sel)) (null? (car sel))) 'timeout)
+                   (else
+                    (let gather ((ports (car sel)) (od out-done?) (ed err-done?))
+                      (if (null? ports) (loop od ed)
+                          (let ((p (car ports)))
+                            (if (eq? p out-port)
+                                (gather (cdr ports) (drain-available! p out-acc) ed)
+                                (gather (cdr ports) od (drain-available! p err-acc)))))))))))))))
 
 (define (%reap-process pid)
   (let* ((status* (catch #t (lambda () (waitpid pid)) (lambda _ #f)))

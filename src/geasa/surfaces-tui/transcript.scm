@@ -520,7 +520,11 @@ escape sequence SEQ."
 
 (define (replace-nth lst idx val)
   "Return a copy of LST with the element at position IDX replaced by VAL."
-  (append (take lst idx) (list val) (drop lst (+ idx 1))))
+  (let loop ((rest lst) (i 0) (acc '()))
+    (cond
+     ((null? rest) (reverse acc))
+     ((= i idx) (append-reverse acc (cons val (cdr rest))))
+     (else (loop (cdr rest) (+ i 1) (cons (car rest) acc))))))
 
 (define (message-collapsed? msg)
   "Return #t when MSG carries a truthy 'collapsed? flag."

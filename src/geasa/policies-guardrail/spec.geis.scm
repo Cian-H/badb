@@ -64,9 +64,11 @@
 
 (test-group "guardrail-default-evaluator"
   (let ((policy (make-guardrail-policy #:level 'cautious)))
-    ;; Read-only: allowed
-    (let ((dec (evaluate-guardrail policy "read_file" '(("path" . "README.md")))))
-      (test-assert "read_file allowed in cautious mode" (guardrail-allow? dec)))
+    ;; Read-only: allowed (even if path or content mentions destructive string)
+    (let ((dec (evaluate-guardrail policy "read_file" '(("path" . "README.md"))))
+          (dec-rm (evaluate-guardrail policy "read_file" '(("path" . "scripts/rm-rf-handler.sh")))))
+      (test-assert "read_file allowed in cautious mode" (guardrail-allow? dec))
+      (test-assert "read_file mentioning rm-rf allowed in cautious mode" (guardrail-allow? dec-rm)))
 
     ;; Mutation: ask
     (let ((dec (evaluate-guardrail policy "write_file" '(("path" . "out.txt")))))

@@ -28,174 +28,211 @@
 ;;; 1. SSE LINE & EVENT PARSER STRESS TESTS ((geasa providers-model common))
 ;;; =========================================================================
 (test-group "sse-parser-adversarial"
-
-  ;; --- 1.1 Empty Stream ---
-  (test-assert "empty-stream-returns-eof"
-    (let ((port (open-input-string ""))
-          (events '()))
-      (let ((res (read-sse-events port (lambda (e) (set! events (cons e events))))))
-        (and (eq? res 'eof)
-             (null? events)))))
-
-  ;; --- 1.2 Whitespace-only stream ---
-  (test-assert "whitespace-only-stream-returns-eof"
-    (let ((port (open-input-string "\n\n   \n\r\n\t\t\n   \r\n"))
-          (events '()))
-      (let ((res (read-sse-events port (lambda (e) (set! events (cons e events))))))
-        (and (eq? res 'eof)
-             (null? events)))))
-
-  ;; --- 1.3 Comment lines variations ---
-  (test-assert "comments-are-silently-ignored"
-    (let* ((payload (string-append
-                     ": this is a leading comment\n"
-                     ":\n"
-                     ":: double colon comment\n"
-                     ":   indented comment\n"
-                     "data: {\"id\": 1}\n"
-                     ": inter-event keepalive ping\n"
-                     ":\n"
-                     "data: {\"id\": 2}\n"
-                     ": trailing comment\n"
-                     "data: [DONE]\n"))
-           (port (open-input-string payload))
-           (events '()))
-      (let ((res (read-sse-events port (lambda (e) (set! events (cons e events))))))
-        (and (eq? res 'done)
-             (= (length events) 2)
-             (equal? (assoc-ref (cadr events) "id") 1)
-             (equal? (assoc-ref (car events) "id") 2)))))
-
-  ;; --- 1.4 Non-data SSE control fields ---
-  (test-assert "non-data-fields-are-ignored"
-    (let* ((payload (string-append
-                     "event: message\n"
-                     "id: 42\n"
-                     "retry: 10000\n"
-                     "data: {\"content\": \"hello\"}\n"
-                     "event: completion\n"
-                     "id: 43\n"
-                     "data: [DONE]\n"))
-           (port (open-input-string payload))
-           (events '()))
-      (let ((res (read-sse-events port (lambda (e) (set! events (cons e events))))))
-        (and (eq? res 'done)
-             (= (length events) 1)
-             (equal? (assoc-ref (car events) "content") "hello")))))
-
-  ;; --- 1.5 Malformed Chunks & Truncated JSON ---
-  (test-assert "truncated-json-falls-back-to-raw-string-without-crashing"
-    (let* ((truncated-json "data: {\"id\": \"chunk-1\", \"incomplete\": [1, 2,")
-           (port (open-input-string (string-append truncated-json "\n\ndata: [DONE]\n")))
-           (events '()))
-      (let ((res (read-sse-events port (lambda (e) (set! events (cons e events))))))
-        (and (eq? res 'done)
-             (= (length events) 1)
-             ;; Must NOT raise an uncaught exception; deliver fallback raw string
-             (string? (car events))
-             (string=? (car events) "{\"id\": \"chunk-1\", \"incomplete\": [1, 2,")))))
-
-  (test-assert "malformed-unquoted-text-falls-back-to-raw-string"
-    (let* ((port (open-input-string "data: unquoted raw streaming text chunk\n\ndata: [DONE]\n"))
-           (events '()))
-      (let ((res (read-sse-events port (lambda (e) (set! events (cons e events))))))
-        (and (eq? res 'done)
-             (= (length events) 1)
-             (string=? (car events) "unquoted raw streaming text chunk")))))
-
-  (test-assert "non-object-json-primitives-delivered-properly"
-    (let* ((payload (string-append
-                     "data: \"string-literal\"\n"
-                     "data: 42\n"
-                     "data: true\n"
-                     "data: [1, 2, 3]\n"
-                     "data: [DONE]\n"))
-           (port (open-input-string payload))
-           (events '()))
-      (let ((res (read-sse-events port (lambda (e) (set! events (cons e events))))))
-        (and (eq? res 'done)
-             (= (length events) 4)
-             (equal? (reverse events)
-                     '("string-literal" 42 #t #(1 2 3)))))))
-
-  ;; --- 1.6 Trailing Data After [DONE] ---
-  (test-assert "trailing-data-after-done-is-ignored"
-    (let* ((payload (string-append
-                     "data: {\"chunk\": 1}\n"
-                     "data: [DONE]\n"
-                     "data: {\"chunk\": 2}\n"
-                     "garbage after done\n"
-                     ": trailing comment\n"))
-           (port (open-input-string payload))
-           (events '()))
-      (let ((res (read-sse-events port (lambda (e) (set! events (cons e events))))))
-        (and (eq? res 'done)
-             (= (length events) 1)
-             (equal? (assoc-ref (car events) "chunk") 1)))))
-
-  ;; --- 1.7 Stream Termination Without [DONE] (Premature Disconnect) ---
-  (test-assert "premature-eof-returns-eof-symbol"
-    (let* ((payload "data: {\"chunk\": 1}\n\ndata: {\"chunk\": 2}\n")
-           (port (open-input-string payload))
-           (events '()))
-      (let ((res (read-sse-events port (lambda (e) (set! events (cons e events))))))
-        (and (eq? res 'eof)
-             (= (length events) 2)
-             (equal? (assoc-ref (cadr events) "chunk") 1)
-             (equal? (assoc-ref (car events) "chunk") 2)))))
-
-  ;; --- 1.8 Error Response Payload on Stream Port ---
-  (test-assert "stream-error-payload-raises-exception"
-    (let* ((err-payload "{\"error\": {\"message\": \"Quota exceeded for project\", \"code\": 429}}\n")
-           (port (open-input-string err-payload)))
-      (catch #t
-        (lambda ()
-          (read-sse-events port (lambda (_) #f))
-          #f)
-        (lambda (key . args)
-          (and (eq? key 'misc-error)
-               (string-contains (format #f "~a" args) "Quota exceeded for project")
-               #t)))))
-
-  ;; --- 1.9 Endpoint Ignored stream: true (Non-SSE JSON Body) ---
-  (test-assert "non-sse-json-complete-body-returned-directly"
-    (let* ((json-body "{\"id\": \"chatcmpl-999\", \"choices\": [{\"message\": {\"content\": \"full response\"}}]}\n")
-           (port (open-input-string json-body))
-           (events '()))
-      (let ((res (read-sse-events port (lambda (e) (set! events (cons e events))))))
-        (and (pair? res)
-             (equal? (assoc-ref res "id") "chatcmpl-999")
-             (null? events)))))
-
-  ;; --- 1.10 parse-sse-line Edge Cases ---
-  (test-equal "parse-sse-line data without space"
-    "{\"a\":1}"
-    (parse-sse-line "data:{\"a\":1}\n"))
-
-  (test-equal "parse-sse-line data with CRLF"
-    "{\"b\":2}"
-    (parse-sse-line "data: {\"b\":2}\r\n"))
-
-  (test-equal "parse-sse-line empty data"
-    ""
-    (parse-sse-line "data:\n"))
-
-  (test-equal "parse-sse-line data with single space"
-    ""
-    (parse-sse-line "data: \n"))
-
-  (test-equal "parse-sse-line data preserving leading spaces after first"
-    "  two leading spaces"
-    (parse-sse-line "data:   two leading spaces\n"))
-
-  (test-equal "parse-sse-line bare [DONE] with CRLF"
-    'done
-    (parse-sse-line "[DONE]\r\n"))
-
-  (test-equal "parse-sse-line data:[DONE] without space"
-    'done
-    (parse-sse-line "data:[DONE]"))
-)
+            ;; --- 1.1 Empty Stream ---
+            (test-assert "empty-stream-returns-eof"
+                         (let*
+                             ((port (open-input-string "")) (events '())
+                              (res
+                                (read-sse-events port
+                                                 (lambda (e)
+                                                   (set! events (cons e events))))))
+                           (and (eq? res 'eof) (null? events))))
+            ;; --- 1.2 Whitespace-only stream ---
+            (test-assert "whitespace-only-stream-returns-eof"
+                         (let*
+                             ((port (open-input-string "\n\n   \n\r\n\t\t\n   \r\n"))
+                              (events '())
+                              (res
+                                (read-sse-events port
+                                                 (lambda (e)
+                                                   (set! events (cons e events))))))
+                           (and (eq? res 'eof) (null? events))))
+            ;; --- 1.3 Comment lines variations ---
+            (test-assert "comments-are-silently-ignored"
+                         (let*
+                             ((payload
+                                (string-append ": this is a leading comment\n"
+                                               ":\n"
+                                               ":: double colon comment\n"
+                                               ":   indented comment\n"
+                                               "data: {\"id\": 1}\n"
+                                               ": inter-event keepalive ping\n"
+                                               ":\n"
+                                               "data: {\"id\": 2}\n"
+                                               ": trailing comment\n"
+                                               "data: [DONE]\n"))
+                              (port (open-input-string payload))
+                              (events '()))
+                           (let
+                               ((res
+                                  (read-sse-events port
+                                                   (lambda (e)
+                                                     (set! events (cons e events))))))
+                             (and (eq? res 'done)
+                                  (= (length events) 2)
+                                  (equal? (assoc-ref (cadr events) "id") 1)
+                                  (equal? (assoc-ref (car events) "id") 2)))))
+            ;; --- 1.4 Non-data SSE control fields ---
+            (test-assert "non-data-fields-are-ignored"
+                         (let*
+                             ((payload
+                                (string-append "event: message\n"
+                                               "id: 42\n"
+                                               "retry: 10000\n"
+                                               "data: {\"content\": \"hello\"}\n"
+                                               "event: completion\n"
+                                               "id: 43\n"
+                                               "data: [DONE]\n"))
+                              (port (open-input-string payload))
+                              (events '()))
+                           (let
+                               ((res
+                                  (read-sse-events port
+                                                   (lambda (e)
+                                                     (set! events (cons e events))))))
+                             (and (eq? res 'done)
+                                  (= (length events) 1)
+                                  (equal? (assoc-ref (car events) "content") "hello")))))
+            ;; --- 1.5 Malformed Chunks & Truncated JSON ---
+            (test-assert
+              "truncated-json-falls-back-to-raw-string-without-crashing"
+              (let*
+                  ((truncated-json "data: {\"id\": \"chunk-1\", \"incomplete\": [1, 2,")
+                   (port (open-input-string (string-append truncated-json "\n\ndata: [DONE]\n")))
+                   (events '()))
+                (let
+                    ((res
+                       (read-sse-events port
+                                        (lambda (e)
+                                          (set! events (cons e events))))))
+                  (and (eq? res 'done)
+                       (= (length events) 1)
+                       ;; Must NOT raise an uncaught exception; deliver fallback raw string
+                       (string? (car events))
+                       (string=? (car events) "{\"id\": \"chunk-1\", \"incomplete\": [1, 2,")))))
+            (test-assert
+              "malformed-unquoted-text-falls-back-to-raw-string"
+              (let*
+                  ((port
+                     (open-input-string "data: unquoted raw streaming text chunk\n\ndata: [DONE]\n"))
+                   (events '()))
+                (let
+                    ((res
+                       (read-sse-events port
+                                        (lambda (e)
+                                          (set! events (cons e events))))))
+                  (and (eq? res 'done)
+                       (= (length events) 1)
+                       (string=? (car events) "unquoted raw streaming text chunk")))))
+            (test-assert
+              "non-object-json-primitives-delivered-properly"
+              (let*
+                  ((payload
+                     (string-append "data: \"string-literal\"\n"
+                                    "data: 42\n"
+                                    "data: true\n"
+                                    "data: [1, 2, 3]\n"
+                                    "data: [DONE]\n"))
+                   (port (open-input-string payload))
+                   (events '()))
+                (let
+                    ((res
+                       (read-sse-events port
+                                        (lambda (e)
+                                          (set! events (cons e events))))))
+                  (and (eq? res 'done)
+                       (= (length events) 4)
+                       (equal? (reverse events) '("string-literal" 42 #t #(1 2 3)))))))
+            ;; --- 1.6 Trailing Data After [DONE] ---
+            (test-assert
+              "trailing-data-after-done-is-ignored"
+              (let*
+                  ((payload
+                     (string-append "data: {\"chunk\": 1}\n"
+                                    "data: [DONE]\n"
+                                    "data: {\"chunk\": 2}\n"
+                                    "garbage after done\n"
+                                    ": trailing comment\n"))
+                   (port (open-input-string payload))
+                   (events '()))
+                (let
+                    ((res
+                       (read-sse-events port
+                                        (lambda (e)
+                                          (set! events (cons e events))))))
+                  (and (eq? res 'done)
+                       (= (length events) 1)
+                       (equal? (assoc-ref (car events) "chunk") 1)))))
+            ;; --- 1.7 Stream Termination Without [DONE] (Premature Disconnect) ---
+            (test-assert "premature-eof-returns-eof-symbol"
+                         (let*
+                             ((payload "data: {\"chunk\": 1}\n\ndata: {\"chunk\": 2}\n")
+                              (port (open-input-string payload))
+                              (events '()))
+                           (let
+                               ((res
+                                  (read-sse-events port
+                                                   (lambda (e)
+                                                     (set! events (cons e events))))))
+                             (and (eq? res 'eof)
+                                  (= (length events) 2)
+                                  (equal? (assoc-ref (cadr events) "chunk") 1)
+                                  (equal? (assoc-ref (car events) "chunk") 2)))))
+            ;; --- 1.8 Error Response Payload on Stream Port ---
+            (test-assert
+              "stream-error-payload-raises-exception"
+              (let*
+                  ((err-payload
+                     "{\"error\": {\"message\": \"Quota exceeded for project\", \"code\": 429}}\n")
+                   (port (open-input-string err-payload)))
+                (catch #t
+                  (lambda ()
+                    (read-sse-events port
+                                     (lambda (_)
+                                       #f))
+                    #f)
+                  (lambda (key . args)
+                    (and (eq? key 'misc-error)
+                         (string-contains (format #f "~a" args) "Quota exceeded for project")
+                         #t)))))
+            ;; --- 1.9 Endpoint Ignored stream: true (Non-SSE JSON Body) ---
+            (test-assert
+              "non-sse-json-complete-body-returned-directly"
+              (let*
+                  ((json-body
+                     "{\"id\": \"chatcmpl-999\", \"choices\": [{\"message\": {\"content\": \"full response\"}}]}\n")
+                   (port (open-input-string json-body))
+                   (events '()))
+                (let
+                    ((res
+                       (read-sse-events port
+                                        (lambda (e)
+                                          (set! events (cons e events))))))
+                  (and (pair? res) (equal? (assoc-ref res "id") "chatcmpl-999") (null? events)))))
+            ;; --- 1.10 parse-sse-line Edge Cases ---
+            (test-equal "parse-sse-line data without space"
+                        "{\"a\":1}"
+                        (parse-sse-line "data:{\"a\":1}\n"))
+            (test-equal "parse-sse-line data with CRLF"
+                        "{\"b\":2}"
+                        (parse-sse-line "data: {\"b\":2}\r\n"))
+            (test-equal "parse-sse-line empty data" "" (parse-sse-line "data:\n"))
+            (test-equal
+              "parse-sse-line data with single space"
+              ""
+              (parse-sse-line "data: \n"))
+            (test-equal
+              "parse-sse-line data preserving leading spaces after first"
+              "  two leading spaces"
+              (parse-sse-line "data:   two leading spaces\n"))
+            (test-equal
+              "parse-sse-line bare [DONE] with CRLF"
+              'done
+              (parse-sse-line "[DONE]\r\n"))
+            (test-equal
+              "parse-sse-line data:[DONE] without space"
+              'done
+              (parse-sse-line "data:[DONE]")))
 
 ;;; =========================================================================
 ;;; 2. HTTP MOCK DISPATCH & PARAMETERIZATION ((geasa providers-model mock))

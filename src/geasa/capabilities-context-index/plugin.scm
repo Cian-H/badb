@@ -28,7 +28,9 @@
             %ctx-index-schema
             %ctx-batch-exec-schema
             %ctx-stats-schema)
-  #:re-export (make-bm25-index))
+  #:re-export (make-bm25-index
+              load-bm25-index
+              save-bm25-index!))
 
 ;;;
 ;;; Default Shell Execution

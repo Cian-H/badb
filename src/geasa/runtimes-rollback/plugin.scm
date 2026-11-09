@@ -365,16 +365,17 @@ Returns an alist describing restoration results."
              files-list))
           ;; 1b. If checkpoint was a full workspace scan, remove any newly created files
           (when (checkpoint-full-scan? chkpt)
-            (let ((recorded-paths (if (hamt? (checkpoint-files chkpt))
-                                      (hamt-fold (lambda (k v acc) (cons k acc)) '() (checkpoint-files chkpt))
-                                      (map car (checkpoint-files chkpt)))))
+            (let ((files-data (checkpoint-files chkpt)))
               (for-each
                (lambda (cur-rel)
-                 (unless (member cur-rel recorded-paths)
-                   (let ((full-path (resolve-workspace-path ws cur-rel)))
-                     (when (file-exists? full-path)
-                       (delete-file full-path)
-                       (set! removed-files (cons cur-rel removed-files))))))
+                 (let ((in-chkpt? (if (hamt? files-data)
+                                      (hamt-ref files-data cur-rel #f)
+                                      (assoc cur-rel files-data))))
+                   (unless in-chkpt?
+                     (let ((full-path (resolve-workspace-path ws cur-rel)))
+                       (when (file-exists? full-path)
+                         (delete-file full-path)
+                         (set! removed-files (cons cur-rel removed-files)))))))
                (scan-text-files ws))))
           ;; 2. Restore Registry
           (restore-registry! reg (checkpoint-registry-state chkpt))

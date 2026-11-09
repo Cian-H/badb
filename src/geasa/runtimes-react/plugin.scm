@@ -186,12 +186,8 @@ If 'properties' is missing from an object schema, inject an empty properties ali
                  (or (assoc-ref meta 'parameters)
                      (assoc-ref meta "parameters")
                      %empty-tool-parameters)))
-             (defer? (or (assoc-ref meta '_badb_defer)
-                         (assoc-ref meta "_badb_defer")
-                         #f))
-             (category (or (assoc-ref meta 'category)
-                           (assoc-ref meta "category")
-                           #f)))
+             (defer? (or (assoc-ref meta '_badb_defer) (assoc-ref meta "_badb_defer") #f))
+             (category (or (assoc-ref meta 'category) (assoc-ref meta "category") #f)))
           `((type . "function")
             (function .
                       ((name . ,(normalize-tool-name id-str))
@@ -199,8 +195,12 @@ If 'properties' is missing from an object schema, inject an empty properties ali
                        (parameters . ,params)
                        (_badb_source . "registry")
                        (_badb_original_id . ,id-str)
-                       ,@(if (not (eq? defer? #f)) `((_badb_defer . ,defer?)) '())
-                       ,@(if category `((category . ,category)) '()))))))
+                       ,@(if defer?
+                           `((_badb_defer . ,defer?))
+                           '())
+                       ,@(if category
+                           `((category . ,category))
+                           '()))))))
 
 (define (mcp-tool->tool-spec tool)
         "Convert an MCP discovered tool entry into an OpenAI-compatible tool spec."
@@ -534,7 +534,7 @@ crossing (the signature is marked warned, subsequent equal counts stay
            (window-len (min (loop-detector-window det) (length hist)))
            (windowed (take hist window-len))
            (count (count (lambda (s) (string= s sig)) windowed)))
-          (set-loop-detector-history! det hist)
+          (set-loop-detector-history! det windowed)
           (cond
             ((>= count (loop-detector-halt-after det)) (cons 'halt count))
             ((and (>= count (loop-detector-warn-after det))

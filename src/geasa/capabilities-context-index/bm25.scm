@@ -53,7 +53,6 @@
 ;;;
 ;;; Records
 ;;;
-
 (define-record-type <chunk>
   (make-chunk id source-id section start-line end-line text token-count token-freqs)
   chunk?
@@ -86,7 +85,6 @@
 ;;;
 ;;; Tokenization & Stemming
 ;;;
-
 (define (stem-token word)
   "Light suffix stemmer for English identifiers."
   (let ((len (string-length word)))
@@ -145,7 +143,6 @@
 ;;;
 ;;; Chunking Helpers
 ;;;
-
 (define (take-n lst n)
   (let loop ((l lst) (i 0) (acc '()))
     (if (or (null? l) (>= i n))
@@ -230,7 +227,6 @@ Returns list of ((section start-line end-line text) ...)."
 ;;;
 ;;; Indexing & Scoring
 ;;;
-
 (define (bm25-add-chunk! idx source-id section start-line end-line text)
   "Add a text chunk to the BM25 index."
   (let* ((cid (index-next-chunk-id idx))
@@ -253,64 +249,74 @@ Returns list of ((section start-line end-line text) ...)."
       token-freqs))
     chunk))
 
-(define* (bm25-search idx query #:key (source-id #f) (top-k 5))
+(define*
+  (bm25-search idx query #:key (source-id #f) (top-k 5))
   "Search IDX for QUERY using Okapi BM25 (k1=1.2, b=0.75) with substring match bonus.
 Returns a list of ((score . <chunk>) ...) sorted in descending order of score."
-  (let* ((q-tokens (tokenize-text query))
-         (q-lower (string-downcase (string-trim-both query)))
-         (N (index-doc-count idx))
-         (avgdl (/ (max 1 (index-total-tokens idx)) (max 1.0 N)))
-         (k1 1.2)
-         (b 0.75)
-         (candidates '()))
+  (let*
+      ((q-tokens (tokenize-text query))
+       (q-lower (string-downcase (string-trim-both query)))
+       (N (index-doc-count idx))
+       (avgdl (/ (max 1 (index-total-tokens idx)) (max 1.0 N)))
+       (k1 1.2)
+       (b 0.75)
+       (candidates '()))
     (when (and (> N 0) (pair? q-tokens))
       (set! candidates
-        (hamt-fold
-       (lambda (_ chunk acc)
-         (if (or (not source-id) (string=? (chunk-source-id chunk) source-id))
-             (let* ((c-freqs (chunk-token-freqs chunk))
-                  (dl (chunk-token-count chunk))
-                  (score
-                   (fold
-                    (lambda (q-tok acc)
-                      (let ((tf (hash-ref c-freqs q-tok 0)))
-                        (if (> tf 0)
-                            (let* ((df (hamt-ref (index-doc-freqs idx) q-tok 0))
-                                   ;; Non-negative Okapi IDF
-                                   (idf (log (+ 1.0 (/ (+ (- N df) 0.5)
-                                                       (+ df 0.5)))))
-                                   (denom (+ tf (* k1 (+ (- 1.0 b) (* b (/ dl (max 1.0 avgdl)))))))
-                                   (tf-part (/ (* tf (+ k1 1.0)) (max 0.0001 denom))))
-                              (+ acc (* idf tf-part)))
-                            acc)))
-                    0.0
-                    q-tokens))
-                  ;; Exact substring boost: +2.0 if whole query is in chunk text
-                  (txt-lower (string-downcase (chunk-text chunk)))
-                  (sub-boost (if (and (not (string-null? q-lower))
-                                      (string-contains txt-lower q-lower))
-                                 2.0
-                                 0.0))
-                  ;; Section name boost
-                  (sec-boost (if (and (chunk-section chunk)
-                                      (not (string-null? q-lower))
-                                      (string-contains (string-downcase (chunk-section chunk)) q-lower))
-                                 1.0
-                                 0.0))
-                  (final-score (+ score sub-boost sec-boost)))
-                   (if (> final-score 0.01)
-                       (cons (cons final-score chunk) acc)
-                       acc))
-             acc))
-       '()
-       (index-chunks-table idx))))
-    (let ((sorted (sort candidates (lambda (a b) (> (car a) (car b))))))
+            (hamt-fold
+              (lambda (_ chunk acc)
+                (if
+                    (or (not source-id) (string=? (chunk-source-id chunk) source-id))
+                  (let*
+                      ((c-freqs (chunk-token-freqs chunk))
+                       (dl (chunk-token-count chunk))
+                       (score
+                         (fold
+                           (lambda (q-tok score-acc)
+                             (let ((tf (hash-ref c-freqs q-tok 0)))
+                               (if (> tf 0)
+                                 (let*
+                                     ((df (hamt-ref (index-doc-freqs idx) q-tok 0))
+                                      ;; Non-negative Okapi IDF
+                                      (idf (log (+ 1.0 (/ (+ (- N df) 0.5) (+ df 0.5)))))
+                                      (denom (+ tf (* k1 (+ (- 1.0 b) (* b (/ dl (max 1.0 avgdl)))))))
+                                      (tf-part (/ (* tf (+ k1 1.0)) (max 0.0001 denom))))
+                                   (+ score-acc (* idf tf-part)))
+                                 score-acc)))
+                           0.0
+                           q-tokens))
+                       ;; Exact substring boost: +2.0 if whole query is in chunk text
+                       (txt-lower (string-downcase (chunk-text chunk)))
+                       (sub-boost
+                         (if
+                             (and (not (string-null? q-lower)) (string-contains txt-lower q-lower))
+                           2.0
+                           0.0))
+                       ;; Section name boost
+                       (sec-boost
+                         (if
+                             (and (chunk-section chunk)
+                                  (not (string-null? q-lower))
+                                  (string-contains (string-downcase (chunk-section chunk)) q-lower))
+                           1.0
+                           0.0))
+                       (final-score (+ score sub-boost sec-boost)))
+                    (if (> final-score 0.01)
+                      (cons (cons final-score chunk) acc)
+                      acc))
+                  acc))
+              '()
+              (index-chunks-table idx))))
+    (let
+        ((sorted
+           (sort candidates
+                 (lambda (cand-a cand-b)
+                   (> (car cand-a) (car cand-b))))))
       (take-n sorted top-k))))
 
 ;;;
 ;;; Persistence
 ;;;
-
 (define (mkdir-p path)
   (unless (or (string-null? path) (string=? path "/") (string=? path ".") (file-exists? path))
     (mkdir-p (dirname path))

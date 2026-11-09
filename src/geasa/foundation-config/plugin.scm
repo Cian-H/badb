@@ -328,22 +328,39 @@ form itself, which would corrupt single-role configurations."
          (or (equal? k sym) (equal? k str) (equal? k kw)))))
 
 (define* (prop-lens key #:optional (default #f))
-  "Return a guile-lens lens focusing KEY in property lists and alists
+         "Return a guile-lens lens focusing KEY in property lists and alists
 with get-prop's tolerant matching (symbol, string, or keyword keys;
 dotted or single-element-list values).  DEFAULT is the focus default."
-  (let* ((sym (ensure-symbol key))
-         (str (symbol->string sym))
-         (kw (symbol->keyword sym)))
-    (lens
-     (lambda (obj) (get-prop (if (list? obj) obj '()) key default))
-     (lambda (obj f)
-       (let ((obj (if (list? obj) obj '()))
-             (val (get-prop (if (list? obj) obj '()) key default)))
-         (cons (list sym (f val))
-               (filter (lambda (entry)
-                         (not (%entry-key-matches? entry sym str kw)))
-                       obj)))))))
-
+         (let*
+             ((sym (ensure-symbol key))
+              (str (symbol->string sym))
+              (kw (symbol->keyword sym)))
+           (lens
+             (lambda (obj)
+               (get-prop
+                 (if (list? obj)
+                   obj
+                   '())
+                 key
+                 default))
+             (lambda (obj f)
+               (let
+                   ((alist
+                      (if (list? obj)
+                        obj
+                        '()))
+                    (val
+                      (get-prop
+                        (if (list? obj)
+                          obj
+                          '())
+                        key
+                        default)))
+                 (cons (list sym (f val))
+                       (filter
+                         (lambda (entry)
+                           (not (%entry-key-matches? entry sym str kw)))
+                         alist)))))))
 
 (define (badb-config-react-max-iterations config)
         "Optional ReAct loop iteration cap from (options (react (max-iterations N))):

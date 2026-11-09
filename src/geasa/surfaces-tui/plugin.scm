@@ -1236,8 +1236,7 @@ and append it to the persistent history journal file."
                                `((role . "assistant") (thoughts . ,total-th) (content . ,inline-ct))))))
                   (let ((idx (react-stream-placeholder-index)))
                     (if idx
-                      (set! messages
-                            (append (take messages idx) (list updated) (drop messages (+ idx 1))))
+                      (set! messages (replace-nth messages idx updated))
                       (set! messages (append messages (list updated)))))))))
     (define (commit-react-stream-message!)
             "Keep the streamed assistant card permanently but drop its

@@ -111,7 +111,6 @@
 ;;; Fixtures — tiny bundles created by THIS spec under a private temp
 ;;; root.  Other geasa bundles' pins are never touched.
 ;;;
-
 (define %fixture-root (mkdtemp "/tmp/badb-freshness-spec-XXXXXX"))
 (define %fixture-dirs '())
 
@@ -167,76 +166,79 @@ Return the tampered hash."
 ;;;
 ;;; Tier 1 — pin check
 ;;;
-
 (test-group "tier 1: pin check"
-
-  (let ((honest (make-fixture! "fresh-honest")))
-    (let ((res (freshness-pin-check honest)))
-      (test-equal "honest bundle status pass" "pass" (freshness-result-status res))
-      (test-assert "honest bundle pass?" (freshness-result-pass? res))
-      (test-equal "both pinned files checked" 2 (length (freshness-result-entries res)))
-      (test-assert "every per-file entry ok"
-        (every freshness-entry-ok? (freshness-result-entries res)))
-      (test-assert "pass result has no reason"
-        (not (freshness-result-reason res)))
-      (test-equal "result carries bundle dir" honest (freshness-result-bundle res))
-      (test-assert "result carries a timestamp"
-        (number? (freshness-result-checked-at res)))
-      (let ((entry (entry-for "plugin.scm" (freshness-result-entries res))))
-        (test-assert "plugin entry present" (and entry #t))
-        (test-equal "expected is the manifest pin"
-          (sha256-hex %plugin-content) (freshness-entry-expected entry))
-        (test-equal "actual is the content hash"
-          (sha256-hex %plugin-content) (freshness-entry-actual entry)))))
-
-  (let ((tampered (make-fixture! "fresh-tampered")))
-    (let ((bad-hash (tamper-plugin-pin! tampered)))
-      (let ((res (freshness-pin-check tampered)))
-        (test-equal "tampered bundle status fail" "fail" (freshness-result-status res))
-        (test-assert "tampered bundle not pass" (not (freshness-result-pass? res)))
-        (test-assert "fail result carries a reason"
-          (string? (freshness-result-reason res)))
-        (let ((entry (entry-for "plugin.scm" (freshness-result-entries res))))
-          (test-assert "tampered entry present" (and entry #t))
-          (test-assert "tampered entry not ok" (not (freshness-entry-ok? entry)))
-          (test-equal "expected is the tampered pin" bad-hash (freshness-entry-expected entry))
-          (test-equal "actual is the real content hash"
-            (sha256-hex %plugin-content) (freshness-entry-actual entry))
-          (test-assert "tampered entry carries a reason"
-            (string? (freshness-entry-reason entry))))
-        (test-assert "untampered file still ok"
-          (freshness-entry-ok?
-            (entry-for "spec.geis.scm" (freshness-result-entries res)))))))
-
-  (let ((broken (make-fixture! "fresh-missing-file")))
-    (delete-file (string-append broken "/spec.geis.scm"))
-    (let ((res (freshness-pin-check broken)))
-      (test-equal "missing pinned file fails" "fail" (freshness-result-status res))
-      (test-assert "missing file entry not ok"
-        (not (freshness-entry-ok?
-               (entry-for "spec.geis.scm" (freshness-result-entries res)))))))
-
-  (let ((empty (string-append %fixture-root "/fresh-no-manifest")))
-    (mkdir empty)
-    (set! %fixture-dirs (cons empty %fixture-dirs))
-    (let ((res (freshness-pin-check empty)))
-      (test-equal "missing manifest fails" "fail" (freshness-result-status res))
-      (test-assert "missing manifest not pass" (not (freshness-result-pass? res)))
-      (test-assert "missing manifest has a reason"
-        (string? (freshness-result-reason res)))))
-
-  (let ((honest (make-fixture! "fresh-pins")))
-    (test-equal "bundle pins read from manifest"
-      '("plugin.scm" "spec.geis.scm")
-      (sort (map car (freshness-bundle-pins honest)) string<?))
-    (test-assert "bundle pins carry the right hashes"
-      (equal? (sha256-hex %plugin-content)
-              (cdr (assoc "plugin.scm" (freshness-bundle-pins honest)))))))
+            (let*
+                ((honest (make-fixture! "fresh-honest")) (res (freshness-pin-check honest)))
+              (test-equal "honest bundle status pass" "pass" (freshness-result-status res))
+              (test-assert "honest bundle pass?" (freshness-result-pass? res))
+              (test-equal "both pinned files checked"
+                          2
+                          (length (freshness-result-entries res)))
+              (test-assert "every per-file entry ok"
+                           (every freshness-entry-ok? (freshness-result-entries res)))
+              (test-assert "pass result has no reason" (not (freshness-result-reason res)))
+              (test-equal "result carries bundle dir" honest (freshness-result-bundle res))
+              (test-assert "result carries a timestamp"
+                           (number? (freshness-result-checked-at res)))
+              (let
+                  ((entry (entry-for "plugin.scm" (freshness-result-entries res))))
+                (test-assert "plugin entry present" (and entry #t))
+                (test-equal "expected is the manifest pin"
+                            (sha256-hex %plugin-content)
+                            (freshness-entry-expected entry))
+                (test-equal "actual is the content hash"
+                            (sha256-hex %plugin-content)
+                            (freshness-entry-actual entry))))
+            (let*
+                ((tampered (make-fixture! "fresh-tampered"))
+                 (bad-hash (tamper-plugin-pin! tampered))
+                 (res (freshness-pin-check tampered)))
+              (test-equal "tampered bundle status fail" "fail" (freshness-result-status res))
+              (test-assert "tampered bundle not pass" (not (freshness-result-pass? res)))
+              (test-assert "fail result carries a reason"
+                           (string? (freshness-result-reason res)))
+              (let
+                  ((entry (entry-for "plugin.scm" (freshness-result-entries res))))
+                (test-assert "tampered entry present" (and entry #t))
+                (test-assert "tampered entry not ok" (not (freshness-entry-ok? entry)))
+                (test-equal "expected is the tampered pin"
+                            bad-hash
+                            (freshness-entry-expected entry))
+                (test-equal "actual is the real content hash"
+                            (sha256-hex %plugin-content)
+                            (freshness-entry-actual entry))
+                (test-assert "tampered entry carries a reason"
+                             (string? (freshness-entry-reason entry))))
+              (test-assert "untampered file still ok"
+                           (freshness-entry-ok? (entry-for "spec.geis.scm" (freshness-result-entries res)))))
+            (let
+                ((broken (make-fixture! "fresh-missing-file")))
+              (delete-file (string-append broken "/spec.geis.scm"))
+              (let ((res (freshness-pin-check broken)))
+                (test-equal "missing pinned file fails" "fail" (freshness-result-status res))
+                (test-assert "missing file entry not ok"
+                             (not
+                               (freshness-entry-ok? (entry-for "spec.geis.scm" (freshness-result-entries res)))))))
+            (let
+                ((empty (string-append %fixture-root "/fresh-no-manifest")))
+              (mkdir empty)
+              (set! %fixture-dirs (cons empty %fixture-dirs))
+              (let ((res (freshness-pin-check empty)))
+                (test-equal "missing manifest fails" "fail" (freshness-result-status res))
+                (test-assert "missing manifest not pass" (not (freshness-result-pass? res)))
+                (test-assert "missing manifest has a reason"
+                             (string? (freshness-result-reason res)))))
+            (let ((honest (make-fixture! "fresh-pins")))
+              (test-equal "bundle pins read from manifest"
+                          '("plugin.scm" "spec.geis.scm")
+                          (sort (map car (freshness-bundle-pins honest)) string<?))
+              (test-assert "bundle pins carry the right hashes"
+                           (equal? (sha256-hex %plugin-content)
+                                   (cdr (assoc "plugin.scm" (freshness-bundle-pins honest)))))))
 
 ;;;
 ;;; Tier 2 — lazy full replay with verdict cache
 ;;;
-
 (test-group "tier 2: lazy verdict cache"
 
   (test-assert "cache predicate accepts a cache" (freshness-cache? (make-freshness-cache)))
@@ -307,7 +309,6 @@ Return the tampered hash."
 ;;;
 ;;; Teardown — delete the private fixture root (files, then dirs).
 ;;;
-
 (for-each
  (lambda (dir)
    (for-each

@@ -54,9 +54,9 @@ guile-fslib's complex-fsing?."
                  (start (max 0 (if (integer? offset) offset (string->number (or offset "0")))))
                  (max-lines (max 1 (if (integer? limit) limit (string->number (or limit "800")))))
                  (end (min total (+ start max-lines))))
-            (let loop ((i start) (acc '()))
+            (let loop ((i start) (cur (drop raw-lines (min total start))) (acc '()))
               (cond
-               ((or (>= i end) (>= i total))
+               ((or (>= i end) (null? cur))
                 (let* ((shown (reverse acc))
                        (last-shown (if (null? shown) start (+ i -1)))
                        (header (format #f "[file ~a - ~a total lines - showing lines ~a..~a]~%"
@@ -71,13 +71,13 @@ guile-fslib's complex-fsing?."
                                 "")))
                   (string-append header body footer tip)))
                (else
-                (let* ((line (list-ref raw-lines i))
+                (let* ((line (car cur))
                        (trim (if (> (string-length line) %read-file-max-chars-per-line)
                                  (string-append (substring line 0 %read-file-max-chars-per-line)
                                                 (format #f "... [line ~a truncated: ~a of ~a chars]"
                                                         i (string-length line) (string-length line)))
                                  line)))
-                  (loop (+ i 1) (cons trim acc)))))))
+                  (loop (+ i 1) (cdr cur) (cons trim acc)))))))
           (format #f "Error: file '~a' does not exist" path)))
     (lambda (_k . a)
       (format #f "Error reading file '~a': ~s" path a))))

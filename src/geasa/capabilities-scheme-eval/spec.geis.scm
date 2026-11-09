@@ -38,6 +38,11 @@
       (test-assert "guardrail denied error reported"
         (string-contains res "guardrail-denied")))))
 
+(test-group "scheme-eval-security"
+  (let ((res (eval-scheme-sandboxed "(system* \"echo\" \"injected\")")))
+    (test-assert "restricted system call blocked"
+      (string-contains res "Security restriction"))))
+
 (test-group "scheme-eval-timeout"
   (let ((res (eval-scheme-sandboxed "(let loop () (loop))" #:timeout-seconds 1)))
     (test-assert "infinite loop timed out"

@@ -107,29 +107,33 @@ NAME-PATTERN and ARGS-PATTERN can be regex strings, literal strings, or #f (wild
 (define* (dangerous-operation? tool-name #:optional (args '()))
   "Return #t if TOOL-NAME and ARGS constitute a dangerous destructive operation."
   (let ((name-str (string-downcase (ensure-string tool-name))))
-    (if (string-contains name-str "danger")
-      #t
-      (let
-          ((args-str
+    (cond
+     ((string-contains name-str "danger") #t)
+     ;; Read-only inspection tools are not destructive commands
+     ((member name-str '("read_file" "fs-read-file" "ctx_search" "find_symbol" "symbols_overview")) #f)
+     (else
+      (let ((args-str
              (string-downcase
               (if (string? args)
-                args
-                (object->string args)))))
+                  args
+                  (object->string args)))))
         (and
-          (or (string-contains args-str "rm -rf")
-              (string-contains args-str "rm  -rf")
-              (string-contains args-str "rm -fr")
-              (string-contains args-str "rm -r -f")
-              (string-contains args-str "rm -f -r")
-              (string-contains args-str "rm --recursive")
-              (string-contains args-str "drop table")
-              (string-contains args-str "drop database")
-              (string-contains args-str "truncate table")
-              (string-contains args-str "format disk")
-              (string-contains args-str "mkfs")
-              (string-contains args-str "> /dev/sd")
-              (string-contains args-str "dd if="))
-          #t)))))
+         (or (string-contains args-str "rm -rf")
+             (string-contains args-str "rm  -rf")
+             (string-contains args-str "rm -fr")
+             (string-contains args-str "rm -r -f")
+             (string-contains args-str "rm -f -r")
+             (string-contains args-str "rm --recursive")
+             (string-contains args-str "rm -r --force")
+             (string-contains args-str "rm --force -r")
+             (string-contains args-str "drop table")
+             (string-contains args-str "drop database")
+             (string-contains args-str "truncate table")
+             (string-contains args-str "format disk")
+             (string-contains args-str "mkfs")
+             (string-contains args-str "> /dev/sd")
+             (string-contains args-str "dd if="))
+         #t))))))
 
 (define* (mutating-operation? tool-name #:optional (_args '()))
   "Return #t if TOOL-NAME represents a state-mutating operation."

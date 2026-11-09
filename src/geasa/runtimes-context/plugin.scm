@@ -258,6 +258,16 @@ order), or #f when none exists. In an agent session this is typically
 the original task assignment."
   (find (lambda (m) (string=? (message-role m) "user")) msgs))
 
+(define (drop-leading-orphaned-tools msgs)
+  "Drop any messages with role 'tool' from the beginning of MSGS that do not
+have a preceding assistant message in MSGS."
+  (let loop ((rest msgs))
+    (cond
+     ((null? rest) '())
+     ((string=? (message-role (car rest)) "tool")
+      (loop (cdr rest)))
+     (else rest))))
+
 (define* (finish-sliding-window sys-msg acc pool #:optional (pin-first-user #f))
         "Attach SYS-MSG to the kept window ACC, guaranteeing the newest user
 message from POOL survives even when it fell outside the token budget.
@@ -265,13 +275,14 @@ When PIN-FIRST-USER is #t, also reinsert the first user message of POOL —
 the session's original task — so compaction can never evict the
 assignment, only middle-of-history working turns."
         (let*
-          ((acc-user
-             (if (any (lambda (m) (string=? (message-role m) "user")) acc)
-               acc
+          ((clean-acc (drop-leading-orphaned-tools acc))
+           (acc-user
+             (if (any (lambda (m) (string=? (message-role m) "user")) clean-acc)
+               clean-acc
                (let ((newest-user (latest-user-message pool)))
                  (if newest-user
-                   (cons newest-user acc)
-                   acc))))
+                   (cons newest-user clean-acc)
+                   clean-acc))))
            (first-user (and pin-first-user (first-user-message pool)))
            (first-user-kept?
              (and first-user (any (lambda (m) (eq? m first-user)) acc-user)))

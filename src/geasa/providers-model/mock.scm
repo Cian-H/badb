@@ -50,6 +50,24 @@ substituting ACCEPT for the accept header."
         (list "-H" (format #f "~a: ~a" key str-val))))
     (or headers '())))
 
+(define (make-piped-stream-port in pids)
+  "Wrap IN port so that closing the stream reaps the child pipeline PIDS."
+  (make-soft-port
+   (vector
+    (lambda (c) (write-char c in))
+    (lambda (s) (display s in))
+    (lambda () (force-output in))
+    (lambda () (read-char in))
+    (lambda ()
+      (catch #t (lambda () (close-port in)) (lambda _ #f))
+      (for-each
+       (lambda (p)
+         (catch 'system-error
+           (lambda () (waitpid p))
+           (lambda _ #f)))
+       pids)))
+   "r"))
+
 (define (curl-collect-output! in pids)
   "Read the remaining output of a curl pipeline from IN, close it, reap the
 child PIDS, and return the captured output string."
@@ -115,7 +133,7 @@ Streams payload directly over standard input without temporary files, captures r
           (lambda (in out pids)
             (display body-str out)
             (close-port out)
-            (values (build-response #:code 200) in))))
+            (values (build-response #:code 200) (make-piped-stream-port in pids)))))
       (let
           ((cmd
              (append

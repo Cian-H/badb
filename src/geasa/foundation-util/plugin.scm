@@ -80,25 +80,25 @@ canonicalized (e.g. when `..' escapes above the root)."
     (lambda _ path)))
 
 (define (mkdir-p dir)
-  "Recursively ensure that directory DIR exists.  The path is
+        "Recursively ensure that directory DIR exists.  The path is
 canonicalized with guile-fslib so that `.' and `..' components are
 resolved before anything is created on disk."
-  (unless (or (not (string? dir))
-              (string-null? dir)
-              (string=? dir ".")
-              (string=? dir "/")
-              (file-exists? dir))
-    (let* ((dir (canonicalize-fsing dir))
-           (parent (dirname dir)))
-      (unless (or (string=? parent dir)
-                  (string-null? parent)
-                  (string=? parent "."))
-        (mkdir-p parent))
-      (catch 'system-error
-        (lambda () (mkdir dir))
-        (lambda args
-          (unless (file-exists? dir)
-            (apply throw args)))))))
+        (unless
+            (or (not (string? dir))
+                (string-null? dir)
+                (string=? dir ".")
+                (string=? dir "/")
+                (file-exists? dir))
+          (let*
+              ((canon-dir (canonicalize-fsing dir)) (parent (dirname canon-dir)))
+            (unless
+                (or (string=? parent canon-dir) (string-null? parent) (string=? parent "."))
+              (mkdir-p parent))
+            (catch 'system-error
+              (lambda ()
+                (mkdir canon-dir))
+              (lambda args
+                (unless (file-exists? canon-dir) (apply throw args)))))))
 
 (define (ensure-parent-directory! file-path)
   "Ensure that the enclosing parent directory of FILE-PATH exists."

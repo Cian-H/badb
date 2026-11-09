@@ -17,20 +17,27 @@
             call-with-timeout
             %scheme-eval-tool-schema))
 
+(define %restricted-sandbox-symbols
+  '(system system* execl execlp execle primitive-fork
+    pipeline open-pipe open-pipe* open-input-pipe open-output-pipe
+    delete-file rmdir mkdir chmod chown setenv putenv
+    primitive-exit exit kill sigaction alarm))
+
 (define (call-with-timeout timeout-sec thunk timeout-val)
   "Execute THUNK with a SIGALRM timeout. Return TIMEOUT-VAL if timeout trips."
   (let ((prev-handler (sigaction SIGALRM)))
     (catch 'timeout-tag
       (lambda ()
-        (sigaction SIGALRM (lambda (sig) (throw 'timeout-tag)))
-        (alarm timeout-sec)
-        (let ((res (thunk)))
-          (alarm 0)
-          (sigaction SIGALRM (car prev-handler))
-          res))
+        (dynamic-wind
+          (lambda ()
+            (sigaction SIGALRM (lambda (sig) (throw 'timeout-tag)))
+            (alarm timeout-sec))
+          (lambda ()
+            (thunk))
+          (lambda ()
+            (alarm 0)
+            (sigaction SIGALRM (car prev-handler)))))
       (lambda (k . a)
-        (alarm 0)
-        (sigaction SIGALRM (car prev-handler))
         timeout-val))))
 
 (define* (eval-scheme-sandboxed code-str
@@ -46,6 +53,14 @@
                                             #:imports '((guile)
                                                         (srfi srfi-1)
                                                         (ice-9 format))))
+             ;; Restrict unsafe host system operations in the sandbox module
+             (_ (for-each
+                 (lambda (sym)
+                   (feature-module-define!
+                    mod sym
+                    (lambda _
+                      (error (format #f "Security restriction: '~a' is forbidden in sandboxed evaluation" sym)))))
+                 %restricted-sandbox-symbols))
              ;; Define call-tool inside the sandbox module
              (_ (feature-module-define!
                  mod

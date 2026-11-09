@@ -24,7 +24,7 @@
 
 (define %default-investigate-tools
   '("read_file" "fs-read-file" "ctx_search" "find_symbol" "symbols_overview"
-    "skill_load" "skill_list" "bash"))
+    "skill_load" "skill_list"))
 
 (define* (run-subagent prompt
                        #:key

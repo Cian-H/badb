@@ -537,7 +537,11 @@ holding the copy's bundle hash.  Return ((tarball . path)
                      (tarball-path (string-append dist-dir "/" tarball-name))
                      (bundle-hash (geis-bundle-hash copy-dir)))
                   (%mkdir-p dist-dir)
-                  (system* "tar" "-czf" tarball-path "-C" temp-parent (basename copy-dir))
+                  (let ((status (system* "tar" "-czf" tarball-path "-C" temp-parent (basename copy-dir))))
+                    (unless (and (number? status) (zero? (status:exit-val status)))
+                      (throw 'geis-bundle-error
+                             (format #f "failed to create bundle tarball '~a' (tar exit: ~a)"
+                                     tarball-path status))))
                   (call-with-output-file
                     (string-append tarball-path ".sha256")
                     (lambda (port)
