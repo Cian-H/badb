@@ -62,9 +62,10 @@
         "Strip badb-internal _badb_* provenance keys from a TOOL spec (top
 level and its function object).  The harness carries them for tool-call
 dispatch routing, but strict OpenAI-compatible APIs (e.g.
-api.mistral.ai) reject unknown body fields with 422 extra_forbidden.
-Tool specs carry the function entry under either a string or symbol
-key, so both spellings are handled."
+api.mistral.ai, LM Studio, vLLM) reject unknown body fields or missing
+function wrappers.  Tool specs carry the function entry under either a string
+or symbol key, so both spellings are handled.  If a flat tool spec is passed,
+it is automatically wrapped into an OpenAI-compliant (type . \"function\") envelope."
         (define (badb-internal-key? key)
                 (and (or (symbol? key) (string? key))
                      (string-prefix? "_badb_"
@@ -83,16 +84,24 @@ key, so both spellings are handled."
                      (or (eq? (car pair) (quote function)) (equal? (car pair) "function"))))
         (let*
             ((tool* (strip-level tool))
-             (fn (or (assoc-ref tool* "function") (assq-ref tool* (quote function)))))
-          (if (pair? fn)
-            (let ((fn* (strip-level fn)))
-              (map
-                (lambda (pair)
-                  (if (function-entry? pair)
-                    (cons (car pair) fn*)
-                    pair))
-                tool*))
-            tool*)))
+             (fn (or (assoc-ref tool* "function") (assq-ref tool* (quote function))))
+             (has-type? (or (assoc-ref tool* "type") (assq-ref tool* (quote type)))))
+          (cond
+            ((pair? fn)
+              (let* ((fn* (strip-level fn))
+                     (mapped (map
+                               (lambda (pair)
+                                 (if (function-entry? pair)
+                                   (cons (car pair) fn*)
+                                   pair))
+                               tool*)))
+                (if has-type?
+                  mapped
+                  (cons (cons "type" "function") mapped))))
+            ((or (assoc-ref tool* "name") (assq-ref tool* (quote name)))
+              `((type . "function")
+                (function . ,tool*)))
+            (else tool*))))
 
 (define*
   (format-chat-request messages

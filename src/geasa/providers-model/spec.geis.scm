@@ -143,6 +143,25 @@
               (test-assert "stripped tool keeps the function type wrapper"
                            (equal? "function" (assoc-ref (vector-ref tools-v 0) "type"))))
 
+            ;; Flat tool specs (e.g. without (type . "function") or (function . ...))
+            ;; are automatically normalized to OpenAI-compliant envelopes.
+            (let* ((flat-tool
+                     '((name . "tool_search")
+                       (description . "Search for tools")
+                       (parameters . ((type . "object")
+                                      (properties . ((query . ((type . "string")))))))))
+                   (payload (json-string->scm
+                              (format-chat-request "x" #:model "m"
+                                                   #:tools (list flat-tool))))
+                   (tools-v (assoc-ref payload "tools")))
+              (test-equal "flat tool wrapped in tools array" 1 (vector-length tools-v))
+              (let ((t0 (vector-ref tools-v 0)))
+                (test-equal "flat tool receives function type" "function" (assoc-ref t0 "type"))
+                (let ((fn (assoc-ref t0 "function")))
+                  (test-assert "flat tool receives function object" (pair? fn))
+                  (test-equal "function name preserved" "tool_search" (assoc-ref fn "name"))
+                  (test-equal "function description preserved" "Search for tools" (assoc-ref fn "description")))))
+
             ;; The strict-OpenAI message profile (the dump2 422: assistant tool
             ;; turns carry a fabricated reasoning_content trace that strict APIs
             ;; reject; local reasoning-template servers require it).
