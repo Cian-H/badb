@@ -2,6 +2,8 @@
 !#
 ;;; format-scheme — Format Scheme source files using cl-indentify and manage Geasa bundle integrity.
 
+(setenv "GUILE_AUTO_COMPILE" "0")
+
 (define %script-path
   (canonicalize-path (car (command-line))))
 
@@ -171,4 +173,9 @@
              (repin-bundles bundles)))))
       ((explicit)
        (let ((valid-files (filter scheme-file-to-format? explicit-files)))
-         (format-files valid-files))))))
+         (unless (null? valid-files)
+           (format-files valid-files)
+           (stage-files valid-files)
+           (let ((bundles (delete-duplicates
+                           (filter-map file->geasa-bundle valid-files))))
+             (repin-bundles bundles))))))))

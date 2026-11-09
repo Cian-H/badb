@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: cl-indentify
+        name: cl-indentify (scheme formatter)
+        entry: ./scripts/format-scheme
+        language: system
+        files: '\.scm$'
+        exclude: '^src/geasa/.*/manifest\.scm$'

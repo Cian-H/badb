@@ -1,3 +1,27 @@
-#!/bin/sh
-ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-exec guile -L "$ROOT_DIR/src" -L "$ROOT_DIR" "$ROOT_DIR/test/runner.scm" "$@"
+#!/usr/bin/env -S guile -e main -s
+!#
+;;; test — Run badb bootstrap test suite and subsystem Geasa contracts.
+
+(setenv "GUILE_AUTO_COMPILE" "0")
+
+(define %script-path
+  (canonicalize-path (car (command-line))))
+
+(define %root-dir
+  (canonicalize-path (string-append (dirname %script-path) "/..")))
+
+(set! %load-path (cons (string-append %root-dir "/src") %load-path))
+(set! %load-path (cons %root-dir %load-path))
+
+;; Re-exec through devenv if guix/project dependencies are not on load path
+(unless (catch #t
+          (lambda () (resolve-interface '(fslib)) #t)
+          (lambda _ #f))
+  (let ((devenv (string-append %root-dir "/scripts/devenv")))
+    (apply execl devenv devenv "--" %script-path (cdr (command-line)))))
+
+(use-modules (test runner))
+
+(define (main args)
+  (chdir %root-dir)
+  (run-all-tests))

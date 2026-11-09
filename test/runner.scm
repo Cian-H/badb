@@ -36,7 +36,7 @@
                 (exit 1))
               (begin
                 (format #t "~%--- Stage 2: Subsystem Geasa Contracts (Kernel Replay) ---~%")
-                (let* ((pipe (open-pipe* OPEN_READ "./scripts/verify-geasa.sh"))
+                (let* ((pipe (open-pipe* OPEN_READ "./scripts/verify-geasa"))
                        (geis-passes 0)
                        (geis-fails 0))
                   (let loop ((line (read-line pipe)))

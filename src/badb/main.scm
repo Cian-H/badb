@@ -144,7 +144,7 @@
             (exit 1))
           ((member (cadr sub-args) '("--all" "-a" "all"))
             (let
-                ((status (system* "./scripts/verify-geasa.sh")))
+                ((status (system* "./scripts/verify-geasa")))
               (exit (status:exit-val status))))
           (else (display (spec-tool-verify (cadr sub-args))))))
 

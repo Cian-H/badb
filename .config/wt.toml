@@ -2,7 +2,7 @@
 # Verify kernel design invariants and full contract suite before merging any agent worktree
 
 [pre-commit]
-format = "./scripts/format-scheme"
+prek = "./scripts/devenv -- prek run"
 
 [pre-merge]
 suite = "./scripts/devenv -- ./scripts/test"

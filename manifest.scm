@@ -18,6 +18,7 @@
             "unzip"
             "tui-test"
             "sema"
+            "prek"
             "guile-quickcheck"
             "guile-fibers"
             "guile-git"

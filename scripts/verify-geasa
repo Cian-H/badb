@@ -1,0 +1,181 @@
+#!/usr/bin/env -S guile -e main -s
+!#
+;;; verify-geasa — Lock and verify all subsystem geasa contracts in parallel.
+
+(setenv "GUILE_AUTO_COMPILE" "0")
+
+(define %script-path
+  (canonicalize-path (car (command-line))))
+
+(define %root-dir
+  (canonicalize-path (string-append (dirname %script-path) "/..")))
+
+(set! %load-path (cons (string-append %root-dir "/src") %load-path))
+(set! %load-path (cons %root-dir %load-path))
+
+;; Re-exec through devenv if guix/project dependencies are not on load path
+(unless (catch #t
+          (lambda () (resolve-interface '(fslib)) #t)
+          (lambda _ #f))
+  (let ((devenv (string-append %root-dir "/scripts/devenv")))
+    (apply execl devenv devenv "--" %script-path (cdr (command-line)))))
+
+(use-modules (badb kernel geis-gate)
+             (badb geis bundle)
+             (ice-9 ftw)
+             (ice-9 popen)
+             (ice-9 rdelim)
+             (ice-9 format)
+             (srfi srfi-1)
+             (srfi srfi-11))
+
+(define (discover-flat-specs)
+  (let ((dir (string-append %root-dir "/test/specs")))
+    (if (file-exists? dir)
+        (sort
+         (filter-map
+          (lambda (name)
+            (and (string-suffix? ".geis.scm" name)
+                 (let ((fid (substring name 0 (- (string-length name) 9))))
+                   (cons (string-append "test/specs/" name) fid))))
+          (scandir dir (lambda (n) (not (member n '("." ".."))))))
+         (lambda (a b) (string<? (cdr a) (cdr b))))
+        '())))
+
+(define (discover-bundles)
+  (let ((dir (string-append %root-dir "/src/geasa")))
+    (if (file-exists? dir)
+        (sort
+         (filter-map
+          (lambda (name)
+            (let ((spec (string-append "src/geasa/" name "/spec.geis.scm")))
+              (and (file-exists? (string-append %root-dir "/" spec))
+                   (cons (string-append "src/geasa/" name) name))))
+          (scandir dir (lambda (n) (not (member n '("." ".."))))))
+         (lambda (a b) (string<? (cdr a) (cdr b))))
+        '())))
+
+(define (run-worker-pool num-jobs items cmd-builder)
+  (let loop ((pending items)
+             (active '())
+             (passed? #t))
+    (let-values (((new-pending new-active)
+                  (let spawn ((p pending) (a active))
+                    (if (and (not (null? p)) (< (length a) num-jobs))
+                        (let* ((item (car p))
+                               (args (cmd-builder item))
+                               (pipe (apply open-pipe* OPEN_READ args)))
+                          (spawn (cdr p) (cons (cons pipe item) a)))
+                        (values p a)))))
+      (if (null? new-active)
+          passed?
+          (let* ((readable (car (select (map car new-active) '() '() 1)))
+                 (p (if (null? readable) (caar new-active) (car readable)))
+                 (entry (assq p new-active))
+                 (item (cdr entry))
+                 (output (let read-lines ((acc '()))
+                           (let ((line (read-line p)))
+                             (if (eof-object? line)
+                                 (string-join (reverse acc) "\n")
+                                 (read-lines (cons line acc))))))
+                 (status (close-pipe p))
+                 (ok? (zero? (status:exit-val status))))
+            (unless (string-null? output)
+              (display output)
+              (newline)
+              (force-output))
+            (loop new-pending
+                  (delq entry new-active)
+                  (and passed? ok?)))))))
+
+(define (verify-flat-worker fid)
+  (let* ((res (verify-locked-geis fid))
+         (verdict (or (assoc-ref res 'verdict) "fail"))
+         (passed? (string-ci=? verdict "pass"))
+         (total (or (assoc-ref res 'summary-total) "?"))
+         (passed (or (assoc-ref res 'summary-passed) "?"))
+         (failed (or (assoc-ref res 'summary-failed) "?"))
+         (hash (or (assoc-ref res 'spec-hash) "none")))
+    (if passed?
+        (begin
+          (format #t "  * PASS: geis ~a (summary: total=~a passed=~a failed=~a spec-hash: ~a)~%"
+                  fid total passed failed hash)
+          (exit 0))
+        (begin
+          (format #t "  * FAIL: geis ~a~%" fid)
+          (format #t "    Verdict: ~a, reason: ~a, failures: ~s~%"
+                  verdict (assoc-ref res 'reason) (assoc-ref res 'failures))
+          (exit 1)))))
+
+(define (verify-bundle-worker fid)
+  (let* ((res (verify-locked-geis-bundle fid #:timeout 120))
+         (verdict (or (assoc-ref res 'verdict) "fail"))
+         (passed? (string-ci=? verdict "pass"))
+         (total (or (assoc-ref res 'summary-total) "?"))
+         (passed (or (assoc-ref res 'summary-passed) "?"))
+         (failed (or (assoc-ref res 'summary-failed) "?"))
+         (hash (or (assoc-ref res 'spec-hash) "none")))
+    (if passed?
+        (begin
+          (format #t "  * PASS: geis bundle ~a (summary: total=~a passed=~a failed=~a spec-hash: ~a)~%"
+                  fid total passed failed hash)
+          (exit 0))
+        (begin
+          (format #t "  * FAIL: geis bundle ~a~%" fid)
+          (format #t "    Verdict: ~a, reason: ~a, failures: ~s~%"
+                  verdict (assoc-ref res 'reason) (assoc-ref res 'failures))
+          (exit 1)))))
+
+(define (main args)
+  (chdir %root-dir)
+  (let ((sub-args (cdr args)))
+    (cond
+      ((and (>= (length sub-args) 2)
+            (string=? (car sub-args) "--worker-flat"))
+       (verify-flat-worker (cadr sub-args)))
+      ((and (>= (length sub-args) 2)
+            (string=? (car sub-args) "--worker-bundle"))
+       (verify-bundle-worker (cadr sub-args)))
+      (else
+       (let* ((num-jobs (or (and=> (getenv "BADB_PARALLEL_JOBS") string->number) 4))
+              (flat-specs (discover-flat-specs))
+              (bundles (discover-bundles)))
+
+         ;; 1. Lock all flat specs
+         (unless (file-exists? ".badb/specs")
+           (system* "mkdir" "-p" ".badb/specs"))
+         (for-each
+          (lambda (pair)
+            (lock-geis (car pair) (cdr pair)))
+          flat-specs)
+
+         ;; 2. Validate and lock all bundles
+         (for-each
+          (lambda (pair)
+            (let* ((bdir (car pair))
+                   (fid (cdr pair))
+                   (errors (geis-manifest-valid? bdir)))
+              (unless (null? errors)
+                (format (current-error-port) "bundle manifest invalid in ~a: ~s~%" bdir errors)
+                (exit 1))
+              (lock-geis-bundle bdir fid)))
+          bundles)
+
+         ;; 3. Parallel verification
+         (display "=== Verifying Subsystem Geasa via Kernel Supervisory Gate ===\n")
+         (force-output)
+
+         (let* ((flat-ok?
+                 (run-worker-pool
+                  num-jobs
+                  (map cdr flat-specs)
+                  (lambda (fid) (list %script-path "--worker-flat" fid))))
+                (bundles-ok?
+                 (run-worker-pool
+                  num-jobs
+                  (map cdr bundles)
+                  (lambda (fid) (list %script-path "--worker-bundle" fid)))))
+
+           (if (and flat-ok? bundles-ok?)
+               (exit 0)
+               (exit 1))))))))

@@ -1,1 +1,12 @@
-../scripts/format-scheme
+#!/usr/bin/env -S guile -e main -s
+!#
+;;; pre-commit hook runner using prek
+
+(define (main args)
+  (let ((prek (search-path (parse-path (or (getenv "PATH") "")) "prek")))
+    (if prek
+        (apply execlp "prek" "prek" "run" (cdr args))
+        (let* ((script-path (canonicalize-path (car (command-line))))
+               (root-dir (canonicalize-path (string-append (dirname script-path) "/..")))
+               (devenv (string-append root-dir "/scripts/devenv")))
+          (apply execl devenv devenv "--" "prek" "run" (cdr args))))))

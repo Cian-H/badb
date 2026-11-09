@@ -1,124 +1,137 @@
-#!/usr/bin/env bash
-# scripts/test-e2e — Unified End-to-End Test Suite Runner (Integration + TUI)
-#
-# Must run inside the project's guix dev environment:
-#   ./scripts/devenv -- ./scripts/test-e2e [options]
-#
-# Options:
-#   --all           Run integration suites and TUI scenarios (default)
-#   --integration   Run only non-TUI integration suites
-#   --tui           Run only terminal TUI scenarios
-set -euo pipefail
+#!/usr/bin/env -S guile -e main -s
+!#
+;;; test-e2e — Unified End-to-End Test Suite Runner (Integration + TUI)
+;;;
+;;; Usage:
+;;;   ./scripts/test-e2e [options]
+;;;
+;;; Options:
+;;;   --all, -a           Run integration suites and TUI scenarios (default)
+;;;   --integration, -i   Run only non-TUI integration suites
+;;;   --tui, -t           Run only terminal TUI scenarios
 
-ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-cd "$ROOT_DIR"
+(setenv "GUILE_AUTO_COMPILE" "0")
 
-MODE="${1:---all}"
-case "$MODE" in
-  --integration|-i)
-    RUN_INTEGRATION=1
-    RUN_TUI=0
-    ;;
-  --tui|-t)
-    RUN_INTEGRATION=0
-    RUN_TUI=1
-    ;;
-  --all|-a|*)
-    RUN_INTEGRATION=1
-    RUN_TUI=1
-    ;;
-esac
+(define %script-path
+  (canonicalize-path (car (command-line))))
 
-echo "================================================================="
-echo "       badb Microkernel End-to-End (E2E) Test Suite              "
-echo "================================================================="
-echo "Start time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-echo "Root directory: $ROOT_DIR"
-echo ""
+(define %root-dir
+  (canonicalize-path (string-append (dirname %script-path) "/..")))
 
-TOTAL_FAILS=0
+(set! %load-path (cons (string-append %root-dir "/src") %load-path))
+(set! %load-path (cons %root-dir %load-path))
 
-# -----------------------------------------------------------------------------
-# Part 1: Integration E2E Suites
-# -----------------------------------------------------------------------------
-if [ "$RUN_INTEGRATION" -eq 1 ]; then
-  echo "-----------------------------------------------------------------"
-  echo ">>> Stage 1: Integration & Subsystem E2E Suites"
-  echo "-----------------------------------------------------------------"
+;; Re-exec through devenv if guix/project dependencies are not on load path
+(unless (catch #t
+          (lambda () (resolve-interface '(fslib)) #t)
+          (lambda _ #f))
+  (let ((devenv (string-append %root-dir "/scripts/devenv")))
+    (apply execl devenv devenv "--" %script-path (cdr (command-line)))))
 
-  run_sub_suite() {
-    local name="$1"
-    local cmd="$2"
-    echo ">> Running: $name"
-    set +e
-    eval "$cmd"
-    local rc=$?
-    set -e
-    if [ "$rc" -ne 0 ]; then
-      echo ">> FAILED: $name (exit code $rc)" >&2
-      TOTAL_FAILS=$((TOTAL_FAILS + 1))
-    else
-      echo ">> PASSED: $name"
-    fi
-    echo ""
-  }
+(use-modules (ice-9 ftw)
+             (ice-9 format)
+             (ice-9 match)
+             (srfi srfi-1))
 
-  run_sub_suite "CLI Entrypoints" "./test/e2e/test-cli-entrypoints.sh"
-  run_sub_suite "Geis Contract Locking & Verification" "guile -L src -L . ./test/e2e/test-geis-contract.scm"
-  run_sub_suite "Transaction Rollback & Provenance" "guile -L src -L . ./test/e2e/test-transaction-rollback.scm"
-fi
+(define (utc-timestamp)
+  (strftime "%Y-%m-%dT%H:%M:%SZ" (gmtime (current-time))))
 
-# -----------------------------------------------------------------------------
-# Part 2: Terminal TUI Scenarios
-# -----------------------------------------------------------------------------
-if [ "$RUN_TUI" -eq 1 ]; then
-  echo "-----------------------------------------------------------------"
-  echo ">>> Stage 2: Interactive TUI Scenarios (tui-test)"
-  echo "-----------------------------------------------------------------"
+(define (run-sub-suite name cmd-args)
+  (format #t ">> Running: ~a~%" name)
+  (let ((status (apply system* cmd-args)))
+    (if (zero? (status:exit-val status))
+        (begin
+          (format #t ">> PASSED: ~a~%~%" name)
+          0)
+        (begin
+          (format (current-error-port) ">> FAILED: ~a (exit code ~a)~%~%"
+                  name (status:exit-val status))
+          1))))
 
-  if ! command -v tui-test >/dev/null 2>&1; then
-    echo "error: tui-test not on PATH; run inside ./scripts/devenv" >&2
-    exit 2
-  fi
+(define (run-integration-stage)
+  (display "-----------------------------------------------------------------\n")
+  (display ">>> Stage 1: Integration & Subsystem E2E Suites\n")
+  (display "-----------------------------------------------------------------\n")
+  (+ (run-sub-suite "CLI Entrypoints"
+                    '("./test/e2e/test-cli-entrypoints.sh"))
+     (run-sub-suite "Geis Contract Locking & Verification"
+                    '("guile" "-L" "src" "-L" "." "./test/e2e/test-geis-contract.scm"))
+     (run-sub-suite "Transaction Rollback & Provenance"
+                    '("guile" "-L" "src" "-L" "." "./test/e2e/test-transaction-rollback.scm"))))
 
-  # Clear stale sessions
-  tui-test close --all >/dev/null 2>&1 || true
-  tui-test daemon stop --all >/dev/null 2>&1 || true
+(define (cleanup-tui-sessions)
+  (catch #t
+    (lambda ()
+      (system* "tui-test" "close" "--all")
+      (system* "tui-test" "daemon" "stop" "--all"))
+    (lambda _ #f)))
 
-  tui_fails=0
-  tui_total=0
-  for scenario in "$ROOT_DIR"/test/e2e/[0-9]*.sh; do
-    [ -f "$scenario" ] || continue
-    echo "=== $(basename "$scenario")"
-    set +e
-    sh "$scenario"
-    rc=$?
-    set -e
-    tui_total=$((tui_total + 1))
-    if [ "$rc" -ne 0 ]; then
-      tui_fails=$((tui_fails + 1))
-    fi
-  done
+(define (find-tui-scenarios)
+  (let ((dir (string-append %root-dir "/test/e2e")))
+    (if (file-exists? dir)
+        (sort
+         (filter-map
+          (lambda (name)
+            (and (string-suffix? ".sh" name)
+                 (let ((c (string-ref name 0)))
+                   (char-numeric? c))
+                 (string-append "test/e2e/" name)))
+          (scandir dir (lambda (n) (not (member n '("." ".."))))))
+         string<?)
+        '())))
 
-  tui-test close --all >/dev/null 2>&1 || true
-  tui-test daemon stop --all >/dev/null 2>&1 || true
+(define (run-tui-stage)
+  (display "-----------------------------------------------------------------\n")
+  (display ">>> Stage 2: Interactive TUI Scenarios (tui-test)\n")
+  (display "-----------------------------------------------------------------\n")
+  (unless (search-path (parse-path (or (getenv "PATH") "")) "tui-test")
+    (format (current-error-port) "error: tui-test not on PATH; run inside ./scripts/devenv~%")
+    (exit 2))
 
-  echo ""
-  echo "TUI E2E: $((tui_total - tui_fails))/$tui_total scenarios passed"
-  if [ "$tui_fails" -ne 0 ]; then
-    TOTAL_FAILS=$((TOTAL_FAILS + tui_fails))
-  fi
-fi
+  (cleanup-tui-sessions)
 
-echo "================================================================="
-echo "                    E2E Test Run Complete                        "
-echo "================================================================="
-if [ "$TOTAL_FAILS" -eq 0 ]; then
-  echo "ALL E2E TESTS PASSED (0 failures)."
-  echo "End time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-  exit 0
-else
-  echo "FAILED: $TOTAL_FAILS failure(s) in E2E suite." >&2
-  echo "End time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-  exit 1
-fi
+  (let* ((scenarios (find-tui-scenarios))
+         (results
+          (map
+           (lambda (scenario)
+             (format #t "=== ~a~%" (basename scenario))
+             (let ((status (system* "sh" scenario)))
+               (zero? (status:exit-val status))))
+           scenarios))
+         (total (length scenarios))
+         (passes (count identity results))
+         (fails (- total passes)))
+    (cleanup-tui-sessions)
+    (format #t "~%TUI E2E: ~a/~a scenarios passed~%" passes total)
+    fails))
+
+(define (main args)
+  (chdir %root-dir)
+  (let* ((mode (match (cdr args)
+                 ((m . _) m)
+                 (() "--all")))
+         (run-integration? (member mode '("--all" "-a" "--integration" "-i")))
+         (run-tui? (member mode '("--all" "-a" "--tui" "-t"))))
+
+    (display "=================================================================\n")
+    (display "       badb Microkernel End-to-End (E2E) Test Suite              \n")
+    (display "=================================================================\n")
+    (format #t "Start time: ~a~%" (utc-timestamp))
+    (format #t "Root directory: ~a~%~%" %root-dir)
+
+    (let* ((int-fails (if run-integration? (run-integration-stage) 0))
+           (tui-fails (if run-tui? (run-tui-stage) 0))
+           (total-fails (+ int-fails tui-fails)))
+
+      (display "=================================================================\n")
+      (display "                    E2E Test Run Complete                        \n")
+      (display "=================================================================\n")
+      (if (zero? total-fails)
+          (begin
+            (display "ALL E2E TESTS PASSED (0 failures).\n")
+            (format #t "End time: ~a~%" (utc-timestamp))
+            (exit 0))
+          (begin
+            (format (current-error-port) "FAILED: ~a failure(s) in E2E suite.~%" total-fails)
+            (format (current-error-port) "End time: ~a~%" (utc-timestamp))
+            (exit 1))))))

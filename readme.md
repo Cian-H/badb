@@ -306,7 +306,7 @@ badb features a comprehensive testing pipeline covering kernel invariants, adver
 ./scripts/test
 
 # Run geasa contracts only in parallel
-./scripts/verify-geasa.sh
+./scripts/verify-geasa
 
 # Run end-to-end integration and TUI tests
 ./scripts/devenv -- ./scripts/test-e2e
@@ -341,7 +341,7 @@ badb/
 │   ├── devenv                    # Guix time-machine development shell wrapper
 │   ├── test                      # Bootstrap unit and kernel invariant test runner
 │   ├── test-e2e                  # Headless end-to-end and TUI test runner
-│   └── verify-geasa.sh           # Parallel geis contract verification script
+│   └── verify-geasa              # Parallel geis contract verification script
 ├── src/
 │   ├── srfi/srfi-253.scm         # SRFI-253 contract specification support
 │   ├── badb/                     # Microkernel core & CLI dispatch

@@ -1,4 +1,16 @@
-#!/bin/sh
-ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-export GUIX_LOCPATH="$HOME/.guix-profile/lib/locale"
-exec guix time-machine -C "$ROOT_DIR/channels.scm" -- shell -L "$ROOT_DIR/guix" -m "$ROOT_DIR/manifest.scm" "$@"
+#!/usr/bin/env -S guile -e main -s
+!#
+;;; devenv — Enter or execute commands within the badb Guix development environment.
+
+(define (main args)
+  (let* ((script-path (canonicalize-path (car (command-line))))
+         (root-dir (canonicalize-path (string-append (dirname script-path) "/..")))
+         (channels (string-append root-dir "/channels.scm"))
+         (manifest (string-append root-dir "/manifest.scm"))
+         (guix-dir (string-append root-dir "/guix"))
+         (locale (string-append (or (getenv "HOME") "") "/.guix-profile/lib/locale")))
+    (when (file-exists? locale)
+      (setenv "GUIX_LOCPATH" locale))
+    (apply execlp "guix" "guix" "time-machine" "-C" channels "--"
+           "shell" "-L" guix-dir "-m" manifest
+           (cdr args))))
