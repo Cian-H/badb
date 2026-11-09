@@ -24,6 +24,7 @@
             execute-skills-subcommand!
             execute-memories-subcommand!
             execute-geis-bootstrap!
+            execute-geis-onboard!
             execute-geis-distill!
             format-config-summary
             format-provider-presets
@@ -247,6 +248,18 @@
       (add-sys-msg! "Project Geasa bootstrapped successfully:\n• .badb/geasa/\n• .badb/workflows/verify.sema\n• .badb/memories/architecture.md\n• .badb/rules.scm"))
     (lambda (k . a)
       (add-err-msg! (format #f "Failed to bootstrap project geasa: ~a ~s" k a)))))
+
+(define* (execute-geis-onboard! reg add-sys-msg! add-err-msg!)
+  "Run project onboarding: detect toolchains and synthesize baseline project geasa."
+  (catch #t
+    (lambda ()
+      (let ((res (onboard-project-geasa! (getcwd) #:reg reg)))
+        (add-sys-msg!
+         (format #f "Project onboarding complete (~a):\n• Test runner synthesized: .badb/geasa/project-test-runner/\n• Discovered geasa index: .badb/geasa/index.json\n• Mounted into active registry: ~s"
+                 (assoc-ref res 'language)
+                 (assoc-ref res 'bundles)))))
+    (lambda (k . a)
+      (add-err-msg! (format #f "Failed to onboard project geasa: ~a ~s" k a)))))
 
 (define (execute-geis-distill! arg add-sys-msg! add-err-msg!)
   "Distill recent trajectory patterns into a Geis bundle."

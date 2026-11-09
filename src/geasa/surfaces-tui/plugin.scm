@@ -441,7 +441,10 @@ verbatim, and fails open to a verbatim truncation."
               `((role . "notice")
                 (content .
                          ,(string-append "badb microharness\n"
-                                         "• ! shell · ( scheme · / commands · /help for keys")))))
+                                         "• ! shell · ( scheme · / commands · /help for keys"
+                                         (if (file-exists? ".badb/geasa")
+                                             ""
+                                             "\n• Tip: run /geis onboard to detect project toolchain & synthesize geasa"))))))
     (set! llm-history (list (make-system-turn)))
     ;; Session log for /resume: the whole llm-history is rewritten to
     ;; this JSONL file after every chat turn (system prompt first).
@@ -1999,6 +2002,8 @@ any open menu first; submenu actions open the next menu in its place."
                     (add-sys-msg! (spec-tool-verify rest-arg))))
                 ((string=? sub "bootstrap")
                   (execute-geis-bootstrap! add-sys-msg! add-err-msg!))
+                ((string=? sub "onboard")
+                  (execute-geis-onboard! reg add-sys-msg! add-err-msg!))
                 ((string=? sub "distill")
                   (execute-geis-distill! rest-arg add-sys-msg! add-err-msg!))
                 ((string=? sub "synthesize")

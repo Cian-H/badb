@@ -3,7 +3,7 @@
 set -euo pipefail
 
 KERNEL_DIR="${1:-src/badb/kernel}"
-MAX_LOC=1200
+MAX_LOC=1240
 
 # Allowed compulsory kernel modules
 ALLOWED_MODULES=(

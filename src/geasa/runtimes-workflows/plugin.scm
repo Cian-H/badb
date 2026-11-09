@@ -17,6 +17,8 @@
   #:use-module (srfi srfi-1)
   #:export (execute-sema-workflow
             bootstrap-project-geasa!
+            profile-workspace-environment
+            onboard-project-geasa!
             distill-trajectory-to-geis
             find-sema-executable
             mount-bundle-workflows!
@@ -154,6 +156,129 @@ runs via the external sema CLI."
 - Geasa: Dynamic project plugins live in `.badb/geasa/`.
 "))
     #t))
+
+;;;
+;;; Project Onboarding & Workspace Profiling
+;;;
+
+(define* (profile-workspace-environment #:optional (workspace (getcwd)))
+  "Inspect WORKSPACE and return an alist describing detected language, test command, and lint command."
+  (let ((has? (lambda (f) (file-exists? (string-append workspace "/" f)))))
+    (cond
+     ((or (has? "guix.scm") (has? "channels.scm") (has? "manifest.scm"))
+      '((language . "guile")
+        (test-cmd . "./scripts/test")
+        (lint-cmd . "./scripts/verify-kernel-deps.scm")))
+     ((has? "Cargo.toml")
+      '((language . "rust")
+        (test-cmd . "cargo test")
+        (lint-cmd . "cargo clippy")))
+     ((has? "package.json")
+      '((language . "node")
+        (test-cmd . "npm test")
+        (lint-cmd . "npm run lint")))
+     ((or (has? "pyproject.toml") (has? "setup.py") (has? "requirements.txt"))
+      '((language . "python")
+        (test-cmd . "pytest")
+        (lint-cmd . "ruff check .")))
+     ((has? "Makefile")
+      '((language . "make")
+        (test-cmd . "make check")
+        (lint-cmd . "make lint")))
+     (else
+      '((language . "general")
+        (test-cmd . "./scripts/test")
+        (lint-cmd . #f))))))
+
+(define* (onboard-project-geasa! #:optional (workspace (getcwd)) #:key (reg #f))
+  "Detect workspace toolchain, bootstrap .badb infrastructure, synthesize a
+calibrated project-test-runner geis bundle, and mount into REG if provided.
+Returns a structured onboarding report alist."
+  (bootstrap-project-geasa! workspace)
+  (let* ((profile (profile-workspace-environment workspace))
+         (lang (assoc-ref profile 'language))
+         (test-cmd (assoc-ref profile 'test-cmd))
+         (geasa-dir (string-append workspace "/.badb/geasa"))
+         (runner-dir (string-append geasa-dir "/project-test-runner"))
+         (plugin-file (string-append runner-dir "/plugin.scm"))
+         (spec-file (string-append runner-dir "/spec.geis.scm"))
+         (manifest-file (string-append runner-dir "/manifest.scm"))
+         (index-file (string-append geasa-dir "/index.json")))
+
+    (mkdir-p runner-dir)
+
+    ;; 1. Generate project-test-runner/plugin.scm
+    (call-with-output-file plugin-file
+      (lambda (p)
+        (format p ";;; (project project-test-runner) — Calibrated Project Test Runner~%")
+        (format p ";;; Auto-synthesized during badb onboarding for language: ~a~%" lang)
+        (format p "(define-module (project project-test-runner)~%")
+        (format p "  #:use-module (geasa foundation-util plugin)~%")
+        (format p "  #:use-module (ice-9 format)~%")
+        (format p "  #:export (project-test-run))~%~%")
+        (format p "(define* (project-test-run #:optional (cmd ~s))~%" test-cmd)
+        (format p "  \"Run project tests with bounded output, preventing context bloat.\"~%")
+        (format p "  (call-with-values~%")
+        (format p "    (lambda () (execute-shell-command (or cmd ~s)))~%" test-cmd)
+        (format p "    (lambda (out exit-val err)~%")
+        (format p "      (let* ((passed? (zero? exit-val))~%")
+        (format p "             (lines (string-split (or out \"\") #\\newline))~%")
+        (format p "             (n (length lines))~%")
+        (format p "             (trimmed (if (> n 20) (take (reverse lines) 20) lines))~%")
+        (format p "             (summary (string-join (reverse trimmed) \"\\n\")))~%")
+        (format p "        (format #f \"Test Verdict: ~~a (exit ~~a)\\nSummary (last ~~a lines):\\n~~a\"~%")
+        (format p "                (if passed? \"PASS\" \"FAIL\") exit-val (min n 20) summary)))))~%")))
+
+    ;; 2. Generate project-test-runner/spec.geis.scm
+    (call-with-output-file spec-file
+      (lambda (p)
+        (format p ";;; spec.geis.scm — Contract verification for project-test-runner~%")
+        (format p "(define-module (geis project-test-runner spec)~%")
+        (format p "  #:use-module (badb spec)~%")
+        (format p "  #:use-module (project project-test-runner))~%~%")
+        (format p "(spec-begin \"project-test-runner\")~%")
+        (format p "(test-assert \"project-test-run procedure is callable\" (procedure? project-test-run))~%")
+        (format p "(spec-end)~%")
+        (format p "(spec-exit)~%")))
+
+    ;; 3. Compute pins & generate manifest.scm
+    (let* ((pins (compute-geis-sha256-pins runner-dir))
+           (manifest
+            `((bundle-version . 1)
+              (feature-id . "project-test-runner")
+              (version . "1.0.0")
+              (spec . "spec.geis.scm")
+              (category . "test")
+              (description . ,(format #f "Project test runner (~a) with structured failure output" lang))
+              (tools . ("project-test-run"))
+              (plugin . ((module . (project project-test-runner))
+                         (file . "plugin.scm")))
+              (sha256 . ,pins))))
+      (call-with-output-file manifest-file
+        (lambda (p) (write manifest p))))
+
+    ;; 4. Write .badb/geasa/index.json
+    (let ((index-data
+           `#(((fid . "project-test-runner")
+               (category . "test")
+               (description . ,(format #f "Project test runner (~a) with structured failure output" lang))
+               (tools . #("project-test-run"))))))
+      (call-with-output-file index-file
+        (lambda (p) (display (scm->json-string index-data #:pretty #t) p))))
+
+    ;; 5. Mount into registry if passed
+    (when reg
+      (catch #t
+        (lambda ()
+          (let ((loader-mod (false-if-exception (resolve-module '(geasa runtimes-geis-loader plugin)))))
+            (when loader-mod
+              ((module-ref loader-mod 'discover-and-mount-project-geasa!) reg #:workspace workspace))))
+        (lambda _ #f)))
+
+    `((status . "success")
+      (language . ,lang)
+      (test-cmd . ,test-cmd)
+      (bundles . ("project-test-runner")))))
 
 ;;;
 ;;; Trajectory Distillation to Geis Bundle

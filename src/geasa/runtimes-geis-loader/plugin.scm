@@ -16,7 +16,9 @@
   #:use-module (srfi srfi-1)
   #:export (discover-and-mount-project-geasa!
             mount-all-project-geasa!
-            synthesize-fallback-spec!))
+            synthesize-fallback-spec!
+            geis-catalog-index
+            geis-index-query))
 
 (define (synthesize-fallback-spec! bundle-dir fid plugin-file module-name)
   "Synthesize a minimal spec.geis.scm and manifest.scm for a raw plugin."
@@ -130,3 +132,125 @@ WORKSPACE/.badb/workflows, and EXTRA-SEARCH-PATHS into REG."
     (reverse mounted-bundles)))
 
 (define mount-all-project-geasa! discover-and-mount-project-geasa!)
+
+;;;
+;;; Progressive Geasa Index & Discovery Query
+;;;
+
+(define (extract-tool-name item)
+  "Extract string tool name from string, symbol, or (name . meta) pair."
+  (cond
+   ((string? item) item)
+   ((symbol? item) (symbol->string item))
+   ((pair? item) (extract-tool-name (car item)))
+   (else (object->string item))))
+
+(define* (geis-catalog-index #:key
+                             (workspace (getcwd))
+                             (extra-search-paths '()))
+  "Collect lightweight metadata records across all discovered geasa.
+Returns a list of alists: ((fid . \"...\") (category . \"...\") (description . \"...\") (tools . (\"...\")))."
+  (let* ((candidate-roots
+          (filter file-exists?
+                  (append (list (string-append workspace "/.badb/geasa")
+                                (string-append workspace "/.badb/workflows")
+                                (string-append workspace "/geis")
+                                "src/geasa")
+                          extra-search-paths)))
+         (seen (make-hash-table))
+         (results '()))
+    ;; 1. Core built-in spec gate entry
+    (let ((spec-gate-entry
+           `((fid . "spec-gate")
+             (category . "spec-gate")
+             (description . "Kernel-owned locked spec gate & Sema plugin synthesis workflow (spec.lock, spec.synthesize, spec.verify, spec.status)")
+             (tools . ("spec.lock" "spec.synthesize" "spec.verify" "spec.status")))))
+      (hash-set! seen "spec-gate" #t)
+      (set! results (cons spec-gate-entry results)))
+
+    ;; 2. Scan disk bundles
+    (for-each
+     (lambda (root)
+       (let ((subdirs (catch #t
+                        (lambda () (scandir-valid-entries root))
+                        (lambda _ '()))))
+         (for-each
+          (lambda (sub)
+            (let* ((bundle-dir (string-append root "/" sub))
+                   (manifest-file (string-append bundle-dir "/manifest.scm")))
+              (when (and (file-is-directory? bundle-dir)
+                         (file-exists? manifest-file)
+                         (not (hash-ref seen sub)))
+                (catch #t
+                  (lambda ()
+                    (let* ((manifest (read-geis-manifest manifest-file))
+                           (fid (or (manifest-field manifest 'feature-id) sub))
+                           (desc (or (manifest-field manifest 'description)
+                                     (let ((meta (manifest-field manifest 'meta)))
+                                       (and (pair? meta) (assoc-ref meta 'description)))
+                                     (format #f "Capability bundle ~a" fid)))
+                           (cat (or (manifest-field manifest 'category)
+                                    (cond
+                                     ((string-prefix? "project." fid) "project")
+                                     ((string-prefix? "capabilities-" fid) "capability")
+                                     ((string-prefix? "runtimes-" fid) "runtime")
+                                     (else "general"))))
+                           (raw-tools (or (manifest-field manifest 'tools)
+                                          (list fid)))
+                           (clean-tools (map extract-tool-name (ensure-list raw-tools))))
+                      (hash-set! seen sub #t)
+                      (set! results (cons `((fid . ,fid)
+                                            (category . ,cat)
+                                            (description . ,desc)
+                                            (tools . ,clean-tools))
+                                          results))))
+                  (lambda _ #f)))))
+          subdirs)))
+     candidate-roots)
+    (reverse results)))
+
+(define* (geis-index-query #:key
+                           (workspace (getcwd))
+                           (category #f)
+                           (query #f)
+                           (extra-search-paths '()))
+  "Query the geis catalog index and format a compact markdown summary
+suitable for model progressive discovery without context bloat."
+  (let* ((all (geis-catalog-index #:workspace workspace #:extra-search-paths extra-search-paths))
+         (cat-str (and (string? category) (not (string-null? (string-trim-both category)))
+                       (string-downcase (string-trim-both category))))
+         (q-str (and (string? query) (not (string-null? (string-trim-both query)))
+                     (string-downcase (string-trim-both query))))
+         (matches
+          (filter
+           (lambda (entry)
+             (let* ((fid (string-downcase (or (assoc-ref entry 'fid) "")))
+                    (cat (string-downcase (or (assoc-ref entry 'category) "")))
+                    (desc (string-downcase (or (assoc-ref entry 'description) "")))
+                    (tools (map (lambda (t) (string-downcase (extract-tool-name t)))
+                                (or (assoc-ref entry 'tools) '())))
+                    (cat-match? (if cat-str (string-contains cat cat-str) #t))
+                    (q-match?
+                     (if q-str
+                         (or (string-contains fid q-str)
+                             (string-contains desc q-str)
+                             (any (lambda (t) (string-contains t q-str)) tools))
+                         #t)))
+               (and cat-match? q-match?)))
+           all)))
+    (if (null? matches)
+        (format #f "No geasa found matching category=~s query=~s. Use geis.index without filters to list all."
+                category query)
+        (let ((lines
+               (map (lambda (entry)
+                      (let* ((fid (assoc-ref entry 'fid))
+                             (cat (assoc-ref entry 'category))
+                             (desc (assoc-ref entry 'description))
+                             (tools (assoc-ref entry 'tools))
+                             (tools-str (if (null? tools) fid (string-join tools ", "))))
+                        (format #f "- **~a** [~a] (tools: `~a`): ~a"
+                                fid cat tools-str desc)))
+                    matches)))
+          (format #f "### Available Geasa Index (~a total)\n~a\n\nTo activate a capability and hydrate its parameter schema into your toolset, call `geis.activate(fid)`."
+                  (length matches)
+                  (string-join lines "\n"))))))

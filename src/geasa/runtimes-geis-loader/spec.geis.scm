@@ -83,5 +83,21 @@
         (test-assert "shout tool registered" (procedure? fn))
         (test-equal "shout works" "hello!" (fn "hello"))))))
 
+(test-group "geis-catalog-index-and-query"
+  (let* ((index (geis-catalog-index))
+         (query-all (geis-index-query))
+         (query-spec (geis-index-query #:category "spec-gate"))
+         (query-none (geis-index-query #:query "non-existent-xyz-feature-12345")))
+    (test-assert "catalog index is non-empty list" (and (list? index) (pair? index)))
+    (test-assert "spec-gate is present in index"
+      (any (lambda (entry) (string=? (assoc-ref entry 'fid) "spec-gate")) index))
+    (test-assert "query-all contains header and spec-gate"
+      (and (string-contains query-all "Available Geasa Index")
+           (string-contains query-all "spec-gate")))
+    (test-assert "query-spec matches spec-gate"
+      (string-contains query-spec "spec-gate"))
+    (test-assert "query-none reports no matching geasa"
+      (string-contains query-none "No geasa found"))))
+
 (spec-end)
 (spec-exit)

@@ -30,6 +30,7 @@
             react-run
             make-react-session
             react-session?
+            current-react-session
             react-session-messages
             react-session-status
             react-session-iteration
@@ -69,6 +70,9 @@
             steering-count
             collect-available-tools
             partition-tools-for-step
+            tool-spec-name
+            tool-spec-description
+            tool-spec-entry-alist
             %default-core-tools
             registry-feature->tool-spec
             mcp-tool->tool-spec
@@ -86,6 +90,8 @@
             loop-detector-window
             loop-detector-warn-after
             loop-detector-halt-after
+            loop-detector-exploratory-turns
+            set-loop-detector-exploratory-turns!
             tool-call-signature
             loop-detector-observe!
             detect-step-loops!
@@ -148,6 +154,23 @@ If 'properties' is missing from an object schema, inject an empty properties ali
             with-type
             (cons '(properties . ()) with-type))))
 
+(define (tool-spec-entry-alist t)
+  "Extract the inner tool entry alist, whether wrapped in function or flat."
+  (let ((fn (or (assoc-ref t 'function) (assoc-ref t "function"))))
+    (if (pair? fn) fn t)))
+
+(define (tool-spec-name t)
+  "Extract the tool name from either a function wrapper or flat alist."
+  (let* ((entry (tool-spec-entry-alist t))
+         (name (or (prop-ref entry 'name) (prop-ref t 'name) "")))
+    (if (symbol? name) (symbol->string name) name)))
+
+(define (tool-spec-description t)
+  "Extract the tool description from either a function wrapper or flat alist."
+  (let* ((entry (tool-spec-entry-alist t))
+         (desc (or (prop-ref entry 'description) (prop-ref t 'description) "")))
+    (if (string? desc) desc (format #f "~a" desc))))
+
 (define (registry-feature->tool-spec feature)
         "Convert a kernel registry feature entry into an OpenAI-compatible tool spec."
         (let*
@@ -162,14 +185,22 @@ If 'properties' is missing from an object schema, inject an empty properties ali
                (sanitize-tool-parameters
                  (or (assoc-ref meta 'parameters)
                      (assoc-ref meta "parameters")
-                     %empty-tool-parameters))))
+                     %empty-tool-parameters)))
+             (defer? (or (assoc-ref meta '_badb_defer)
+                         (assoc-ref meta "_badb_defer")
+                         #f))
+             (category (or (assoc-ref meta 'category)
+                           (assoc-ref meta "category")
+                           #f)))
           `((type . "function")
             (function .
                       ((name . ,(normalize-tool-name id-str))
                        (description . ,desc)
                        (parameters . ,params)
                        (_badb_source . "registry")
-                       (_badb_original_id . ,id-str))))))
+                       (_badb_original_id . ,id-str)
+                       ,@(if (not (eq? defer? #f)) `((_badb_defer . ,defer?)) '())
+                       ,@(if category `((category . ,category)) '()))))))
 
 (define (mcp-tool->tool-spec tool)
         "Convert an MCP discovered tool entry into an OpenAI-compatible tool spec."
@@ -438,7 +469,7 @@ ENTRY is either a steering instruction string or the symbol 'interrupt."
         (length (steering-queue-entries queue)))
 
 ;;;
-;;; Loop Detector (opt-in)
+;;; Loop Detector & Thrash Circuit Breaker (opt-in)
 ;;;
 ;;; Amnesia-induced tool loops — a model re-issuing the identical tool
 ;;; call dozens of times after context eviction dropped its own earlier
@@ -448,21 +479,36 @@ ENTRY is either a steering instruction string or the symbol 'interrupt."
 ;;; tool-call signatures; a repeated signature crosses the warn
 ;;; threshold once (injecting a corrective user message into the
 ;;; session) and the halt threshold afterwards (stopping the run).
+;;; Additionally, the detector counts consecutive exploratory turns
+;;; (searching without writing code or running tests) and triggers an
+;;; ephemeral circuit breaker prompt on the 3rd turn.
+(define current-react-session (make-parameter #f))
+
+(define %mutation-tool-names
+  '("write_file" "edit_file" "replace_symbol_body" "run_tests"
+    "checkpoint_create" "checkpoint_rollback" "spec.synthesize" "spec_synthesize"
+    "spec.lock" "spec_lock"))
+
+(define (mutation-tool-call? tc)
+  (let ((name (or (assoc-ref tc 'name) (assoc-ref tc "name") "")))
+    (and (member name %mutation-tool-names) #t)))
+
 (define-record-type <loop-detector>
-  (%make-loop-detector window warn-after halt-after history warned)
+  (%make-loop-detector window warn-after halt-after history warned exploratory-turns)
   loop-detector?
   (window loop-detector-window)
   (warn-after loop-detector-warn-after)
   (halt-after loop-detector-halt-after)
   (history loop-detector-history set-loop-detector-history!)
-  (warned loop-detector-warned set-loop-detector-warned!))
+  (warned loop-detector-warned set-loop-detector-warned!)
+  (exploratory-turns loop-detector-exploratory-turns set-loop-detector-exploratory-turns!))
 
 (define*
   (make-loop-detector #:key (window 12) (warn-after 3) (halt-after 5))
   "Create a loop detector watching the last WINDOW executed tool calls,
 warning on the first signature repeated WARN-AFTER times and halting on
 HALT-AFTER repeats."
-  (%make-loop-detector window warn-after halt-after '() '()))
+  (%make-loop-detector window warn-after halt-after '() '() 0))
 
 (define (tool-call-signature tc)
   "Return a canonical identity string for TOOL-CALL: name plus a
@@ -595,7 +641,9 @@ return content-str unchanged (fail-open). If OFFLOAD-HOOK is given, invoke
 (define %default-core-tools
   '("read_file" "write_file" "edit_file" "symbols_overview" "find_symbol" "replace_symbol_body"
     "bash" "ctx_exec" "ctx_search" "run_tests" "checkpoint_create" "checkpoint_rollback"
-    "investigate" "scheme_eval" "skill_load" "memory_read" "tool_search"))
+    "investigate" "scheme_eval" "skill_load" "memory_read"
+    "geis_index" "geis.index" "geis_activate" "geis.activate" "geis_deactivate" "geis.deactivate"
+    "tool_search"))
 
 (define* (partition-tools-for-step all-tools
                                    #:optional
@@ -612,7 +660,7 @@ tool is added to hydrated tools."
         (if (null? rest)
             (if (null? deferred)
                 (values (reverse hydrated) '())
-                (let* ((names (map (lambda (t) (prop-ref t 'name)) (reverse deferred)))
+                (let* ((names (map tool-spec-name (reverse deferred)))
                        (count (length names))
                        (desc (if (> count 15)
                                  (format #f "Deferred tools available via tool_search(query): ~a"
@@ -620,8 +668,8 @@ tool is added to hydrated tools."
                                  (format #f "Deferred tools available via tool_search(query):\n~a"
                                          (string-join
                                           (map (lambda (t)
-                                                 (let* ((n (prop-ref t 'name))
-                                                        (d (or (prop-ref t 'description) ""))
+                                                 (let* ((n (tool-spec-name t))
+                                                        (d (tool-spec-description t))
                                                         (d-short (if (> (string-length d) 60)
                                                                      (string-append (substring d 0 60) "...")
                                                                      d)))
@@ -639,17 +687,29 @@ tool is added to hydrated tools."
                   (values (append (reverse hydrated) (list tool-search-tool))
                           (reverse deferred))))
             (let* ((t (car rest))
-                   (name (prop-ref t 'name))
-                   (defer-pair (or (assoc '_badb_defer t)
+                   (entry (tool-spec-entry-alist t))
+                   (name (tool-spec-name t))
+                   (defer-pair (or (assoc '_badb_defer entry)
+                                   (assoc "_badb_defer" entry)
+                                   (assoc '_badb_defer t)
                                    (assoc "_badb_defer" t)))
-                   (is-core? (and (member name core-names) #t))
-                   (is-active? (and (member name active-names) #t))
+                   (norm-core (map normalize-tool-name core-names))
+                   (norm-active (map normalize-tool-name active-names))
+                   (norm-name (normalize-tool-name name))
+                   (is-core? (and (or (member name core-names)
+                                      (member norm-name norm-core))
+                                  #t))
+                   (is-active? (and (or (member name active-names)
+                                        (member norm-name norm-active))
+                                    #t))
                    (explicit-defer? (and defer-pair (eq? (cdr defer-pair) #t)))
                    (explicit-nodefer? (and defer-pair (eq? (cdr defer-pair) #f))))
               (cond
                (explicit-nodefer?
                 (loop (cdr rest) (cons t hydrated) deferred))
-               ((or explicit-defer? (not (or is-core? is-active?)))
+               (is-active?
+                (loop (cdr rest) (cons t hydrated) deferred))
+               ((or explicit-defer? (not is-core?))
                 (loop (cdr rest) hydrated (cons t deferred)))
                (else
                 (loop (cdr rest) (cons t hydrated) deferred))))))))
@@ -660,24 +720,39 @@ no-op without one). Returns 'halt once the halt threshold trips, 'warn
 when a corrective user message was injected this step, else #f."
   (let ((det (react-session-loop-detector session)))
     (if (loop-detector? det)
-      (let loop ((rest tool-calls) (outcome #f))
-        (if (null? rest)
-          outcome
-          (let ((verdict (loop-detector-observe! det (tool-call-signature (car rest)))))
-            (cond
-              ((eq? (car verdict) 'halt) 'halt)
-              ((eq? (car verdict) 'warn)
-               (set-react-session-messages!
-                 session
-                 (append
-                   (react-session-messages session)
-                   (list `((role . "user")
-                           (content . ,(loop-detector-warn-text
-                                         (tool-call-signature (car rest))
-                                         (cdr verdict)
-                                         (loop-detector-window det)))))))
-               (loop (cdr rest) 'warn))
-              (else (loop (cdr rest) outcome))))))
+      (begin
+        ;; Track exploratory turn thrashing without workspace mutations
+        (let ((has-mutation? (any mutation-tool-call? tool-calls)))
+          (if has-mutation?
+              (set-loop-detector-exploratory-turns! det 0)
+              (let ((count (+ (or (loop-detector-exploratory-turns det) 0) 1)))
+                (set-loop-detector-exploratory-turns! det count)
+                (when (= count 3)
+                  (set-react-session-messages!
+                   session
+                   (append
+                    (react-session-messages session)
+                    (list `((role . "user")
+                            (content . "[Tripwire] 3 consecutive exploratory search turns detected without code modifications. Halt ad-hoc bashing: either make a targeted edit, check 'geis.index' for project capabilities, or author a geis bundle if this operation will recur.")))))))))
+        ;; Track identical tool call repetitions
+        (let loop ((rest tool-calls) (outcome #f))
+          (if (null? rest)
+            outcome
+            (let ((verdict (loop-detector-observe! det (tool-call-signature (car rest)))))
+              (cond
+                ((eq? (car verdict) 'halt) 'halt)
+                ((eq? (car verdict) 'warn)
+                 (set-react-session-messages!
+                   session
+                   (append
+                     (react-session-messages session)
+                     (list `((role . "user")
+                             (content . ,(loop-detector-warn-text
+                                           (tool-call-signature (car rest))
+                                           (cdr verdict)
+                                           (loop-detector-window det)))))))
+                 (loop (cdr rest) 'warn))
+                (else (loop (cdr rest) outcome)))))))
       #f)))
 
 (define (make-react-session . args)
@@ -883,11 +958,13 @@ applied AFTER log-tool-execution!."
                        (matches
                         (filter
                          (lambda (t)
-                           (or (string=? q-str "all")
-                               (string-contains (string-downcase (or (prop-ref t 'name) "")) q-str)
-                               (string-contains (string-downcase (or (prop-ref t 'description) "")) q-str)))
+                           (let ((n (tool-spec-name t))
+                                 (d (tool-spec-description t)))
+                             (or (string=? q-str "all")
+                                 (string-contains (string-downcase n) q-str)
+                                 (string-contains (string-downcase d) q-str))))
                          deferred-tools))
-                       (matched-names (map (lambda (t) (prop-ref t 'name)) matches)))
+                       (matched-names (map tool-spec-name matches)))
                   (when session
                     (let ((cur (react-session-active-tools session)))
                       (set-react-session-active-tools!
@@ -900,10 +977,11 @@ applied AFTER log-tool-execution!."
                                (length matches)
                                (string-join
                                 (map (lambda (t)
-                                       (format #f "### ~a\n~a\nParameters: ~s"
-                                               (prop-ref t 'name)
-                                               (or (prop-ref t 'description) "")
-                                               (or (assoc-ref t 'parameters) (assoc-ref t "parameters") '())))
+                                       (let ((entry (tool-spec-entry-alist t)))
+                                         (format #f "### ~a\n~a\nParameters: ~s"
+                                                 (tool-spec-name t)
+                                                 (tool-spec-description t)
+                                                 (or (assoc-ref entry 'parameters) (assoc-ref entry "parameters") '()))))
                                      matches)
                                 "\n\n")))
                    #f))
@@ -930,15 +1008,16 @@ applied AFTER log-tool-execution!."
     tool-calls))
 
 (define (react-step! session)
-        "Execute a single turn of the ReAct cycle.
+  "Execute a single turn of the ReAct cycle.
 Returns:
   (values 'completed content-string)
   (values 'continue list-of-tool-results)
   (values 'loop-detected description-string)
   (values 'max-iterations-reached #f)
   (values 'error error-message)"
-        (let*
-            ((iter (react-session-iteration session))
+  (parameterize ((current-react-session session))
+    (let*
+        ((iter (react-session-iteration session))
              (max-iter (react-session-max-iterations session))
              (client (react-session-client session))
              (reg (react-session-reg session))
@@ -1042,7 +1121,7 @@ Returns:
                   (let
                       ((err-msg (format #f "ReAct loop error (~a): ~s" key args)))
                     (set-react-session-status! session 'error)
-                    (values 'error err-msg))))))))
+                    (values 'error err-msg)))))))))
 
 (define (latest-assistant-content session)
         "Return the content of the most recent assistant message in SESSION, or #f."
@@ -1091,7 +1170,8 @@ injected as user messages, and a queued 'interrupt halts the loop with verdict
         (values 'interrupted content session))
       (receive (status payload) (react-step! session)
         (case status
-            ((completed)
+          ((completed)
+           (set-react-session-active-tools! session '())
            (when (procedure? on-finish)
              (on-finish 'completed payload))
            (values 'completed payload session))

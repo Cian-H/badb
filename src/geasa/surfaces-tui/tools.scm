@@ -18,6 +18,7 @@
   #:use-module (geasa agents-subagent plugin)
   #:use-module (geasa capabilities-scheme-eval plugin)
   #:use-module (geasa runtimes-geis-loader plugin)
+  #:use-module (geasa runtimes-react plugin)
   #:use-module (geasa runtimes-workflows plugin)
   #:use-module (geasa foundation-config plugin)
   #:use-module (geasa foundation-util plugin)
@@ -181,6 +182,8 @@ FEATURE-ID into the kernel-owned locked spec store."
                       (spec-tool-lock spec-path feature-id))
                     '((description .
                        "Lock the authored spec at spec-path for feature-id into the kernel-owned locked spec store; returns the locked copy path and its SHA-256 spec-hash. Locking is how a contract becomes binding: the kernel re-reads the LOCKED copy at commit time, never the agent's working copy.")
+                      (_badb_defer . #t)
+                      (category . "spec-gate")
                       (parameters .
                        ((type . "object")
                         (properties .
@@ -195,6 +198,8 @@ FEATURE-ID into the kernel-owned locked spec store."
                       (spec-tool-verify feature-id))
                     '((description .
                        "Ask the kernel to replay the LOCKED spec copy for feature-id in a disposable subprocess; returns the verdict, spec-hash, summary counts, and failure diagnostics. Verdicts come only from kernel subprocess replay of the locked copy, never from agent self-report; the gate fails closed.")
+                      (_badb_defer . #t)
+                      (category . "spec-gate")
                       (parameters .
                        ((type . "object")
                         (properties .
@@ -208,6 +213,8 @@ FEATURE-ID into the kernel-owned locked spec store."
                       (apply spec-tool-status args))
                     '((description .
                        "List the locked specs in the kernel locked-spec store with recomputed SHA-256 hashes; with optional feature-id, report whether that feature has a locked spec. The kernel re-reads the LOCKED copies at commit time.")
+                      (_badb_defer . #t)
+                      (category . "spec-gate")
                       (parameters .
                        ((type . "object")
                         (properties .
@@ -278,6 +285,8 @@ FEATURE-ID into the kernel-owned locked spec store."
                           (format #f "Error during synthesis (~a): ~s" k a))))
                     '((description .
                        "Run the Sema plugin synthesis workflow for feature-id against its locked contract specification; iteratively synthesizes the Guile module from counterexamples and triggers kernel commit + hot-attach.")
+                      (_badb_defer . #t)
+                      (category . "spec-gate")
                       (parameters .
                        ((type . "object")
                         (properties .
@@ -421,9 +430,12 @@ Follow the contract-gated dynamic synthesis workflow:
   (registry-attach! reg
                     "checkpoint_create"
                     (lambda (description)
-                      (let ((c (create-checkpoint! rollback-mgr (or description "agent-checkpoint"))))
+                      (let* ((c (create-checkpoint! rollback-mgr (or description "agent-checkpoint")))
+                             (sess (current-react-session)))
+                        (when sess
+                          (set-react-session-active-tools! sess '()))
                         (format #f
-                                "Created checkpoint: ~a (~a) covering ~a workspace file(s) and the registry. Files outside the workspace directory are NOT captured."
+                                "Created checkpoint: ~a (~a) covering ~a workspace file(s) and the registry. Active tools reset to baseline."
                                 (checkpoint-id c)
                                 (checkpoint-description c)
                                 (length (checkpoint-files c)))))
@@ -526,6 +538,73 @@ Follow the contract-gated dynamic synthesis workflow:
                         (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args)))
                     '((description . "Call a tool on an MCP server")
                       (_badb_defer . #t)))
+
+  ;; Progressive geis discovery & just-in-time hydration tools
+  (registry-attach! reg
+                    "geis.index"
+                    (lambda* (#:optional category query)
+                      (geis-index-query #:category category #:query query))
+                    '((description .
+                       "Query the geis capability index for available domain tools, test runners, or workflows. Returns a concise summary table without hydrating schemas into context. To use a discovered tool, activate it with geis.activate(feature_id).")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((category . ((type . "string") (description . "Optional category filter (e.g. 'test', 'lint', 'spec-gate', 'project')")))
+                          (query . ((type . "string") (description . "Optional search keyword for feature-id or description")))))
+                        (required . #())))))
+
+  (registry-attach! reg
+                    "geis.activate"
+                    (lambda (feature-id)
+                      (let* ((fid (ensure-string feature-id))
+                             (sess (current-react-session))
+                             (all-index (geis-catalog-index))
+                             (matched (find (lambda (e)
+                                              (let ((efid (assoc-ref e 'fid))
+                                                    (tools (assoc-ref e 'tools)))
+                                                (or (string=? efid fid)
+                                                    (member fid (ensure-list tools)))))
+                                            all-index))
+                             (tools-to-add (if matched
+                                               (cons fid (or (assoc-ref matched 'tools) '()))
+                                               (list fid))))
+                        (if sess
+                            (let ((cur (react-session-active-tools sess)))
+                              (set-react-session-active-tools! sess (delete-duplicates (append cur tools-to-add)))
+                              (format #f "Activated capability '~a' (~a tool(s) hydrated into active toolset: ~a). The tool parameter schemas are now available for subsequent turns."
+                                      fid (length tools-to-add) (string-join tools-to-add ", ")))
+                            (format #f "Capability '~a' marked active (~a)." fid (string-join tools-to-add ", ")))))
+                    '((description .
+                       "Activate a geis capability by feature-id (from geis.index), hydrating its full tool parameter schema into your active toolset for the current task.")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((feature-id . ((type . "string") (description . "Feature ID or tool name to activate")))))
+                        (required . #("feature-id"))))))
+
+  (registry-attach! reg
+                    "geis.deactivate"
+                    (lambda (feature-id)
+                      (let* ((fid (ensure-string feature-id))
+                             (sess (current-react-session))
+                             (all-index (geis-catalog-index))
+                             (matched (find (lambda (e) (string=? (assoc-ref e 'fid) fid)) all-index))
+                             (tools-to-remove (if matched
+                                                  (cons fid (or (assoc-ref matched 'tools) '()))
+                                                  (list fid))))
+                        (if sess
+                            (let* ((cur (react-session-active-tools sess))
+                                   (remaining (filter (lambda (t) (not (member t tools-to-remove))) cur)))
+                              (set-react-session-active-tools! sess remaining)
+                              (format #f "Deactivated capability '~a'. Tools demoted back to deferred status." fid))
+                            (format #f "Capability '~a' deactivated." fid))))
+                    '((description .
+                       "Deactivate a geis capability, demoting its schema back to deferred status to save context.")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((feature-id . ((type . "string") (description . "Feature ID or tool name to deactivate")))))
+                        (required . #("feature-id"))))))
 
   ;; Project geasa and workflows auto-mount
   (catch #t

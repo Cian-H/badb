@@ -69,5 +69,23 @@
     (let ((errors (geis-manifest-valid? bundle-dir)))
       (test-assert "distilled bundle manifest is valid" (null? errors)))))
 
+(test-group "workflows-onboard"
+  (let* ((tmp-dir (mkdtemp "/tmp/badb-onboard-test-XXXXXX"))
+         (_ (call-with-output-file (string-append tmp-dir "/Cargo.toml")
+              (lambda (p) (display "[package]\nname = \"demo\"\n" p))))
+         (profile (profile-workspace-environment tmp-dir))
+         (report (onboard-project-geasa! tmp-dir)))
+    (test-equal "profile detects rust" "rust" (assoc-ref profile 'language))
+    (test-equal "profile assigns cargo test" "cargo test" (assoc-ref profile 'test-cmd))
+    (test-equal "onboard status is success" "success" (assoc-ref report 'status))
+    (test-assert "project-test-runner bundle created"
+      (file-exists? (string-append tmp-dir "/.badb/geasa/project-test-runner/plugin.scm")))
+    (test-assert "project-test-runner spec created"
+      (file-exists? (string-append tmp-dir "/.badb/geasa/project-test-runner/spec.geis.scm")))
+    (test-assert "project-test-runner manifest created"
+      (file-exists? (string-append tmp-dir "/.badb/geasa/project-test-runner/manifest.scm")))
+    (test-assert "index.json created"
+      (file-exists? (string-append tmp-dir "/.badb/geasa/index.json")))))
+
 (spec-end)
 (spec-exit)
