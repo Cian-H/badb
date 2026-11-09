@@ -1,46 +1,124 @@
-#!/bin/sh
-# Runs the tui-test based e2e suite for the badb TUI.
+#!/usr/bin/env bash
+# scripts/test-e2e — Unified End-to-End Test Suite Runner (Integration + TUI)
 #
-# Must run inside the project's guix dev environment (tui-test and
-# guile-ncurses only exist there):
+# Must run inside the project's guix dev environment:
+#   ./scripts/devenv -- ./scripts/test-e2e [options]
 #
-#   ./scripts/devenv -- ./scripts/test-e2e
-#
-# All scenarios are hermetic; the chat round-trip runs against the
-# static fake endpoint in test/e2e/fake-endpoint.scm by default. To
-# exercise a real model server instead:
-#
-#   E2E_CHAT_ENDPOINT=http://127.0.0.1:1234/v1 \
-#   E2E_CHAT_MODEL=qwen/qwen3.6-35b-a3b \
-#   ./scripts/devenv -- ./scripts/test-e2e
-ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# Options:
+#   --all           Run integration suites and TUI scenarios (default)
+#   --integration   Run only non-TUI integration suites
+#   --tui           Run only terminal TUI scenarios
+set -euo pipefail
 
-if ! command -v tui-test >/dev/null 2>&1; then
-  echo "error: tui-test not on PATH; run inside ./scripts/devenv" >&2
-  exit 2
+ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$ROOT_DIR"
+
+MODE="${1:---all}"
+case "$MODE" in
+  --integration|-i)
+    RUN_INTEGRATION=1
+    RUN_TUI=0
+    ;;
+  --tui|-t)
+    RUN_INTEGRATION=0
+    RUN_TUI=1
+    ;;
+  --all|-a|*)
+    RUN_INTEGRATION=1
+    RUN_TUI=1
+    ;;
+esac
+
+echo "================================================================="
+echo "       badb Microkernel End-to-End (E2E) Test Suite              "
+echo "================================================================="
+echo "Start time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+echo "Root directory: $ROOT_DIR"
+echo ""
+
+TOTAL_FAILS=0
+
+# -----------------------------------------------------------------------------
+# Part 1: Integration E2E Suites
+# -----------------------------------------------------------------------------
+if [ "$RUN_INTEGRATION" -eq 1 ]; then
+  echo "-----------------------------------------------------------------"
+  echo ">>> Stage 1: Integration & Subsystem E2E Suites"
+  echo "-----------------------------------------------------------------"
+
+  run_sub_suite() {
+    local name="$1"
+    local cmd="$2"
+    echo ">> Running: $name"
+    set +e
+    eval "$cmd"
+    local rc=$?
+    set -e
+    if [ "$rc" -ne 0 ]; then
+      echo ">> FAILED: $name (exit code $rc)" >&2
+      TOTAL_FAILS=$((TOTAL_FAILS + 1))
+    else
+      echo ">> PASSED: $name"
+    fi
+    echo ""
+  }
+
+  run_sub_suite "CLI Entrypoints" "./test/e2e/test-cli-entrypoints.sh"
+  run_sub_suite "Geis Contract Locking & Verification" "guile -L src -L . ./test/e2e/test-geis-contract.scm"
+  run_sub_suite "Transaction Rollback & Provenance" "guile -L src -L . ./test/e2e/test-transaction-rollback.scm"
 fi
 
-# Clear any stale sessions and daemons so scenarios start from a clean
-# slate (session daemons inherit the environment of the first client
-# that spawned them).
-tui-test close --all >/dev/null 2>&1
-tui-test daemon stop --all >/dev/null 2>&1
+# -----------------------------------------------------------------------------
+# Part 2: Terminal TUI Scenarios
+# -----------------------------------------------------------------------------
+if [ "$RUN_TUI" -eq 1 ]; then
+  echo "-----------------------------------------------------------------"
+  echo ">>> Stage 2: Interactive TUI Scenarios (tui-test)"
+  echo "-----------------------------------------------------------------"
 
-fails=0
-total=0
-for scenario in "$ROOT_DIR"/test/e2e/[0-9]*.sh; do
-  echo "=== $(basename "$scenario")"
-  sh "$scenario"
-  rc=$?
-  total=$((total + 1))
-  if [ "$rc" -ne 0 ]; then
-    fails=$((fails + 1))
+  if ! command -v tui-test >/dev/null 2>&1; then
+    echo "error: tui-test not on PATH; run inside ./scripts/devenv" >&2
+    exit 2
   fi
-done
 
-tui-test close --all >/dev/null 2>&1
-tui-test daemon stop --all >/dev/null 2>&1
+  # Clear stale sessions
+  tui-test close --all >/dev/null 2>&1 || true
+  tui-test daemon stop --all >/dev/null 2>&1 || true
 
-echo ""
-echo "e2e: $((total - fails))/$total scenarios passed"
-[ "$fails" -eq 0 ]
+  tui_fails=0
+  tui_total=0
+  for scenario in "$ROOT_DIR"/test/e2e/[0-9]*.sh; do
+    [ -f "$scenario" ] || continue
+    echo "=== $(basename "$scenario")"
+    set +e
+    sh "$scenario"
+    rc=$?
+    set -e
+    tui_total=$((tui_total + 1))
+    if [ "$rc" -ne 0 ]; then
+      tui_fails=$((tui_fails + 1))
+    fi
+  done
+
+  tui-test close --all >/dev/null 2>&1 || true
+  tui-test daemon stop --all >/dev/null 2>&1 || true
+
+  echo ""
+  echo "TUI E2E: $((tui_total - tui_fails))/$tui_total scenarios passed"
+  if [ "$tui_fails" -ne 0 ]; then
+    TOTAL_FAILS=$((TOTAL_FAILS + tui_fails))
+  fi
+fi
+
+echo "================================================================="
+echo "                    E2E Test Run Complete                        "
+echo "================================================================="
+if [ "$TOTAL_FAILS" -eq 0 ]; then
+  echo "ALL E2E TESTS PASSED (0 failures)."
+  echo "End time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  exit 0
+else
+  echo "FAILED: $TOTAL_FAILS failure(s) in E2E suite." >&2
+  echo "End time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  exit 1
+fi

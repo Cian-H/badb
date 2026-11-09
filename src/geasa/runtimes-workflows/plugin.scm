@@ -168,7 +168,7 @@ runs via the external sema CLI."
      ((or (has? "guix.scm") (has? "channels.scm") (has? "manifest.scm"))
       '((language . "guile")
         (test-cmd . "./scripts/test")
-        (lint-cmd . "./scripts/verify-kernel-deps.scm")))
+        (lint-cmd . "./scripts/test")))
      ((has? "Cargo.toml")
       '((language . "rust")
         (test-cmd . "cargo test")

@@ -114,25 +114,21 @@ Bundles are searched under `src/geasa/` by default; override with
 
 ## Testing
 
-Unit tests run anywhere guile is available:
+Unit tests and contract replays run via:
 
 ```sh
-./scripts/test                 # bootstrap suite + all geasa contracts via the gate
+./scripts/test                 # bootstrap suite, kernel invariants + all geasa contracts
 ./scripts/verify-geasa.sh      # geasa contracts only, in parallel
 ```
 
-Kernel invariants are guarded separately:
+Kernel invariants (whitelist, epistemic purity, zero macros, zero user-space imports, public ABI surface, mutation bounds, density, and McCabe complexity) are formally verified inside Stage 1 via `test/test-kernel-design.scm`.
+
+The end-to-end suite exercises CLI entrypoints, contract locking, transaction rollback, and interactive TUI scenarios via the [tui-test] headless terminal tool:
 
 ```sh
-./scripts/verify-kernel-size.sh    # kernel LOC budget
-./scripts/verify-kernel-deps.scm   # zero user-space deps in src/badb/kernel/
-```
-
-The TUI has an end-to-end suite that drives the real interface through
-the [tui-test] headless terminal tool (packaged in `guix/badb/packages/`):
-
-```sh
-./scripts/devenv -- ./scripts/test-e2e
+./scripts/devenv -- ./scripts/test-e2e                 # all integration & TUI scenarios
+./scripts/devenv -- ./scripts/test-e2e --integration   # non-TUI integration suites only
+./scripts/devenv -- ./scripts/test-e2e --tui           # TUI terminal scenarios only
 ```
 
 Each scenario boots the TUI in an isolated terminal session and asserts

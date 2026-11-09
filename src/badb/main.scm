@@ -123,7 +123,7 @@
                 (cond
                   ((or (null? sub-args) (member (car sub-args) '("help" "-h" "--help")))
                     (format #t
-                            "Usage: badb geis [status [fid]|list|verify <fid>|synthesize <fid>|pack <fid>|install <dir>|replay <fid>|distill [--analyze-only]|onboard [--workspace <dir>]]\n\nInspect, verify, or synthesize contract specifications (geasa).\npack builds a shareable tarball of a bundle from BADB_GEIS_PATH; install locks\na bundle (and its geis dependencies) into the kernel gate and verifies it.\ndistill analyzes recent execution trajectory and distills into a Geis bundle.\nonboard inspects the workspace toolchain and synthesizes baseline geasa.\nTo dynamically synthesize a feature with an agent, launch the TUI and run:\n  /geis add <feature description>\n"))
+                            "Usage: badb geis [status [fid]|list|verify <fid>|synthesize <fid>|pack <fid>|install <dir>|replay <fid>|pin <dir...>|distill [--analyze-only]|onboard [--workspace <dir>]]\n\nInspect, verify, or synthesize contract specifications (geasa).\npack builds a shareable tarball of a bundle from BADB_GEIS_PATH; install locks\na bundle (and its geis dependencies) into the kernel gate and verifies it.\npin recomputes and writes sha256 pins in a bundle manifest.\ndistill analyzes recent execution trajectory and distills into a Geis bundle.\nonboard inspects the workspace toolchain and synthesizes baseline geasa.\nTo dynamically synthesize a feature with an agent, launch the TUI and run:\n  /geis add <feature description>\n"))
                   ((equal? (car sub-args) "onboard")
                     (let* ((args (cdr sub-args))
                            (ws (cond
@@ -202,6 +202,23 @@
                   ((equal? (car sub-args) "install")
                     (format (current-error-port) "Error: badb geis install requires <bundle-dir>\n")
                     (exit 1))
+                  ((member (car sub-args) '("pin" "repin"))
+                   (let ((dirs (cdr sub-args)))
+                     (if (null? dirs)
+                         (begin
+                           (format (current-error-port) "Error: badb geis pin requires <bundle-dir> [...]\n")
+                           (exit 1))
+                         (let ((pin! (module-ref (resolve-interface '(badb geis bundle)) 'geis-bundle-pin!)))
+                           (for-each
+                            (lambda (d)
+                              (catch 'geis-bundle-error
+                                (lambda ()
+                                  (let ((pins (pin! d)))
+                                    (format #t "Re-pinned ~a (~a files)\n" d (length pins))))
+                                (lambda (key . args)
+                                  (format (current-error-port) "Error: ~a\n" (car args))
+                                  (exit 1))))
+                            dirs)))))
                   (else
                     (format (current-error-port) "Unknown geis subcommand: ~a\n" (car sub-args))
                     (exit 1)))))

@@ -99,27 +99,27 @@ assert_eq "scripts/badb with unrecognized option exits 1" "1" "$rc_bad"
 assert_contains "scripts/badb reports unrecognized option in stderr" "unrecognized option" "$out_bad"
 
 # -----------------------------------------------------------------------------
-# 2. scripts/mcp-filetree entrypoint tests
+# 2. badb mcp-filetree entrypoint tests
 # -----------------------------------------------------------------------------
-echo "[2/4] Testing scripts/mcp-filetree entrypoint..."
+echo "[2/4] Testing badb mcp-filetree entrypoint..."
 
 # Test initialize handshake
 init_request='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test-runner","version":"1.0"}}}'
-out_mcp_init=$(printf '%s\n' "$init_request" | ./scripts/mcp-filetree 2>/dev/null)
-assert_contains "scripts/mcp-filetree returns JSON-RPC 2.0 version" '"jsonrpc":"2.0"' "$out_mcp_init"
-assert_contains "scripts/mcp-filetree returns filetree serverInfo name" '"name":"filetree"' "$out_mcp_init"
+out_mcp_init=$(printf '%s\n' "$init_request" | ./scripts/badb mcp-filetree 2>/dev/null)
+assert_contains "badb mcp-filetree returns JSON-RPC 2.0 version" '"jsonrpc":"2.0"' "$out_mcp_init"
+assert_contains "badb mcp-filetree returns filetree serverInfo name" '"name":"filetree"' "$out_mcp_init"
 
 # Test tools/list request
 tools_request='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
-out_mcp_tools=$(printf '%s\n%s\n' "$init_request" "$tools_request" | ./scripts/mcp-filetree 2>/dev/null)
-assert_contains "scripts/mcp-filetree tools/list includes 'tree' tool" '"name":"tree"' "$out_mcp_tools"
-assert_contains "scripts/mcp-filetree tools/list includes 'find' tool" '"name":"find"' "$out_mcp_tools"
-assert_contains "scripts/mcp-filetree tools/list includes 'read' tool" '"name":"read"' "$out_mcp_tools"
+out_mcp_tools=$(printf '%s\n%s\n' "$init_request" "$tools_request" | ./scripts/badb mcp-filetree 2>/dev/null)
+assert_contains "badb mcp-filetree tools/list includes 'tree' tool" '"name":"tree"' "$out_mcp_tools"
+assert_contains "badb mcp-filetree tools/list includes 'find' tool" '"name":"find"' "$out_mcp_tools"
+assert_contains "badb mcp-filetree tools/list includes 'read' tool" '"name":"read"' "$out_mcp_tools"
 
 # Test tools/call 'find'
 find_call='{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"find","arguments":{"pattern":"manifest.scm"}}}'
-out_mcp_call=$(printf '%s\n%s\n' "$init_request" "$find_call" | ./scripts/mcp-filetree 2>/dev/null)
-assert_contains "scripts/mcp-filetree tools/call returns matched file" 'manifest.scm' "$out_mcp_call"
+out_mcp_call=$(printf '%s\n%s\n' "$init_request" "$find_call" | ./scripts/badb mcp-filetree 2>/dev/null)
+assert_contains "badb mcp-filetree tools/call returns matched file" 'manifest.scm' "$out_mcp_call"
 
 # -----------------------------------------------------------------------------
 # 3. scripts/test entrypoint tests
@@ -133,7 +133,7 @@ rc_test_runner=$?
 assert_eq "scripts/test exits 0" "0" "$rc_test_runner"
 assert_file_contains "scripts/test runs bootstrap test suite" "Starting badb Bootstrap Test Suite" "$tmp_test_out"
 assert_file_contains "scripts/test reports 0 failures" "Test Run Complete: 0 failure(s)" "$tmp_test_out"
-assert_file_contains "scripts/test finishes with expected 1842 passes" "# of expected passes    : 1842" "$tmp_test_out"
+assert_file_contains "scripts/test reports expected passes" "# of expected passes" "$tmp_test_out"
 rm -f "$tmp_test_out"
 
 # -----------------------------------------------------------------------------

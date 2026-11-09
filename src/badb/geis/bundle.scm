@@ -47,7 +47,8 @@
                                         geis-capture-pending-prompt!
                                         geis-take-pending-prompt
                                         geis-bundle-assemble!
-                                        geis-bundle-replay))
+                                        geis-bundle-replay
+                                        geis-bundle-pin!))
 
 (define (%string-split-char s delim)
   "Split S on single-character DELIM into a list of substrings."
@@ -878,3 +879,23 @@ modified by the replay (cassette mode re-runs the edits)."
                 (cons 'reason "bundle records no workflow or cassettes"))))
       (throw 'geis-bundle-error
              (format #f "bundle not found for feature-id '~a'" fid)))))
+
+(define (geis-bundle-pin! bundle-dir)
+  "Recompute sha256 pins for BUNDLE-DIR, update its manifest.scm, and validate."
+  (let ((manifest-path (string-append bundle-dir "/manifest.scm")))
+    (unless (file-exists? manifest-path)
+      (throw 'geis-bundle-error (format #f "manifest not found at '~a'" manifest-path)))
+    (let ((manifest (read-geis-manifest manifest-path)))
+      (unless manifest
+        (throw 'geis-bundle-error (format #f "failed to read manifest at '~a'" manifest-path)))
+      (let* ((pins (compute-geis-sha256-pins bundle-dir))
+             (updated (%manifest-with manifest 'sha256 pins)))
+        (call-with-output-file manifest-path
+          (lambda (port)
+            (write updated port)
+            (newline port)))
+        (let ((errors (geis-manifest-valid? bundle-dir)))
+          (unless (null? errors)
+            (throw 'geis-bundle-error
+                   (format #f "manifest invalid after re-pinning '~a': ~s" bundle-dir errors)))
+          pins)))))
