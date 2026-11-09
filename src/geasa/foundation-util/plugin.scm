@@ -26,6 +26,9 @@
                         valid-dir-entry?
                         scandir-valid-entries
                         exec-shell-command
+                        active-subprocess-pid
+                        set-active-subprocess-pid!
+                        kill-active-subprocess!
                         ensure-string
                         ensure-symbol
                         ensure-keyword
@@ -491,19 +494,57 @@ ellipsis when it had to be cut."
         (format #f "~,1fk" (/ (if (number? n) n 0) 1000.0)))
 
 ;;;
-;;; Subprocess Execution
+;;; Subprocess Execution & Signals
 ;;;
+(define *active-subprocess-pid* #f)
+
+(define (active-subprocess-pid)
+        "Return the PID of the currently active shell subprocess, or #f if none."
+        *active-subprocess-pid*)
+
+(define (set-active-subprocess-pid! pid)
+        "Set the PID of the currently active shell subprocess."
+        (set! *active-subprocess-pid* pid))
+
+(define (kill-active-subprocess!)
+        "Send SIGINT (falling back to SIGTERM) to the active subprocess and its group, if any."
+        (let ((pid *active-subprocess-pid*))
+          (when (and (number? pid) (> pid 0))
+            (catch #t
+              (lambda ()
+                ;; Signal process group first, then the process
+                (catch #t (lambda () (kill (- pid) SIGINT)) (lambda _ #f))
+                (kill pid SIGINT))
+              (lambda _
+                (catch #t
+                  (lambda ()
+                    (catch #t (lambda () (kill (- pid) SIGTERM)) (lambda _ #f))
+                    (kill pid SIGTERM))
+                  (lambda _ #f)))))))
+
 (define (exec-shell-command cmd)
         "Execute shell CMD and return (values output-string exit-code error-or-#f)."
         (catch #t
           (lambda ()
             (let* ((pipe (open-pipe (string-append cmd " 2>&1") OPEN_READ))
-                   (raw-out (read-string pipe))
-                   (status (close-pipe pipe))
-                   (exit-val (if (status:exit-val status) (status:exit-val status) 0))
-                   (clean-out (if (or (eof-object? raw-out) (string-null? raw-out))
-                                ""
-                                (string-trim-right raw-out))))
-              (values clean-out exit-val #f)))
+                   (pid (catch #t
+                          (lambda ()
+                            (let ((table (module-ref (resolve-module '(ice-9 popen)) 'port/pid-table)))
+                              (hashq-ref table pipe)))
+                          (lambda _ #f))))
+              (dynamic-wind
+                (lambda ()
+                  (when pid (set-active-subprocess-pid! pid)))
+                (lambda ()
+                  (let* ((raw-out (read-string pipe))
+                         (status (close-pipe pipe))
+                         (exit-val (if (status:exit-val status) (status:exit-val status) 0))
+                         (clean-out (if (or (eof-object? raw-out) (string-null? raw-out))
+                                      ""
+                                      (string-trim-right raw-out))))
+                    (values clean-out exit-val #f)))
+                (lambda ()
+                  (when (eqv? *active-subprocess-pid* pid)
+                    (set-active-subprocess-pid! #f))))))
           (lambda (key . args)
             (values #f 1 (format #f "Shell error (~a): ~s" key args)))))

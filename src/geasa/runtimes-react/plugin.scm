@@ -68,6 +68,7 @@
                           steering-drain!
                           steering-empty?
                           steering-count
+                          steering-has-interrupt?
                           collect-available-tools
                           partition-tools-for-step
                           tool-spec-name
@@ -269,7 +270,42 @@ reasoning trace, matching determine-step-content's fallback policy:
 the reasoning wrapped in a closed think block, then a plain note."
         (format #f "<think>~a</think>\n(Response provided in model reasoning trace)" reasoning))
 
-(define* (stream-model-completion client messages tools max-tokens on-delta)
+(define-record-type <steering-queue>
+                    (%make-steering-queue entries)
+                    steering-queue?
+                    (entries steering-queue-entries set-steering-queue-entries!))
+
+(define (make-steering-queue)
+        "Create a new empty mutable steering queue."
+        (%make-steering-queue '()))
+
+(define (steering-push! queue entry)
+        "Push ENTRY onto the tail of QUEUE.
+ENTRY is either a steering instruction string or the symbol 'interrupt."
+        (set-steering-queue-entries! queue (cons entry (steering-queue-entries queue))))
+
+(define (steering-drain! queue)
+        "Return all queued entries in FIFO order and empty QUEUE."
+        (let ((entries (reverse (steering-queue-entries queue))))
+          (set-steering-queue-entries! queue '())
+          entries))
+
+(define (steering-empty? queue)
+        "Return #t if QUEUE currently holds no entries."
+        (null? (steering-queue-entries queue)))
+
+(define (steering-count queue)
+        "Return the number of entries currently held in QUEUE."
+        (length (steering-queue-entries queue)))
+
+(define (steering-has-interrupt? queue)
+        "Return #t if QUEUE currently contains an 'interrupt symbol."
+        (and (steering-queue? queue)
+             (memq 'interrupt (steering-queue-entries queue))
+             #t))
+
+(define* (stream-model-completion client messages tools max-tokens on-delta
+                                  #:key (steering-queue #f))
          "Run one streamed chat completion for the ReAct loop: accumulate content
 and reasoning deltas and assemble streamed tool-call fragments
 (merge-tool-call-fragment), invoking (ON-DELTA payload type) for every
@@ -278,49 +314,69 @@ chunk - guarded, so a throwing ON-DELTA never aborts the stream. Return
 non-streaming path (finalize-tool-call-fragments matches
 parse-single-tool-call). When the endpoint ignored streaming and
 delivered nothing, fall back to a single model-complete call."
-         (let ((content "") (reasoning "") (frag-acc #f) (complete-result #f))
+         (let ((content "") (reasoning "") (frag-acc #f) (complete-result #f) (interrupted? #f))
            (model-stream client messages
-                         (lambda (payload type)
-                           (case type
-                             ((thought) (set! reasoning (string-append reasoning payload)))
-                             ((content) (set! content (string-append content payload)))
-                             ((tool-call)
-                               (set! frag-acc (merge-tool-call-fragment frag-acc payload)))
-                             ((complete-json)
-                               ;; Endpoint ignored stream:true: whole completion at once.
-                               ;; Its usage block, when present, rides out through the
-                               ;; delta channel (type 'usage) for session token accounting.
-                               (let ((usage (extract-usage payload)))
-                                 (when (and usage (procedure? on-delta))
-                                   (ignore-errors (on-delta usage 'usage))))
-                               (receive (c r) (determine-step-content payload)
-                                        (set! complete-result (list c r (parse-tool-calls payload c)))))
-                             (else #f))
-                           (when (procedure? on-delta)
-                             (ignore-errors (on-delta payload type))))
+                         (lambda (payload . type-opt)
+                           (let ((type (if (pair? type-opt) (car type-opt) 'content))
+                                 (int? (and (steering-queue? steering-queue)
+                                            (steering-has-interrupt? steering-queue))))
+                             (if int?
+                               (begin
+                                 (set! interrupted? #t)
+                                 (set! frag-acc #f)
+                                 'stop)
+                               (begin
+                                 (case type
+                                   ((thought) (set! reasoning (string-append reasoning payload)))
+                                   ((content) (set! content (string-append content payload)))
+                                   ((tool-call)
+                                     (set! frag-acc (merge-tool-call-fragment frag-acc payload)))
+                                   ((complete-json)
+                                     ;; Endpoint ignored stream:true: whole completion at once.
+                                     ;; Its usage block, when present, rides out through the
+                                     ;; delta channel (type 'usage) for session token accounting.
+                                     (let ((usage (extract-usage payload)))
+                                       (when (and usage (procedure? on-delta))
+                                         (ignore-errors (on-delta usage 'usage))))
+                                     (receive (c r) (determine-step-content payload)
+                                              (set! complete-result (list c r (parse-tool-calls payload c)))))
+                                   (else #f))
+                                 (if (procedure? on-delta)
+                                   (let ((res (catch #t
+                                                (lambda () (on-delta payload type))
+                                                (lambda _
+                                                  (catch #t
+                                                    (lambda () (on-delta payload))
+                                                    (lambda _ #f))))))
+                                     (if (eq? res 'stop)
+                                       'stop
+                                       #t))
+                                   #t)))))
                          #:tools tools
                          #:max-tokens max-tokens)
-           (if complete-result
-             (apply values complete-result)
-             (if (and (string-null? (string-trim-both content))
-                      (string-null? (string-trim-both reasoning))
-                      (not (pair? frag-acc)))
-               (let ((raw-resp (model-complete client messages #:tools tools #:max-tokens max-tokens #:raw? #t)))
-                 (let ((usage (extract-usage raw-resp)))
-                   (when (and usage (procedure? on-delta))
-                     (ignore-errors (on-delta usage 'usage))))
-                 (receive (fb-content fb-reasoning) (determine-step-content raw-resp)
-                          (values fb-content fb-reasoning (parse-tool-calls raw-resp fb-content))))
-               (let ((native-calls (finalize-tool-call-fragments frag-acc))
-                     (final-content
-                       (cond
-                         ((not (string-null? (string-trim-both content))) content)
-                         ((non-empty-string? reasoning) (reasoning-fallback-content reasoning))
-                         (else ""))))
-                 (values final-content reasoning
-                         (if (pair? native-calls)
-                           native-calls
-                           (parse-xml-tool-calls content))))))))
+           (if interrupted?
+             (values content reasoning '())
+             (if complete-result
+               (apply values complete-result)
+               (if (and (string-null? (string-trim-both content))
+                        (string-null? (string-trim-both reasoning))
+                        (not (pair? frag-acc)))
+                 (let ((raw-resp (model-complete client messages #:tools tools #:max-tokens max-tokens #:raw? #t)))
+                   (let ((usage (extract-usage raw-resp)))
+                     (when (and usage (procedure? on-delta))
+                       (ignore-errors (on-delta usage 'usage))))
+                   (receive (fb-content fb-reasoning) (determine-step-content raw-resp)
+                            (values fb-content fb-reasoning (parse-tool-calls raw-resp fb-content))))
+                 (let ((native-calls (finalize-tool-call-fragments frag-acc))
+                       (final-content
+                         (cond
+                           ((not (string-null? (string-trim-both content))) content)
+                           ((non-empty-string? reasoning) (reasoning-fallback-content reasoning))
+                           (else ""))))
+                   (values final-content reasoning
+                           (if (pair? native-calls)
+                             native-calls
+                             (parse-xml-tool-calls content)))))))))
 
 (define (parse-tool-calls raw-response content-text)
         "Extract tool calls from RAW-RESPONSE (native OpenAI format) or CONTENT-TEXT (XML tags)."
@@ -440,33 +496,6 @@ logs execution provenance to JRN, and returns (values result is-error?)."
 ;;;
 ;;; Steering Queue
 ;;;
-(define-record-type <steering-queue>
-                    (%make-steering-queue entries)
-                    steering-queue?
-                    (entries steering-queue-entries set-steering-queue-entries!))
-
-(define (make-steering-queue)
-        "Create a new empty mutable steering queue."
-        (%make-steering-queue '()))
-
-(define (steering-push! queue entry)
-        "Push ENTRY onto the tail of QUEUE.
-ENTRY is either a steering instruction string or the symbol 'interrupt."
-        (set-steering-queue-entries! queue (cons entry (steering-queue-entries queue))))
-
-(define (steering-drain! queue)
-        "Return all queued entries in FIFO order and empty QUEUE."
-        (let ((entries (reverse (steering-queue-entries queue))))
-          (set-steering-queue-entries! queue '())
-          entries))
-
-(define (steering-empty? queue)
-        "Return #t if QUEUE currently holds no entries."
-        (null? (steering-queue-entries queue)))
-
-(define (steering-count queue)
-        "Return the number of entries currently held in QUEUE."
-        (length (steering-queue-entries queue)))
 
 ;;;
 ;;; Loop Detector & Thrash Circuit Breaker (opt-in)
@@ -945,67 +974,83 @@ callback is reported on stderr and skipped, never aborting the loop.
 When the tool message's content exceeds the threshold and dir is set,
 its content becomes (offload-tool-result! dir name content-str threshold #:offload-hook offload-hook) —
 applied AFTER log-tool-execution!."
-  (map
-    (lambda (tc)
-      (run-isolated-hook! on-tool-call-fn "on-tool-call" tc)
-      (let ((name (prop-ref tc 'name))
-            (args (or (prop-ref tc 'arguments) '())))
-        (call-with-values
-          (lambda ()
-            (if (string=? (or name "") "tool_search")
-              (let* ((query (or (assoc-ref args 'query) (assoc-ref args "query") "all"))
-                     (q-str (string-downcase (if (string? query) query (format #f "~a" query))))
-                     (matches
-                       (filter
-                         (lambda (t)
-                           (let ((n (tool-spec-name t))
-                                 (d (tool-spec-description t)))
-                             (or (string=? q-str "all")
-                                 (string-contains (string-downcase n) q-str)
-                                 (string-contains (string-downcase d) q-str))))
-                         deferred-tools))
-                     (matched-names (map tool-spec-name matches)))
-                (when session
-                  (let ((cur (react-session-active-tools session)))
-                    (set-react-session-active-tools!
-                      session
-                      (delete-duplicates (append cur matched-names)))))
-                (values
-                  (if (null? matches)
-                    (format #f "No deferred tools matched query '~a'." query)
-                    (format #f "Found ~a deferred tool(s) (schemas hydrated for next turn):\n~a"
-                            (length matches)
-                            (string-join
-                              (map (lambda (t)
-                                     (let ((entry (tool-spec-entry-alist t)))
-                                       (format #f "### ~a\n~a\nParameters: ~s"
-                                               (tool-spec-name t)
-                                               (tool-spec-description t)
-                                               (or (assoc-ref entry 'parameters) (assoc-ref entry "parameters") '()))))
-                                   matches)
-                              "\n\n")))
-                  #f))
-              (call-with-values
-                (lambda ()
-                  (execute-tool-call tc reg mcp-mgr #:jrn jrn #:mgr mgr #:guardrail guardrail-fn))
-                (lambda (res err?)
-                  (when (and session name (not (string-null? name)))
-                    (let ((cur (react-session-active-tools session)))
-                      (unless (member name cur)
-                        (set-react-session-active-tools! session (cons name cur)))))
-                  (values res err?)))))
-          (lambda (res err?)
-            (run-isolated-hook! on-tool-result-fn "on-tool-result" tc res err?)
-            (let*
-                ((content-str (safe-json-string res))
-                 (tc-id (or (prop-ref tc 'id) "call_0"))
-                 (tc-name (or (prop-ref tc 'name) ""))
-                 (final-content (offload-tool-result! result-offload-dir tc-name content-str result-offload-chars #:offload-hook offload-hook))
-                 (tool-msg `((role . "tool") (tool_call_id . ,tc-id)
-                             (name . ,tc-name)
-                             (content . ,final-content))))
-              (cons tc tool-msg))))))
-    tool-calls))
+  (let loop ((rest tool-calls) (acc '()))
+            (if (null? rest)
+              (reverse acc)
+              (let* ((tc (car rest))
+                     (sess (or session (current-react-session)))
+                     (interrupted? (and sess (steering-has-interrupt? (react-session-steering-queue sess)))))
+                (if interrupted?
+                  (let ((cancelled-msgs
+                          (map (lambda (unrun-tc)
+                                 (let ((tc-id (or (prop-ref unrun-tc 'id) "call_0"))
+                                       (tc-name (or (prop-ref unrun-tc 'name) "")))
+                                   (cons unrun-tc
+                                         `((role . "tool")
+                                           (tool_call_id . ,tc-id)
+                                           (name . ,tc-name)
+                                           (content . "Tool execution aborted: user requested interrupt.")))))
+                               rest)))
+                    (append (reverse acc) cancelled-msgs))
+                  (begin
+                    (run-isolated-hook! on-tool-call-fn "on-tool-call" tc)
+                    (let ((name (prop-ref tc 'name))
+                          (args (or (prop-ref tc 'arguments) '())))
+                      (call-with-values
+                        (lambda ()
+                          (if (string=? (or name "") "tool_search")
+                            (let* ((query (or (assoc-ref args 'query) (assoc-ref args "query") "all"))
+                                   (q-str (string-downcase (if (string? query) query (format #f "~a" query))))
+                                   (matches
+                                     (filter
+                                       (lambda (t)
+                                         (let ((n (tool-spec-name t))
+                                               (d (tool-spec-description t)))
+                                           (or (string=? q-str "all")
+                                               (string-contains (string-downcase n) q-str)
+                                               (string-contains (string-downcase d) q-str))))
+                                       deferred-tools))
+                                   (matched-names (map tool-spec-name matches)))
+                              (when session
+                                (let ((cur (react-session-active-tools session)))
+                                  (set-react-session-active-tools!
+                                    session
+                                    (delete-duplicates (append cur matched-names)))))
+                              (values
+                                (if (null? matches)
+                                  (format #f "No deferred tools matched query '~a'." query)
+                                  (format #f "Found ~a deferred tool(s) (schemas hydrated for next turn):\n~a"
+                                          (length matches)
+                                          (string-join
+                                            (map (lambda (t)
+                                                   (let ((entry (tool-spec-entry-alist t)))
+                                                     (format #f "### ~a\n~a\nParameters: ~s"
+                                                             (tool-spec-name t)
+                                                             (tool-spec-description t)
+                                                             (or (assoc-ref entry 'parameters) (assoc-ref entry "parameters") '()))))
+                                                 matches)
+                                            "\n\n")))
+                                #f))
+                            (call-with-values
+                              (lambda ()
+                                (execute-tool-call tc reg mcp-mgr #:jrn jrn #:mgr mgr #:guardrail guardrail-fn))
+                              (lambda (res err?)
+                                (when (and session name (not (string-null? name)))
+                                  (let ((cur (react-session-active-tools session)))
+                                    (unless (member name cur)
+                                      (set-react-session-active-tools! session (cons name cur)))))
+                                (values res err?)))))
+                        (lambda (res err?)
+                          (run-isolated-hook! on-tool-result-fn "on-tool-result" tc res err?)
+                          (let*
+                              ((content-str (safe-json-string res))
+                               (tc-id (or (prop-ref tc 'id) "call_0"))
+                               (tc-name (or (prop-ref tc 'name) ""))
+                               (final-content (offload-tool-result! result-offload-dir tc-name content-str result-offload-chars #:offload-hook offload-hook))
+                               (tool-msg `((role . "tool") (tool_call_id . ,tc-id)
+                                           (name . ,tc-name)
+                                           (content . ,final-content))))
+                            (loop (cdr rest) (cons (cons tc tool-msg) acc))))))))))))
 
 (define (react-step! session)
         "Execute a single turn of the ReAct cycle.
@@ -1069,7 +1114,8 @@ Returns:
                                                                outbound-msgs
                                                                tools
                                                                max-tokens
-                                                               on-delta-fn)))
+                                                               on-delta-fn
+                                                               #:steering-queue (react-session-steering-queue session))))
                                     (if (null? tool-calls)
                                       (let
                                           ((final-msg `((role . "assistant") (content . ,content))))

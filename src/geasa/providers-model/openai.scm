@@ -587,24 +587,29 @@ Returns 'done or 'eof."
                        (read-sse-events port
                                         (lambda (chunk)
                                           (let
-                                              ((fragments (extract-tool-call-deltas chunk)))
+                                              ((stop? #f)
+                                               (fragments (extract-tool-call-deltas chunk)))
                                             (if (pair? fragments)
                                               (for-each
                                                 (lambda (frag)
-                                                  (catch #t
-                                                    (lambda ()
-                                                      (chunk-callback frag 'tool-call))
-                                                    (lambda _
-                                                      #f)))
+                                                  (unless stop?
+                                                    (let ((res (catch #t
+                                                                 (lambda ()
+                                                                   (chunk-callback frag 'tool-call))
+                                                                 (lambda _
+                                                                   #f))))
+                                                      (when (eq? res 'stop) (set! stop? #t)))))
                                                 fragments)
                                               (let ((item (extract-chat-delta-item chunk)))
                                                 (when
                                                     (and (pair? item) (string? (cdr item)) (not (string-null? (cdr item))))
-                                                  (catch #t
-                                                    (lambda ()
-                                                      (chunk-callback (cdr item) (car item)))
-                                                    (lambda _
-                                                      (chunk-callback (cdr item)))))))))))
+                                                  (let ((res (catch #t
+                                                               (lambda ()
+                                                                 (chunk-callback (cdr item) (car item)))
+                                                               (lambda _
+                                                                 (chunk-callback (cdr item))))))
+                                                    (when (eq? res 'stop) (set! stop? #t))))))
+                                            (if stop? 'stop #f)))))
                      (complete-res (and (pair? result) (json-ref result "choices") result)))
                   (when complete-res
                     (catch #t

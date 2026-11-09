@@ -255,8 +255,10 @@ endpoint that ignored stream:true)."
                         ((eq? event 'eof) 'eof)
                         ((eq? event 'done) 'done)
                         ((and (pair? event) (eq? (car event) 'data))
-                          (callback (cdr event))
-                          (loop))
+                          (let ((res (callback (cdr event))))
+                            (if (eq? res 'stop)
+                              'done
+                              (loop))))
                         ((and (pair? event) (eq? (car event) 'body))
                           (cdr event))
                         (else (loop)))))))
