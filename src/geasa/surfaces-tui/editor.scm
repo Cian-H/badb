@@ -103,7 +103,7 @@ breaking on whitespace when possible."
           ("checkpoint" . "Create a workspace and registry checkpoint")
           ("rollback" . "Revert to latest or specified checkpoint")
           ("rules" . "Inspect discovered project rules & workspace tree")
-          ("geis" . "Contract-gated dynamic harness synthesis (/geis add <desc>, list, verify, status)")
+          ("geis" . "Contract-gated dynamic harness synthesis (/geis add <desc>, model [name], list, verify, status)")
           ("context" . "View conversation token stats and metrics")
           ("ctx" . "Context index search and token savings stats")
           ("skills" . "List available agent skills")

@@ -1956,6 +1956,7 @@ any open menu first; submenu actions open the next menu in its place."
                     (string-append
                       "Geis (Contract Gate & Dynamic Synthesis):\n"
                       "  /geis add <description>            - Prompt agent to draft spec, lock contract, synthesize module, and hot-attach\n"
+                      "  /geis model [name]                 - Inspect or set default model for geis contract synthesis\n"
                       "  /geis list                         - List all locked feature contracts (geasa)\n"
                       "  /geis status [feature-id]          - Check status/hash of locked contract(s)\n"
                       "  /geis verify <feature-id>          - Replay locked contract in a disposable kernel subprocess\n"
@@ -1988,6 +1989,18 @@ any open menu first; submenu actions open the next menu in its place."
                           (add-err-msg! (format #f "Geis synthesis error (~a): ~s" key args))
                           (set! status-text "READY")
                           (render!))))))
+                ((string=? sub "model")
+                  (if (string-null? rest-arg)
+                    (let* ((synth-model (badb-config-synthesis-model cfg #f)))
+                      (add-sys-msg!
+                        (if synth-model
+                          (format #f "Geis synthesis model: ~a (configured in .badb/config.scm)\nUsage: /geis model [NAME]" synth-model)
+                          (format #f "Geis synthesis model: ~a (default)\nUsage: /geis model [NAME]" (badb-config-synthesis-model cfg)))))
+                    (let ((new-model (string-trim-both rest-arg)))
+                      (badb-config-set-synthesis-model! cfg new-model)
+                      (try-save-config!)
+                      (add-sys-msg!
+                        (format #f "Geis synthesis model set to: ~a (saved to config)" new-model)))))
                 ((string=? sub "list") (add-sys-msg! (spec-tool-status)))
                 ((string=? sub "status")
                   (add-sys-msg!

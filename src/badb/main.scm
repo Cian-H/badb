@@ -155,14 +155,35 @@
                (distill-exec-patterns! #:workspace (getcwd) #:analyze-only? (and analyze? #t))))
           (format #t "distill: ~s~%" res)))
 
+(define (run-geis-model sub-args)
+        (let* ((cfg-mod (resolve-interface '(geasa foundation-config plugin)))
+               (load-cfg (module-ref cfg-mod 'load-config))
+               (save-cfg! (module-ref cfg-mod 'save-local-config!))
+               (get-model (module-ref cfg-mod 'badb-config-synthesis-model))
+               (set-model! (module-ref cfg-mod 'badb-config-set-synthesis-model!))
+               (cfg (load-cfg))
+               (args (cdr sub-args)))
+          (if (null? args)
+            (let ((configured (get-model cfg #f)))
+              (format #t "Geis synthesis model: ~a~a~%"
+                      (or configured (get-model cfg))
+                      (if configured
+                        " (configured in .badb/config.scm)"
+                        " (default: qwen3.6-35b-a3b)")))
+            (let ((new-model (car args)))
+              (set-model! cfg new-model)
+              (save-cfg! cfg)
+              (format #t "Geis synthesis model set to: ~a (saved to .badb/config.scm)~%" new-model)))))
+
 (define (run-geis-command options)
         (let ((sub-args (cdr options)))
           (cond
             ((or (null? sub-args) (member (car sub-args) '("help" "-h" "--help")))
               (format #t
-                      "Usage: badb geis [status [fid]|list|verify <fid>|synthesize <fid>|pack <fid>|install <dir>|replay <fid>|pin <dir...>|distill [--analyze-only]|onboard [--workspace <dir>]]\n\nInspect, verify, or synthesize contract specifications (geasa).\npack builds a shareable tarball of a bundle from BADB_GEIS_PATH; install locks\na bundle (and its geis dependencies) into the kernel gate and verifies it.\npin recomputes and writes sha256 pins in a bundle manifest.\ndistill analyzes recent execution trajectory and distills into a Geis bundle.\nonboard inspects the workspace toolchain and synthesizes baseline geasa.\nTo dynamically synthesize a feature with an agent, launch the TUI and run:\n  /geis add <feature description>\n"))
+                      "Usage: badb geis [status [fid]|list|verify <fid>|model [name]|synthesize <fid>|pack <fid>|install <dir>|replay <fid>|pin <dir...>|distill [--analyze-only]|onboard [--workspace <dir>]]\n\nInspect, verify, or synthesize contract specifications (geasa).\npack builds a shareable tarball of a bundle from BADB_GEIS_PATH; install locks\na bundle (and its geis dependencies) into the kernel gate and verifies it.\npin recomputes and writes sha256 pins in a bundle manifest.\nmodel inspects or sets default model for geis contract synthesis.\ndistill analyzes recent execution trajectory and distills into a Geis bundle.\nonboard inspects the workspace toolchain and synthesizes baseline geasa.\nTo dynamically synthesize a feature with an agent, launch the TUI and run:\n  /geis add <feature description>\n"))
             ((equal? (car sub-args) "onboard") (run-onboard-command sub-args))
             ((equal? (car sub-args) "distill") (run-geis-distill sub-args))
+            ((equal? (car sub-args) "model") (run-geis-model sub-args))
             ((equal? (car sub-args) "list") (display (spec-tool-status)))
             ((equal? (car sub-args) "status")
               (display (apply spec-tool-status (cdr sub-args))))

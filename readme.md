@@ -238,6 +238,7 @@ The TUI provides built-in commands for managing the session, models, tools, and 
 
 #### Geasa Contracts & Synthesis
 - `/geis add <feature description>` — Trigger the agentic synthesis loop to create and verify a new feature bundle.
+- `/geis model [name]` — Inspect or set default LLM model for geis contract synthesis.
 - `/geis list` — Display status of all discovered and locked geasa bundles.
 - `/geis verify <fid>` — Run verification for a bundle.
 - `/geis bootstrap` — Initialize project geasa structure.

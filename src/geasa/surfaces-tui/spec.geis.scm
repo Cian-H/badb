@@ -1929,7 +1929,16 @@
                            (and (registry-lookup reg "spec.lock")
                                 (registry-lookup reg "spec.verify")
                                 (registry-lookup reg "spec.status")
-                                (registry-lookup reg "spec.synthesize")))))
+                                (registry-lookup reg "spec.synthesize"))))
+            (test-equal "parse-command parses /geis model"
+                        '("geis" . "model")
+                        (parse-command "/geis model"))
+            (test-equal "parse-command parses /geis model with model name"
+                        '("geis" . "model qwen-2.5")
+                        (parse-command "/geis model qwen-2.5"))
+            (test-equal "classify-input classifies /geis model command"
+                        '(slash "geis" "model qwen-2.5")
+                        (classify-input "/geis model qwen-2.5")))
 
 (test-group "tui-builtin-read-file"
             (let*

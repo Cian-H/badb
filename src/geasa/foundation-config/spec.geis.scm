@@ -307,7 +307,17 @@
                 (test-equal "no agents section yields empty catalog"
                             '() (badb-config-agents bare))
                 (test-assert "no roles on bare config"
-                             (not (badb-config-get-agent bare "synthesis"))))))
+                             (not (badb-config-get-agent bare "synthesis")))
+                (test-equal "default synthesis model fallback"
+                            "qwen3.6-35b-a3b"
+                            (badb-config-synthesis-model bare))
+                (badb-config-set-synthesis-model! bare "claude-3-7-sonnet")
+                (test-equal "updated synthesis model"
+                            "claude-3-7-sonnet"
+                            (badb-config-synthesis-model bare))
+                (test-equal "synthesis role model property updated"
+                            "claude-3-7-sonnet"
+                            (get-prop (badb-config-get-agent bare "synthesis") 'model #f)))))
 
 (test-group "config-react-iterations"
             (let ((cfg (parse-config-sexp

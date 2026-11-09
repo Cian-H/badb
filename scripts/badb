@@ -1,15 +1,26 @@
-#!/usr/bin/env -S guile -e main -s
+#!/usr/bin/env -S guile --no-auto-compile -e main -s
 !#
 ;; badb launcher: puts src/ on the load path, adds the geis bundle search
 ;; roots (BADB_GEIS_PATH, default "geis") so (geis <fid> plugin) modules
 ;; resolve as raw scheme, and imports the real entry point from (badb main)
 ;; so that `guile -e main' can find it.
-(add-to-load-path
- (canonicalize-path
-  (string-append (dirname (current-filename)) "/../src")))
-(add-to-load-path
- (canonicalize-path
-  (string-append (dirname (current-filename)) "/..")))
+(setenv "GUILE_AUTO_COMPILE" "0")
+
+(define %script-path
+  (canonicalize-path (car (command-line))))
+
+(define %root-dir
+  (canonicalize-path (string-append (dirname %script-path) "/..")))
+
+;; Re-exec through devenv if guix/project dependencies are not on load path
+(unless (catch #t
+          (lambda () (resolve-interface '(fslib)) #t)
+          (lambda _ #f))
+  (let ((devenv (string-append %root-dir "/scripts/devenv")))
+    (apply execl devenv devenv "--" %script-path (cdr (command-line)))))
+
+(add-to-load-path (string-append %root-dir "/src"))
+(add-to-load-path %root-dir)
 (let ((geis-path (getenv "BADB_GEIS_PATH")))
   (for-each
    (lambda (root)

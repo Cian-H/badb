@@ -66,6 +66,8 @@
                  badb-config-allow-missing-thinking?
                  badb-config-agents
                  badb-config-get-agent
+                 badb-config-synthesis-model
+                 badb-config-set-synthesis-model!
                  badb-config-switch-provider!
                  parse-config-sexp
                  config->sexp
@@ -315,6 +317,38 @@ form itself, which would corrupt single-role configurations."
          (name-str (symbol->string name-sym))
          (roles (badb-config-agents config)))
     (or (assq-ref roles name-sym) (assoc-ref roles name-str))))
+
+(define*
+  (badb-config-synthesis-model config #:optional (default (or (getenv "BADB_SYNTHESIS_MODEL") "qwen3.6-35b-a3b")))
+  "Return the model configured for geis synthesis, or DEFAULT if not explicitly set."
+  (let ((role (badb-config-get-agent config "synthesis")))
+    (or (and role (get-prop role 'model #f))
+        default)))
+
+(define
+  (badb-config-set-synthesis-model! config model-name)
+  "Set or update the model for the 'synthesis' agent role in CONFIG options."
+  (let* ((opts (badb-config-options config))
+         (agents-entry (or (assq 'agents opts) '(agents)))
+         (roles (cdr agents-entry))
+         (synth-entry (or (assq 'synthesis roles) '(synthesis)))
+         (synth-body (cdr synth-entry))
+         (new-synth-body (cons `(model ,(ensure-string model-name))
+                               (filter (lambda (prop)
+                                         (not (and (pair? prop) (eq? (car prop) 'model))))
+                                       synth-body)))
+         (new-synth-entry (cons 'synthesis new-synth-body))
+         (new-roles (cons new-synth-entry
+                          (filter (lambda (r)
+                                    (not (and (pair? r) (eq? (car r) 'synthesis))))
+                                  roles)))
+         (new-agents-entry (cons 'agents new-roles))
+         (new-opts (cons new-agents-entry
+                         (filter (lambda (opt)
+                                   (not (and (pair? opt) (eq? (car opt) 'agents))))
+                                 opts))))
+    (set-badb-config-options! config new-opts)
+    config))
 
 ;;;
 ;;; Tolerant property lens (guile-lens over get-prop matching)

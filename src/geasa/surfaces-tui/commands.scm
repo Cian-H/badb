@@ -336,7 +336,7 @@
                        "  /checkpoint [DSC] Create a rollback checkpoint snapshot\n"
                        "  /rollback [ID]    Revert to latest or specified checkpoint\n"
                        "  /rules            View discovered project rules & workspace tree\n"
-                       "  /geis [CMD]       Contract-gated dynamic synthesis (/geis add <desc>, list, verify, status, bootstrap, distill)\n"
+                       "  /geis [CMD]       Contract-gated dynamic synthesis (/geis add <desc>, model [name], list, verify, status, bootstrap, distill)\n"
                        "  /context          View conversation token metrics\n"
                        "  /ctx [stats|query] Search BM25 context index or show token virtualization savings\n"
                        "  /skills           List active agent skills\n"

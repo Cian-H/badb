@@ -121,7 +121,7 @@ root GEIS-ROOT on the load path) and extract structured JSON diagnostics."
   (def tools (append ast-tools (list read_file write_file spec_runner)))
 
   (phase "Synthesis")
-  (def model-name (or (if (contains? args :model) (:model args) #f) "qwen3.6-35b-a3b"))
+  (def model-name (or (if (contains? args :model) (:model args) #f) (env "BADB_SYNTHESIS_MODEL") "qwen3.6-35b-a3b"))
   ;; Project-local geis root for resolving synthesized modules in the
   ;; spec subprocess; passed by badb from the resolved synthesis target.
   (def geis-root (if (contains? args :geis-load-path) (:geis-load-path args) "geis"))
