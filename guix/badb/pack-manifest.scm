@@ -6,7 +6,8 @@
 ;;; sema) form the complete runtime closure embedded in `guix pack -RR`
 ;;; tarballs built by scripts/dist.
 
-(use-modules (guix profiles)
-             (badb packages badb))
+(define-module (badb pack-manifest)
+               #:use-module (guix profiles)
+               #:use-module (badb packages badb))
 
 (packages->manifest (list badb))
