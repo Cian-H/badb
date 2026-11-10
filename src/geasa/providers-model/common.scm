@@ -15,6 +15,8 @@
                #:use-module
                (srfi srfi-9)
                #:use-module
+               (srfi srfi-13)
+               #:use-module
                (srfi srfi-158)
                #:export
                (current-send-reasoning? <model-client>
@@ -145,120 +147,147 @@ Rejects internal UI logs or tool responses missing required tool_call_id."
           ((string? msg) (list (cons "role" "user") (cons "content" msg)))
           (else msg)))
 
-(define (normalize-messages msgs)
-        (cond
-          ((vector? msgs)
-            (list->vector (map normalize-message (filter valid-api-message? (vector->list msgs)))))
-          ((single-message-alist? msgs)
-            (if (valid-api-message? msgs)
-              (vector (normalize-message msgs))
-              (vector)))
-          ((list? msgs)
-            (list->vector (map normalize-message (filter valid-api-message? msgs))))
-          ((string? msgs)
-            (vector (list (cons "role" "user") (cons "content" msgs))))
-          (else msgs)))
+(define (canonicalize-system-messages messages)
+        "Place system context first and merge it into one system message.
+Some chat templates, including Qwen's, reject a system message after any
+conversation turn (and may reject multiple system messages as well)."
+        (let* ((msgs (vector->list messages))
+               (systems (filter (lambda (msg)
+                                  (equal? (assoc-ref msg "role") "system"))
+                                msgs))
+               (conversation (filter (lambda (msg)
+                                       (not (equal? (assoc-ref msg "role") "system")))
+                                     msgs)))
+          (if (null? systems)
+            messages
+            (let* ((first-system (car systems))
+                   (contents (filter (lambda (value)
+                                       (and (string? value) (not (string-null? value))))
+                                     (map (lambda (msg) (assoc-ref msg "content")) systems)))
+                   (list->vector
+                     (cons (map (lambda (field)
+                                  (if (equal? (car field) "content")
+                                    (cons "content" (string-join contents "\n\n"))
+                                    field))
+                                first-system)
+                           conversation)))))
 
-;;;
-;;; Server-Sent Events (SSE) Parsing
-;;;
-(define (clean-sse-line line)
-        (if (string? line)
-          (string-trim-right line (lambda (c) (or (char=? c #\return) (char=? c #\newline))))
-          ""))
+          (define (normalize-messages msgs)
+                  (cond
+                    ((vector? msgs)
+                      (canonicalize-system-messages
+                        (list->vector (map normalize-message (filter valid-api-message? (vector->list msgs)))))
+                      ((single-message-alist? msgs)
+                       (if (valid-api-message? msgs)
+                         (canonicalize-system-messages (vector (normalize-message msgs)))
+                         (vector)))
+                      ((list? msgs)
+                       (canonicalize-system-messages
+                         (list->vector (map normalize-message (filter valid-api-message? msgs)))))
+                      ((string? msgs)
+                       (vector (list (cons "role" "user") (cons "content" msgs))))
+                      (else msgs)))
 
-(define (parse-sse-line line)
-        "Parse a single SSE line.
+                  ;;;
+                  ;;; Server-Sent Events (SSE) Parsing
+                  ;;;
+                  (define (clean-sse-line line)
+                          (if (string? line)
+                            (string-trim-right line (lambda (c) (or (char=? c #\return) (char=? c #\newline))))
+                            ""))
+
+                  (define (parse-sse-line line)
+                          "Parse a single SSE line.
 Returns:
   - 'done if the line indicates stream completion ([DONE])
   - string payload if the line is a data event (\"data: ...\")
   - #f for empty lines, comments (\": ...\"), or non-data lines."
-        (let ((cleaned (clean-sse-line line)))
-          (cond
-            ;; Empty line
-            ((string-null? cleaned) #f)
-            ;; Comment line (starts with colon per SSE spec)
-            ((string-prefix? ":" cleaned) #f)
-            ;; Detect bare [DONE]
-            ((string=? cleaned "[DONE]") 'done)
-            ;; Data lines
-            ((string-prefix? "data:" cleaned)
-              (let* ((rest (substring cleaned 5))
-                     (payload (if (and (> (string-length rest) 0)
-                                       (char=? (string-ref rest 0) #\space))
-                                (substring rest 1)
-                                rest)))
-                (if (string=? payload "[DONE]")
-                  'done
-                  payload)))
-            ;; Other SSE fields (event, id, retry)
-            (else #f))))
+                          (let ((cleaned (clean-sse-line line)))
+                            (cond
+                              ;; Empty line
+                              ((string-null? cleaned) #f)
+                              ;; Comment line (starts with colon per SSE spec)
+                              ((string-prefix? ":" cleaned) #f)
+                              ;; Detect bare [DONE]
+                              ((string=? cleaned "[DONE]") 'done)
+                              ;; Data lines
+                              ((string-prefix? "data:" cleaned)
+                                (let* ((rest (substring cleaned 5))
+                                       (payload (if (and (> (string-length rest) 0)
+                                                         (char=? (string-ref rest 0) #\space))
+                                                  (substring rest 1)
+                                                  rest)))
+                                  (if (string=? payload "[DONE]")
+                                    'done
+                                    payload)))
+                              ;; Other SSE fields (event, id, retry)
+                              (else #f))))
 
-(define (sse-event-generator port)
-        "Return a lazy (srfi-158) generator that yields parsed SSE events
+                  (define (sse-event-generator port)
+                          "Return a lazy (srfi-158) generator that yields parsed SSE events
 from PORT.  Each yield is one of:
   (data . OBJ-OR-STRING)  a 'data: ' SSE event payload
   (body . ALIST)          a non-SSE complete JSON completion response
   done                      '[DONE]' was seen
   eof                       the port reached end of file"
-        (make-coroutine-generator
-          (lambda (yield)
-            (let loop ()
-                      (let ((line (read-line port)))
-                        (cond
-                          ((eof-object? line) (yield 'eof))
-                          (else
-                            (let* ((cleaned (clean-sse-line line))
-                                   (parsed (parse-sse-line line)))
-                              (cond
-                                ((eq? parsed 'done) (yield 'done))
-                                ((string? parsed)
-                                  (let ((data (catch #t
-                                                (lambda () (json-string->scm parsed))
-                                                (lambda _ parsed))))
-                                    (yield (cons 'data data))
-                                    (loop)))
-                                ((and (string-prefix? "{" cleaned)
-                                      (or (string-contains cleaned "\"error\"")
-                                          (string-contains cleaned "'error'")))
-                                  (let ((err-obj (catch #t
-                                                   (lambda () (json-string->scm cleaned))
-                                                   (lambda _ #f))))
-                                    (error "SSE stream received error response"
-                                           (or (and (pair? err-obj)
-                                                    (let ((err-inner (assoc-ref err-obj "error")))
-                                                      (and (pair? err-inner) (assoc-ref err-inner "message"))))
-                                               cleaned))))
-                                ;; Non-SSE complete JSON response: some endpoints ignore
-                                ;; stream:true and answer with a normal completion body.
-                                ;; Yield it as a terminal event.
-                                ((and (string-prefix? "{" cleaned)
-                                      (catch #t
-                                        (lambda () (json-string->scm cleaned))
-                                        (lambda _ #f)))
-                                  => (lambda (obj)
-                                       (if (and (pair? obj) (json-ref obj "choices"))
-                                         (yield (cons 'body obj))
-                                         (loop))))
-                                (else (loop)))))))))))
+                          (make-coroutine-generator
+                            (lambda (yield)
+                              (let loop ()
+                                        (let ((line (read-line port)))
+                                          (cond
+                                            ((eof-object? line) (yield 'eof))
+                                            (else
+                                              (let* ((cleaned (clean-sse-line line))
+                                                     (parsed (parse-sse-line line)))
+                                                (cond
+                                                  ((eq? parsed 'done) (yield 'done))
+                                                  ((string? parsed)
+                                                    (let ((data (catch #t
+                                                                  (lambda () (json-string->scm parsed))
+                                                                  (lambda _ parsed))))
+                                                      (yield (cons 'data data))
+                                                      (loop)))
+                                                  ((and (string-prefix? "{" cleaned)
+                                                        (or (string-contains cleaned "\"error\"")
+                                                            (string-contains cleaned "'error'")))
+                                                    (let ((err-obj (catch #t
+                                                                     (lambda () (json-string->scm cleaned))
+                                                                     (lambda _ #f))))
+                                                      (error "SSE stream received error response"
+                                                             (or (and (pair? err-obj)
+                                                                      (let ((err-inner (assoc-ref err-obj "error")))
+                                                                        (and (pair? err-inner) (assoc-ref err-inner "message"))))
+                                                                 cleaned))))
+                                                  ;; Non-SSE complete JSON response: some endpoints ignore
+                                                  ;; stream:true and answer with a normal completion body.
+                                                  ;; Yield it as a terminal event.
+                                                  ((and (string-prefix? "{" cleaned)
+                                                        (catch #t
+                                                          (lambda () (json-string->scm cleaned))
+                                                          (lambda _ #f)))
+                                                    => (lambda (obj)
+                                                         (if (and (pair? obj) (json-ref obj "choices"))
+                                                           (yield (cons 'body obj))
+                                                           (loop))))
+                                                  (else (loop)))))))))))
 
-(define (read-sse-events port callback)
-        "Read lines from PORT, parse SSE 'data: ' events, and invoke
+                  (define (read-sse-events port callback)
+                          "Read lines from PORT, parse SSE 'data: ' events, and invoke
 (CALLBACK data-json-or-string) for each event until EOF or '[DONE]'.
 Returns 'done when [DONE] is encountered, 'eof upon reaching EOF, or the
 parsed alist when the body is a non-SSE complete JSON response (an
 endpoint that ignored stream:true)."
-        (let ((gen (sse-event-generator port)))
-          (let loop ()
-                    (let ((event (gen)))
-                      (cond
-                        ((eq? event 'eof) 'eof)
-                        ((eq? event 'done) 'done)
-                        ((and (pair? event) (eq? (car event) 'data))
-                          (let ((res (callback (cdr event))))
-                            (if (eq? res 'stop)
-                              'done
-                              (loop))))
-                        ((and (pair? event) (eq? (car event) 'body))
-                          (cdr event))
-                        (else (loop)))))))
+                          (let ((gen (sse-event-generator port)))
+                            (let loop ()
+                                      (let ((event (gen)))
+                                        (cond
+                                          ((eq? event 'eof) 'eof)
+                                          ((eq? event 'done) 'done)
+                                          ((and (pair? event) (eq? (car event) 'data))
+                                            (let ((res (callback (cdr event))))
+                                              (if (eq? res 'stop)
+                                                'done
+                                                (loop))))
+                                          ((and (pair? event) (eq? (car event) 'body))
+                                            (cdr event))
+                                          (else (loop)))))))
