@@ -1,0 +1,1 @@
+((bundle-version . 1) (feature-id . "capabilities-lsp") (version . "1.0.0") (spec . "spec.geis.scm") (plugin (module geasa capabilities-lsp plugin) (file . "plugin.scm")) (tools "lsp_diagnostics") (sha256 ("plugin.scm" . "e53bb58b6f24202c66662301743d5ea83205695e6eccedfd84567ff5bb1befaa") ("spec.geis.scm" . "42dfe968214ff27ede7fdb90b8402e04f13e98c537eb2e3f65ac1bedc38fcf2b")))

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# scripts/commit-feature — geis bundle: verification-gated feature commit.
+#
+# Usage: scripts/commit-feature <feature-id> <commit-message>
+#
+# Invariants (contract):
+#   1. ./scripts/test must pass before anything is staged or committed.
+#   2. Only src/geasa/<feature-id>/ is staged — never unrelated files.
+#   3. A geis/<feature-id> tag pins the committed capability bundle.
+#   4. Nothing-to-commit is reported, never silently swallowed.
+set -euo pipefail
+
+usage() { echo "usage: $0 <feature-id> <commit-message>" >&2; exit 2; }
+[ $# -ge 2 ] || usage
+
+feature_id="$1"; shift
+msg="$1"; shift
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# --- Gate 1: verification-gate rule — run the test suite first. ----------
+./scripts/test
+
+# --- Targeted edit: stage ONLY this feature's directory. -----------------
+if [ ! -d "src/geasa/${feature_id}" ]; then
+  echo "commit-feature: no capability directory src/geasa/${feature_id}" >&2
+  exit 1
+fi
+git add "src/geasa/${feature_id}/"
+
+# --- Commit, tolerating the nothing-to-commit case explicitly. ----------
+if git diff --cached --quiet; then
+  echo "commit-feature: nothing to commit for ${feature_id} (tests still passed)"
+  exit 0
+fi
+
+git commit -m "feat(${feature_id}): ${msg}" "$@"
+
+# --- Pin the bundle so the capability is addressable later. --------------
+git tag -f "geis/${feature_id}" -m "capability bundle ${feature_id}"
+
+echo "commit-feature: committed ${feature_id} at $(git rev-parse --short HEAD)"
