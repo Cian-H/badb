@@ -3,6 +3,7 @@
 ;;; format-scheme — Format Scheme source files using cl-indentify and manage Geasa bundle integrity.
 
 (setenv "GUILE_AUTO_COMPILE" "0")
+(current-warning-port (%make-void-port "w"))
 
 (define %script-path
   (canonicalize-path (car (command-line))))

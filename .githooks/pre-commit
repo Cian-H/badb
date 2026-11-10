@@ -2,6 +2,9 @@
 !#
 ;;; pre-commit hook runner using prek
 
+(setenv "GUILE_AUTO_COMPILE" "0")
+(current-warning-port (%make-void-port "w"))
+
 (define (main args)
   (let ((prek (search-path (parse-path (or (getenv "PATH") "")) "prek")))
     (if prek

@@ -5,6 +5,7 @@
 ;; resolve as raw scheme, and imports the real entry point from (badb main)
 ;; so that `guile -e main' can find it.
 (setenv "GUILE_AUTO_COMPILE" "0")
+(current-warning-port (%make-void-port "w"))
 
 (define %script-path
   (canonicalize-path (car (command-line))))

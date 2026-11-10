@@ -526,25 +526,37 @@ ellipsis when it had to be cut."
         "Execute shell CMD and return (values output-string exit-code error-or-#f)."
         (catch #t
           (lambda ()
-            (let* ((pipe (open-pipe (string-append cmd " 2>&1") OPEN_READ))
-                   (pid (catch #t
-                          (lambda ()
-                            (let ((table (module-ref (resolve-module '(ice-9 popen)) 'port/pid-table)))
-                              (hashq-ref table pipe)))
-                          (lambda _ #f))))
+            (let*
+                ((wrapped-cmd (format #f "( ~a\n) 2>&1 < /dev/null" cmd))
+                 (pipe (open-pipe wrapped-cmd OPEN_READ))
+                 (pid
+                   (catch #t
+                     (lambda ()
+                       (let*
+                           ((popen-mod (resolve-module '(ice-9 popen)))
+                            (mutex (module-ref popen-mod 'port/pid-table-mutex))
+                            (table (module-ref popen-mod 'port/pid-table)))
+                         (with-mutex mutex (hashq-ref table pipe))))
+                     (lambda _
+                       #f))))
               (dynamic-wind
                 (lambda ()
                   (when pid (set-active-subprocess-pid! pid)))
                 (lambda ()
-                  (let* ((raw-out (read-string pipe))
-                         (status (close-pipe pipe))
-                         (exit-val (if (status:exit-val status) (status:exit-val status) 0))
-                         (clean-out (if (or (eof-object? raw-out) (string-null? raw-out))
-                                      ""
-                                      (string-trim-right raw-out))))
+                  (let*
+                      ((raw-out (read-string pipe))
+                       (status (close-pipe pipe))
+                       (exit-val
+                         (if (status:exit-val status)
+                           (status:exit-val status)
+                           0))
+                       (clean-out
+                         (if
+                             (or (eof-object? raw-out) (string-null? raw-out))
+                           ""
+                           (string-trim-right raw-out))))
                     (values clean-out exit-val #f)))
                 (lambda ()
-                  (when (eqv? *active-subprocess-pid* pid)
-                    (set-active-subprocess-pid! #f))))))
+                  (when (eqv? *active-subprocess-pid* pid) (set-active-subprocess-pid! #f))))))
           (lambda (key . args)
             (values #f 1 (format #f "Shell error (~a): ~s" key args)))))
