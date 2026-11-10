@@ -575,7 +575,7 @@ verbatim, and fails open to a verbatim truncation."
       (define steering-queue (make-steering-queue))
       (define steering-buffer "")
       (define interrupt-requested? #f)
-      (define %render-mutex (make-mutex))
+      (define %render-mutex (make-mutex 'recursive))
       (define %agent-thread #f)
       (define (agent-running?)
               (and (thread? %agent-thread) (not (thread-exited? %agent-thread))))
@@ -1232,7 +1232,11 @@ and append it to the persistent history journal file."
                               (let ((sig (format #f "~s ~s" key args)))
                                 (unless (equal? sig last-render-error-sig)
                                   (set! last-render-error-sig sig)
-                                  (add-err-msg! (format #f "render error: ~a ~s" key args))))
+                                  (catch #t
+                                    (lambda ()
+                                      (add-err-msg! (format #f "render error: ~a ~s" key args)))
+                                    (lambda _
+                                      #f))))
                               #f))))
       ;; Live streaming display: one flagged assistant card grows in the
       ;; transcript as deltas arrive ('streaming flag); later steps replace

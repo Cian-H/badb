@@ -149,7 +149,6 @@ roles for segment-line rendering; degrade to raw TEXT on any error."
 ;;;
 ;;; Model Thoughts & Reasoning Separation Helper
 ;;;
-
 (define (split-thoughts-and-content text)
         "Separate thought blocks (<think>...</think> or <thought>...</thought>)
 from response content in TEXT. Handles unclosed tags from live streaming.
@@ -203,7 +202,6 @@ Returns (values thoughts content)."
 ;;;
 ;;; Theme Color Mapping
 ;;;
-
 (define (color-symbol->ncurses-constant color)
         "Map a theme COLOR symbol to the name of the matching color constant
 symbol (resolved against the (geasa surfaces-tui nc) backend module at runtime
@@ -222,7 +220,6 @@ by the renderer). The neutral 'default maps to white."
 ;;;
 ;;; Morphing Prompt Indicator
 ;;;
-
 (define %spinner-frames (vector "⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧"))
 
 (define (streaming-spinner-glyph)
@@ -263,7 +260,6 @@ based on current input mode, execution status, and active prompt mode."
 ;;;
 ;;; Slim Header, Rule & Keymap Layout Formatters
 ;;;
-
 (define (format-rule-line maxx)
         "Return a thin horizontal rule line filling MAXX columns for the header
 underline."
@@ -350,7 +346,6 @@ MODE (a symbol: chat, shell, scheme, selector, menu or steering)."
 ;;;
 ;;; Agent Steering Helpers
 ;;;
-
 (define (steering-key-handle buffer ch)
         "Map a keypress CH to a steering action and the resulting buffer.
 Return (values new-buffer action)."
@@ -397,7 +392,6 @@ currently executing."
 ;;;
 ;;; Visual Hierarchy & Token Highlight Engine
 ;;;
-
 (define %status-tags
         (list (list "[RUNNING]" 'success #t #f)
               (list "[OK]" 'success #t #f)
@@ -423,83 +417,101 @@ currently executing."
 
 (define (segment-line line)
         "Segment LINE into styled chunks of the form ((chunk-str theme-role bold? dim?) ...)."
-        (let loop ((pos 0) (acc '()))
-                  (if (>= pos (string-length line))
-                    (reverse acc)
-                    (let* ((rem (substring line pos))
-                           (tag-match
-                             (find (lambda (tag-entry)
-                                     (string-prefix? (car tag-entry) rem))
-                                   %status-tags)))
-                      (cond
-                        (tag-match
-                          (let* ((tag-str (car tag-match))
-                                 (theme-role (cadr tag-match))
-                                 (bold? (caddr tag-match))
-                                 (dim? (cadddr tag-match)))
-                            (loop (+ pos (string-length tag-str))
-                                  (cons (list tag-str theme-role bold? dim?) acc))))
-                        ((or (string-prefix? "• " rem) (string-prefix? "❯ " rem))
-                          (let ((bullet-str (substring rem 0 2)))
-                            (loop (+ pos 2)
-                                  (cons (list bullet-str 'accent #t #f) acc))))
-                        ((regexp-exec %key-label-rx rem)
-                          => (lambda (m)
-                               (let* ((full-match (match:substring m 0))
-                                      (match-len (string-length full-match)))
-                                 (loop (+ pos match-len)
-                                       (cons (list full-match 'accent #f #f) acc)))))
-                        ((string-prefix? "[CODE:" rem)
-                          (let* ((end-pos (string-index rem "[/CODE]"))
-                                 (code-end (if end-pos (+ pos end-pos 7) #f)))
-                            (if code-end
-                              (let* ((full-match (substring line pos code-end))
-                                     (colon-pos (string-index full-match ":"))
-                                     (role-start (if colon-pos (+ colon-pos 1) 6))
-                                     (bracket-pos (string-index full-match "]"))
-                                     (role (if (and bracket-pos (> bracket-pos role-start))
-                                             (substring full-match role-start bracket-pos)
-                                             'accent))
-                                     (content-start bracket-pos)
-                                     (content-end-pos (string-index full-match "[/CODE]"))
-                                     (content (substring full-match (+ content-start 1) content-end-pos)))
-                                (let* ((opening-fence (substring full-match 0 (+ bracket-pos 1)))
-                                       (code-content content)
-                                       (closing-fence "[/CODE]"))
-                                  (loop code-end
-                                        (cons (list opening-fence 'dim #f #f)
-                                              (cons (list code-content role #f #f)
-                                                    (cons (list closing-fence 'dim #f #f) acc)))))))
-                            (loop (string-length line)
-                                  (cons (list (substring line pos) 'default #f #f) acc))))
-                        ((string-prefix? "`" rem)
-                          (let* ((end-pos (string-index rem "`" 1))
-                                 (code-end (if end-pos (+ pos end-pos 1) #f)))
-                            (if code-end
-                              (loop code-end
-                                    (cons (list (substring line pos code-end) 'accent #f #f) acc))
-                              (loop (string-length line)
-                                    (cons (list (substring line pos) 'default #f #f) acc)))))
-                        (else
-                          (let find-next ((end (+ pos 1)))
-                                         (if (>= end (string-length line))
-                                           (reverse (cons (list (substring line pos) 'default #f #f) acc))
-                                           (let ((sub-rem (substring line end)))
-                                             (if (or (any (lambda (t) (string-prefix? (car t) sub-rem)) %status-tags)
-                                                     (string-prefix? "• " sub-rem)
-                                                     (string-prefix? "❯ " sub-rem)
-                                                     (regexp-exec %key-label-rx sub-rem)
-                                                     (string-prefix? "`" sub-rem)
-                                                     (string-prefix? "[CODE:" sub-rem)
-                                                     (string-prefix? "[/CODE]" sub-rem))
-                                               (loop end
-                                                     (cons (list (substring line pos end) 'default #f #f) acc))
-                                               (find-next (+ end 1))))))))))))
+        (let loop
+          ((pos 0) (acc '()))
+          (if (>= pos (string-length line))
+            (reverse acc)
+            (let*
+                ((rem (substring line pos))
+                 (tag-match
+                   (find
+                     (lambda (tag-entry)
+                       (string-prefix? (car tag-entry) rem))
+                     %status-tags)))
+              (cond
+                (tag-match
+                  (let*
+                      ((tag-str (car tag-match))
+                       (theme-role (cadr tag-match))
+                       (bold? (caddr tag-match))
+                       (dim? (cadddr tag-match)))
+                    (loop (+ pos (string-length tag-str))
+                          (cons (list tag-str theme-role bold? dim?) acc))))
+                ((or (string-prefix? "• " rem) (string-prefix? "❯ " rem))
+                  (let ((bullet-str (substring rem 0 2)))
+                    (loop (+ pos 2) (cons (list bullet-str 'accent #t #f) acc))))
+                ((regexp-exec %key-label-rx rem) =>
+                                                 (lambda (m)
+                                                   (let*
+                                                       ((full-match (match:substring m 0)) (match-len (string-length full-match)))
+                                                     (loop (+ pos match-len) (cons (list full-match 'accent #f #f) acc)))))
+                ((string-prefix? "[CODE:" rem)
+                  (let*
+                      ((end-pos (string-contains rem "[/CODE]"))
+                       (code-end
+                         (if end-pos
+                           (+ pos end-pos 7)
+                           #f)))
+                    (if code-end
+                      (let*
+                          ((full-match (substring line pos code-end))
+                           (colon-pos (string-index full-match #\:))
+                           (role-start
+                             (if colon-pos
+                               (+ colon-pos 1)
+                               6))
+                           (bracket-pos (string-index full-match #\]))
+                           (role
+                             (if (and bracket-pos (> bracket-pos role-start))
+                               (string->symbol (substring full-match role-start bracket-pos))
+                               'accent))
+                           (content-start bracket-pos)
+                           (content-end-pos (string-contains full-match "[/CODE]"))
+                           (content (substring full-match (+ content-start 1) content-end-pos)))
+                        (let*
+                            ((opening-fence (substring full-match 0 (+ bracket-pos 1)))
+                             (code-content content)
+                             (closing-fence "[/CODE]"))
+                          (loop code-end
+                                (cons (list opening-fence 'dim #f #f)
+                                      (cons (list code-content role #f #f) (cons (list closing-fence 'dim #f #f) acc)))))))
+                    (loop (string-length line)
+                          (cons (list (substring line pos) 'default #f #f) acc))))
+                ((string-prefix? "`" rem)
+                  (let*
+                      ((end-pos (string-index rem #\` 1))
+                       (code-end
+                         (if end-pos
+                           (+ pos end-pos 1)
+                           #f)))
+                    (if code-end
+                      (loop code-end (cons (list (substring line pos code-end) 'accent #f #f) acc))
+                      (loop (string-length line)
+                            (cons (list (substring line pos) 'default #f #f) acc)))))
+                (else
+                  (let find-next
+                    ((end (+ pos 1)))
+                    (if (>= end (string-length line))
+                      (reverse (cons (list (substring line pos) 'default #f #f) acc))
+                      (let ((sub-rem (substring line end)))
+                        (if
+                            (or
+                              (any
+                                (lambda (t)
+                                  (string-prefix? (car t) sub-rem))
+                                %status-tags)
+                              (string-prefix? "• " sub-rem)
+                              (string-prefix? "❯ " sub-rem)
+                              (regexp-exec %key-label-rx sub-rem)
+                              (string-prefix? "`" sub-rem)
+                              (string-prefix? "[CODE:" sub-rem)
+                              (string-prefix? "[/CODE]" sub-rem))
+                          (loop end (cons (list (substring line pos end) 'default #f #f) acc))
+                          (find-next (+ end 1))))))))))))
 
 ;;;
 ;;; Key normalizers
 ;;;
-
 (define (key->code ch)
         "Normalize a keypress CH from the backend's getch to an integer code."
         (cond
@@ -517,7 +529,6 @@ escape sequence SEQ."
 ;;;
 ;;; Message Collapse State & Block Formatting
 ;;;
-
 (define (replace-nth lst idx val)
         "Return a copy of LST with the element at position IDX replaced by VAL."
         (let loop ((rest lst) (i 0) (acc '()))
@@ -744,7 +755,6 @@ and THOUGHTS fields, followed by the trailing spacer row."
 ;;;
 ;;; Formatted-Row Cache (incremental rendering)
 ;;;
-
 (define-record-type <row-cache>
                     (%make-row-cache table width)
                     row-cache?

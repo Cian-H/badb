@@ -35,7 +35,7 @@
                     (mutex registry-mutex))
 
 (define (make-registry)
-        (%make-registry (make-hash-table 31) (make-mutex)))
+        (%make-registry (make-hash-table 31) (make-mutex 'recursive)))
 
 (define (canonical-feature-id id)
         (cond ((symbol? id) id) ((string? id) (string->symbol id))
