@@ -1,7 +1,6 @@
 *.log
 .badb/
 .sema/
-.agents/
 *.go
 *~
 .jj/
