@@ -42,6 +42,8 @@
                #:use-module
                (geasa runtimes-react plugin)
                #:use-module
+               (geasa runtimes-loop-guard plugin)
+               #:use-module
                (geasa policies-guardrail plugin)
                #:use-module
                (geasa runtimes-context plugin)
@@ -1360,6 +1362,7 @@ grown journal), which the per-frame header render must not pay."
                         (lambda ()
                           (let*
                               ((max-react-iters (badb-config-react-max-iterations cfg))
+                               (loop-guard (make-loop-guard))
                                (session
                                  (make-react-session #:client
                                                      client
@@ -1387,46 +1390,48 @@ grown journal), which the per-frame header render must not pay."
                                                      (lambda (t-name t-args)
                                                        (evaluate-guardrail policy t-name t-args))
                                                      #:hooks
-                                                     (list
-                                                       (cons 'on-step
-                                                             (lambda (iter phase)
-                                                               (when (eq? phase 'starting)
-                                                                 (commit-react-stream-message!)
-                                                                 (reset-react-stream-state!))
-                                                               (set! status-text (format #f "REACT [~a/~a]" iter max-react-iters))
-                                                               (poll-steering-input!)
-                                                               (render!)))
-                                                       (cons 'on-tool-call
-                                                             (lambda (tc)
-                                                               (let
-                                                                   ((t-name (prop-ref tc 'name)) (t-args (prop-ref tc 'arguments)))
-                                                                 (set! status-text (format #f "TOOL: ~a..." t-name))
-                                                                 (add-msg! "tool-call" (format #f "Invoking tool: ~a (~s)" t-name t-args))
+                                                     (append
+                                                       (make-loop-guard-hooks loop-guard)
+                                                       (list
+                                                         (cons 'on-step
+                                                               (lambda (iter phase)
+                                                                 (when (eq? phase 'starting)
+                                                                   (commit-react-stream-message!)
+                                                                   (reset-react-stream-state!))
+                                                                 (set! status-text (format #f "REACT [~a/~a]" iter max-react-iters))
                                                                  (poll-steering-input!)
-                                                                 (render!))))
-                                                       (cons 'on-tool-result
-                                                             (lambda (tc res err?)
-                                                               (let*
-                                                                   ((t-name (prop-ref tc 'name))
-                                                                    (res-str
-                                                                      (if (string? res)
-                                                                        res
-                                                                        (safe-json-string res)))
-                                                                    (preview
-                                                                      (if (> (string-length res-str) 140)
-                                                                        (string-append (substring res-str 0 140) "...")
-                                                                        res-str)))
-                                                                 (add-msg! "tool-result"
-                                                                           (if err?
-                                                                             (format #f "Tool ~a failed: ~a" t-name preview)
-                                                                             (format #f "Tool ~a returned: ~a" t-name preview)))
+                                                                 (render!)))
+                                                         (cons 'on-tool-call
+                                                               (lambda (tc)
+                                                                 (let
+                                                                     ((t-name (prop-ref tc 'name)) (t-args (prop-ref tc 'arguments)))
+                                                                   (set! status-text (format #f "TOOL: ~a..." t-name))
+                                                                   (add-msg! "tool-call" (format #f "Invoking tool: ~a (~s)" t-name t-args))
+                                                                   (poll-steering-input!)
+                                                                   (render!))))
+                                                         (cons 'on-tool-result
+                                                               (lambda (tc res err?)
+                                                                 (let*
+                                                                     ((t-name (prop-ref tc 'name))
+                                                                      (res-str
+                                                                        (if (string? res)
+                                                                          res
+                                                                          (safe-json-string res)))
+                                                                      (preview
+                                                                        (if (> (string-length res-str) 140)
+                                                                          (string-append (substring res-str 0 140) "...")
+                                                                          res-str)))
+                                                                   (add-msg! "tool-result"
+                                                                             (if err?
+                                                                               (format #f "Tool ~a failed: ~a" t-name preview)
+                                                                               (format #f "Tool ~a returned: ~a" t-name preview)))
+                                                                   (poll-steering-input!)
+                                                                   (render!))))
+                                                         (cons 'on-delta
+                                                               (lambda (delta type)
+                                                                 (update-react-stream-message! delta type)
                                                                  (poll-steering-input!)
-                                                                 (render!))))
-                                                       (cons 'on-delta
-                                                             (lambda (delta type)
-                                                               (update-react-stream-message! delta type)
-                                                               (poll-steering-input!)
-                                                               (throttled-stream-render!))))
+                                                                 (throttled-stream-render!)))))
                                                      #:compactor
                                                      compactor
                                                      #:loop-detector

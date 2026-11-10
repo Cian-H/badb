@@ -949,5 +949,115 @@
               (test-assert "contains custom hook pointer"
                            (string-contains res "[custom hook pointer for bash in"))))
 
+;;;
+;;; Seam-test fixture responses as plain JSON strings (no vector literals,
+;;; so paren balance is trivially local).
+;;;
+(define %seam-tool-call-response
+        "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Calling ping.\",\"tool_calls\":[{\"id\":\"call_seam\",\"type\":\"function\",\"function\":{\"name\":\"ping\",\"arguments\":\"{}\"}}]}}]}")
+
+(define %seam-loop-response
+        "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Looping...\",\"tool_calls\":[{\"id\":\"call_l\",\"type\":\"function\",\"function\":{\"name\":\"ping\",\"arguments\":\"{}\"}}]}}]}")
+
+(define %seam-text-response
+        "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Seam text answer.\"}}]}")
+
+(test-group "react-intercept-hook"
+            (let* ((reg (make-registry))
+                   (exec-count 0)
+                   (_ (registry-attach! reg "ping"
+                                        (lambda () (set! exec-count (+ exec-count 1)) "pong")
+                                        '((description . "Ping"))))
+                   (client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "seam-test"))
+                   (mock-poster
+                     (lambda* (uri #:key body headers streaming?)
+                              (values (build-response #:code 200) %seam-tool-call-response)))
+                   (session
+                     (make-react-session client
+                                         #:initial-messages '(((role . "user") (content . "call it")))
+                                         #:reg reg
+                                         #:max-iterations 5
+                                         #:hooks (list (cons 'intercept-tool-call
+                                                             (lambda (tc _sess)
+                                                               (and (equal? (assoc-ref tc 'name) "ping")
+                                                                    "already executed in turn 1 (seam test)")))))))
+              (parameterize ((current-http-post mock-poster))
+                            (call-with-values (lambda () (react-step! session))
+                                              (lambda (status results)
+                                                (test-equal "vetoed step still continues" 'continue status)
+                                                (test-equal "vetoed tool never executes" 0 exec-count)
+                                                (test-assert "tool role carries the structured ERROR envelope"
+                                                             (string-contains (assoc-ref (cdr (car results)) 'content)
+                                                                              "DuplicateToolCallException"))
+                                                (test-assert "block reason embedded in the envelope"
+                                                             (string-contains (assoc-ref (cdr (car results)) 'content)
+                                                                              "seam test")))))))
+
+(test-group "react-completion-hook"
+            (let* ((client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "seam-test"))
+                   (bodies '())
+                   (mock-poster
+                     (lambda* (uri #:key body headers streaming?)
+                              (set! bodies (cons body bodies))
+                              (values (build-response #:code 200) %seam-text-response)))
+                   (session
+                     (make-react-session client
+                                         #:initial-messages '(((role . "user") (content . "seam test")))
+                                         #:max-iterations 3
+                                         #:hooks (list (cons 'completion
+                                                             (lambda (base messages tools)
+                                                               (call-with-values
+                                                                 (lambda () (base messages tools #:temperature 0.9))
+                                                                 (lambda (c r t)
+                                                                   (values c r t
+                                                                           (list `((role . "user")
+                                                                                   (content . "pre-turn marker"))))))))))))
+              (parameterize ((current-http-post mock-poster))
+                            (call-with-values (lambda () (react-step! session))
+                                              (lambda (status content)
+                                                (test-equal "completion hook drives the turn" 'completed status)
+                                                (test-equal "hook-set temperature reaches the wire"
+                                                            0.9
+                                                            (assoc-ref (json-string->scm (car bodies)) "temperature"))
+                                                (let ((msgs (react-session-messages session)))
+                                                  (test-equal "pre-turns persisted before the final assistant turn"
+                                                              3 (length msgs))
+                                                  (test-equal "pre-turn message stored in order"
+                                                              "pre-turn marker" (assoc-ref (cadr msgs) 'content))
+                                                  (test-equal "final assistant turn last"
+                                                              "assistant" (assoc-ref (caddr msgs) 'role)))))))
+
+            (test-group "react-post-turn-and-detector-ignores-blocked"
+                        (let* ((client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "looping-llm"))
+                               (post-turn-count 0)
+                               (mock-poster
+                                 (lambda* (uri #:key body headers streaming?)
+                                          (values (build-response #:code 200) %seam-loop-response)))
+                               (session
+                                 (make-react-session client
+                                                     #:initial-messages '(((role . "user") (content . "infinite loop")))
+                                                     #:max-iterations 6
+                                                     #:loop-detector (make-loop-detector #:window 10
+                                                                                         #:warn-after 2
+                                                                                         #:halt-after 3)
+                                                     #:hooks (list
+                                                               (cons 'intercept-tool-call
+                                                                     (lambda (tc _sess) "blocked duplicate (seam test)"))
+                                                               (cons 'post-turn
+                                                                     (lambda (_sess)
+                                                                       (set! post-turn-count (+ post-turn-count 1))))))))
+                          (parameterize ((current-http-post mock-poster))
+                                        (call-with-values (lambda () (react-run! session))
+                                                          (lambda (verdict payload sess)
+                                                            (test-equal "blocked duplicates never trip the detector halt"
+                                                                        'max-iterations-reached verdict)
+                                                            (test-equal "post-turn hook fires once per step"
+                                                                        6 post-turn-count)
+                                                            (test-assert "no detector warning injected for blocked calls"
+                                                                         (not (any (lambda (m)
+                                                                                     (string-contains (or (assoc-ref m 'content) "")
+                                                                                                      "[badb loop-detector]"))
+                                                                                   (react-session-messages sess))))))))))
+
 (spec-end)
 (spec-exit)

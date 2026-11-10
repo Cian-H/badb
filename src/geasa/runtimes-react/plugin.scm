@@ -86,6 +86,10 @@
                           stream-model-completion
                           parse-xml-tool-calls
                           execute-tool-call
+                          %duplicate-blocked-marker
+                          blocked-tool-payload
+                          session-intercept-tool-call
+                          tool-result-blocked?
                           make-loop-detector
                           loop-detector?
                           loop-detector-window
@@ -305,7 +309,9 @@ ENTRY is either a steering instruction string or the symbol 'interrupt."
              #t))
 
 (define* (stream-model-completion client messages tools max-tokens on-delta
-                                  #:key (steering-queue #f))
+                                  #:key (steering-queue #f)
+                                  (temperature 0.7)
+                                  (tool-choice #f))
          "Run one streamed chat completion for the ReAct loop: accumulate content
 and reasoning deltas and assemble streamed tool-call fragments
 (merge-tool-call-fragment), invoking (ON-DELTA payload type) for every
@@ -353,7 +359,9 @@ delivered nothing, fall back to a single model-complete call."
                                        #t))
                                    #t)))))
                          #:tools tools
-                         #:max-tokens max-tokens)
+                         #:max-tokens max-tokens
+                         #:temperature temperature
+                         #:tool-choice tool-choice)
            (if interrupted?
              (values content reasoning '())
              (if complete-result
@@ -361,7 +369,12 @@ delivered nothing, fall back to a single model-complete call."
                (if (and (string-null? (string-trim-both content))
                         (string-null? (string-trim-both reasoning))
                         (not (pair? frag-acc)))
-                 (let ((raw-resp (model-complete client messages #:tools tools #:max-tokens max-tokens #:raw? #t)))
+                 (let ((raw-resp (model-complete client messages
+                                                 #:tools tools
+                                                 #:max-tokens max-tokens
+                                                 #:temperature temperature
+                                                 #:tool-choice tool-choice
+                                                 #:raw? #t)))
                    (let ((usage (extract-usage raw-resp)))
                      (when (and usage (procedure? on-delta))
                        (ignore-errors (on-delta usage 'usage))))
@@ -743,6 +756,48 @@ tool is added to hydrated tools."
                            (else
                              (loop (cdr rest) (cons t hydrated) deferred))))))))
 
+;;; Duplicate-call interception seam.  An 'intercept-tool-call hook on the
+;;; session may veto execution of a tool call before it runs; the vetoed
+;;; call is answered with a structured ERROR payload inside the tool role
+;;; (instruction-tuned models react to structured tool failures far more
+;;; reliably than to prose warnings), and is excluded from loop detection.
+;;; NOTE: these helpers live AFTER the <react-session> record definition —
+;;; in-module functions defined before it resolve srfi-9 accessors as
+;;; syntax transformers at the call site.
+(define %duplicate-blocked-marker "DuplicateToolCallException")
+
+(define (blocked-tool-payload name message)
+        "Render the structured exception payload returned in the tool role
+when an execution-interception hook vetoed the call to NAME; MESSAGE is
+the hook's block reason."
+        `((status . "ERROR")
+          (error_type . ,%duplicate-blocked-marker)
+          (message . ,message)))
+
+(define (session-intercept-tool-call sess tc)
+        "Consult session SESS's 'intercept-tool-call hook ((FN TC SESS) ->
+block-reason-string | #f). Return the block reason string when the hook
+vetoes execution of TC, #f otherwise. Never raises: a throwing hook
+degrades to a pass-through."
+        (let* ((hooks (and sess (react-session-hooks sess)))
+               (fn (and hooks (assoc-ref hooks 'intercept-tool-call))))
+          (if (procedure? fn)
+            (catch #t
+              (lambda ()
+                (let ((verdict (fn tc sess)))
+                  (and (string? verdict) verdict)))
+              (lambda _ #f))
+            #f)))
+
+(define (tool-result-blocked? result-pair)
+        "Return #t when RESULT-PAIR's tool message carries the structured
+duplicate-blocked ERROR payload rather than a real execution result."
+        (let ((content (assoc-ref (cdr result-pair) 'content)))
+          (and (string? content)
+               (string-contains content %duplicate-blocked-marker))))
+
+
+
 (define* (detect-step-loops! session tool-calls #:key (jrn #f))
          "Observe TOOL-CALLS signatures against SESSION's loop detector (a
 no-op without one). Returns 'halt once the halt threshold trips, 'warn
@@ -971,6 +1026,9 @@ stderr as a warning instead of letting it abort the caller."
   "Execute TOOL-CALLS sequentially, invoking callbacks and returning pairs of (tool-call . tool-msg).
 Hook exceptions are isolated: a failing on-tool-call or on-tool-result
 callback is reported on stderr and skipped, never aborting the loop.
+A session 'intercept-tool-call hook may veto execution of a call before
+it runs; vetoed calls are never dispatched to the tool environment and
+return a structured DuplicateToolCallException ERROR payload instead.
 When the tool message's content exceeds the threshold and dir is set,
 its content becomes (offload-tool-result! dir name content-str threshold #:offload-hook offload-hook) —
 applied AFTER log-tool-execution!."
@@ -998,48 +1056,57 @@ applied AFTER log-tool-execution!."
                           (args (or (prop-ref tc 'arguments) '())))
                       (call-with-values
                         (lambda ()
-                          (if (string=? (or name "") "tool_search")
-                            (let* ((query (or (assoc-ref args 'query) (assoc-ref args "query") "all"))
-                                   (q-str (string-downcase (if (string? query) query (format #f "~a" query))))
-                                   (matches
-                                     (filter
-                                       (lambda (t)
-                                         (let ((n (tool-spec-name t))
-                                               (d (tool-spec-description t)))
-                                           (or (string=? q-str "all")
-                                               (string-contains (string-downcase n) q-str)
-                                               (string-contains (string-downcase d) q-str))))
-                                       deferred-tools))
-                                   (matched-names (map tool-spec-name matches)))
-                              (when session
-                                (let ((cur (react-session-active-tools session)))
-                                  (set-react-session-active-tools!
-                                    session
-                                    (delete-duplicates (append cur matched-names)))))
-                              (values
-                                (if (null? matches)
-                                  (format #f "No deferred tools matched query '~a'." query)
-                                  (format #f "Found ~a deferred tool(s) (schemas hydrated for next turn):\n~a"
-                                          (length matches)
-                                          (string-join
-                                            (map (lambda (t)
-                                                   (let ((entry (tool-spec-entry-alist t)))
-                                                     (format #f "### ~a\n~a\nParameters: ~s"
-                                                             (tool-spec-name t)
-                                                             (tool-spec-description t)
-                                                             (or (assoc-ref entry 'parameters) (assoc-ref entry "parameters") '()))))
-                                                 matches)
-                                            "\n\n")))
-                                #f))
-                            (call-with-values
-                              (lambda ()
-                                (execute-tool-call tc reg mcp-mgr #:jrn jrn #:mgr mgr #:guardrail guardrail-fn))
-                              (lambda (res err?)
-                                (when (and session name (not (string-null? name)))
-                                  (let ((cur (react-session-active-tools session)))
-                                    (unless (member name cur)
-                                      (set-react-session-active-tools! session (cons name cur)))))
-                                (values res err?)))))
+                          (let ((blocked-reason (session-intercept-tool-call sess tc)))
+                            (if (and (string? blocked-reason) (not (string-null? blocked-reason)))
+                              (begin
+                                (log-tool-execution! jrn
+                                                     name
+                                                     args
+                                                     "blocked"
+                                                     '((blocked . "duplicate")))
+                                (values (blocked-tool-payload name blocked-reason) #t))
+                              (if (string=? (or name "") "tool_search")
+                                (let* ((query (or (assoc-ref args 'query) (assoc-ref args "query") "all"))
+                                       (q-str (string-downcase (if (string? query) query (format #f "~a" query))))
+                                       (matches
+                                         (filter
+                                           (lambda (t)
+                                             (let ((n (tool-spec-name t))
+                                                   (d (tool-spec-description t)))
+                                               (or (string=? q-str "all")
+                                                   (string-contains (string-downcase n) q-str)
+                                                   (string-contains (string-downcase d) q-str))))
+                                           deferred-tools))
+                                       (matched-names (map tool-spec-name matches)))
+                                  (when session
+                                    (let ((cur (react-session-active-tools session)))
+                                      (set-react-session-active-tools!
+                                        session
+                                        (delete-duplicates (append cur matched-names)))))
+                                  (values
+                                    (if (null? matches)
+                                      (format #f "No deferred tools matched query '~a'." query)
+                                      (format #f "Found ~a deferred tool(s) (schemas hydrated for next turn):\n~a"
+                                              (length matches)
+                                              (string-join
+                                                (map (lambda (t)
+                                                       (let ((entry (tool-spec-entry-alist t)))
+                                                         (format #f "### ~a\n~a\nParameters: ~s"
+                                                                 (tool-spec-name t)
+                                                                 (tool-spec-description t)
+                                                                 (or (assoc-ref entry 'parameters) (assoc-ref entry "parameters") '()))))
+                                                     matches)
+                                                "\n\n")))
+                                    #f))
+                                (call-with-values
+                                  (lambda ()
+                                    (execute-tool-call tc reg mcp-mgr #:jrn jrn #:mgr mgr #:guardrail guardrail-fn))
+                                  (lambda (res err?)
+                                    (when (and session name (not (string-null? name)))
+                                      (let ((cur (react-session-active-tools session)))
+                                        (unless (member name cur)
+                                          (set-react-session-active-tools! session (cons name cur)))))
+                                    (values res err?)))))))
                         (lambda (res err?)
                           (run-isolated-hook! on-tool-result-fn "on-tool-result" tc res err?)
                           (let*
@@ -1059,7 +1126,11 @@ Returns:
   (values 'continue list-of-tool-results)
   (values 'loop-detected description-string)
   (values 'max-iterations-reached #f)
-  (values 'error error-message)"
+  (values 'error error-message)
+Optional session hooks extend the cycle: 'completion overrides the model
+call (decoding constraints, re-rolls, forced reflection turns),
+'intercept-tool-call vetoes duplicate executions pre-dispatch, and
+'post-turn runs per-step transcript surgery after history append."
         (parameterize ((current-react-session session))
                       (let*
                           ((iter (react-session-iteration session))
@@ -1101,7 +1172,35 @@ Returns:
                                      (outbound-msgs
                                        (if (react-session-recitation? session)
                                          (append msgs (list `((role . "user") (content . ,(react-recitation-text session)))))
-                                         msgs)))
+                                         msgs))
+                                     ;; Completion seam: the base closure runs one streamed
+                                     ;; completion for this loop; a session 'completion hook
+                                     ;; (FN BASE MESSAGES TOOLS -> VALUES content reasoning
+                                     ;; tool-calls PRE-TURNS) may override decoding
+                                     ;; parameters (temperature, tool_choice), re-roll
+                                     ;; completions, or force reflection turns. PRE-TURNS are
+                                     ;; extra messages persisted before the final assistant
+                                     ;; turn. Without the hook behavior is unchanged.
+                                     (base-completion
+                                       (lambda* (eff-msgs eff-tools #:key (temperature #f) (tool-choice #f))
+                                                (stream-model-completion client
+                                                                         eff-msgs
+                                                                         eff-tools
+                                                                         max-tokens
+                                                                         on-delta-fn
+                                                                         #:steering-queue
+                                                                         (react-session-steering-queue session)
+                                                                         #:temperature
+                                                                         (or temperature 0.7)
+                                                                         #:tool-choice
+                                                                         tool-choice)))
+                                     (completion-fn
+                                       (or (assoc-ref hooks 'completion)
+                                           (lambda (base eff-msgs eff-tools)
+                                             (call-with-values
+                                               (lambda () (base eff-msgs eff-tools))
+                                               (lambda (c r t)
+                                                 (values c r t '())))))))
                                   (let-values*
                                     (((tools deferred-tools)
                                       (partition-tools-for-step
@@ -1109,17 +1208,14 @@ Returns:
                                         (react-session-core-tool-names session)
                                         (react-session-active-tools session)
                                         (react-session-deferred-tools? session)))
-                                     ((content reasoning tool-calls)
-                                      (stream-model-completion client
-                                                               outbound-msgs
-                                                               tools
-                                                               max-tokens
-                                                               on-delta-fn
-                                                               #:steering-queue (react-session-steering-queue session))))
+                                     ((content reasoning tool-calls pre-turns)
+                                      (completion-fn base-completion
+                                                     outbound-msgs
+                                                     tools)))
                                     (if (null? tool-calls)
                                       (let
                                           ((final-msg `((role . "assistant") (content . ,content))))
-                                        (set-react-session-messages! session (append msgs (list final-msg)))
+                                        (set-react-session-messages! session (append msgs (append pre-turns (list final-msg))))
                                         (set-react-session-status! session 'completed)
                                         (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'completed))
                                         (values 'completed content))
@@ -1147,10 +1243,25 @@ Returns:
                                                                    #:session
                                                                    session))
                                              (tool-msgs (map cdr results))
-                                             (new-turn (cons asst-msg tool-msgs)))
-                                          (set-react-session-messages! session (append msgs new-turn))
+                                             (new-turn (cons asst-msg tool-msgs))
+                                             ;; Loop detection observes EXECUTED calls only:
+                                             ;; an intercepted duplicate (blocked with a
+                                             ;; structured ERROR before execution) never
+                                             ;; counts toward the warn/halt thresholds.
+                                             (executed-tcs
+                                               (map car
+                                                    (filter (lambda (r) (not (tool-result-blocked? r)))
+                                                            (filter pair? results)))))
+                                          (set-react-session-messages! session (append msgs (append pre-turns new-turn)))
                                           (let
-                                              ((loop-outcome (detect-step-loops! session tool-calls #:jrn jrn)))
+                                              ((loop-outcome (detect-step-loops! session executed-tcs #:jrn jrn)))
+                                            ;; Post-turn seam: runs after the turn is appended and
+                                            ;; after loop detection, letting a session hook (FN
+                                            ;; SESSION) rewrite the transcript (context surgery)
+                                            ;; before the next iteration. Isolated like all hooks.
+                                            (run-isolated-hook! (assoc-ref hooks 'post-turn)
+                                                                "post-turn"
+                                                                session)
                                             (cond
                                               ((eq? loop-outcome 'halt)
                                                 (set-react-session-status! session 'loop-detected)
