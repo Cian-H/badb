@@ -167,14 +167,39 @@ a topic sketch of the top 8 non-stopword words across user messages."
 
 (define (jsonl-line->turn line)
         "Parse a single JSONL LINE into a turn alist of the form
-((role . STRING) (content . STRING)); return #f for blank or malformed
-lines and for entries without string role and content fields."
+((role . STRING) (content . STRING)); preserve the assistant turn's
+reasoning_content and tool_calls plus the tool role's tool_call_id and
+name when the line carries them, so resumed sessions reconstruct the full
+assistant/tool structure. Return #f for blank or malformed lines and for
+entries without string role and content fields."
         (let ((parsed (safe-json-parse line)))
           (if (and (list? parsed)
                    (string? (assoc-ref parsed "role"))
                    (string? (assoc-ref parsed "content")))
-            `((role . ,(assoc-ref parsed "role"))
-              (content . ,(assoc-ref parsed "content")))
+            (let* ((role (assoc-ref parsed "role"))
+                   (reasoning (assoc-ref parsed "reasoning_content"))
+                   (tcs-raw (assoc-ref parsed "tool_calls"))
+                   (tid (assoc-ref parsed "tool_call_id"))
+                   (nm (assoc-ref parsed "name"))
+                   (tcs
+                     (and (vector? tcs-raw)
+                          (list->vector
+                            (filter-map
+                              (lambda (e)
+                                (let ((id (assoc-ref e "id"))
+                                      (fn (assoc-ref e "function")))
+                                  (and (pair? fn)
+                                       `((id . ,(or id ""))
+                                         (type . "function")
+                                         (function . ((name . ,(or (assoc-ref fn "name") ""))
+                                                      (arguments . ,(or (assoc-ref fn "arguments") "{}"))))))))
+                              (vector->list tcs-raw))))))
+              `((role . ,role)
+                (content . ,(assoc-ref parsed "content"))
+                ,@(if (string? reasoning) `((reasoning_content . ,reasoning)) '())
+                ,@(if tcs `((tool_calls . ,tcs)) '())
+                ,@(if (and (equal? role "tool") (string? tid)) `((tool_call_id . ,tid)) '())
+                ,@(if (and (equal? role "tool") (string? nm)) `((name . ,nm)) '())))
             #f)))
 
 (define (summarize-history-file path)

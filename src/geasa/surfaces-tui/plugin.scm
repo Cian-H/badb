@@ -1398,7 +1398,19 @@ grown journal), which the per-frame header render must not pay."
                                                                  (when (eq? phase 'starting)
                                                                    (commit-react-stream-message!)
                                                                    (reset-react-stream-state!))
-                                                                 (set! status-text (format #f "REACT [~a/~a]" iter max-react-iters))
+                                                                 (set! status-text
+                                                                       (if max-react-iters
+                                                                         (format #f "REACT [~a/~a]" iter max-react-iters)
+                                                                         (format #f "REACT [~a]" iter)))
+                                                                 ;; Crash-safe persistence: sync the transcript
+                                                                 ;; from the live session and rewrite the session
+                                                                 ;; file after every executed step so /resume
+                                                                 ;; recovers mid-run state.
+                                                                 (when (memq phase '(tools-executed loop-detected))
+                                                                   (let ((sess (current-react-session)))
+                                                                     (when (react-session? sess)
+                                                                       (set! llm-history (react-session-messages sess))
+                                                                       (persist-session-file! session-file llm-history))))
                                                                  (poll-steering-input!)
                                                                  (render!)))
                                                          (cons 'on-tool-call
@@ -1484,59 +1496,75 @@ grown journal), which the per-frame header render must not pay."
                                                          (default-collapse-message
                                                            `((role . "assistant") (thoughts . #f) (content . "")))))))
                              (render!)
-                             (catch #t
-                               (lambda ()
-                                 (let
-                                     ((raw-api-thoughts "") (raw-api-content "") (target-cell (last-pair messages)))
-                                   (model-stream client
-                                                 llm-history
-                                                 (lambda (delta . type-args)
-                                                   (let
-                                                       ((chunk-type
-                                                          (if (pair? type-args)
-                                                            (car type-args)
-                                                            'content)))
-                                                     (cond
-                                                       ((eq? chunk-type 'complete-json)
-                                                         ;; Endpoint ignored stream:true:
-                                                         ;; deliver the whole completion
-                                                         ;; as one update; its usage
-                                                         ;; block, when present, feeds
-                                                         ;; the session accounting.
-                                                         (record-session-usage! (extract-usage delta))
-                                                         (call-with-values
-                                                           (lambda ()
-                                                             (determine-step-content delta))
-                                                           (lambda (ct rc)
-                                                             (set! raw-api-content (string-append raw-api-content ct))
-                                                             (set! raw-api-thoughts (string-append raw-api-thoughts (or rc ""))))))
-                                                       ((eq? chunk-type 'thought)
-                                                         (set! raw-api-thoughts (string-append raw-api-thoughts delta)))
-                                                       (else (set! raw-api-content (string-append raw-api-content delta))))
-                                                     (call-with-values
-                                                       (lambda ()
-                                                         (split-thoughts-and-content raw-api-content))
-                                                       (lambda (inline-th inline-ct)
-                                                         (let*
-                                                             ((total-th
-                                                                (cond
-                                                                  ((and (not (string-null? raw-api-thoughts)) inline-th)
-                                                                    (string-append raw-api-thoughts "\n\n" inline-th))
-                                                                  ((not (string-null? raw-api-thoughts)) raw-api-thoughts)
-                                                                  (else inline-th)))
-                                                              (updated-msg
-                                                                (default-collapse-message
-                                                                  `((role . "assistant") (thoughts . ,total-th) (content . ,inline-ct)))))
-                                                           (if (pair? target-cell)
-                                                             (set-car! target-cell updated-msg)
-                                                             (set! messages (append (drop-right messages 1) (list updated-msg))))
-                                                           (throttled-stream-render!))))))
-                                                 #:max-tokens
-                                                 (or (badb-config-model-max-tokens cfg) 4096))
-                                   (set! llm-history
-                                         (append llm-history (list `((role . "assistant") (content . ,raw-api-content)))))))
-                               (lambda (key . args)
-                                 (add-err-msg! (format #f "Stream error (~a): ~s" key args))))))))
+                             ;; Direct-streaming accumulators live OUTSIDE the catch so a
+                             ;; mid-stream failure can still preserve the partial output.
+                             (let ((raw-api-thoughts "") (raw-api-content ""))
+                               (catch #t
+                                 (lambda ()
+                                   (let ((target-cell (last-pair messages)))
+                                     (model-stream client
+                                                   llm-history
+                                                   (lambda (delta . type-args)
+                                                     (let
+                                                         ((chunk-type
+                                                            (if (pair? type-args)
+                                                              (car type-args)
+                                                              'content)))
+                                                       (cond
+                                                         ((eq? chunk-type 'complete-json)
+                                                           ;; Endpoint ignored stream:true:
+                                                           ;; deliver the whole completion
+                                                           ;; as one update; its usage
+                                                           ;; block, when present, feeds
+                                                           ;; the session accounting.
+                                                           (record-session-usage! (extract-usage delta))
+                                                           (call-with-values
+                                                             (lambda ()
+                                                               (determine-step-content delta))
+                                                             (lambda (ct rc)
+                                                               (set! raw-api-content (string-append raw-api-content ct))
+                                                               (set! raw-api-thoughts (string-append raw-api-thoughts (or rc ""))))))
+                                                         ((eq? chunk-type 'thought)
+                                                           (set! raw-api-thoughts (string-append raw-api-thoughts delta)))
+                                                         (else (set! raw-api-content (string-append raw-api-content delta))))
+                                                       (call-with-values
+                                                         (lambda ()
+                                                           (split-thoughts-and-content raw-api-content))
+                                                         (lambda (inline-th inline-ct)
+                                                           (let*
+                                                               ((total-th
+                                                                  (cond
+                                                                    ((and (not (string-null? raw-api-thoughts)) inline-th)
+                                                                      (string-append raw-api-thoughts "\n\n" inline-th))
+                                                                    ((not (string-null? raw-api-thoughts)) raw-api-thoughts)
+                                                                    (else inline-th)))
+                                                                (updated-msg
+                                                                  (default-collapse-message
+                                                                    `((role . "assistant") (thoughts . ,total-th) (content . ,inline-ct)))))
+                                                             (if (pair? target-cell)
+                                                               (set-car! target-cell updated-msg)
+                                                               (set! messages (append (drop-right messages 1) (list updated-msg))))
+                                                             (throttled-stream-render!))))))
+                                                   #:max-tokens
+                                                   (or (badb-config-model-max-tokens cfg) 4096))
+                                     (set! llm-history
+                                           (append llm-history (list `((role . "assistant") (content . ,raw-api-content)))))))
+                                 (lambda (key . args)
+                                   ;; Preserve any partially streamed output in
+                                   ;; llm-history (with its thinking trace) so the
+                                   ;; model sees its own partial answer when the
+                                   ;; next turn recovers from the stream failure.
+                                   (when (and (string? raw-api-content)
+                                              (not (string-null? (string-trim-both raw-api-content))))
+                                     (set! llm-history
+                                           (append llm-history
+                                                   (list (append
+                                                           `((role . "assistant")
+                                                             ,@(if (non-empty-string? raw-api-thoughts)
+                                                                 `((reasoning_content . ,raw-api-thoughts))
+                                                                 '()))
+                                                           `((content . ,raw-api-content)))))))
+                                   (add-err-msg! (format #f "Stream error (~a): ~s" key args)))))))))
                 (lambda (key . args)
                   (add-err-msg! (format #f "Execution error (~a): ~s" key args))))
               ;; No endpoint usage block this turn: account an estimate of

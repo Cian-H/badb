@@ -1059,5 +1059,141 @@
                                                                                                       "[badb loop-detector]"))
                                                                                    (react-session-messages sess))))))))))
 
+;;;
+;;; 13. Runtime reliability: premature-stop preservation
+;;;
+(test-group "react-partial-preservation"
+            ;; completion-turn-content: thinking-only turns must never go blank
+            (test-equal "content wins when present"
+                        "solid answer"
+                        (completion-turn-content "solid answer" "ignored trace"))
+            (test-assert
+              "thinking-only falls back to the rendered trace"
+              (string-contains
+                (completion-turn-content "" "Partial reasoning.")
+                "Partial reasoning."))
+            (test-assert
+              "thinking-only fallback renders the think block"
+              (string-contains (completion-turn-content "  " "Trace text.") "Trace text."))
+            ;; commit-partial-step!: executed results kept, never-run calls answered
+            (let*
+                ((tc-a (list (cons 'name "read_file") (cons 'id "c1")))
+                 (tc-b (list (cons 'name "bash") (cons 'id "c2")))
+                 (executed
+                   (list
+                     (cons tc-a
+                           `((role . "tool") (tool_call_id . "c1")
+                             (name . "read_file")
+                             (content . "FILE DATA")))))
+                 (msgs
+                   (list '((role . "user") (content . "task"))
+                         `((role . "assistant")
+                           (tool_calls .
+                                       ,(list->vector
+                                          (list
+                                            `((id . "c1") (type . "function")
+                                              (function . ((name . "read_file") (arguments . "{}"))))))))))
+                 (session (make-react-session #:messages msgs)))
+              (test-assert "tool-call partial turn committed"
+                           (commit-partial-step! session
+                                                 "partial thinking"
+                                                 ""
+                                                 (list tc-a tc-b)
+                                                 '()
+                                                 executed
+                                                 "boom"))
+              (let ((out (react-session-messages session)))
+                (test-assert
+                  "executed result preserved at its call id"
+                  (any
+                    (lambda (m)
+                      (and (equal? (assoc-ref m 'tool_call_id) "c1")
+                           (string-contains (assoc-ref m 'content) "FILE DATA")))
+                    out))
+                (test-assert
+                  "never-run call answered by a synthetic abort observation"
+                  (any
+                    (lambda (m)
+                      (and (equal? (assoc-ref m 'role) "tool")
+                           (equal? (assoc-ref m 'tool_call_id) "c2")
+                           (string-contains (assoc-ref m 'content) "Tool execution aborted")))
+                    out))
+                (test-assert
+                  "assistant tool turn carried the emitted calls"
+                  (any
+                    (lambda (m)
+                      (and (equal? (assoc-ref m 'role) "assistant") (assoc-ref m 'tool_calls)))
+                    out)))
+              (let*
+                  ((think-session
+                     (make-react-session #:messages '((role . "user") (content . "task"))))
+                   (think-only?
+                     (commit-partial-step! think-session "" "Orphan trace." '() '() '() "boom")))
+                (test-assert
+                  "thinking-only partial step commits the trace"
+                  (and think-only?
+                       (string-contains
+                         (assoc-ref (car (reverse (react-session-messages think-session))) 'content)
+                         "Orphan trace.")))
+                (let*
+                    ((blank-session
+                       (make-react-session #:messages '((role . "user") (content . "task"))))
+                     (blank? (commit-partial-step! blank-session "" "" '() '() '() "boom")))
+                  (test-equal "an empty partial wastes no transcript space" #f blank?)))))
+
+(test-group "react-progress-cell"
+            ;; execute-step-tools streams completed (tc . msg) pairs into the progress
+            ;; cell even when a later tool errors (tool errors become observations)
+            (let* ((reg (make-registry))
+                   (_ (registry-attach! reg "ok.tool"
+                                        (lambda () "fine")
+                                        '((description . "ok"))))
+                   (_ (registry-attach! reg "bad.tool"
+                                        (lambda () (error "tool explosion"))
+                                        '((description . "bad"))))
+                   (tcs (list (list (cons 'name "ok_tool") (cons 'id "c1"))
+                              (list (cons 'name "bad_tool") (cons 'id "c2"))))
+                   (cell (cons '() #f)))
+              (let ((results (execute-step-tools tcs reg #f #f #f #f #f #f #:progress-cell cell)))
+                (test-equal "both results returned to the caller" 2 (length results))
+                (test-equal "progress cell mirrors every completed pair" 2 (length (car cell)))
+                (test-assert "exploding tool degraded into an error observation"
+                             (string-contains (assoc-ref (cdr (cadr (reverse (car cell)))) 'content)
+                                              "tool explosion")))))
+
+(test-group "react-precommitted-turn-not-duplicated"
+            ;; A hook error AFTER the step's turn was committed must not duplicate it:
+            ;; the error path skips re-committing an already-landed turn.
+            (let* ((reg (make-registry))
+                   (_ (registry-attach! reg "ping" (lambda () "pong") '((description . "Ping"))))
+                   (client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "hook-err"))
+                   (mock-poster
+                     (lambda* (uri #:key body headers streaming?)
+                              (values (build-response #:code 200) "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Calling.\",\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"ping\",\"arguments\":\"{}\"}}]}}]}")))
+                   (session
+                     (make-react-session client
+                                         #:initial-messages '(((role . "user") (content . "call")))
+                                         #:reg reg
+                                         #:max-iterations 5
+                                         ;; repositories with a `json` import parse the plain
+                                         ;; JSON-string body above just fine
+                                         #:hooks (list (cons 'on-step
+                                                             (lambda (iter phase)
+                                                               (when (eq? phase 'tools-executed)
+                                                                 (error "hook explosion after commit"))))))))
+              (parameterize ((current-http-post mock-poster))
+                            (call-with-values (lambda () (react-step! session))
+                                              (lambda (status payload)
+                                                (test-equal "commit-then-explode surfaces as error" 'error status)
+                                                (let* ((msgs (react-session-messages session))
+                                                       (matches (filter (lambda (m)
+                                                                          (and (equal? (assoc-ref m 'role) "tool")
+                                                                               (string-contains (assoc-ref m 'content) "pong")))
+                                                                        msgs)))
+                                                  (test-equal "committed tool result appears exactly once" 1 (length matches))
+                                                  (test-assert "the committed assistant tool turn survives"
+                                                               (any (lambda (m) (and (equal? (assoc-ref m 'role) "assistant") (assoc-ref m 'tool_calls)))
+                                                                    msgs))))))))
+
 (spec-end)
 (spec-exit)

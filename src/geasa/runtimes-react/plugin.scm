@@ -7,101 +7,119 @@
 ;;; logs execution provenance to the journal, and drives agent tasks to completion.
 
 (define-module (geasa runtimes-react plugin)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (geasa providers-model openai)
-               #:use-module (geasa runtimes-context plugin)
-               #:use-module (badb kernel registry)
-               #:use-module (badb kernel journal)
-               #:use-module (badb kernel transaction)
-               #:use-module (geasa capabilities-mcp plugin)
-               #:use-module (json)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 rdelim)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-9)
-               #:use-module (uuid generate)
-               #:use-module (uuid utils)
-               #:export (<react-session>
-                          <steering-queue>
-                          <react-agent>
-                          make-react-agent
-                          react-agent?
-                          react-step
-                          react-run
-                          make-react-session
-                          react-session?
-                          current-react-session
-                          react-session-messages
-                          react-session-status
-                          react-session-iteration
-                          react-session-max-iterations
-                          react-session-client
-                          react-session-reg
-                          react-session-mcp-mgr
-                          react-session-jrn
-                          react-session-mgr
-                          react-session-hooks
-                          react-session-steering-queue
-                          react-session-max-tokens
-                          react-session-compactor
-                          react-session-loop-detector
-                          react-session-result-offload-dir
-                          react-session-result-offload-chars
-                          react-session-recitation?
-                          react-session-deferred-tools?
-                          react-session-core-tool-names
-                          react-session-active-tools
-                          react-session-offload-hook
-                          set-react-session-messages!
-                          set-react-session-status!
-                          set-react-session-iteration!
-                          set-react-session-max-tokens!
-                          set-react-session-compactor!
-                          set-react-session-steering-queue!
-                          set-react-session-deferred-tools?!
-                          set-react-session-core-tool-names!
-                          set-react-session-active-tools!
-                          set-react-session-offload-hook!
-                          make-steering-queue
-                          steering-queue?
-                          steering-push!
-                          steering-drain!
-                          steering-empty?
-                          steering-count
-                          steering-has-interrupt?
-                          collect-available-tools
-                          partition-tools-for-step
-                          tool-spec-name
-                          tool-spec-description
-                          tool-spec-entry-alist
-                          %default-core-tools
-                          registry-feature->tool-spec
-                          mcp-tool->tool-spec
-                          sanitize-tool-parameters
-                          offload-tool-result!
-                          react-recitation-text
-                          parse-tool-calls
-                          determine-step-content
-                          reasoning-fallback-content
-                          stream-model-completion
-                          parse-xml-tool-calls
-                          execute-tool-call
-                          %duplicate-blocked-marker
-                          blocked-tool-payload
-                          session-intercept-tool-call
-                          tool-result-blocked?
-                          make-loop-detector
-                          loop-detector?
-                          loop-detector-window
-                          loop-detector-warn-after
-                          loop-detector-halt-after
-                          loop-detector-exploratory-turns
-                          set-loop-detector-exploratory-turns!
-                          tool-call-signature
-                          loop-detector-observe!
-                          detect-step-loops!
-                          react-step!
-                          react-run!))
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (geasa providers-model openai)
+               #:use-module
+               (geasa runtimes-context plugin)
+               #:use-module
+               (badb kernel registry)
+               #:use-module
+               (badb kernel journal)
+               #:use-module
+               (badb kernel transaction)
+               #:use-module
+               (geasa capabilities-mcp plugin)
+               #:use-module
+               (json)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:use-module
+               (uuid generate)
+               #:use-module
+               (uuid utils)
+               #:export
+               (<react-session> <steering-queue>
+                                <react-agent>
+                                make-react-agent
+                                react-agent?
+                                react-step
+                                react-run
+                                make-react-session
+                                react-session?
+                                current-react-session
+                                react-session-messages
+                                react-session-status
+                                react-session-iteration
+                                react-session-max-iterations
+                                react-session-client
+                                react-session-reg
+                                react-session-mcp-mgr
+                                react-session-jrn
+                                react-session-mgr
+                                react-session-hooks
+                                react-session-steering-queue
+                                react-session-max-tokens
+                                react-session-compactor
+                                react-session-loop-detector
+                                react-session-result-offload-dir
+                                react-session-result-offload-chars
+                                react-session-recitation?
+                                react-session-deferred-tools?
+                                react-session-core-tool-names
+                                react-session-active-tools
+                                react-session-offload-hook
+                                set-react-session-messages!
+                                set-react-session-status!
+                                set-react-session-iteration!
+                                set-react-session-max-tokens!
+                                set-react-session-compactor!
+                                set-react-session-steering-queue!
+                                set-react-session-deferred-tools?!
+                                set-react-session-core-tool-names!
+                                set-react-session-active-tools!
+                                set-react-session-offload-hook!
+                                make-steering-queue
+                                steering-queue?
+                                steering-push!
+                                steering-drain!
+                                steering-empty?
+                                steering-count
+                                steering-has-interrupt?
+                                collect-available-tools
+                                partition-tools-for-step
+                                tool-spec-name
+                                tool-spec-description
+                                tool-spec-entry-alist
+                                %default-core-tools
+                                registry-feature->tool-spec
+                                mcp-tool->tool-spec
+                                sanitize-tool-parameters
+                                offload-tool-result!
+                                react-recitation-text
+                                parse-tool-calls
+                                determine-step-content
+                                reasoning-fallback-content
+                                stream-model-completion
+                                execute-step-tools
+                                parse-xml-tool-calls
+                                execute-tool-call
+                                %duplicate-blocked-marker
+                                blocked-tool-payload
+                                session-intercept-tool-call
+                                tool-result-blocked?
+                                aborted-tool-msg
+                                completion-turn-content
+                                commit-partial-step!
+                                make-loop-detector
+                                loop-detector?
+                                loop-detector-window
+                                loop-detector-warn-after
+                                loop-detector-halt-after
+                                loop-detector-exploratory-turns
+                                set-loop-detector-exploratory-turns!
+                                tool-call-signature
+                                loop-detector-observe!
+                                detect-step-loops!
+                                react-step!
+                                react-run!))
 
 ;;;
 ;;; Tool Schema Translators
@@ -509,7 +527,6 @@ logs execution provenance to JRN, and returns (values result is-error?)."
 ;;;
 ;;; Steering Queue
 ;;;
-
 ;;;
 ;;; Loop Detector & Thrash Circuit Breaker (opt-in)
 ;;;
@@ -1022,13 +1039,17 @@ stderr as a warning instead of letting it abort the caller."
                       (result-offload-chars 2000)
                       (offload-hook #f)
                       (deferred-tools '())
-                      (session #f))
+                      (session #f)
+                      (progress-cell #f))
   "Execute TOOL-CALLS sequentially, invoking callbacks and returning pairs of (tool-call . tool-msg).
 Hook exceptions are isolated: a failing on-tool-call or on-tool-result
 callback is reported on stderr and skipped, never aborting the loop.
 A session 'intercept-tool-call hook may veto execution of a call before
 it runs; vetoed calls are never dispatched to the tool environment and
 return a structured DuplicateToolCallException ERROR payload instead.
+When a non-#f PROGRESS-CELL (a mutable pair) is supplied, its car is
+updated with the reversed list of completed (tool-call . tool-msg) pairs
+after every tool, so a crashing step can still preserve finished results.
 When the tool message's content exceeds the threshold and dir is set,
 its content becomes (offload-tool-result! dir name content-str threshold #:offload-hook offload-hook) —
 applied AFTER log-tool-execution!."
@@ -1116,8 +1137,73 @@ applied AFTER log-tool-execution!."
                                (final-content (offload-tool-result! result-offload-dir tc-name content-str result-offload-chars #:offload-hook offload-hook))
                                (tool-msg `((role . "tool") (tool_call_id . ,tc-id)
                                            (name . ,tc-name)
-                                           (content . ,final-content))))
-                            (loop (cdr rest) (cons (cons tc tool-msg) acc))))))))))))
+                                           (content . ,final-content)))
+                               (pair (cons tc tool-msg)))
+                            (when (pair? progress-cell)
+                              (set-car! progress-cell (cons pair (car progress-cell))))
+                            (loop (cdr rest) (cons pair acc))))))))))))
+
+;;;
+;;; Premature-stop preservation: a step that dies mid-flight (stream
+;;; failure, tool crash, thrown hook) commits everything it produced to
+;;; the session transcript instead of dropping the whole turn, so the
+;;; agent sees its own partial outputs, reasoning, and errors on the
+;;; next iteration and can recover from them.
+;;;
+(define (aborted-tool-msg tc reason)
+        "Synthetic tool-role observation answering a call that never ran
+to completion."
+        `((role . "tool")
+          (tool_call_id . ,(or (prop-ref tc 'id) "call_0"))
+          (name . ,(or (prop-ref tc 'name) ""))
+          (content . ,reason)))
+
+(define (completion-turn-content content reasoning)
+        "Final text content for a completed step: CONTENT when the model
+produced any, else the reasoning trace rendered via the think-block
+fallback — a thinking-only turn must never persist as a blank message."
+        (cond
+          ((and (string? content) (not (string-null? (string-trim-both content)))) content)
+          ((non-empty-string? reasoning) (reasoning-fallback-content reasoning))
+          (else (if (string? content) content ""))))
+
+(define (commit-partial-step! session content reasoning tool-calls pre-turns results error-msg)
+        "Preserve the partial output of a failed step in SESSION's
+transcript: the streamed content/reasoning (thinking-only fallbacks render
+the reasoning), the emitted assistant tool calls, the RESULTS (ordered
+(tool-call . tool-msg) pairs) of tools that finished, and synthetic error
+observations for calls that never ran. Return #t when a turn was appended."
+        (let* ((tcs (or tool-calls '()))
+               (executed (filter pair? (or results '())))
+               (executed-ids (map (lambda (r) (or (prop-ref (car r) 'id) "call_0")) executed))
+               (missing (filter (lambda (tc)
+                                  (not (member (or (prop-ref tc 'id) "call_0")
+                                               executed-ids equal?)))
+                                tcs))
+               (has-content? (and (string? content)
+                                  (not (string-null? (string-trim-both content)))))
+               (has-reasoning? (non-empty-string? reasoning))
+               (asst-msg
+                 (if (null? tcs)
+                   `((role . "assistant")
+                     (content . ,(completion-turn-content content reasoning)))
+                   (build-assistant-tool-turn tcs
+                                              (if (string? content) content "")
+                                              (if (string? reasoning) reasoning ""))))
+               (synthetic
+                 (map (lambda (tc)
+                        (aborted-tool-msg tc
+                                          (format #f
+                                                  "Tool execution aborted: ReAct step failed (~a)"
+                                                  error-msg)))
+                      missing))
+               (turn (append (or pre-turns '()) (list asst-msg) (map cdr executed) synthetic))
+               (any-output? (or (pair? tcs) has-content? has-reasoning?)))
+          (when any-output?
+            (set-react-session-messages!
+              session
+              (append (react-session-messages session) turn)))
+          (and any-output? #t)))
 
 (define (react-step! session)
         "Execute a single turn of the ReAct cycle.
@@ -1156,129 +1242,182 @@ call (decoding constraints, re-rolls, forced reflection turns),
                             (set-react-session-iteration! session (+ iter 1))
                             (set-react-session-status! session 'running)
                             (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'starting))
-                            (catch #t
-                              (lambda ()
-                                (let*
-                                    ((raw-msgs (react-session-messages session))
-                                     (msgs
-                                       (if
-                                           (and compactor (compaction-needed? compactor raw-msgs))
-                                         (let
-                                             ((compacted (compact-messages compactor raw-msgs)))
-                                           (set-react-session-messages! session compacted)
-                                           compacted)
-                                         raw-msgs))
-                                     ;; Ephemeral recitation for outbound model completion only (strict append-only history for KV cache)
-                                     (outbound-msgs
-                                       (if (react-session-recitation? session)
-                                         (append msgs (list `((role . "user") (content . ,(react-recitation-text session)))))
-                                         msgs))
-                                     ;; Completion seam: the base closure runs one streamed
-                                     ;; completion for this loop; a session 'completion hook
-                                     ;; (FN BASE MESSAGES TOOLS -> VALUES content reasoning
-                                     ;; tool-calls PRE-TURNS) may override decoding
-                                     ;; parameters (temperature, tool_choice), re-roll
-                                     ;; completions, or force reflection turns. PRE-TURNS are
-                                     ;; extra messages persisted before the final assistant
-                                     ;; turn. Without the hook behavior is unchanged.
-                                     (base-completion
-                                       (lambda* (eff-msgs eff-tools #:key (temperature #f) (tool-choice #f))
-                                                (stream-model-completion client
-                                                                         eff-msgs
-                                                                         eff-tools
-                                                                         max-tokens
-                                                                         on-delta-fn
-                                                                         #:steering-queue
-                                                                         (react-session-steering-queue session)
-                                                                         #:temperature
-                                                                         (or temperature 0.7)
-                                                                         #:tool-choice
-                                                                         tool-choice)))
-                                     (completion-fn
-                                       (or (assoc-ref hooks 'completion)
-                                           (lambda (base eff-msgs eff-tools)
-                                             (call-with-values
-                                               (lambda () (base eff-msgs eff-tools))
-                                               (lambda (c r t)
-                                                 (values c r t '())))))))
-                                  (let-values*
-                                    (((tools deferred-tools)
-                                      (partition-tools-for-step
-                                        (collect-available-tools reg mcp-mgr)
-                                        (react-session-core-tool-names session)
-                                        (react-session-active-tools session)
-                                        (react-session-deferred-tools? session)))
-                                     ((content reasoning tool-calls pre-turns)
-                                      (completion-fn base-completion
-                                                     outbound-msgs
-                                                     tools)))
-                                    (if (null? tool-calls)
-                                      (let
-                                          ((final-msg `((role . "assistant") (content . ,content))))
-                                        (set-react-session-messages! session (append msgs (append pre-turns (list final-msg))))
-                                        (set-react-session-status! session 'completed)
-                                        (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'completed))
-                                        (values 'completed content))
-                                      (begin
-                                        (set-react-session-status! session 'awaiting-tool)
-                                        (let*
-                                            ((asst-msg (build-assistant-tool-turn tool-calls content reasoning))
-                                             (results
-                                               (execute-step-tools tool-calls
-                                                                   reg
-                                                                   mcp-mgr
-                                                                   jrn
-                                                                   mgr
-                                                                   guardrail-fn
-                                                                   on-tool-call-fn
-                                                                   on-tool-result-fn
-                                                                   #:result-offload-dir
-                                                                   (react-session-result-offload-dir session)
-                                                                   #:result-offload-chars
-                                                                   (react-session-result-offload-chars session)
-                                                                   #:offload-hook
-                                                                   (react-session-offload-hook session)
-                                                                   #:deferred-tools
-                                                                   deferred-tools
-                                                                   #:session
-                                                                   session))
-                                             (tool-msgs (map cdr results))
-                                             (new-turn (cons asst-msg tool-msgs))
-                                             ;; Loop detection observes EXECUTED calls only:
-                                             ;; an intercepted duplicate (blocked with a
-                                             ;; structured ERROR before execution) never
-                                             ;; counts toward the warn/halt thresholds.
-                                             (executed-tcs
-                                               (map car
-                                                    (filter (lambda (r) (not (tool-result-blocked? r)))
-                                                            (filter pair? results)))))
-                                          (set-react-session-messages! session (append msgs (append pre-turns new-turn)))
-                                          (let
-                                              ((loop-outcome (detect-step-loops! session executed-tcs #:jrn jrn)))
-                                            ;; Post-turn seam: runs after the turn is appended and
-                                            ;; after loop detection, letting a session hook (FN
-                                            ;; SESSION) rewrite the transcript (context surgery)
-                                            ;; before the next iteration. Isolated like all hooks.
-                                            (run-isolated-hook! (assoc-ref hooks 'post-turn)
-                                                                "post-turn"
-                                                                session)
-                                            (cond
-                                              ((eq? loop-outcome 'halt)
-                                                (set-react-session-status! session 'loop-detected)
-                                                (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'loop-detected))
-                                                (values 'loop-detected
-                                                        (format #f
-                                                                "identical tool calls repeated ~a+ times within the detector window"
-                                                                (loop-detector-halt-after (react-session-loop-detector session)))))
-                                              (else
-                                                (set-react-session-status! session 'running)
-                                                (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'tools-executed))
-                                                (values 'continue results))))))))))
-                              (lambda (key . args)
-                                (let
-                                    ((err-msg (format #f "ReAct loop error (~a): ~s" key args)))
-                                  (set-react-session-status! session 'error)
-                                  (values 'error err-msg)))))))))
+                            ;; Premature-stop tracking: everything a possibly
+                            ;; failing step accumulates lives in these cells so
+                            ;; the error handler can commit the partial turn to
+                            ;; the transcript instead of dropping it.
+                            (let ((step-content #f)
+                                  (step-reasoning #f)
+                                  (step-tool-calls #f)
+                                  (step-pre-turns #f)
+                                  (step-progress (cons '() #f))
+                                  (step-committed? #f)
+                                  (stream-acc (cons "" "")))
+                              (catch #t
+                                (lambda ()
+                                  (let*
+                                      ((raw-msgs (react-session-messages session))
+                                       (msgs
+                                         (if
+                                             (and compactor (compaction-needed? compactor raw-msgs))
+                                           (let
+                                               ((compacted (compact-messages compactor raw-msgs)))
+                                             (set-react-session-messages! session compacted)
+                                             compacted)
+                                           raw-msgs))
+                                       ;; Ephemeral recitation for outbound model completion only (strict append-only history for KV cache)
+                                       (outbound-msgs
+                                         (if (react-session-recitation? session)
+                                           (append msgs (list `((role . "user") (content . ,(react-recitation-text session)))))
+                                           msgs))
+                                       ;; Completion seam: the base closure runs one streamed
+                                       ;; completion for this loop; a session 'completion hook
+                                       ;; (FN BASE MESSAGES TOOLS -> VALUES content reasoning
+                                       ;; tool-calls PRE-TURNS) may override decoding
+                                       ;; parameters (temperature, tool_choice), re-roll
+                                       ;; completions, or force reflection turns. PRE-TURNS are
+                                       ;; extra messages persisted before the final assistant
+                                       ;; turn. Without the hook behavior is unchanged.
+                                       (completion-delta-fn
+                                         (lambda (payload . type-args)
+                                           (let ((type (if (pair? type-args)
+                                                         (car type-args)
+                                                         'content)))
+                                             (when (string? payload)
+                                               (case type
+                                                 ((content) (set-car! stream-acc
+                                                                      (string-append (car stream-acc) payload)))
+                                                 ((thought) (set-cdr! stream-acc
+                                                                      (string-append (cdr stream-acc) payload))))))
+                                           (if (procedure? on-delta-fn)
+                                             (catch #t
+                                               (lambda () (apply on-delta-fn payload type-args))
+                                               (lambda _ #f))
+                                             #t)))
+                                       (base-completion
+                                         (lambda* (eff-msgs eff-tools #:key (temperature #f) (tool-choice #f))
+                                                  (stream-model-completion client
+                                                                           eff-msgs
+                                                                           eff-tools
+                                                                           max-tokens
+                                                                           completion-delta-fn
+                                                                           #:steering-queue
+                                                                           (react-session-steering-queue session)
+                                                                           #:temperature
+                                                                           (or temperature 0.7)
+                                                                           #:tool-choice
+                                                                           tool-choice)))
+                                       (completion-fn
+                                         (or (assoc-ref hooks 'completion)
+                                             (lambda (base eff-msgs eff-tools)
+                                               (call-with-values
+                                                 (lambda () (base eff-msgs eff-tools))
+                                                 (lambda (c r t)
+                                                   (values c r t '())))))))
+                                    (let-values*
+                                      (((tools deferred-tools)
+                                        (partition-tools-for-step
+                                          (collect-available-tools reg mcp-mgr)
+                                          (react-session-core-tool-names session)
+                                          (react-session-active-tools session)
+                                          (react-session-deferred-tools? session)))
+                                       ((content reasoning tool-calls pre-turns)
+                                        (completion-fn base-completion
+                                                       outbound-msgs
+                                                       tools)))
+                                      (set! step-content content)
+                                      (set! step-reasoning reasoning)
+                                      (set! step-tool-calls tool-calls)
+                                      (set! step-pre-turns pre-turns)
+                                      (if (null? tool-calls)
+                                        (let
+                                            ((final-msg `((role . "assistant")
+                                                          (content . ,(completion-turn-content content reasoning)))))
+                                          (set! step-committed? #t)
+                                          (set-react-session-messages! session (append msgs (append pre-turns (list final-msg))))
+                                          (set-react-session-status! session 'completed)
+                                          (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'completed))
+                                          (values 'completed content))
+                                        (begin
+                                          (set-react-session-status! session 'awaiting-tool)
+                                          (let*
+                                              ((asst-msg (build-assistant-tool-turn tool-calls content reasoning))
+                                               (results
+                                                 (execute-step-tools tool-calls
+                                                                     reg
+                                                                     mcp-mgr
+                                                                     jrn
+                                                                     mgr
+                                                                     guardrail-fn
+                                                                     on-tool-call-fn
+                                                                     on-tool-result-fn
+                                                                     #:result-offload-dir
+                                                                     (react-session-result-offload-dir session)
+                                                                     #:result-offload-chars
+                                                                     (react-session-result-offload-chars session)
+                                                                     #:offload-hook
+                                                                     (react-session-offload-hook session)
+                                                                     #:deferred-tools
+                                                                     deferred-tools
+                                                                     #:session
+                                                                     session
+                                                                     #:progress-cell
+                                                                     step-progress))
+                                               (tool-msgs (map cdr results))
+                                               (new-turn (cons asst-msg tool-msgs))
+                                               ;; Loop detection observes EXECUTED calls only:
+                                               ;; an intercepted duplicate (blocked with a
+                                               ;; structured ERROR before execution) never
+                                               ;; counts toward the warn/halt thresholds.
+                                               (executed-tcs
+                                                 (map car
+                                                      (filter (lambda (r) (not (tool-result-blocked? r)))
+                                                              (filter pair? results)))))
+                                            (set-react-session-messages! session (append msgs (append pre-turns new-turn)))
+                                            (set! step-committed? #t)
+                                            (let
+                                                ((loop-outcome (detect-step-loops! session executed-tcs #:jrn jrn)))
+                                              ;; Post-turn seam: runs after the turn is appended and
+                                              ;; after loop detection, letting a session hook (FN
+                                              ;; SESSION) rewrite the transcript (context surgery)
+                                              ;; before the next iteration. Isolated like all hooks.
+                                              (run-isolated-hook! (assoc-ref hooks 'post-turn)
+                                                                  "post-turn"
+                                                                  session)
+                                              (cond
+                                                ((eq? loop-outcome 'halt)
+                                                  (set-react-session-status! session 'loop-detected)
+                                                  (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'loop-detected))
+                                                  (values 'loop-detected
+                                                          (format #f
+                                                                  "identical tool calls repeated ~a+ times within the detector window"
+                                                                  (loop-detector-halt-after (react-session-loop-detector session)))))
+                                                (else
+                                                  (set-react-session-status! session 'running)
+                                                  (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'tools-executed))
+                                                  (values 'continue results))))))))))
+                                (lambda (key . args)
+                                  (let
+                                      ((err-msg (format #f "ReAct loop error (~a): ~s" key args)))
+                                    ;; Premature-stop preservation: commit any
+                                    ;; partially streamed content/reasoning, the
+                                    ;; emitted tool calls, finished results, and
+                                    ;; synthetic error observations for calls that
+                                    ;; never ran — unless the turn already landed.
+                                    (unless step-committed?
+                                      (catch #t
+                                        (lambda ()
+                                          (commit-partial-step!
+                                            session
+                                            (or step-content (car stream-acc))
+                                            (or step-reasoning (cdr stream-acc))
+                                            step-tool-calls
+                                            step-pre-turns
+                                            (reverse (car step-progress))
+                                            err-msg))
+                                        (lambda _ #f)))
+                                    (set-react-session-status! session 'error)
+                                    (values 'error err-msg))))))))))
 
 (define (latest-assistant-content session)
         "Return the content of the most recent assistant message in SESSION, or #f."

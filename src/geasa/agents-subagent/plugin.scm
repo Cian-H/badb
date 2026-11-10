@@ -31,7 +31,7 @@
                        (client #f)
                        (parent-reg #f)
                        (allowed-tools %default-investigate-tools)
-                       (max-iterations 8)
+                       (max-iterations #f)
                        (journal-dir ".badb/journal/subagents"))
          "Execute an isolated ReAct sub-agent with ALLOWED-TOOLS and return only the final answer."
          (let* ((sub-id (uuid->string (generate-uuid 'uuidv4)))
@@ -75,7 +75,7 @@
                                  (client #f)
                                  (parent-reg #f)
                                  (allowed-tools %default-investigate-tools)
-                                 (max-iterations 8)
+                                 (max-iterations #f)
                                  (journal-dir ".badb/journal/subagents"))
          "Execute multiple subagents in parallel across QUERIES and collect formatted findings."
          (let ((results
@@ -99,7 +99,7 @@
                        (properties .
                                    ((prompt . ((type . "string") (description . "Research question for the sub-agent")))
                                     (allowed_tools . ((type . "array") (items . ((type . "string"))) (description . "Tool names to grant")))
-                                    (max_iterations . ((type . "integer") (description . "Max iterations (default: 8)")))))
+                                    (max_iterations . ((type . "integer") (description . "Max iterations (default: unlimited)")))))
                        (required . #("prompt"))))))
 
 (define %investigate-parallel-tool-schema
@@ -109,7 +109,7 @@
                       ((type . "object")
                        (properties .
                                    ((queries . ((type . "array") (items . ((type . "string"))) (description . "List of questions to investigate")))
-                                    (max_iterations . ((type . "integer") (description . "Max iterations per sub-agent (default: 8)")))))
+                                    (max_iterations . ((type . "integer") (description . "Max iterations per sub-agent (default: unlimited)")))))
                        (required . #("queries"))))))
 
 (define* (register-subagent-tools! reg
@@ -124,7 +124,7 @@
            (lambda (args)
              (with-tool-args args ((prompt prompt "")
                                    (tools-raw allowed_tools #f)
-                                   (max-iter max_iterations 8))
+                                   (max-iter max_iterations #f))
                              (let ((tools (cond
                                             ((vector? tools-raw) (vector->list tools-raw))
                                             ((list? tools-raw) tools-raw)
@@ -142,7 +142,7 @@
            "investigate_parallel"
            (lambda (args)
              (with-tool-args args ((queries-raw queries '())
-                                   (max-iter max_iterations 8))
+                                   (max-iter max_iterations #f))
                              (let ((queries (cond
                                               ((vector? queries-raw) (vector->list queries-raw))
                                               ((list? queries-raw) queries-raw)

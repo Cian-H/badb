@@ -204,12 +204,50 @@ before spawn."
           (number->string (getpid))
           ".jsonl"))
 
+(define (%assistant-tce->jso tce)
+        "Serialize one assistant tool-call entry TCE for a JSONL line:
+id, type, and the function's name plus raw JSON arguments string."
+        (let ((fn (assoc-ref tce 'function)))
+          `(("id" . ,(or (prop-ref tce 'id) ""))
+            ("type" . "function")
+            ("function" . (("name" . ,(or (prop-ref fn 'name) ""))
+                           ("arguments" . ,(or (prop-ref fn 'arguments) "{}")))))))
+
+(define (%turn-extras msg role)
+        "Extra JSONL fields beyond role and content: the assistant turn's
+reasoning trace and tool_calls vector, and the tool role's tool_call_id
+and name."
+        (let ((reasoning (assoc-ref msg 'reasoning_content))
+              (tcs (assoc-ref msg 'tool_calls))
+              (tid (assoc-ref msg 'tool_call_id))
+              (nm (assoc-ref msg 'name)))
+          (append
+            (if (equal? role "assistant")
+              (append
+                (if (string? reasoning) `(("reasoning_content" . ,reasoning)) '())
+                (if (vector? tcs)
+                  (list (cons "tool_calls"
+                              (list->vector (map %assistant-tce->jso (vector->list tcs)))))
+                  '()))
+              '())
+            (if (equal? role "tool")
+              (append
+                (if (string? tid) `(("tool_call_id" . ,tid)) '())
+                (if (string? nm) `(("name" . ,nm)) '()))
+              '()))))
+
 (define (turn->jsonl-line msg)
-        "Serialize one conversation turn MSG (an alist with role and content)
-into a single JSON object line {\"role\":...,\"content\":...}."
-        (scm->json-string
-          `(("role" . ,(message-role msg))
-            ("content" . ,(message-content msg)))))
+        "Serialize one conversation turn MSG into a single JSON object
+line. Beyond role and content this preserves the assistant turn's
+reasoning trace and tool_calls (ids plus name/arguments), and the tool
+role's tool_call_id/name, so a resumed session reconstructs the full
+assistant/tool structure the model expects."
+        (let ((role (message-role msg)))
+          (scm->json-string
+            (append
+              `(("role" . ,role)
+                ("content" . ,(message-content msg)))
+              (%turn-extras msg role)))))
 
 (define (persist-session-file! path history)
         "Write the whole conversation HISTORY to the session JSONL file at PATH,
