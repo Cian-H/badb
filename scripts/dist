@@ -1,0 +1,45 @@
+#!/usr/bin/env -S guile -e main -s
+!#
+;;; dist — Build a zero-install relocatable badb tarball (`guix pack -RR`).
+;;;
+;;; Produces dist/badb-<version>-<arch>.tar.gz: a relocatable pack with
+;;; PRoot/user-namespace fallback that runs without a Guix daemon, root
+;;; privileges, or any pre-installed dependencies.  Uses the repository's
+;;; pinned channels.scm for bit-reproducible builds.
+
+(setenv "GUILE_AUTO_COMPILE" "0")
+
+(define %script-path
+  (canonicalize-path (car (command-line))))
+
+(define %root-dir
+  (canonicalize-path (string-append (dirname %script-path) "/..")))
+
+(set! %load-path (cons (string-append %root-dir "/src") %load-path))
+
+(use-modules (badb dist))
+
+(define (main args)
+  (let ((cmd-args (if (pair? args) (cdr args) '())))
+    (cond
+     ((member "--help" cmd-args)
+      (display (usage-text))
+      (newline)
+      (exit 0))
+     (else
+      (match (parse-dist-args cmd-args)
+        ('error
+         (format (current-error-port) "scripts/dist: unrecognized arguments~%~%~a~%"
+                 (usage-text))
+         (exit 2))
+        ((out-dir raw-out)
+         (unless raw-out
+           (mkdir-p (string-append %root-dir "/" out-dir)))
+         (let* ((version %default-version)
+                (argv (pack-command %root-dir version))
+                (out (last argv)))
+           (format #t "Building relocatable pack: ~a~%" out)
+           (format #t "This may take a while on first run (channel + closure download).~%")
+           ;; Replace the process with the pinned guix pack invocation;
+           ;; its exit status becomes ours.
+           (apply execlp "guix" "guix" argv))))))))
