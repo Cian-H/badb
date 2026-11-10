@@ -1,0 +1,1 @@
+((bundle-version . 1) (feature-id . "capabilities-macro") (version . "1.0.0") (spec . "spec.geis.scm") (plugin (module geasa capabilities-macro plugin) (file . "plugin.scm")) (tools "macro_expand") (sha256 ("plugin.scm" . "e51cdb6828485b6a796b5e0814f8a9e14f54658ca50c0996e3e220f7417f8d63") ("spec.geis.scm" . "7662eedb6b15516a4c324436aa3e8310869d2fb42039863ed0eab520663f75f4")))
