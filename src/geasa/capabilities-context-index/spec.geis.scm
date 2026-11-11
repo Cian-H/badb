@@ -85,9 +85,9 @@
                                    #:offload-dir tmp-dir)))
 
               (test-assert "returned summary is bounded" (<= (string-length res) 1600))
-              (test-assert "summary identifies indexed output" (string-contains res "indexed=exec:0"))
+              (test-assert "summary identifies indexed output" (string-contains res "indexed=exec:1"))
               (test-assert "large output does not create a log file"
-                           (not (file-exists? (string-append tmp-dir "/exec-0.log"))))
+                           (not (file-exists? (string-append tmp-dir "/exec-1.log"))))
               (test-assert "summary contains error line 42" (string-contains res "assertion failed"))
               (test-assert "summary contains fatal line 85" (string-contains res "Connection pool exhausted"))
 
