@@ -110,51 +110,62 @@
 
               (system* "rm" "-rf" tmp-repo)))
 
-(test-group "subagent-isolated-registry-filesystem"
-            (let* ((tmp-repo (mkdtemp "/tmp/badb-iso-reg-XXXXXX"))
-                   (_ (system* "git" "-C" tmp-repo "init"))
-                   (_ (system* "git" "-C" tmp-repo "config" "user.name" "Test User"))
-                   (_ (system* "git" "-C" tmp-repo "config" "user.email" "test@example.com"))
-                   (_ (call-with-output-file (string-append tmp-repo "/base.txt")
-                                             (lambda (p) (display "base content\n" p))))
-                   (_ (system* "git" "-C" tmp-repo "add" "base.txt"))
-                   (_ (system* "git" "-C" tmp-repo "commit" "-m" "Initial commit"))
-                   (sw (create-subagent-worktree #:repo tmp-repo))
-                   (wt-path (subagent-worktree-path sw))
-                   (sub-reg (make-isolated-subagent-registry (make-registry) wt-path #:parent-repo tmp-repo)))
-
-              (test-assert "isolated registry has read_file" (procedure? (registry-lookup sub-reg "read_file")))
-              (test-assert "isolated registry has write_file" (procedure? (registry-lookup sub-reg "write_file")))
-              (test-assert "isolated registry has edit_file" (procedure? (registry-lookup sub-reg "edit_file")))
-              (test-assert "isolated registry has bash" (procedure? (registry-lookup sub-reg "bash")))
-
-              ;; Write file in worktree
-              (let ((write-fn (registry-lookup sub-reg "write_file")))
-                (write-fn "subfolder/hello.txt" "Hello from worktree!\nLine 2\n")
-                (test-assert "written file exists in worktree"
-                             (file-exists? (string-append wt-path "/subfolder/hello.txt")))
-                (test-assert "written file does NOT exist in parent repo"
-                             (not (file-exists? (string-append tmp-repo "/subfolder/hello.txt")))))
-
-              ;; Read file in worktree
-              (let ((read-fn (registry-lookup sub-reg "read_file")))
-                (let ((content (read-fn "subfolder/hello.txt" 0 10)))
-                  (test-assert "read_file returns content" (string-contains content "Hello from worktree!"))))
-
-              ;; Edit file in worktree
-              (let ((edit-fn (registry-lookup sub-reg "edit_file")))
-                (edit-fn "subfolder/hello.txt" "Hello" "Greetings" #f)
-                (let ((read-fn (registry-lookup sub-reg "read_file")))
-                  (let ((content (read-fn "subfolder/hello.txt" 0 10)))
-                    (test-assert "edit_file modified content" (string-contains content "Greetings from worktree!")))))
-
-              ;; Shell tool in worktree
-              (let ((bash-fn (registry-lookup sub-reg "bash")))
-                (let ((out (bash-fn "pwd")))
-                  (test-assert "bash runs in worktree directory" (string-contains out wt-path))))
-
-              (cleanup-subagent-worktree! sw)
-              (system* "rm" "-rf" tmp-repo)))
+(test-group
+  "subagent-isolated-registry-filesystem"
+  (let*
+      ((tmp-repo (mkdtemp "/tmp/badb-iso-reg-XXXXXX"))
+       (_ (system* "git" "-C" tmp-repo "init"))
+       (_ (system* "git" "-C" tmp-repo "config" "user.name" "Test User"))
+       (_ (system* "git" "-C" tmp-repo "config" "user.email" "test@example.com"))
+       (_
+         (call-with-output-file
+           (string-append tmp-repo "/base.txt")
+           (lambda (p)
+             (display "base content\n" p))))
+       (_ (system* "git" "-C" tmp-repo "add" "base.txt"))
+       (_ (system* "git" "-C" tmp-repo "commit" "-m" "Initial commit"))
+       (sw (create-subagent-worktree #:repo tmp-repo))
+       (wt-path (subagent-worktree-path sw))
+       (sub-reg
+         (make-isolated-subagent-registry (make-registry) wt-path #:parent-repo tmp-repo)))
+    (test-assert "isolated registry has read_file"
+                 (procedure? (registry-lookup sub-reg "read_file")))
+    (test-assert "isolated registry has write_file"
+                 (procedure? (registry-lookup sub-reg "write_file")))
+    (test-assert "isolated registry has edit_file"
+                 (procedure? (registry-lookup sub-reg "edit_file")))
+    (test-assert "isolated registry has bash"
+                 (procedure? (registry-lookup sub-reg "bash")))
+    ;; Write file in worktree
+    (let
+        ((write-fn (registry-lookup sub-reg "write_file")))
+      (write-fn "subfolder/hello.txt" "Hello from worktree!\nLine 2\n")
+      (test-assert "written file exists in worktree"
+                   (file-exists? (string-append wt-path "/subfolder/hello.txt")))
+      (test-assert
+        "written file does NOT exist in parent repo"
+        (not (file-exists? (string-append tmp-repo "/subfolder/hello.txt")))))
+    ;; Read file in worktree
+    (let*
+        ((read-fn (registry-lookup sub-reg "read_file"))
+         (content (read-fn "subfolder/hello.txt" 0 10)))
+      (test-assert "read_file returns content"
+                   (string-contains content "Hello from worktree!")))
+    ;; Edit file in worktree
+    (let
+        ((edit-fn (registry-lookup sub-reg "edit_file")))
+      (edit-fn "subfolder/hello.txt" "Hello" "Greetings" #f)
+      (let*
+          ((read-fn (registry-lookup sub-reg "read_file"))
+           (content (read-fn "subfolder/hello.txt" 0 10)))
+        (test-assert "edit_file modified content"
+                     (string-contains content "Greetings from worktree!"))))
+    ;; Shell tool in worktree
+    (let*
+        ((bash-fn (registry-lookup sub-reg "bash")) (out (bash-fn "pwd")))
+      (test-assert "bash runs in worktree directory" (string-contains out wt-path)))
+    (cleanup-subagent-worktree! sw)
+    (system* "rm" "-rf" tmp-repo)))
 
 (test-group "subagent-worktree-verify-and-merge"
             (let* ((tmp-repo (mkdtemp "/tmp/badb-v-merge-XXXXXX"))
