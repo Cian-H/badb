@@ -539,8 +539,8 @@ logs execution provenance to JRN, and returns (values result is-error?)."
 ;;; threshold once (injecting a corrective user message into the
 ;;; session) and the halt threshold afterwards (stopping the run).
 ;;; Additionally, the detector counts consecutive exploratory turns
-;;; (searching without writing code or running tests) and triggers an
-;;; ephemeral circuit breaker prompt on the 3rd turn.
+;;; (searching without writing code or running tests) and injects a
+;;; progress checkpoint prompt on the 3rd turn.
 (define current-react-session (make-parameter #f))
 
 (define %mutation-tool-names
@@ -834,7 +834,7 @@ when a corrective user message was injected this step, else #f."
                          (append
                            (react-session-messages session)
                            (list `((role . "user")
-                                   (content . "[Tripwire] 3 consecutive exploratory search turns detected without code modifications. Halt ad-hoc bashing: either make a targeted edit, check 'geis.index' for project capabilities, or author a geis bundle if this operation will recur.")))))))))
+                                   (content . "[Exploration checkpoint] You've spent three tool turns investigating without an edit or test. Briefly summarize what you've learned and name the next question or action. If more exploration is needed, continue with a specific question to resolve; don't make an edit or create a geis bundle just to satisfy this reminder. Check 'geis.index' only if a relevant project capability could help.")))))))))
                ;; Track identical tool call repetitions
                (let loop ((rest tool-calls) (outcome #f))
                          (if (null? rest)

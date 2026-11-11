@@ -260,12 +260,12 @@
               (detect-step-loops! session (list exploratory-tc2))
               (test-equal "turn 2 has no tripwire" 0 (length (react-session-messages session)))
 
-              ;; Turn 3: third exploratory call -> TRIPWIRE INJECTED
+              ;; Turn 3: third exploratory call -> checkpoint injected
               (detect-step-loops! session (list exploratory-tc3))
               (let ((msgs (react-session-messages session)))
-                (test-equal "turn 3 injects 1 tripwire message" 1 (length msgs))
-                (test-assert "injected message contains [Tripwire]"
-                             (string-contains (assoc-ref (car msgs) 'content) "[Tripwire]")))
+                (test-equal "turn 3 injects 1 checkpoint message" 1 (length msgs))
+                (test-assert "injected message contains exploration checkpoint"
+                             (string-contains (assoc-ref (car msgs) 'content) "[Exploration checkpoint]")))
 
               ;; Turn 4: mutation resets exploratory counter
               (detect-step-loops! session (list mutation-tc))
