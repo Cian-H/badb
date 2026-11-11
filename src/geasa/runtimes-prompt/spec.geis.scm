@@ -12,7 +12,6 @@
 ;;;
 ;;; 1. Composer Construction
 ;;;
-
 (test-group "prompt-composer-construction"
             (let ((composer (make-prompt-composer)))
               (test-assert "prompt-composer? recognizes record" (prompt-composer? composer))
@@ -39,7 +38,6 @@
 ;;;
 ;;; 2. Environment & Git Inspection
 ;;;
-
 (test-group "prompt-environment-and-git"
             (let ((env (collect-environment-info)))
               (test-assert "environment contains os" (assoc-ref env 'os))
@@ -57,7 +55,6 @@
 ;;;
 ;;; 3. File Tree Scanning
 ;;;
-
 (test-group "prompt-file-tree"
             (let* ((tmp-dir (mkdtemp "/tmp/badb-prompt-tree-XXXXXX")))
               (dynamic-wind
@@ -75,7 +72,6 @@
 ;;;
 ;;; 4. Project Rules Discovery
 ;;;
-
 (test-group "prompt-rules-discovery"
             (let* ((tmp-dir "/tmp/badb-test-rules")
                    (_ (system (format #f "rm -rf ~a && mkdir -p ~a/.badb" tmp-dir tmp-dir)))
@@ -105,7 +101,6 @@
 ;;;
 ;;; 5. Tool Formatting for Prompts
 ;;;
-
 (test-group "prompt-tool-formatting"
             (let* ((tools (list `(("type" . "function")
                                   ("function" . (("name" . "execute_command")
@@ -124,7 +119,6 @@
 ;;;
 ;;; 6. Unified Prompt Assembly
 ;;;
-
 (test-group "prompt-assembly"
             (let* ((composer (make-prompt-composer
                                #:system-identity "You are badb system prompt."
@@ -205,6 +199,51 @@
               (test-assert "full prompt contains static prefix" (string-contains prompt "## Operational Directives"))
               (test-assert "full prompt contains skills" (string-contains prompt "git-flow: git workflow"))
               (test-assert "full prompt contains memories" (string-contains prompt "note: important note"))))
+
+(test-group "split-system-prompt-halves"
+            (let*
+                ((composer (make-prompt-composer))
+                 (full
+                   (assemble-system-prompt composer
+                                           #:workspace-dir
+                                           (getcwd)
+                                           #:skills
+                                           '(((name . "s") (description . "d")))
+                                           #:memories
+                                           '(((title . "m") (content . "c")))))
+                 (static
+                   (assemble-system-prompt composer
+                                           #:workspace-dir
+                                           (getcwd)
+                                           #:skills
+                                           '(((name . "s") (description . "d")))
+                                           #:memories
+                                           '(((title . "m") (content . "c")))
+                                           #:static-only?
+                                           #t))
+                 (pair
+                   (split-system-prompt composer
+                                        #:workspace-dir
+                                        (getcwd)
+                                        #:skills
+                                        '(((name . "s") (description . "d")))
+                                        #:memories
+                                        '(((title . "m") (content . "c"))))))
+              (test-assert "split car is the static prefix" (equal? (car pair) static))
+              (test-assert
+                "reassembly reproduces the full prompt"
+                (equal? (string-append (car pair) "\n\n" (cdr pair)) full))
+              (test-assert
+                "static half is invariant to workspace changes"
+                (equal?
+                  (car (split-system-prompt composer #:workspace-dir "/dir/alpha"))
+                  (car (split-system-prompt composer #:workspace-dir "/dir/beta"))))
+              (test-assert
+                "dynamic half contains the Environment section"
+                (string-contains (cdr pair) "## Environment"))
+              (test-assert
+                "static half contains the Tool Usage directives"
+                (string-contains (car pair) "## Tool Usage"))))
 
 (spec-end)
 (spec-exit)

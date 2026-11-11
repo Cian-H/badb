@@ -11,6 +11,8 @@
                #:use-module
                (geasa providers-model anthropic)
                #:use-module
+               (geasa providers-model cache)
+               #:use-module
                (geasa providers-model mock)
                #:use-module
                (web uri)
@@ -113,7 +115,8 @@ it is automatically wrapped into an OpenAI-compliant (type . \"function\") envel
                        (tool-choice #f)
                        (max-tokens #f)
                        (as-alist #f)
-                       (allow-missing-thinking #t))
+                       (allow-missing-thinking #t)
+                       (cache-markers? #f))
   "Format a chat completion request payload.
 MESSAGES can be a string prompt, a list of message alists, a single message alist,
 a list of (role . text) pairs, or a vector of messages.
@@ -124,9 +127,15 @@ Optional keyword arguments:
   #:tools       - List or vector of tool specification alists
   #:tool-choice - Tool choice policy string or object (e.g. \"auto\")
   #:max-tokens  - Integer maximum tokens to generate
-  #:as-alist    - When true, returns the Scheme alist instead of JSON string."
+  #:as-alist    - When true, returns the Scheme alist instead of JSON string.
+  #:cache-markers? - Annotate the stable leading system-message prefix with
+    an explicit ephemeral cache_control breakpoint (see (geasa
+    providers-model cache)); no markers are attached when #f (default)."
   (let*
-      ((msgs (normalize-messages messages))
+      ((msgs
+         (if cache-markers?
+           (apply-cache-breakpoints (normalize-messages messages))
+           (normalize-messages messages)))
        (alist
          (filter pair?
                  (list (cons "messages" msgs)
@@ -136,9 +145,7 @@ Optional keyword arguments:
                        (and
                          (and tools (or (pair? tools) (vector? tools)))
                          (cons "tools"
-                               (list->vector
-                                 (map strip-internal-tool-keys
-                                      (filter pair? (ensure-list tools))))))
+                               (list->vector (map strip-internal-tool-keys (filter pair? (ensure-list tools))))))
                        (and tool-choice (cons "tool_choice" tool-choice))
                        (and allow-missing-thinking (cons "allow_missing_thinking" #t))
                        (cons "stream"
@@ -460,7 +467,9 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
                                 #:tool-choice
                                 tool-choice
                                 #:allow-missing-thinking
-                                (model-client-allow-missing-thinking? client))))
+                                (model-client-allow-missing-thinking? client)
+                                #:cache-markers?
+                                (model-client-cache-markers? client))))
        (headers (build-headers api-key #f))
        (poster (or http-poster (current-http-post))))
     (let loop
@@ -549,7 +558,9 @@ Returns 'done or 'eof."
                                 #:stream
                                 #t
                                 #:allow-missing-thinking
-                                (model-client-allow-missing-thinking? client))))
+                                (model-client-allow-missing-thinking? client)
+                                #:cache-markers?
+                                (model-client-cache-markers? client))))
        (headers (build-headers api-key #t))
        (poster (or http-poster (current-http-post))))
     (call-with-values
@@ -587,29 +598,34 @@ Returns 'done or 'eof."
                        (read-sse-events port
                                         (lambda (chunk)
                                           (let
-                                              ((stop? #f)
-                                               (fragments (extract-tool-call-deltas chunk)))
+                                              ((stop? #f) (fragments (extract-tool-call-deltas chunk)))
                                             (if (pair? fragments)
                                               (for-each
                                                 (lambda (frag)
                                                   (unless stop?
-                                                    (let ((res (catch #t
-                                                                 (lambda ()
-                                                                   (chunk-callback frag 'tool-call))
-                                                                 (lambda _
-                                                                   #f))))
+                                                    (let
+                                                        ((res
+                                                           (catch #t
+                                                             (lambda ()
+                                                               (chunk-callback frag 'tool-call))
+                                                             (lambda _
+                                                               #f))))
                                                       (when (eq? res 'stop) (set! stop? #t)))))
                                                 fragments)
                                               (let ((item (extract-chat-delta-item chunk)))
                                                 (when
                                                     (and (pair? item) (string? (cdr item)) (not (string-null? (cdr item))))
-                                                  (let ((res (catch #t
-                                                               (lambda ()
-                                                                 (chunk-callback (cdr item) (car item)))
-                                                               (lambda _
-                                                                 (chunk-callback (cdr item))))))
+                                                  (let
+                                                      ((res
+                                                         (catch #t
+                                                           (lambda ()
+                                                             (chunk-callback (cdr item) (car item)))
+                                                           (lambda _
+                                                             (chunk-callback (cdr item))))))
                                                     (when (eq? res 'stop) (set! stop? #t))))))
-                                            (if stop? 'stop #f)))))
+                                            (if stop?
+                                              'stop
+                                              #f)))))
                      (complete-res (and (pair? result) (json-ref result "choices") result)))
                   (when complete-res
                     (catch #t
