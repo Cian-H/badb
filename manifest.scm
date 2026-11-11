@@ -8,6 +8,7 @@
             "git"
             "grep"
             "guile"
+            "bubblewrap"
             "guile-json"
             "notcurses"
             "sed"

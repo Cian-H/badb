@@ -110,6 +110,29 @@ When badb starts or loads a bundle, `geis-gate` executes the bundle's `spec.geis
 
 Bundles are discovered in `BADB_GEIS_PATH` (defaults to `.badb/geasa:src/geasa`).
 
+#### Project bundle isolation and permissions
+
+Bundles mounted from `.badb/geasa`, `.badb/workflows`, or extra project search paths are
+untrusted. A manifest cannot mark itself trusted. Built-in bundles are trusted only when
+badb wires them directly as part of its installed application. Project plugins must list
+their exported tool names in `tools`; the loader does not evaluate a plugin in the host
+process to discover exports.
+
+Each project tool runs in a bubblewrap worker with a clean environment, a temporary home,
+read-only access to badb's source and Guix store, a private process namespace, and no network
+namespace access. The project workspace and host home are not mounted into the worker. A
+120-second timeout terminates stuck workers. Plugins can still start child processes using
+programs visible in the Guix store, but those children remain in the private namespaces.
+Permissions are deny-by-default: an absent `capabilities` list grants nothing. Declared
+`(kind target)` requests are granted only when the host supplies an approving
+`capability-provider`; the worker calls those attenuated host closures over the worker's
+JSON protocol. Existing project plugins that use ambient filesystem, network, or environment
+access must migrate those operations to `geis-capability` and request the narrow target they
+need. The worker's Guile module paths are limited to badb source and the active Guix store
+profile, which remains readable so the runtime can load. Each tool call gets a fresh worker,
+so plugins must not rely on process-local globals persisting between calls. If bubblewrap or
+the Guix store is unavailable, the worker fails closed.
+
 ### Project Infrastructure (`.badb/`)
 
 Running `./scripts/badb init` or `onboard` establishes project-scoped harness state in `.badb/`:
