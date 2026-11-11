@@ -35,13 +35,11 @@
 ;;;
 ;;; Default Shell Execution
 ;;;
-
 (define default-shell-exec exec-shell-command)
 
 ;;;
 ;;; File and Content Indexing
 ;;;
-
 (define (ctx-index-file! idx path)
         "Index a file from PATH into IDX. Returns the number of chunks added."
         (if (file-exists? path)
@@ -70,7 +68,6 @@
 ;;;
 ;;; Context Search
 ;;;
-
 (define* (ctx-search idx query #:key (source-id #f) (top-k 5) (max-chars 2400))
          "Search the BM25 index for QUERY and return a formatted context slice."
          (let* ((matches (bm25-search idx query #:source-id source-id #:top-k top-k)))
@@ -109,93 +106,125 @@
 ;;;
 ;;; Command Execution & Virtualization
 ;;;
-
 (define %error-pattern
         (make-regexp "(^[[:space:]]*(ERROR|FAIL|FAILED|FATAL|CRITICAL|PANIC|TRACEBACK|EXCEPTION|ASSERTION FAILED|DENIED)(:|[[:space:]])|:[[:space:]]*(error|failure|failed|fatal|panic|exception|assertion failed|denied)(:|[[:space:]])|^[[:space:]]*Traceback([[:space:]]|:))" regexp/icase))
 
-(define* (ctx-exec! idx command #:key (shell-executor #f) (intent-query #f)
-                    (max-return-chars 1600) (offload-dir ".badb/ctx"))
-         "Execute COMMAND with virtualized output management. Automatically offloads
+(define*
+  (ctx-exec! idx
+             command
+             #:key
+             (shell-executor #f)
+             (intent-query #f)
+             (max-return-chars 1600)
+             (offload-dir ".badb/ctx"))
+  "Execute COMMAND with virtualized output management. Automatically offloads
 oversized outputs and indexes them into BM25."
-         (let ((exec-fn (or shell-executor default-shell-exec)))
-           (call-with-values
-             (lambda () (exec-fn command))
-             (lambda (out . rest)
-               (let* ((exit-code (if (pair? rest) (car rest) 0))
-                      (err (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) #f))
-                      (clean-out (or out "")))
-                 (if err
-                   (format #f "[Command execution failed with exit=~a]: ~a" exit-code err)
-                   (let* ((doc-n (index-next-doc-id idx))
-                          (doc-id (format #f "exec:~a" doc-n))
-                          (raw-bytes (string-length clean-out))
-                          (lines (string-split clean-out #\newline))
-                          (line-count (length lines)))
-                     (set-index-next-doc-id! idx (+ doc-n 1))
-                     ;; Always index into BM25
-                     (ctx-index-content! idx doc-id clean-out)
-
-                     (if (and (<= raw-bytes max-return-chars) (not intent-query))
-                       ;; Output is small enough to return directly
-                       (begin
-                         (set-index-returned-bytes! idx (+ (index-returned-bytes idx) raw-bytes))
-                         clean-out)
-                       ;; Output is large or intent-query was specified: virtualize!
-                       (begin
-                         (mkdir-p offload-dir)
-                         (let ((log-path (format #f "~a/exec-~a.log" offload-dir doc-n)))
-                           (catch #t
-                             (lambda ()
-                               (call-with-output-file log-path
-                                                      (lambda (p) (display clean-out p))))
-                             (lambda _ #f))
-
-                           (let* ((header (format #f "[~a exit=~a lines=~a bytes=~a offloaded=~a]\n"
-                                                  doc-id exit-code line-count raw-bytes log-path))
-                                  (summary-body
-                                    (if intent-query
-                                      ;; Extract intent query chunks
-                                      (ctx-search idx intent-query #:source-id doc-id #:top-k 3 #:max-chars (- max-return-chars 300))
-                                      ;; Extract failure lines or window
-                                      (let* ((tagged-lines
-                                               (let loop ((i 1) (rem lines) (acc '()))
-                                                         (if (null? rem)
-                                                           (reverse acc)
-                                                           (let ((l (car rem)))
-                                                             (if (regexp-exec %error-pattern l)
-                                                               (loop (+ i 1) (cdr rem) (cons (cons i l) acc))
-                                                               (loop (+ i 1) (cdr rem) acc))))))
-                                             (error-count (length tagged-lines)))
-                                        (cond
-                                          ((> error-count 0)
-                                            (let* ((top-errors (take-n tagged-lines 15))
-                                                   (formatted-errors
-                                                     (map (lambda (pair)
-                                                            (format #f "  L~a: ~a" (car pair) (cdr pair)))
-                                                          top-errors))
-                                                   (tail-lines (take-n (reverse lines) 5))
-                                                   (tail-str (string-join (reverse tail-lines) "\n")))
-                                              (format #f "Identified ~a diagnostic error/failure lines:\n~a\n\nTail summary:\n~a"
-                                                      error-count
-                                                      (string-join formatted-errors "\n")
-                                                      tail-str)))
-                                          (else
-                                            (let* ((head-lines (take-n lines 8))
-                                                   (tail-lines (take-n (reverse lines) 5))
-                                                   (head-str (string-join head-lines "\n"))
-                                                   (tail-str (string-join (reverse tail-lines) "\n")))
-                                              (format #f "~a\n... [~a lines virtualized into ~a] ...\n~a"
-                                                      head-str (- line-count 13) doc-id tail-str)))))))
-                                  (footer (format #f "\n[Output virtualized to save tokens. Use ctx_search(query: \"...\", source_id: ~s) for details]"
-                                                  doc-id))
-                                  (full-response (string-append header summary-body footer)))
-                             (set-index-returned-bytes! idx (+ (index-returned-bytes idx) (string-length full-response)))
-                             full-response)))))))))))
+  (let
+      ((exec-fn (or shell-executor default-shell-exec)))
+    (call-with-values
+      (lambda ()
+        (exec-fn command))
+      (lambda (out . rest)
+        (let*
+            ((exit-code
+               (if (pair? rest)
+                 (car rest)
+                 0))
+             (err
+               (if (and (pair? rest) (pair? (cdr rest)))
+                 (cadr rest)
+                 #f))
+             (clean-out (or out "")))
+          (if err
+            (format #f "[Command execution failed with exit=~a]: ~a" exit-code err)
+            (let*
+                ((doc-n (index-next-doc-id idx))
+                 (doc-id (format #f "exec:~a" doc-n))
+                 (raw-bytes (string-length clean-out))
+                 (lines (string-split clean-out #\newline))
+                 (line-count (length lines)))
+              (set-index-next-doc-id! idx (+ doc-n 1))
+              ;; Always index into BM25
+              (ctx-index-content! idx doc-id clean-out)
+              (if
+                  (and (<= raw-bytes max-return-chars) (not intent-query))
+                ;; Output is small enough to return directly
+                (begin
+                  (set-index-returned-bytes! idx (+ (index-returned-bytes idx) raw-bytes))
+                  clean-out)
+                ;; Output is large or intent-query was specified: virtualize!
+                (let*
+                    ((header
+                       (format #f
+                               "[~a exit=~a lines=~a bytes=~a indexed=~a]\n"
+                               doc-id
+                               exit-code
+                               line-count
+                               raw-bytes
+                               doc-id))
+                     (summary-body
+                       (if intent-query
+                         ;; Extract intent query chunks
+                         (ctx-search idx
+                                     intent-query
+                                     #:source-id
+                                     doc-id
+                                     #:top-k
+                                     3
+                                     #:max-chars
+                                     (- max-return-chars 300))
+                         ;; Extract failure lines or window
+                         (let*
+                             ((tagged-lines
+                                (let loop
+                                  ((i 1) (rem lines) (acc '()))
+                                  (if (null? rem)
+                                    (reverse acc)
+                                    (let ((l (car rem)))
+                                      (if (regexp-exec %error-pattern l)
+                                        (loop (+ i 1) (cdr rem) (cons (cons i l) acc))
+                                        (loop (+ i 1) (cdr rem) acc))))))
+                              (error-count (length tagged-lines)))
+                           (cond
+                             ((> error-count 0)
+                               (let*
+                                   ((top-errors (take-n tagged-lines 15))
+                                    (formatted-errors
+                                      (map
+                                        (lambda (pair)
+                                          (format #f "  L~a: ~a" (car pair) (cdr pair)))
+                                        top-errors))
+                                    (tail-lines (take-n (reverse lines) 5))
+                                    (tail-str (string-join (reverse tail-lines) "\n")))
+                                 (format #f
+                                         "Identified ~a diagnostic error/failure lines:\n~a\n\nTail summary:\n~a"
+                                         error-count
+                                         (string-join formatted-errors "\n")
+                                         tail-str)))
+                             (else
+                               (let*
+                                   ((head-lines (take-n lines 8))
+                                    (tail-lines (take-n (reverse lines) 5))
+                                    (head-str (string-join head-lines "\n"))
+                                    (tail-str (string-join (reverse tail-lines) "\n")))
+                                 (format #f
+                                         "~a\n... [~a lines virtualized into ~a] ...\n~a"
+                                         head-str
+                                         (- line-count 13)
+                                         doc-id
+                                         tail-str)))))))
+                     (footer
+                       (format #f
+                               "\n[Output virtualized to save tokens. Use ctx_search(query: \"...\", source_id: ~s) for details]"
+                               doc-id))
+                     (full-response (string-append header summary-body footer)))
+                  (set-index-returned-bytes! idx
+                                             (+ (index-returned-bytes idx) (string-length full-response)))
+                  full-response)))))))))
 
 ;;;
 ;;; Batch Execution
 ;;;
-
 (define* (ctx-batch-exec! idx #:key (commands '()) (queries '()) (shell-executor #f)
                           (max-return-chars 2800))
          "Execute a batch of commands and queries in a single turn."
@@ -223,7 +252,6 @@ oversized outputs and indexes them into BM25."
 ;;;
 ;;; Offload Hook
 ;;;
-
 (define* (make-ctx-offload-hook idx #:key (offload-dir ".badb/ctx"))
          "Return a hook procedure (lambda (filename tc-name content-str) ...) that
 indexes oversized tool outputs and returns a compact virtualized pointer."
@@ -237,7 +265,6 @@ indexes oversized tool outputs and returns a compact virtualized pointer."
 ;;;
 ;;; Stats Formatting
 ;;;
-
 (define (format-ctx-stats idx)
         "Format virtualization metrics (bytes ingested, tokens saved, reduction %)."
         (let* ((raw (index-raw-bytes idx))
@@ -255,7 +282,6 @@ indexes oversized tool outputs and returns a compact virtualized pointer."
 ;;;
 ;;; Tool Schemas & Registration
 ;;;
-
 (define %ctx-exec-schema
         `((name . "ctx_exec")
           (description . "Execute a shell command with virtualized output management. Automatically offloads and indexes large outputs into the BM25 context index, returning a concise summary or intent-matched slices.")
