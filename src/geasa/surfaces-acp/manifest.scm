@@ -1,0 +1,1 @@
+((bundle-version . 1) (feature-id . "surfaces-acp") (version . "1.0.0") (spec . "spec.geis.scm") (plugin (module geasa surfaces-acp plugin) (file . "plugin.scm")) (sha256 ("plugin.scm" . "3b9acce18142f7091756f54d10977ed572e0233223bbb70918dcc5037d5b4992") ("spec.geis.scm" . "23ae42ae7d8619bc599ddadd886a277946b4d400119638c41d1517060cc4d4a2")))

@@ -1,20 +1,34 @@
-(define-module (badb main)
-               #:use-module (ice-9 format)
-               #:use-module (badb surfaces cli)
-               #:autoload (geasa surfaces-tui plugin)
+(define-module (badb main) #:use-module
+               (ice-9 format)
+               #:use-module
+               (badb surfaces cli)
+               #:use-module
+               (srfi srfi-13)
+               #:autoload
+               (geasa surfaces-tui plugin)
                (run-tui spec-tool-status spec-tool-verify)
-               #:autoload (badb capabilities filetree-mcp)
+               #:autoload
+               (badb capabilities filetree-mcp)
                (run-filetree-mcp)
-               #:autoload (geasa runtimes-synthesis plugin)
-               (run-synthesis-cli synthesis-assemble-hook default-workflow-path
+               #:autoload
+               (geasa runtimes-synthesis plugin)
+               (run-synthesis-cli synthesis-assemble-hook
+                                  default-workflow-path
                                   synthesis-bundle-dir)
-               #:autoload (geasa runtimes-workflows plugin)
+               #:autoload
+               (geasa runtimes-workflows plugin)
                (bootstrap-project-geasa! distill-exec-patterns! onboard-project-geasa!)
-               #:autoload (geasa capabilities-code-nav plugin)
+               #:autoload
+               (geasa capabilities-code-nav plugin)
                (symbols-overview)
-               #:autoload (geasa capabilities-context-index plugin)
+               #:autoload
+               (geasa capabilities-context-index plugin)
                (make-bm25-index load-bm25-index format-ctx-stats)
-               #:export (%program-name %version main))
+               #:autoload
+               (geasa surfaces-acp plugin)
+               (run-acp-server)
+               #:export
+               (%program-name %version main))
 
 (define %program-name "badb")
 
@@ -22,7 +36,7 @@
 
 (define (print-usage port)
         (format port
-                "~a ~a [COMMAND] [OPTION]...\n\nMicroharness kernel.\n\n~a\n  ~a   launch interactive terminal user interface (default)\n  ~a          initialize project geasa, workflows & memories\n  ~a          run bootstrap test suite\n  ~a  run the filetree MCP server over stdio\n  ~a   run the Sema plugin synthesis workflow\n  ~a         inspect, verify, or distill contract specifications (geasa)\n  ~a          show BM25 context index token statistics\n  ~a    display this help and exit\n  ~a output version information and exit\n"
+                "~a ~a [COMMAND] [OPTION]...\n\nMicroharness kernel.\n\n~a\n  ~a   launch interactive terminal user interface (default)\n  ~a          initialize project geasa, workflows & memories\n  ~a          run bootstrap test suite\n  ~a  run the filetree MCP server over stdio\n  ~a   run the Sema plugin synthesis workflow\n  ~a         inspect, verify, or distill contract specifications (geasa)\n  ~a          show BM25 context index token statistics\n  ~a   serve the Agent Client Protocol over stdio (editor surface)\n  ~a    display this help and exit\n  ~a output version information and exit\n"
                 (bold port "Usage:")
                 %program-name
                 (bold port "Commands & Options:")
@@ -33,6 +47,7 @@
                 (cyan port "synthesize")
                 (cyan port "geis")
                 (cyan port "ctx")
+                (cyan port "acp")
                 (cyan port "-h, --help")
                 (cyan port "-V, --version")))
 
@@ -258,6 +273,29 @@
                       "Error: test runner module (test runner) not found.\n")
               (exit 1)))))
 
+(define (run-acp-command options)
+        (let*
+            ((args (cdr options)) (permission 'allow) (endpoint #f) (model #f))
+          (for-each
+            (lambda (arg)
+              (cond
+                ((string-prefix? "--permission=" arg)
+                  (set! permission (string->symbol (substring arg 13))))
+                ((string-prefix? "--endpoint=" arg) (set! endpoint (substring arg 11)))
+                ((string-prefix? "--model=" arg) (set! model (substring arg 8)))))
+            args)
+          (if (not (memq permission '(allow ask)))
+            (begin
+              (format (current-error-port)
+                      "Error: badb acp --permission must be allow or ask\n")
+              (exit 1))
+            (run-acp-server #:permission-policy
+                            permission
+                            #:endpoint
+                            endpoint
+                            #:model
+                            model))))
+
 (define (main args)
         (let ((options (cdr args)))
           (cond
@@ -270,6 +308,7 @@
             ((equal? (car options) "synthesize")
               (begin (wire-synthesis-assemble!) (run-synthesis-cli (cdr options))))
             ((equal? (car options) "geis") (run-geis-command options))
+            ((equal? (car options) "acp") (run-acp-command options))
             ((member (car options) '("-h" "--help")) (print-usage (current-output-port)))
             ((member (car options) '("-V" "--version"))
               (format #t "~a ~a~%" (bold (current-output-port) %program-name) %version))
