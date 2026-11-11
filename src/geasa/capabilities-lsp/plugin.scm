@@ -33,12 +33,12 @@
 (define (%json-read port)
         (let ((c (peek-char port)))
           (cond
-            ((eq? c #\{) (%json-object port))
-            ((eq? c #\[) (%json-array port))
-            ((eq? c #\") (%json-string port))
-            ((eq? c #\t) (%eat 4 port) #t)
-            ((eq? c #\f) (%eat 5 port) #f)
-            ((eq? c #\n) (%eat 4 port) 'null)
+            ((char=? c #\{) (%json-object port))
+            ((char=? c #\[) (%json-array port))
+            ((char=? c #\") (%json-string port))
+            ((char=? c #\t) (%eat 4 port) #t)
+            ((char=? c #\f) (%eat 5 port) #f)
+            ((char=? c #\n) (%eat 4 port) 'null)
             (else (%json-number port)))))
 
 (define (%eat n port)
@@ -52,50 +52,54 @@
                       (begin (read-char port) (loop (cons c chars)))
                       (string->number (list->string (reverse chars)))))))
 
-(define (%json-string port)
-        (read-char port)                          ; opening quote
-        (let loop ((acc '()))
-                  (let ((c (read-char port)))
-                    (cond
-                      ((or (eof-object? c) (eq? c #\")) (list->string (reverse acc)))
-                      ((eq? c #\\)
-                        (let ((e (read-char port)))
-                          (case e
-                            ((#\n) (loop (cons #\newline acc)))
-                            ((#\t) (loop (cons #\tab acc)))
-                            ((#\r) (loop (cons #\return acc)))
-                            ((#\b) (loop (cons #\backspace acc)))
-                            ((#\f) (loop (cons #\page acc)))
-                            (else (loop acc)))))          ; \" \\ \/ \uXXXX handled as-is
-                      (else (loop (cons c acc)))))))
+(define (%json-string port) (read-char port)
+        ; opening quote
+        (let loop
+          ((acc '()))
+          (let ((c (read-char port)))
+            (cond
+              ((or (eof-object? c) (char=? c #\")) (list->string (reverse acc)))
+              ((char=? c #\\)
+                (let ((e (read-char port)))
+                  (case e
+                    ((#\n) (loop (cons #\newline acc)))
+                    ((#\t) (loop (cons #\tab acc)))
+                    ((#\r) (loop (cons #\return acc)))
+                    ((#\b) (loop (cons #\backspace acc)))
+                    ((#\f) (loop (cons #\page acc)))
+                    (else (loop acc)))))
+              ; \" \\ \/ \uXXXX handled as-is
+              (else (loop (cons c acc)))))))
 
-(define (%json-object port)
-        (read-char port)                          ; {
-        (let loop ((acc '()))
-                  (%json-skip-ws port)
-                  (if (eq? (peek-char port) #\})
-                    acc
-                    (let* ((key (%json-string port))
-                           (_ (%json-skip-ws port))
-                           (_2 (read-char port))      ; colon
-                           (val (%json-value port)))
-                      (%json-skip-ws port)
-                      (let ((c (peek-char port)))
-                        (if (eq? c #\,) (read-char port)))
-                      (loop (cons (cons key val) acc))))))
+(define (%json-object port) (read-char port)
+        ; {
+        (let loop
+          ((acc '()))
+          (%json-skip-ws port)
+          (if (char=? (peek-char port) #\})
+            acc
+            (let*
+                ((key (%json-string port))
+                 (_ (%json-skip-ws port))
+                 (_2 (read-char port))
+                 ; colon
+                 (val (%json-value port)))
+              (%json-skip-ws port)
+              (let ((c (peek-char port))) (if (char=? c #\,) (read-char port)))
+              (loop (cons (cons key val) acc))))))
 
-(define (%json-array port)
-        (read-char port)                          ; [
-        (let loop ((acc '()))
-                  (%json-skip-ws port)
-                  (let ((c (peek-char port)))
-                    (if (eq? c #\])
-                      (begin (read-char port) (reverse acc))
-                      (let ((val (%json-value port)))
-                        (%json-skip-ws port)
-                        (let ((c2 (peek-char port)))
-                          (if (eq? c2 #\,) (read-char port)))
-                        (loop (cons val acc)))))))
+(define (%json-array port) (read-char port)
+        ; [
+        (let loop
+          ((acc '()))
+          (%json-skip-ws port)
+          (let ((c (peek-char port)))
+            (if (char=? c #\])
+              (begin (read-char port) (reverse acc))
+              (let ((val (%json-value port)))
+                (%json-skip-ws port)
+                (let ((c2 (peek-char port))) (if (char=? c2 #\,) (read-char port)))
+                (loop (cons val acc)))))))
 
 (define (%json-value port)
         (%json-skip-ws port)
