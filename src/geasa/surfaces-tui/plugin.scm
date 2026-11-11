@@ -1933,6 +1933,61 @@ any open menu first; submenu actions open the next menu in its place."
                           orig-tokens
                           new-tokens))))
       ;; Handle checkpoint command
+      (define (checkpoint-conversation-path checkpoint)
+              (format #f "~a/~a.conversation.jsonl"
+                      (rollback-manager-storage-dir rollback-mgr)
+                      (checkpoint-id checkpoint)))
+      (define (save-checkpoint-conversation! checkpoint)
+              (persist-session-file! (checkpoint-conversation-path checkpoint) llm-history))
+      (define (restore-checkpoint-conversation! checkpoint-id)
+              (let ((checkpoint (get-checkpoint rollback-mgr checkpoint-id)))
+                (and checkpoint
+                     (let* ((path (checkpoint-conversation-path checkpoint))
+                            (history (load-session-file path)))
+                       (and (file-exists? path)
+                            (pair? history)
+                            (equal? (assoc-ref (car history) 'role) "system")
+                            history)))))
+      (define (handle-replay-cmd! arg)
+              (let* ((checkpoint-id (string-trim-both arg))
+                     (history (and (not (string-null? checkpoint-id))
+                                   (restore-checkpoint-conversation! checkpoint-id))))
+                (if (not history)
+                  (add-err-msg! "Replay needs a saved checkpoint ID. Use /checkpoint first; /journal lists checkpoint IDs.")
+                  (let ((result (rollback-to-checkpoint! rollback-mgr checkpoint-id)))
+                    (if (equal? (assoc-ref result 'status) "rolled_back")
+                      (begin
+                        (set! llm-history history)
+                        (persist-session-file! session-file llm-history)
+                        (set! %ctx-cache-key #f)
+                        (set! messages '())
+                        (add-sys-msg! (format #f "Replayed checkpoint ~a (~a)."
+                                              checkpoint-id
+                                              (assoc-ref result 'description))))
+                      (add-err-msg! (format #f "Replay failed: ~a" (assoc-ref result 'error))))))))
+      (define (handle-fork-cmd! arg)
+              (let ((requested (string-trim-both arg)))
+                (if (string-null? requested)
+                  (let ((fork (create-checkpoint! rollback-mgr "Conversation fork")))
+                    (if (save-checkpoint-conversation! fork)
+                      (add-sys-msg! (format #f "Fork point saved as checkpoint ~a." (checkpoint-id fork)))
+                      (add-err-msg! "Fork point created, but its conversation snapshot could not be saved.")))
+                  (let ((restored (restore-checkpoint-conversation! requested)))
+                    (if (not restored)
+                      (add-err-msg! "Fork checkpoint has no saved conversation. Use /checkpoint to create replayable checkpoints.")
+                      (let ((result (rollback-to-checkpoint! rollback-mgr requested)))
+                        (if (not (equal? (assoc-ref result 'status) "rolled_back"))
+                          (add-err-msg! (format #f "Fork failed: ~a" (assoc-ref result 'error)))
+                          (begin
+                            (set! llm-history restored)
+                            (set! %ctx-cache-key #f)
+                            (set! messages '())
+                            (let ((fork (create-checkpoint! rollback-mgr (format #f "Fork of ~a" requested))))
+                              (if (save-checkpoint-conversation! fork)
+                                (begin
+                                  (persist-session-file! session-file llm-history)
+                                  (add-sys-msg! (format #f "Forked checkpoint ~a as ~a." requested (checkpoint-id fork))))
+                                (add-err-msg! "Fork checkpoint created, but its conversation snapshot could not be saved.")))))))))))
       (define (handle-checkpoint-cmd! arg)
               (let*
                   ((desc
@@ -1940,6 +1995,8 @@ any open menu first; submenu actions open the next menu in its place."
                        "User manual checkpoint"
                        (string-trim-both arg)))
                    (chkpt (create-checkpoint! rollback-mgr desc)))
+                (unless (save-checkpoint-conversation! chkpt)
+                  (add-err-msg! "Checkpoint created, but the conversation snapshot could not be saved."))
                 (add-sys-msg!
                   (format #f
                           "Created checkpoint '~a' (~a).\nFiles recorded: ~a, Registry entries: ~a."
@@ -2161,6 +2218,8 @@ any open menu first; submenu actions open the next menu in its place."
                   ((string=? cmd "resume") (handle-resume-cmd! arg))
                   ((string=? cmd "checkpoint") (handle-checkpoint-cmd! arg))
                   ((string=? cmd "rollback") (handle-rollback-cmd! arg))
+                  ((string=? cmd "fork") (handle-fork-cmd! arg))
+                  ((string=? cmd "replay") (handle-replay-cmd! arg))
                   ((string=? cmd "rules") (handle-rules-cmd! arg))
                   ((string=? cmd "geis") (handle-geis-cmd! arg))
                   ((string=? cmd "context") (handle-context-cmd! arg))

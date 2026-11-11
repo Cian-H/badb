@@ -335,6 +335,8 @@
                        "  /resume           Resume a previous chat session from disk\n"
                        "  /checkpoint [DSC] Create a rollback checkpoint snapshot\n"
                        "  /rollback [ID]    Revert to latest or specified checkpoint\n"
+                       "  /fork [ID]        Branch the conversation at the current or saved checkpoint\n"
+                       "  /replay <ID>      Restore conversation and workspace to a saved checkpoint\n"
                        "  /rules            View discovered project rules & workspace tree\n"
                        "  /geis [CMD]       Contract-gated dynamic synthesis (/geis add <desc>, model [name], list, verify, status, bootstrap, distill)\n"
                        "  /context          View conversation token metrics\n"

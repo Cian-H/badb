@@ -64,6 +64,9 @@
             (test-equal "parse /provider with argument"
                         '("provider" . "lmstudio")
                         (parse-command "/provider lmstudio"))
+            (test-equal "parse /replay checkpoint ID"
+                        '("replay" . "checkpoint-123")
+                        (parse-command "/replay checkpoint-123"))
             ;; Whitespace trimming
             (test-equal
               "parse with leading and trailing whitespace"
