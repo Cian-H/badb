@@ -39,6 +39,6 @@
             "guile-knots"
             "guile-lens"
             "guile-file-names"
-            "guile-fslib"))
-    (packages->manifest
-      (list cl-indentify))))
+            "guile-fslib"
+            "guile-lsp-server"))
+    (packages->manifest (list cl-indentify))))
