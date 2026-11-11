@@ -47,7 +47,6 @@
 ;;;
 ;;; Kernel-Owned Spec Gate Tools
 ;;;
-
 (define (spec-tool-format-failure failure)
         "Render one parsed spec failure record as a single diagnostic line."
         (format #f
@@ -319,7 +318,6 @@ Follow the contract-gated dynamic synthesis workflow:
 ;;;
 ;;; Builtin TUI Tools
 ;;;
-
 (define (exec-shell-tool-impl cmd-or-arg)
         "Execute a shell command passed as a string or tool-call argument alist."
         (let ((cmd (cond
@@ -342,51 +340,95 @@ Follow the contract-gated dynamic synthesis workflow:
 (define %read-file-max-chars-per-line 400)
 (define %read-file-max-chars 16000)
 
-(define* (builtin-read-file path #:optional (offset 0) (limit #f))
-         "Read a bounded, line-based slice of the file at PATH."
-         (catch #t
-           (lambda ()
-             (if (file-exists? path)
-               (let* ((text (or (file->string path) ""))
-                      (raw-lines (string-split text #\newline))
-                      (trailing-newline? (and (pair? raw-lines) (string-null? (last raw-lines))))
-                      (total (- (length raw-lines) (if trailing-newline? 1 0)))
-                      (start (max 0 (if (number? offset) (inexact->exact (floor offset)) 0)))
-                      (lim (if (and (number? limit) (> limit 0))
-                             (inexact->exact (floor limit))
-                             %read-file-default-limit))
-                      (end (min total (+ start lim))))
-                 (if (>= start total)
-                   (format #f
-                           "[file ~a - ~a total lines - offset ~a is at or past end of file]"
-                           path total start)
-                   (let loop ((i start) (acc '()) (chars 0))
-                             (cond
-                               ((or (>= i end) (>= chars %read-file-max-chars))
-                                 (let* ((shown (reverse acc))
-                                        (last-shown (if (null? shown) start (+ i -1))))
-                                   (string-append
-                                     (format #f
-                                             "[file ~a - ~a total lines - showing lines ~a..~a]~%"
-                                             path total start last-shown)
-                                     (string-join shown "\n")
-                                     (if (>= end total)
-                                       (format #f "~%[end of file at line ~a of ~a]" total total)
-                                       (format #f
-                                               "~%[~a more lines elided - call read_file with offset=~a to continue (total ~a lines)]"
-                                               (- total i) i total)))))
-                               (else
-                                 (let* ((line (list-ref raw-lines i))
-                                        (trim (if (> (string-length line) %read-file-max-chars-per-line)
-                                                (string-append
-                                                  (substring line 0 %read-file-max-chars-per-line)
-                                                  (format #f "... [line ~a truncated: ~a of ~a chars]"
-                                                          i (string-length line) (string-length line)))
-                                                line)))
-                                   (loop (+ i 1) (cons trim acc) (+ chars (string-length trim)))))))))
-               (format #f "Error: file '~a' does not exist" path)))
-           (lambda (_k . a)
-             (format #f "Error reading file: ~s" a))))
+(define (read-line-bounded port max-chars)
+        (let loop
+          ((chars '()) (length 0))
+          (let ((ch (read-char port)))
+            (cond
+              ((eof-object? ch)
+                (and (> length 0) (cons (list->string (reverse chars)) length)))
+              ((char=? ch #\newline) (cons (list->string (reverse chars)) length))
+              (else
+                (loop
+                  (if (< length max-chars)
+                    (cons ch chars)
+                    chars) (+ length 1)))))))
+
+(define
+  (read-lines-window port start end max-chars)
+  (let loop
+    ((i 0) (acc '()) (chars 0) (last-shown #f))
+    (let
+        ((line-info (read-line-bounded port %read-file-max-chars-per-line)))
+      (if (not line-info)
+        (list i (reverse acc) last-shown)
+        (let*
+            ((line (car line-info))
+             (line-length (cdr line-info))
+             (trim
+               (if (> line-length %read-file-max-chars-per-line)
+                 (string-append line
+                                (format #f "... [line ~a truncated: ~a of ~a chars]" i line-length line-length))
+                 line))
+             (selected? (and (>= i start) (< i end) (< chars max-chars))))
+          (loop (+ i 1)
+                (if selected?
+                  (cons trim acc)
+                  acc)
+                (if selected?
+                  (+ chars (string-length trim))
+                  chars)
+                (if selected?
+                  i
+                  last-shown)))))))
+
+(define*
+  (builtin-read-file path #:optional (offset 0) (limit #f))
+  "Read a bounded, line-based slice of PATH without loading it all into memory."
+  (catch #t
+    (lambda ()
+      (if (not (file-exists? path))
+        (format #f "Error: file '~a' does not exist" path)
+        (call-with-input-file path
+                              (lambda (port)
+                                (let*
+                                    ((start
+                                       (max 0
+                                            (if (number? offset)
+                                              (inexact->exact (floor offset))
+                                              0)))
+                                     (lim
+                                       (if (and (number? limit) (> limit 0))
+                                         (inexact->exact (floor limit))
+                                         %read-file-default-limit))
+                                     (scan (read-lines-window port start (+ start lim) %read-file-max-chars))
+                                     (total (car scan))
+                                     (shown (cadr scan))
+                                     (last-shown (caddr scan))
+                                     (next (+ (or last-shown start) 1)))
+                                  (if (>= start total)
+                                    (format #f
+                                            "[file ~a - ~a total lines - offset ~a is at or past end of file]"
+                                            path
+                                            total
+                                            start)
+                                    (string-append
+                                      (format #f
+                                              "[file ~a - ~a total lines - showing lines ~a..~a]~%"
+                                              path
+                                              total
+                                              start
+                                              (or last-shown start))
+                                      (string-join shown "\n")
+                                      (if (>= next total)
+                                        (format #f "~%[end of file at line ~a of ~a]" total total)
+                                        (format #f
+                                                "~%[~a more lines elided - call read_file with offset=~a to continue (total ~a lines)]"
+                                                (- total next)
+                                                next
+                                                total)))))))))
+    (lambda (_k . a)
+      (format #f "Error reading file: ~s" a))))
 
 (define* (register-builtin-tui-tools! reg rollback-mgr verifier mcp-mgr get-llm-history
                                       #:key
