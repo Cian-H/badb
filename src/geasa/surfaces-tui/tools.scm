@@ -10,6 +10,7 @@
                #:use-module (badb kernel digest)
                #:use-module (geasa surfaces-tui session)
                #:use-module (geasa capabilities-mcp plugin)
+               #:use-module (geasa capabilities-macro plugin)
                #:use-module (geasa capabilities-history-tools plugin)
                #:use-module (geasa capabilities-fs-tools plugin)
                #:use-module (geasa capabilities-code-nav plugin)
@@ -397,6 +398,8 @@ Follow the contract-gated dynamic synthesis workflow:
          "Register built-in autonomous agent tools, MCP kernel tools, and spec gate tools on REG."
          ;; 1. Core filesystem & editing tools (read_file, write_file, edit_file, bash)
          (register-fs-tools! reg #:rollback-mgr rollback-mgr #:verifier verifier #:shell-executor exec-shell-tool-impl)
+         ;; 1b. Input macro expansion (@@, @file:PATH, @SHORTCUT directives)
+         (register-macro-tools! reg)
          ;; 2. Code navigation & persistent memories
          (register-code-nav-tools! reg #:workspace (getcwd))
          ;; 3. Virtualized output & BM25 context indexing

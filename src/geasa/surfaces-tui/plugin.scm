@@ -38,6 +38,8 @@
                #:use-module
                (geasa capabilities-mcp plugin)
                #:use-module
+               (geasa capabilities-macro plugin)
+               #:use-module
                (geasa capabilities-history-tools plugin)
                #:use-module
                (geasa runtimes-react plugin)
@@ -2525,15 +2527,21 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                                        (execute-scheme! code-str)
                                                        (loop)))
                                                    ((chat)
-                                                     (let ((user-text (cdr action)))
-                                                       (record-history! user-text 'chat)
-                                                       (add-user-msg! user-text)
+                                                     (let* ((user-text (cdr action))
+                                                            ;; Expand @@, @file:PATH, and @SHORTCUT
+                                                            ;; directives before the turn reaches
+                                                            ;; ReAct (see capabilities-macro). The
+                                                            ;; expansion never raises, so failures
+                                                            ;; surface as @error: markers.
+                                                            (delivered (expand-macros user-text)))
+                                                       (record-history! delivered 'chat)
+                                                       (add-user-msg! delivered)
                                                        (set! %agent-thread
                                                              (call-with-new-thread
                                                                (lambda ()
                                                                  (catch #t
                                                                    (lambda ()
-                                                                     (execute-chat-stream! user-text)
+                                                                     (execute-chat-stream! delivered)
                                                                      ;; The ReAct loop ran for a while:
                                                                      ;; ring the terminal bell so an
                                                                      ;; away-from-keyboard user knows badb

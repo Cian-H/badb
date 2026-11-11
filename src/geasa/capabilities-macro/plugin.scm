@@ -15,6 +15,7 @@
 
 (define-module (geasa capabilities-macro plugin)
                #:use-module (srfi srfi-13)
+               #:use-module (badb kernel registry)
                #:export (expand-macros
                           register-macro-tools!))
 
