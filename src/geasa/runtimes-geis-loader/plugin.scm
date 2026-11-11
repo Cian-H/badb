@@ -7,6 +7,7 @@
 
 (define-module (geasa runtimes-geis-loader plugin)
                #:use-module (badb geis bundle)
+               #:use-module (badb geis capabilities)
                #:use-module (badb kernel registry)
                #:use-module (badb kernel digest)
                #:use-module (geasa foundation-util plugin)
@@ -51,11 +52,30 @@
                                    (lambda (port) (write manifest-data port)))
             manifest-data)))
 
+(define (%resolve-capability-grants requests provider)
+        (let loop ((remaining requests) (grants '()))
+                  (if (null? remaining)
+                    (reverse grants)
+                    (let* ((request (car remaining))
+                           (grant (and (procedure? provider)
+                                       (catch #t
+                                         (lambda () (provider (car request) (cadr request)))
+                                         (lambda _ #f)))))
+                      (if (procedure? grant)
+                        (loop (cdr remaining) (cons (cons request grant) grants))
+                        #f)))))
+
+(define (%with-capabilities proc grants)
+        (lambda args
+          (parameterize ((current-geis-capabilities grants))
+                        (apply proc args))))
+
 (define*
   (discover-and-mount-project-geasa! reg
                                      #:key
                                      (workspace (getcwd))
                                      (extra-search-paths '())
+                                     (capability-provider #f)
                                      (logger #f))
   "Discover and mount geis bundles from WORKSPACE/.badb/geasa,
 WORKSPACE/.badb/workflows, and EXTRA-SEARCH-PATHS into REG."
@@ -97,54 +117,56 @@ WORKSPACE/.badb/workflows, and EXTRA-SEARCH-PATHS into REG."
                             ((manifest (read-geis-manifest manifest-file))
                              (fid (manifest-field manifest 'feature-id))
                              (plugin-info (manifest-field manifest 'plugin))
-                             (tool-names (manifest-field manifest 'tools)))
-                          (when
-                              (and (list? plugin-info) (manifest-field plugin-info 'file))
-                            (let*
-                                ((rel-file (manifest-field plugin-info 'file))
-                                 (full-plugin (string-append bundle-dir "/" rel-file))
-                                 (mod-name (manifest-field plugin-info 'module)))
-                              (catch #t
-                                (lambda ()
-                                  (save-module-excursion
-                                    (lambda ()
-                                      (parameterize
-                                        ((current-warning-port (%make-void-port "w")))
-                                        (primitive-load full-plugin))))
-                                  (let*
-                                      ((mod (resolve-module mod-name)) (iface (module-public-interface mod)))
-                                    (if iface
-                                      (let
-                                          ((exports
-                                             (module-map
-                                               (lambda (sym var)
-                                                 (cons (symbol->string sym) (variable-ref var)))
-                                               iface)))
-                                        (for-each
-                                          (lambda (entry)
-                                            (let ((name (car entry)) (proc (cdr entry)))
-                                              (when
-                                                  (and (procedure? proc) (or (not tool-names) (member name tool-names)))
-                                                (registry-attach! reg
-                                                                  name
-                                                                  proc
-                                                                  #:metadata
-                                                                  `((source . ,bundle-dir) (bundle-id . ,fid))))))
-                                          exports))
-                                      (registry-attach! reg
-                                                        fid
-                                                        mod
-                                                        #:metadata
-                                                        `((source . ,bundle-dir) (bundle-id . ,fid)))))
-                                  (set! mounted-bundles (cons fid mounted-bundles)))
-                                (lambda (k . a)
-                                  (when (procedure? logger)
-                                    (logger 'error (format #f "Error mounting bundle ~a: ~s" fid a))))))))
-                        (when (procedure? logger)
-                          (logger 'warn (format #f "Invalid bundle ~a: ~a" sub (string-join errors "; "))))))))))
-            subdirs)))
-      candidate-roots)
-    (reverse mounted-bundles)))
+                             (tool-names (manifest-field manifest 'tools))
+                             (capability-requests (or (manifest-field manifest 'capabilities) '()))
+                             (capabilities
+                               (%resolve-capability-grants capability-requests capability-provider)))
+                          (if (and (pair? capability-requests) (not capabilities))
+                            (when (procedure? logger)
+                              (logger 'warn (format #f "Bundle ~a denied: a requested capability has no host grant" fid)))
+                            (when (and (list? plugin-info) (manifest-field plugin-info 'file))
+                              (let* ((rel-file (manifest-field plugin-info 'file))
+                                     (full-plugin (string-append bundle-dir "/" rel-file))
+                                     (mod-name (manifest-field plugin-info 'module)))
+                                (catch #t
+                                  (lambda ()
+                                    (save-module-excursion
+                                      (lambda ()
+                                        (parameterize
+                                          ((current-warning-port (%make-void-port "w")))
+                                          (primitive-load full-plugin))))
+                                    (let* ((mod (resolve-module mod-name))
+                                           (iface (module-public-interface mod)))
+                                      (if iface
+                                        (let ((exports
+                                                (module-map
+                                                  (lambda (sym var)
+                                                    (cons (symbol->string sym) (variable-ref var)))
+                                                  iface)))
+                                          (for-each
+                                            (lambda (entry)
+                                              (let ((name (car entry)) (proc (cdr entry)))
+                                                (when (and (procedure? proc)
+                                                           (or (not tool-names) (member name tool-names)))
+                                                  (registry-attach! reg name
+                                                                    (if (pair? capabilities)
+                                                                      (%with-capabilities proc capabilities)
+                                                                      proc)
+                                                                    #:metadata
+                                                                    `((source . ,bundle-dir) (bundle-id . ,fid))))))
+                                            exports))
+                                        (registry-attach! reg fid mod
+                                                          #:metadata
+                                                          `((source . ,bundle-dir) (bundle-id . ,fid)))))
+                                    (set! mounted-bundles (cons fid mounted-bundles)))
+                                  (lambda (k . a)
+                                    (when (procedure? logger)
+                                      (logger 'error (format #f "Error mounting bundle ~a: ~s" fid a))))))))
+                          (when (procedure? logger)
+                            (logger 'warn (format #f "Invalid bundle ~a: ~a" sub (string-join errors "; "))))))))))
+              subdirs)))
+        candidate-roots)
+      (reverse mounted-bundles))))
 
 (define mount-all-project-geasa! discover-and-mount-project-geasa!)
 

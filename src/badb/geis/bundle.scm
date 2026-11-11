@@ -38,6 +38,7 @@
                                         read-geis-manifest
                                         manifest-field
                                         geis-manifest-valid?
+                                        geis-manifest-capabilities-valid?
                                         geis-bundle-files
                                         compute-geis-sha256-pins
                                         geis-bundle-hash
@@ -105,6 +106,22 @@
                                  #\a #\b #\c #\d #\e #\f))
                           (loop (cdr chars)))
                         (else #f))))
+
+(define (%valid-capability? capability)
+        (and (list? capability)
+             (= (length capability) 2)
+             (memq (car capability) '(fs-read fs-write net-http))
+             (string? (cadr capability))
+             (not (string-null? (cadr capability)))))
+
+(define (geis-manifest-capabilities-valid? manifest)
+        "Return #t when optional capabilities are a duplicate-free list of
+(kind target) requests using the supported capability kinds."
+        (let ((capabilities (manifest-field manifest 'capabilities)))
+          (or (not capabilities)
+              (and (list? capabilities)
+                   (every %valid-capability? capabilities)
+                   (= (length capabilities) (length (delete-duplicates capabilities equal?)))))))
 
 ;;;
 ;;; Search path and discovery
@@ -264,6 +281,8 @@ otherwise a non-empty list of human-readable reason strings."
                                             (and (pair? t) (or (symbol? (car t)) (string? (car t))))))
                                       tools))
                     (add! "tools field must be a list of tool names or specifications"))))
+              (unless (geis-manifest-capabilities-valid? manifest)
+                (add! "capabilities must be unique (fs-read|fs-write|net-http target) requests"))
               (let ((wf-exports (manifest-field manifest 'workflow-exports)))
                 (when wf-exports
                   (unless (and (list? wf-exports) (every string? wf-exports))
