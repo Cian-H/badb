@@ -1047,5 +1047,258 @@
               (test-equal "malformed response -> #f"
                           #f (fetch-model-context-limit client #:http-getter malformed-getter))))
 
+(test-group "cache-control-markers"
+            ;; client flag
+            (test-assert
+              "cache markers default to #f on new clients"
+              (not (model-client-cache-markers? (make-model-client))))
+            (test-assert
+              "cache markers can be enabled per client"
+              (model-client-cache-markers? (make-model-client #:cache-markers? #t)))
+            (test-assert
+              "positional constructor leaves markers off"
+              (not (model-client-cache-markers? (make-model-client "http://x:1/v1" "k" "m"))))
+            ;; marker value
+            (test-equal "ephemeral cache_control value"
+                        (list (cons "type" "ephemeral"))
+                        (ephemeral-cache-control))
+            ;; apply-cache-breakpoints
+            (let
+                ((msgs
+                   (vector
+                     (list (cons "role" "system") (cons "content" "You are badb."))
+                     (list (cons "role" "user") (cons "content" "hello")))))
+              (let ((marked (apply-cache-breakpoints msgs)))
+                (test-assert "shapes are preserved on vectors" (vector? marked))
+                (let*
+                    ((sys (vector-ref marked 0)) (content (assoc-ref sys "content")))
+                  (test-assert "system content wrapped into blocks" (vector? content))
+                  (let ((block (vector-ref content 0)))
+                    (test-equal "block text preserved" "You are badb." (assoc-ref block "text"))
+                    (test-equal "block cache_control is ephemeral"
+                                "ephemeral"
+                                (assoc-ref (assoc-ref block "cache_control") "type"))))
+                (let ((user (vector-ref marked 1)))
+                  (test-assert "non-system message untouched"
+                               (string? (assoc-ref user "content")))))
+              ;; strip round trip
+              (let
+                  ((stripped (strip-cache-markers (apply-cache-breakpoints msgs))))
+                (test-equal
+                  "strip-cache-markers collapses blocks back to text"
+                  "You are badb."
+                  (assoc-ref (vector-ref stripped 0) "content"))
+                (test-assert "strip keeps user content a string"
+                             (string? (assoc-ref (vector-ref stripped 1) "content"))))
+              ;; no system prefix: no-op
+              (let
+                  ((user-only (vector (list (cons "role" "user") (cons "content" "hi")))))
+                (test-equal
+                  "messages without system prefix pass through unchanged"
+                  "hi"
+                  (assoc-ref (vector-ref (apply-cache-breakpoints user-only) 0) "content"))))
+            ;; list input: default breakpoint at end of system run
+            (let
+                ((marked
+                   (apply-cache-breakpoints
+                     (list
+                       (list (cons "role" "system") (cons "content" "S1"))
+                       (list (cons "role" "system") (cons "content" "S2"))
+                       (list (cons "role" "user") (cons "content" "u"))))))
+              (test-assert "list input accepted" (list? marked))
+              (test-assert
+                "default breakpoint lands on last system message of the run"
+                (vector? (assoc-ref (cadr marked) "content")))
+              (test-assert "first system message stays plain"
+                           (string? (assoc-ref (car marked) "content"))))
+            ;; explicit prefix breakpoint between static and dynamic system halves
+            (let
+                ((marked
+                   (apply-cache-breakpoints
+                     (list
+                       (list (cons "role" "system") (cons "content" "S1"))
+                       (list (cons "role" "system") (cons "content" "volatile tail"))
+                       (list (cons "role" "user") (cons "content" "u")))
+                     1)))
+              (test-assert
+                "explicit prefix-count marks the static half"
+                (vector? (assoc-ref (car marked) "content")))
+              (test-assert
+                "explicit prefix-count leaves the dynamic half plain"
+                (string? (assoc-ref (cadr marked) "content"))))
+            ;; wire format via format-chat-request
+            (let*
+                ((json-str
+                   (format-chat-request
+                     (list
+                       (list (cons "role" "system") (cons "content" "SYS"))
+                       (list (cons "role" "user") (cons "content" "hi")))
+                     #:model
+                     "m"
+                     #:cache-markers?
+                     #t))
+                 (parsed (json-string->scm json-str))
+                 (messages (assoc-ref parsed "messages"))
+                 (sys (vector-ref messages 0))
+                 (blocks (assoc-ref sys "content"))
+                 (b0 (vector-ref blocks 0)))
+              (test-assert "wire system content is a block array" (vector? blocks))
+              (test-equal "wire block text" "SYS" (assoc-ref b0 "text"))
+              (test-equal "wire cache_control type"
+                          "ephemeral"
+                          (assoc-ref (assoc-ref b0 "cache_control") "type")))
+            (let*
+                ((json-str
+                   (format-chat-request
+                     (list (list (cons "role" "system") (cons "content" "SYS")))
+                     #:model
+                     "m"))
+                 (parsed (json-string->scm json-str)))
+              (test-assert
+                "markers are opt-in: default payload keeps plain string content"
+                (string? (assoc-ref (vector-ref (assoc-ref parsed "messages") 0) "content"))))
+            ;; client flag flows through model-complete onto the wire
+            (let*
+                ((client
+                   (make-model-client #:endpoint
+                                      "http://test-server/v1"
+                                      #:api-key
+                                      "k"
+                                      #:model
+                                      "test-model"
+                                      #:cache-markers?
+                                      #t
+                                      #:allow-missing-thinking?
+                                      #f))
+                 (captured-req #f)
+                 (mock-poster
+                   (lambda*
+                     (uri #:key (body #f) (headers '()) (streaming? #f))
+                     (set! captured-req (capture-request uri body headers streaming?))
+                     (values
+                       (build-response #:code
+                                       200
+                                       #:headers
+                                       '((content-type application/json (charset . "utf-8"))))
+                       "{\"choices\": [{\"message\": {\"content\": \"ok\"}}]}"))))
+              (model-complete client
+                              (list
+                                (list (cons "role" "system") (cons "content" "SYS"))
+                                (list (cons "role" "user") (cons "content" "hello")))
+                              #:http-poster
+                              mock-poster)
+              (let*
+                  ((body-json (json-string->scm (assq-ref captured-req 'body)))
+                   (messages (assoc-ref body-json "messages"))
+                   (sys (vector-ref messages 0))
+                   (blocks (assoc-ref sys "content"))
+                   (b0 (and (vector? blocks) (vector-ref blocks 0))))
+                (test-assert
+                  "model-complete emits cache-marked system blocks"
+                  (and b0 (assoc-ref b0 "cache_control")))
+                (test-assert
+                  "strict client profile sends no allow_missing_thinking field"
+                  (not (assoc-ref body-json "allow_missing_thinking"))))))
+
+(test-group "provider-profiles"
+            ;; endpoints
+            (test-equal "ollama default endpoint"
+                        "http://localhost:11434/v1"
+                        (ollama-endpoint))
+            (test-equal "vllm default endpoint" "http://localhost:8000/v1" (vllm-endpoint))
+            (test-equal
+              "gemini endpoint points at the OpenAI-compat bridge"
+              "https://generativelanguage.googleapis.com/v1beta/openai"
+              (gemini-endpoint))
+            (test-equal "mistral endpoint" "https://api.mistral.ai/v1" (mistral-endpoint))
+            (test-equal "anthropic endpoint"
+                        "https://api.anthropic.com/v1"
+                        (anthropic-endpoint))
+            ;; env overrides
+            (let ((old (getenv "OLLAMA_HOST")))
+              (dynamic-wind
+                (lambda _
+                  (setenv "OLLAMA_HOST" "myhost:11434"))
+                (lambda _
+                  (test-equal
+                    "OLLAMA_HOST without scheme is normalized to an http base URL"
+                    "http://myhost:11434/v1"
+                    (ollama-endpoint)))
+                (lambda _
+                  (if old
+                    (setenv "OLLAMA_HOST" old)
+                    (unsetenv "OLLAMA_HOST")))))
+            ;; client presets
+            (let
+                ((ollama (make-ollama-client #:model "qwen3:8b")))
+              (test-equal
+                "ollama preset keeps endpoint default"
+                "http://localhost:11434/v1"
+                (model-client-endpoint ollama))
+              (test-equal "ollama preset model override"
+                          "qwen3:8b"
+                          (model-client-model ollama))
+              (test-assert
+                "ollama preset allows missing thinking"
+                (model-client-allow-missing-thinking? ollama))
+              (test-assert "ollama preset has no cache markers"
+                           (not (model-client-cache-markers? ollama))))
+            (let
+                ((vllm (make-vllm-client #:endpoint "http://gpu-box:8000/v1" #:api-key "EMPTY")))
+              (test-equal "vllm preset endpoint override"
+                          "http://gpu-box:8000/v1"
+                          (model-client-endpoint vllm))
+              (test-assert "vllm preset is strict"
+                           (not (model-client-allow-missing-thinking? vllm)))
+              (test-assert "vllm preset has no cache markers"
+                           (not (model-client-cache-markers? vllm))))
+            (let
+                ((gemini (make-gemini-client #:api-key "g-key")))
+              (test-equal "gemini preset model default"
+                          "gemini-2.0-flash"
+                          (model-client-model gemini))
+              (test-equal "gemini preset api key" "g-key" (model-client-api-key gemini))
+              (test-assert "gemini preset is strict"
+                           (not (model-client-allow-missing-thinking? gemini))))
+            (let
+                ((mistral (make-mistral-client #:api-key "m-key" #:model "codestral-latest")))
+              (test-equal "mistral preset model"
+                          "codestral-latest"
+                          (model-client-model mistral))
+              (test-assert "mistral preset is strict"
+                           (not (model-client-allow-missing-thinking? mistral))))
+            (let
+                ((anthropic (make-anthropic-client #:api-key "a-key" #:model "claude-x")))
+              (test-equal "anthropic preset model" "claude-x" (model-client-model anthropic))
+              (test-assert
+                "anthropic preset enables cache markers"
+                (model-client-cache-markers? anthropic))
+              (test-assert "anthropic preset is strict"
+                           (not (model-client-allow-missing-thinking? anthropic))))
+            ;; dispatcher
+            (test-equal
+              "make-provider-client dispatches ollama to the preset endpoint"
+              "http://localhost:11434/v1"
+              (model-client-endpoint (make-provider-client 'ollama)))
+            (test-equal
+              "make-provider-client accepts keyword overrides"
+              "gpt-proxy"
+              (model-client-model (make-provider-client 'vllm #:model "gpt-proxy")))
+            (test-assert
+              "make-provider-client gemini defaults model"
+              (string? (model-client-model (make-provider-client 'gemini #:api-key "x"))))
+            (test-equal
+              "known-provider-profiles lists every profile"
+              '(ollama vllm gemini mistral anthropic)
+              known-provider-profiles)
+            (test-assert
+              "make-provider-client rejects unknown profiles"
+              (catch #t
+                (lambda ()
+                  (make-provider-client 'unknown-provider)
+                  #f)
+                (lambda _
+                  #t))))
+
 (spec-end)
 (spec-exit)

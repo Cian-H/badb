@@ -5,54 +5,65 @@
 ;;; system prompts tailored for autonomous ReAct loops.
 
 (define-module (geasa runtimes-prompt plugin)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (geasa persona-badb plugin)
-               #:use-module (git bindings)
-               #:use-module (git repository)
-               #:use-module (git reference)
-               #:use-module (git branch)
-               #:use-module (git status)
-               #:use-module (ice-9 popen)
-               #:use-module (ice-9 rdelim)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 optargs)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-9)
-               #:use-module (pipe)
-               #:export (<prompt-composer>
-                          make-prompt-composer
-                          prompt-composer?
-                          prompt-composer-system-identity
-                          prompt-composer-include-git-status?
-                          prompt-composer-include-file-tree?
-                          prompt-composer-file-tree-depth
-                          prompt-composer-file-tree-max-files
-                          prompt-composer-rule-files
-                          prompt-composer-custom-rules
-                          prompt-composer-tool-style
-                          prompt-composer-context-limit-chars
-                          set-prompt-composer-system-identity!
-                          set-prompt-composer-custom-rules!
-
-                          ;; Environment & Git Inspection
-                          get-git-branch
-                          get-git-status-summary
-                          build-workspace-file-tree
-                          collect-environment-info
-
-                          ;; Rules Discovery
-                          discover-project-rules
-                          read-rule-file
-
-                          ;; Tool Formatting
-                          format-tools-for-prompt
-
-                          ;; Prompt Assembly
-                          assemble-system-prompt
-                          compile-system-prompt
-                          format-skill-catalog-section
-                          format-memory-catalog-section
-                          default-system-prompt))
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (geasa persona-badb plugin)
+               #:use-module
+               (git bindings)
+               #:use-module
+               (git repository)
+               #:use-module
+               (git reference)
+               #:use-module
+               (git branch)
+               #:use-module
+               (git status)
+               #:use-module
+               (ice-9 popen)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 optargs)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:use-module
+               (pipe)
+               #:export
+               (<prompt-composer> make-prompt-composer
+                                  prompt-composer?
+                                  prompt-composer-system-identity
+                                  prompt-composer-include-git-status?
+                                  prompt-composer-include-file-tree?
+                                  prompt-composer-file-tree-depth
+                                  prompt-composer-file-tree-max-files
+                                  prompt-composer-rule-files
+                                  prompt-composer-custom-rules
+                                  prompt-composer-tool-style
+                                  prompt-composer-context-limit-chars
+                                  set-prompt-composer-system-identity!
+                                  set-prompt-composer-custom-rules!
+                                  ;; Environment & Git Inspection
+                                  get-git-branch
+                                  get-git-status-summary
+                                  build-workspace-file-tree
+                                  collect-environment-info
+                                  ;; Rules Discovery
+                                  discover-project-rules
+                                  read-rule-file
+                                  ;; Tool Formatting
+                                  format-tools-for-prompt
+                                  ;; Prompt Assembly
+                                  assemble-system-prompt
+                                  split-system-prompt
+                                  compile-system-prompt
+                                  format-skill-catalog-section
+                                  format-memory-catalog-section
+                                  default-system-prompt))
 
 ;;;
 ;;; Shell & Process Helper
@@ -400,6 +411,123 @@ Returns a string (or #f if empty)."
           (else #f)))
 
 (define*
+  (%assemble-system-sections composer
+                             #:key
+                             (workspace-dir (getcwd))
+                             (tools '())
+                             (mode 'code)
+                             (skills '())
+                             (memories '()))
+  "Build the system prompt's static and dynamic section lists in one
+pass.  Returns (values STATIC-SECTIONS DYNAMIC-SECTIONS), each in
+assembly order: identity, mode directives and tool-usage guidance are
+static (stable within a session and safe for prompt-prefix caching);
+environment, git state, workspace outline, discovered and custom
+rules, skill/memory catalogs and XML tool instructions are dynamic."
+  (let ((static '()) (dynamic '()))
+    (define (add-static-sec! header content)
+            (when (non-empty-string? content)
+              (set! static
+                    (cons (format #f "## ~a\n~a" header (string-trim-both content)) static))))
+    (define (add-dynamic-sec! header content)
+            (when (non-empty-string? content)
+              (set! dynamic
+                    (cons (format #f "## ~a\n~a" header (string-trim-both content)) dynamic))))
+    ;; 1. Base Identity
+    (set! static (cons (prompt-composer-system-identity composer) static))
+    ;; 2. Mode Guidance
+    (case mode
+      ((code)
+        (add-static-sec! "Operational Directives"
+                         "Maintain code integrity. Inspect files before editing. Run tests after changes.
+Never commit untracked roadmap files or temporary scratch files."))
+      ((plan)
+        (add-static-sec! "Operational Directives"
+                         "Analyze the problem statement, identify dependencies, and outline a step-by-step
+execution plan. Do not perform write operations."))
+      ((fast)
+        (add-static-sec! "Operational Directives"
+                         "Provide direct, concise assessments with minimal preamble.")))
+    ;; 2b. Tool Usage Guidance
+    (add-static-sec! "Tool Usage"
+                     "Prefer the read_file tool (path, offset, limit) to inspect files rather than
+shelling out with cat/sed. read_file reports the file's total line count in its
+header; when you need more than the default window, plan a few windowed reads
+(explicit offset/limit) in advance instead of many tiny ones. Avoid re-reading
+a file you have already read in this session — retain what you learned and
+move forward.")
+    ;; 3. Environment & Workspace
+    (let*
+        ((env (collect-environment-info))
+         (env-str
+           (format #f
+                   "- OS: ~a\n- Guile: ~a\n- Directory: ~a"
+                   (assoc-ref env 'os)
+                   (assoc-ref env 'guile-version)
+                   workspace-dir)))
+      (add-dynamic-sec! "Environment" env-str))
+    ;; 4. Git State
+    (when
+        (prompt-composer-include-git-status? composer)
+      (let
+          ((branch (get-git-branch workspace-dir))
+           (status (get-git-status-summary workspace-dir)))
+        (when (or branch status)
+          (let
+              ((git-str
+                 (format #f
+                         "- Branch: ~a\n- Status: ~a"
+                         (or branch "unknown")
+                         (or status "clean"))))
+            (add-dynamic-sec! "Git State" git-str)))))
+    ;; 5. File Tree
+    (when
+        (prompt-composer-include-file-tree? composer)
+      (let
+          ((tree
+             (build-workspace-file-tree workspace-dir
+                                        #:max-depth
+                                        (prompt-composer-file-tree-depth composer)
+                                        #:max-files
+                                        (prompt-composer-file-tree-max-files composer))))
+        (when tree
+          (add-dynamic-sec! "Workspace Outline" (format #f "```\n~a\n```" tree)))))
+    ;; 6. Discovered Project Rules
+    (let
+        ((discovered
+           (discover-project-rules workspace-dir
+                                   #:candidates
+                                   (prompt-composer-rule-files composer))))
+      (for-each
+        (lambda (rule-entry)
+          (let
+              ((path (assoc-ref rule-entry 'path)) (content (assoc-ref rule-entry 'content)))
+            (add-dynamic-sec! (format #f "Project Rule: ~a" path) content)))
+        discovered))
+    ;; 7. Custom Rules
+    (let
+        ((custom (prompt-composer-custom-rules composer)))
+      (for-each
+        (lambda (cr)
+          (if (string? cr)
+            (add-dynamic-sec! "Instruction" cr)
+            (when (pair? cr) (add-dynamic-sec! (format #f "Rule: ~a" (car cr)) (cdr cr)))))
+        custom))
+    ;; 7b. Skills Catalog
+    (let
+        ((sec (format-skill-catalog-section skills)))
+      (when sec (set! dynamic (cons sec dynamic))))
+    ;; 7c. Project Memories
+    (let
+        ((sec (format-memory-catalog-section memories)))
+      (when sec (set! dynamic (cons sec dynamic))))
+    ;; 8. Tool Instructions (if non-native XML tool style)
+    (when
+        (and (eq? (prompt-composer-tool-style composer) 'xml) (pair? tools))
+      (set! dynamic (cons (format-tools-for-prompt tools #:style 'xml) dynamic)))
+    (values (reverse static) (reverse dynamic))))
+
+(define*
   (assemble-system-prompt composer
                           #:key
                           (workspace-dir (getcwd))
@@ -409,107 +537,62 @@ Returns a string (or #f if empty)."
                           (memories '())
                           (static-only? #f))
   "Assemble a unified, structured markdown system prompt incorporating persona,
-workspace state, project guidelines, and tool instructions."
-  (let*
-      ((sections '())
-       (add-sec!
-         (lambda (header content)
-           (when (non-empty-string? content)
-             (set! sections
-                   (cons (format #f "## ~a\n~a" header (string-trim-both content)) sections))))))
-    ;; 1. Base Identity
-    (set! sections (cons (prompt-composer-system-identity composer) sections))
-    ;; 2. Mode Guidance
-    (case mode
-      ((code)
-        (add-sec! "Operational Directives"
-                  "Maintain code integrity. Inspect files before editing. Run tests after changes.
-Never commit untracked roadmap files or temporary scratch files."))
-      ((plan)
-        (add-sec! "Operational Directives"
-                  "Analyze the problem statement, identify dependencies, and outline a step-by-step
-execution plan. Do not perform write operations."))
-      ((fast)
-        (add-sec! "Operational Directives"
-                  "Provide direct, concise assessments with minimal preamble.")))
-    ;; 2b. Tool Usage Guidance
-    (add-sec! "Tool Usage"
-              "Prefer the read_file tool (path, offset, limit) to inspect files rather than
-shelling out with cat/sed. read_file reports the file's total line count in its
-header; when you need more than the default window, plan a few windowed reads
-(explicit offset/limit) in advance instead of many tiny ones. Avoid re-reading
-a file you have already read in this session — retain what you learned and
-move forward.")
-    (if static-only?
-      (string-join (reverse sections) "\n\n")
-      (begin
-        ;; 3. Environment & Workspace
-        (let*
-            ((env (collect-environment-info))
-             (env-str
-               (format #f
-                       "- OS: ~a\n- Guile: ~a\n- Directory: ~a"
-                       (assoc-ref env 'os)
-                       (assoc-ref env 'guile-version)
-                       workspace-dir)))
-          (add-sec! "Environment" env-str))
-        ;; 4. Git State
-        (when
-            (prompt-composer-include-git-status? composer)
-          (let
-              ((branch (get-git-branch workspace-dir))
-               (status (get-git-status-summary workspace-dir)))
-            (when (or branch status)
-              (let
-                  ((git-str
-                     (format #f
-                             "- Branch: ~a\n- Status: ~a"
-                             (or branch "unknown")
-                             (or status "clean"))))
-                (add-sec! "Git State" git-str)))))
-        ;; 5. File Tree
-        (when
-            (prompt-composer-include-file-tree? composer)
-          (let
-              ((tree
-                 (build-workspace-file-tree workspace-dir
-                                            #:max-depth
-                                            (prompt-composer-file-tree-depth composer)
-                                            #:max-files
-                                            (prompt-composer-file-tree-max-files composer))))
-            (when tree (add-sec! "Workspace Outline" (format #f "```\n~a\n```" tree)))))
-        ;; 6. Discovered Project Rules
-        (let
-            ((discovered
-               (discover-project-rules workspace-dir
-                                       #:candidates
-                                       (prompt-composer-rule-files composer))))
-          (for-each
-            (lambda (rule-entry)
-              (let
-                  ((path (assoc-ref rule-entry 'path)) (content (assoc-ref rule-entry 'content)))
-                (add-sec! (format #f "Project Rule: ~a" path) content)))
-            discovered))
-        ;; 7. Custom Rules
-        (let
-            ((custom (prompt-composer-custom-rules composer)))
-          (for-each
-            (lambda (cr)
-              (if (string? cr)
-                (add-sec! "Instruction" cr)
-                (when (pair? cr) (add-sec! (format #f "Rule: ~a" (car cr)) (cdr cr)))))
-            custom))
-        ;; 7b. Skills Catalog
-        (let ((sec (format-skill-catalog-section skills)))
-          (when sec (set! sections (cons sec sections))))
-        ;; 7c. Project Memories
-        (let ((sec (format-memory-catalog-section memories)))
-          (when sec (set! sections (cons sec sections))))
-        ;; 8. Tool Instructions (if non-native XML tool style)
-        (when
-            (and (eq? (prompt-composer-tool-style composer) 'xml) (pair? tools))
-          (set! sections (cons (format-tools-for-prompt tools #:style 'xml) sections)))
-        (string-join (reverse sections) "\n\n")))))
+workspace state, project guidelines, and tool instructions.  With
+STATIC-ONLY?, return just the stable prefix (identity and directives)
+that callers may keep in a provider prompt cache (see split-system-prompt
+for the two-piece form)."
+  (call-with-values
+    (lambda ()
+      (%assemble-system-sections composer
+                                 #:workspace-dir
+                                 workspace-dir
+                                 #:tools
+                                 tools
+                                 #:mode
+                                 mode
+                                 #:skills
+                                 skills
+                                 #:memories
+                                 memories))
+    (lambda (static-secs dynamic-secs)
+      (string-join
+        (if static-only?
+          static-secs
+          (append static-secs dynamic-secs))
+        "\n\n"))))
+
+(define*
+  (split-system-prompt composer
+                       #:key
+                       (workspace-dir (getcwd))
+                       (tools '())
+                       (mode 'code)
+                       (skills '())
+                       (memories '()))
+  "Return (STATIC . DYNAMIC): the system prompt split into its stable
+and volatile halves for explicit prompt-prefix caching.  STATIC is the
+identity/directives prefix (identical to assemble-system-prompt with
+STATIC-ONLY?); DYNAMIC is the environment, git-state, rules and
+catalog remainder.  (string-append STATIC \"\\n\\n\" DYNAMIC) is
+byte-identical to (assemble-system-prompt COMPOSER ...) for the same
+arguments.  Cache the STATIC half in the provider KV cache and pair
+with (geasa providers-model cache) apply-cache-breakpoints to place
+the cache breakpoint after it."
+  (call-with-values
+    (lambda ()
+      (%assemble-system-sections composer
+                                 #:workspace-dir
+                                 workspace-dir
+                                 #:tools
+                                 tools
+                                 #:mode
+                                 mode
+                                 #:skills
+                                 skills
+                                 #:memories
+                                 memories))
+    (lambda (static-secs dynamic-secs)
+      (cons (string-join static-secs "\n\n") (string-join dynamic-secs "\n\n")))))
 
 (define* (compile-system-prompt #:key
                                 (composer #f)

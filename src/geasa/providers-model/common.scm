@@ -24,6 +24,7 @@
                                         model-client-api-key
                                         model-client-model
                                         model-client-allow-missing-thinking?
+                                        model-client-cache-markers?
                                         valid-api-message?
                                         normalize-messages
                                         parse-sse-line
@@ -34,12 +35,17 @@
 ;;; Client Record Type
 ;;;
 (define-record-type <model-client>
-                    (%make-model-client endpoint api-key model allow-missing-thinking?)
+                    (%make-model-client endpoint
+                                        api-key
+                                        model
+                                        allow-missing-thinking?
+                                        cache-markers?)
                     model-client?
                     (endpoint model-client-endpoint)
-                    (api-key  model-client-api-key)
-                    (model    model-client-model)
-                    (allow-missing-thinking? model-client-allow-missing-thinking?))
+                    (api-key model-client-api-key)
+                    (model model-client-model)
+                    (allow-missing-thinking? model-client-allow-missing-thinking?)
+                    (cache-markers? model-client-cache-markers?))
 
 (define (make-model-client . args)
         "Create a model client record.
@@ -51,31 +57,52 @@ Can be invoked with keyword arguments:
     flag allow_missing_thinking (default #t).  Disable it for strict
     OpenAI-compatible APIs (e.g. api.mistral.ai) that reject extra
     body fields.
+  #:cache-markers? - Annotate the stable leading system-message prefix
+    with an explicit ephemeral cache_control breakpoint (default #f).
+    Enable it only for providers with explicit prompt caching
+    (Anthropic and compatible gateways).
 or with positional arguments:
   (make-model-client endpoint [api-key [model]])"
-        (let loop ((rest args)
-                   (endpoint "http://localhost:11434/v1/chat/completions")
-                   (api-key #f)
-                   (model "default")
-                   (amt? #t))
-                  (cond
-                    ((null? rest)
-                      (%make-model-client endpoint api-key model amt?))
-                    ((keyword? (car rest))
-                      (let ((k (car rest))
-                            (v (if (pair? (cdr rest)) (cadr rest) #f))
-                            (tail (if (pair? (cdr rest)) (cddr rest) '())))
-                        (case k
-                          ((#:endpoint) (loop tail v api-key model amt?))
-                          ((#:api-key)  (loop tail endpoint v model amt?))
-                          ((#:model)    (loop tail endpoint api-key v amt?))
-                          ((#:allow-missing-thinking?) (loop tail endpoint api-key model (and v #t)))
-                          (else (loop tail endpoint api-key model amt?)))))
-                    (else
-                      (let ((ep (car args))
-                            (ak (if (pair? (cdr args)) (cadr args) #f))
-                            (md (if (and (pair? (cdr args)) (pair? (cddr args))) (caddr args) "default")))
-                        (%make-model-client ep ak md #t))))))
+        (let loop
+          ((rest args)
+           (endpoint "http://localhost:11434/v1/chat/completions")
+           (api-key #f)
+           (model "default")
+           (amt? #t)
+           (cache? #f))
+          (cond
+            ((null? rest) (%make-model-client endpoint api-key model amt? cache?))
+            ((keyword? (car rest))
+              (let
+                  ((k (car rest))
+                   (v
+                     (if (pair? (cdr rest))
+                       (cadr rest)
+                       #f))
+                   (tail
+                     (if (pair? (cdr rest))
+                       (cddr rest)
+                       '())))
+                (case k
+                  ((#:endpoint) (loop tail v api-key model amt? cache?))
+                  ((#:api-key) (loop tail endpoint v model amt? cache?))
+                  ((#:model) (loop tail endpoint api-key v amt? cache?))
+                  ((#:allow-missing-thinking?)
+                    (loop tail endpoint api-key model (and v #t) cache?))
+                  ((#:cache-markers?) (loop tail endpoint api-key model amt? (and v #t)))
+                  (else (loop tail endpoint api-key model amt? cache?)))))
+            (else
+              (let
+                  ((ep (car args))
+                   (ak
+                     (if (pair? (cdr args))
+                       (cadr args)
+                       #f))
+                   (md
+                     (if (and (pair? (cdr args)) (pair? (cddr args)))
+                       (caddr args)
+                       "default")))
+                (%make-model-client ep ak md #t #f))))))
 
 ;;;
 ;;; Message Validation & Normalization
