@@ -651,7 +651,19 @@ and append it to the persistent history journal file."
                                        cur-model
                                        #:allow-missing-thinking?
                                        (badb-config-allow-missing-thinking? cfg cur-endpoint)))
-              (module-define! repl-mod 'client client))
+              (module-define! repl-mod 'client client)
+              (let
+                  ((context-limit
+                     (catch #t
+                       (lambda ()
+                         (fetch-model-context-limit client))
+                       (lambda _
+                         #f))))
+                (set-context-compactor-max-tokens! compactor
+                                                   (if
+                                                       (and (integer? context-limit) (> context-limit 4096))
+                                                     context-limit
+                                                     16384))))
       ;; Startup model auto-detection: when the active model is a generic
       ;; placeholder (#f, empty or "default"), ask the endpoint's /models
       ;; listing to pick one and adopt it. The request is wrapped in catch so
@@ -1934,60 +1946,80 @@ any open menu first; submenu actions open the next menu in its place."
                           new-tokens))))
       ;; Handle checkpoint command
       (define (checkpoint-conversation-path checkpoint)
-              (format #f "~a/~a.conversation.jsonl"
+              (format #f
+                      "~a/~a.conversation.jsonl"
                       (rollback-manager-storage-dir rollback-mgr)
                       (checkpoint-id checkpoint)))
-      (define (save-checkpoint-conversation! checkpoint)
-              (persist-session-file! (checkpoint-conversation-path checkpoint) llm-history))
-      (define (restore-checkpoint-conversation! checkpoint-id)
-              (let ((checkpoint (get-checkpoint rollback-mgr checkpoint-id)))
-                (and checkpoint
-                     (let* ((path (checkpoint-conversation-path checkpoint))
-                            (history (load-session-file path)))
-                       (and (file-exists? path)
-                            (pair? history)
-                            (equal? (assoc-ref (car history) 'role) "system")
-                            history)))))
+      (define
+        (save-checkpoint-conversation! checkpoint)
+        (persist-session-file! (checkpoint-conversation-path checkpoint) llm-history))
+      (define
+        (restore-checkpoint-conversation! checkpoint-id)
+        (let
+            ((checkpoint (get-checkpoint rollback-mgr checkpoint-id)))
+          (and checkpoint
+               (let*
+                   ((path (checkpoint-conversation-path checkpoint))
+                    (history (load-session-file path)))
+                 (and (file-exists? path)
+                      (pair? history)
+                      (equal? (assoc-ref (car history) 'role) "system")
+                      history)))))
       (define (handle-replay-cmd! arg)
-              (let* ((checkpoint-id (string-trim-both arg))
-                     (history (and (not (string-null? checkpoint-id))
-                                   (restore-checkpoint-conversation! checkpoint-id))))
+              (let*
+                  ((checkpoint-id (string-trim-both arg))
+                   (history
+                     (and (not (string-null? checkpoint-id))
+                          (restore-checkpoint-conversation! checkpoint-id))))
                 (if (not history)
-                  (add-err-msg! "Replay needs a saved checkpoint ID. Use /checkpoint first; /journal lists checkpoint IDs.")
-                  (let ((result (rollback-to-checkpoint! rollback-mgr checkpoint-id)))
-                    (if (equal? (assoc-ref result 'status) "rolled_back")
-                      (begin
-                        (set! llm-history history)
-                        (persist-session-file! session-file llm-history)
-                        (set! %ctx-cache-key #f)
-                        (set! messages '())
-                        (add-sys-msg! (format #f "Replayed checkpoint ~a (~a)."
-                                              checkpoint-id
-                                              (assoc-ref result 'description))))
+                  (add-err-msg!
+                    "Replay needs a saved checkpoint ID. Use /checkpoint first; /journal lists checkpoint IDs.")
+                  (let
+                      ((result (rollback-to-checkpoint! rollback-mgr checkpoint-id)))
+                    (if
+                        (equal? (assoc-ref result 'status) "rolled_back")
+                      (begin (set! llm-history history)
+                             (persist-session-file! session-file llm-history)
+                             (set! %ctx-cache-key #f)
+                             (set! messages '())
+                             (add-sys-msg!
+                               (format #f
+                                       "Replayed checkpoint ~a (~a)."
+                                       checkpoint-id
+                                       (assoc-ref result 'description))))
                       (add-err-msg! (format #f "Replay failed: ~a" (assoc-ref result 'error))))))))
       (define (handle-fork-cmd! arg)
               (let ((requested (string-trim-both arg)))
                 (if (string-null? requested)
-                  (let ((fork (create-checkpoint! rollback-mgr "Conversation fork")))
+                  (let
+                      ((fork (create-checkpoint! rollback-mgr "Conversation fork")))
                     (if (save-checkpoint-conversation! fork)
-                      (add-sys-msg! (format #f "Fork point saved as checkpoint ~a." (checkpoint-id fork)))
-                      (add-err-msg! "Fork point created, but its conversation snapshot could not be saved.")))
-                  (let ((restored (restore-checkpoint-conversation! requested)))
+                      (add-sys-msg!
+                        (format #f "Fork point saved as checkpoint ~a." (checkpoint-id fork)))
+                      (add-err-msg!
+                        "Fork point created, but its conversation snapshot could not be saved.")))
+                  (let
+                      ((restored (restore-checkpoint-conversation! requested)))
                     (if (not restored)
-                      (add-err-msg! "Fork checkpoint has no saved conversation. Use /checkpoint to create replayable checkpoints.")
-                      (let ((result (rollback-to-checkpoint! rollback-mgr requested)))
-                        (if (not (equal? (assoc-ref result 'status) "rolled_back"))
+                      (add-err-msg!
+                        "Fork checkpoint has no saved conversation. Use /checkpoint to create replayable checkpoints.")
+                      (let
+                          ((result (rollback-to-checkpoint! rollback-mgr requested)))
+                        (if
+                            (not (equal? (assoc-ref result 'status) "rolled_back"))
                           (add-err-msg! (format #f "Fork failed: ~a" (assoc-ref result 'error)))
-                          (begin
-                            (set! llm-history restored)
-                            (set! %ctx-cache-key #f)
-                            (set! messages '())
-                            (let ((fork (create-checkpoint! rollback-mgr (format #f "Fork of ~a" requested))))
-                              (if (save-checkpoint-conversation! fork)
-                                (begin
-                                  (persist-session-file! session-file llm-history)
-                                  (add-sys-msg! (format #f "Forked checkpoint ~a as ~a." requested (checkpoint-id fork))))
-                                (add-err-msg! "Fork checkpoint created, but its conversation snapshot could not be saved.")))))))))))
+                          (begin (set! llm-history restored)
+                                 (set! %ctx-cache-key #f)
+                                 (set! messages '())
+                                 (let
+                                     ((fork (create-checkpoint! rollback-mgr (format #f "Fork of ~a" requested))))
+                                   (if (save-checkpoint-conversation! fork)
+                                     (begin
+                                       (persist-session-file! session-file llm-history)
+                                       (add-sys-msg!
+                                         (format #f "Forked checkpoint ~a as ~a." requested (checkpoint-id fork))))
+                                     (add-err-msg!
+                                       "Fork checkpoint created, but its conversation snapshot could not be saved.")))))))))))
       (define (handle-checkpoint-cmd! arg)
               (let*
                   ((desc
@@ -1996,7 +2028,8 @@ any open menu first; submenu actions open the next menu in its place."
                        (string-trim-both arg)))
                    (chkpt (create-checkpoint! rollback-mgr desc)))
                 (unless (save-checkpoint-conversation! chkpt)
-                  (add-err-msg! "Checkpoint created, but the conversation snapshot could not be saved."))
+                  (add-err-msg!
+                    "Checkpoint created, but the conversation snapshot could not be saved."))
                 (add-sys-msg!
                   (format #f
                           "Created checkpoint '~a' (~a).\nFiles recorded: ~a, Registry entries: ~a."
@@ -2588,13 +2621,14 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                                        (execute-scheme! code-str)
                                                        (loop)))
                                                    ((chat)
-                                                     (let* ((user-text (cdr action))
-                                                            ;; Expand @@, @file:PATH, and @SHORTCUT
-                                                            ;; directives before the turn reaches
-                                                            ;; ReAct (see capabilities-macro). The
-                                                            ;; expansion never raises, so failures
-                                                            ;; surface as @error: markers.
-                                                            (delivered (expand-macros user-text)))
+                                                     (let*
+                                                         ((user-text (cdr action))
+                                                          ;; Expand @@, @file:PATH, and @SHORTCUT
+                                                          ;; directives before the turn reaches
+                                                          ;; ReAct (see capabilities-macro). The
+                                                          ;; expansion never raises, so failures
+                                                          ;; surface as @error: markers.
+                                                          (delivered (expand-macros user-text)))
                                                        (record-history! delivered 'chat)
                                                        (add-user-msg! delivered)
                                                        (set! %agent-thread
