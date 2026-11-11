@@ -111,7 +111,7 @@
 ;;;
 
 (define %error-pattern
-        (make-regexp "(error|fail|traceback|exception|panic|assert|fatal|denied)" regexp/icase))
+        (make-regexp "(^[[:space:]]*(ERROR|FAIL|FAILED|FATAL|CRITICAL|PANIC|TRACEBACK|EXCEPTION|ASSERTION FAILED|DENIED)(:|[[:space:]])|:[[:space:]]*(error|failure|failed|fatal|panic|exception|assertion failed|denied)(:|[[:space:]])|^[[:space:]]*Traceback([[:space:]]|:))" regexp/icase))
 
 (define* (ctx-exec! idx command #:key (shell-executor #f) (intent-query #f)
                     (max-return-chars 1600) (offload-dir ".badb/ctx"))

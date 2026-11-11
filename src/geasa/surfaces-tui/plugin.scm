@@ -1469,8 +1469,10 @@ grown journal), which the per-frame header render must not pay."
                                                      compactor
                                                      #:loop-detector
                                                      (make-loop-detector)
+                                                     ;; The per-step user-role recitation was repeatedly
+                                                     ;; mistaken for untrusted tool-output instructions.
                                                      #:recitation?
-                                                     #t)))
+                                                     #f)))
                             (call-with-values
                               (lambda ()
                                 (react-run! session))
