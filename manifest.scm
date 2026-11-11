@@ -17,6 +17,7 @@
             "gzip"
             "unzip"
             "tui-test"
+            "uv"
             "sema"
             "prek"
             "guile-quickcheck"

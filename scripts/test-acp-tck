@@ -1,0 +1,87 @@
+#!/usr/bin/env -S guile -e main -s
+!#
+;;; test-acp-tck — Run the upstream ACP Test Compatibility Kit against `badb acp`.
+;;;
+;;; Launches a hermetic fake model endpoint (test/e2e/fake-endpoint.scm), then
+;;; runs `uvx --from git+https://github.com/agentclientprotocol/acp-tck.git acp-tck`
+;;; against `badb acp` with BADB_MODEL_ENDPOINT pointed at the fake endpoint.
+;;; Exits non-zero unless the TCK verdict is CONFORMANT.
+
+(setenv "GUILE_AUTO_COMPILE" "0")
+
+(define %script-path (canonicalize-path (car (command-line))))
+(define %root-dir (canonicalize-path (string-append (dirname %script-path) "/..")))
+(set! %load-path (cons (string-append %root-dir "/src") %load-path))
+(set! %load-path (cons %root-dir %load-path))
+
+(unless (catch #t (lambda () (resolve-interface '(fslib)) #t) (lambda _ #f))
+  (let ((devenv (string-append %root-dir "/scripts/devenv")))
+    (apply execl devenv devenv "--" %script-path (cdr (command-line)))))
+
+(use-modules (ice-9 popen)
+             (ice-9 rdelim)
+             (ice-9 format)
+             (ice-9 textual-ports)
+             (ice-9 threads)
+             (srfi srfi-1)
+             (json))
+
+;; The Guix shell has no CA bundle on the default path; point git/uv at the
+;; system one so fetching the TCK repo works inside devenv.
+(unless (getenv "GIT_SSL_CAINFO")
+  (when (file-exists? "/etc/ssl/certs/ca-certificates.crt")
+    (setenv "GIT_SSL_CAINFO" "/etc/ssl/certs/ca-certificates.crt")
+    (setenv "SSL_CERT_FILE" "/etc/ssl/certs/ca-certificates.crt")))
+
+(define %tck-repo "git+https://github.com/agentclientprotocol/acp-tck.git")
+(define %fake-port (or (and=> (getenv "E2E_FAKE_PORT") string->number) 18034))
+(define %fake-endpoint (format #f "http://127.0.0.1:~a/v1" %fake-port))
+(define %agent-cwd (string-append %root-dir "/test/e2e/.acp-tck-wd"))
+
+(define (run! cmd . args)
+  (let ((status (apply system* cmd args)))
+    (status:exit-val status)))
+
+(define (spawn-endpoint! path)
+  "Start the fake endpoint as a background child; return its pid."
+  (let ((pid (primitive-fork)))
+    (if (= pid 0)
+      (begin
+        (setenv "E2E_FAKE_PORT" (number->string %fake-port))
+        (apply execlp "guile" "guile" "--no-auto-compile" (list path))
+        (primitive-exit 127))
+      pid)))
+
+(define (main args)
+  (chdir %root-dir)
+  (system* "mkdir" "-p" %agent-cwd)
+  ;; 1. Start the fake model endpoint in the background.
+  ;;    (Bracket the pattern so pkill never matches this script's own argv.)
+  (let ((stale (open-pipe* OPEN_READ "pkill" "-f" "[f]ake-endpoint.scm")))
+    (close-pipe stale))
+  (let ((endpoint-pid (spawn-endpoint!
+                        (string-append %root-dir "/test/e2e/fake-endpoint.scm"))))
+    (usleep 1500000)
+    (let ((report-path (string-append %root-dir "/.badb/acp-tck-report.json")))
+      (system* "mkdir" "-p" (dirname report-path))
+      (format #t "Running acp-tck against `badb acp` (fake endpoint ~a)...~%" %fake-endpoint)
+      (let ((status
+              (run! "uvx" "--from" %tck-repo "acp-tck"
+                    "--agent-cwd" %agent-cwd
+                    "--agent-env" (string-append "BADB_MODEL_ENDPOINT=" %fake-endpoint)
+                    "--agent-env" "BADB_MODEL_NAME=fake-model"
+                    "--timeout" "60" "--test-timeout" "120"
+                    "--report-json" report-path
+                    "--"
+                    (string-append %root-dir "/scripts/badb") "acp")))
+        (catch #t (lambda () (kill endpoint-pid SIGTERM)) (lambda _ #f))
+        (when (file-exists? report-path)
+          (let ((report (call-with-input-file report-path
+                          (lambda (p) (json-string->scm (get-string-all p))))))
+            (let ((verdict (assoc-ref report "verdict")))
+              (format #t "TCK verdict: conformant=~a~%"
+                      (or (assoc-ref verdict "conformant") #f)))))
+        (format #t "acp-tck exit status: ~a~%" status)
+        (exit (if (zero? status) 0 1))))))
+
+(main (command-line))
