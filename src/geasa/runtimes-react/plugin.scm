@@ -544,9 +544,16 @@ logs execution provenance to JRN, and returns (values result is-error?)."
 (define current-react-session (make-parameter #f))
 
 (define %mutation-tool-names
-        '("write_file" "edit_file" "replace_symbol_body" "run_tests"
-          "checkpoint_create" "checkpoint_rollback" "spec.synthesize" "spec_synthesize"
-          "spec.lock" "spec_lock"))
+        '("write_file" "edit_file"
+          "edit_lines"
+          "replace_symbol_body"
+          "run_tests"
+          "checkpoint_create"
+          "checkpoint_rollback"
+          "spec.synthesize"
+          "spec_synthesize"
+          "spec.lock"
+          "spec_lock"))
 
 (define (mutation-tool-call? tc)
         (let ((name (or (assoc-ref tc 'name) (assoc-ref tc "name") "")))
@@ -698,10 +705,28 @@ return content-str unchanged (fail-open). If OFFLOAD-HOOK is given, invoke
                     (offload-hook react-session-offload-hook set-react-session-offload-hook!))
 
 (define %default-core-tools
-        '("read_file" "write_file" "edit_file" "symbols_overview" "find_symbol" "replace_symbol_body"
-          "bash" "ctx_exec" "ctx_search" "run_tests" "checkpoint_create" "checkpoint_rollback"
-          "investigate" "scheme_eval" "skill_load" "memory_read"
-          "geis_index" "geis.index" "geis_activate" "geis.activate" "geis_deactivate" "geis.deactivate"
+        '("read_file" "write_file"
+          "edit_file"
+          "edit_lines"
+          "symbols_overview"
+          "find_symbol"
+          "replace_symbol_body"
+          "bash"
+          "ctx_exec"
+          "ctx_search"
+          "run_tests"
+          "checkpoint_create"
+          "checkpoint_rollback"
+          "investigate"
+          "scheme_eval"
+          "skill_load"
+          "memory_read"
+          "geis_index"
+          "geis.index"
+          "geis_activate"
+          "geis.activate"
+          "geis_deactivate"
+          "geis.deactivate"
           "tool_search"))
 
 (define* (partition-tools-for-step all-tools

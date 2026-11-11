@@ -452,10 +452,15 @@ execution plan. Do not perform write operations."))
     (add-static-sec! "Tool Usage"
                      "Prefer the read_file tool (path, offset, limit) to inspect files rather than
 shelling out with cat/sed. read_file reports the file's total line count in its
-header; when you need more than the default window, plan a few windowed reads
-(explicit offset/limit) in advance instead of many tiny ones. Avoid re-reading
-a file you have already read in this session — retain what you learned and
-move forward.")
+header and annotates every line as N:HHH→content, where N is the 0-based line
+number and HHH is the line's content anchor. For surgical edits, prefer the
+edit_lines tool: pass ranges as {from, from_hash, to, to_hash, new_text} using
+the anchors read_file showed you — the harness verifies them against the live
+file and rejects edits based on stale reads instead of corrupting the wrong
+lines. edit_file remains available for exact-text replacements. When you need
+more than the default window, plan a few windowed reads (explicit offset/limit)
+in advance instead of many tiny ones. Avoid re-reading a file you have already
+read in this session — retain what you learned and move forward.")
     ;; 3. Environment & Workspace
     (let*
         ((env (collect-environment-info))

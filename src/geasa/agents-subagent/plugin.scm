@@ -60,8 +60,20 @@
           "skill_load" "skill_list"))
 
 (define %default-worktree-tools
-        '("read_file" "write_file" "edit_file" "bash" "sh" "git_status" "git_diff" "git_log" "git_commit"
-          "ctx_search" "find_symbol" "symbols_overview" "skill_load" "skill_list"))
+        '("read_file" "write_file"
+          "edit_file"
+          "edit_lines"
+          "bash"
+          "sh"
+          "git_status"
+          "git_diff"
+          "git_log"
+          "git_commit"
+          "ctx_search"
+          "find_symbol"
+          "symbols_overview"
+          "skill_load"
+          "skill_list"))
 
 ;; ---- Subprocess & Git Plumbing ----------------------------------------------
 

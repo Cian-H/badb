@@ -85,12 +85,230 @@
                 (test-assert "file on disk untouched"
                              (string-contains (call-with-input-file code-file read-string) "42")))))
 
+(test-group "hash-line-anchors"
+            ;; FNV-1a anchor contract: trailing-whitespace-trimmed, 12-bit, 3 lowercase hex chars
+            (test-equal "FNV-1a anchor golden vector: foo" "ed7" (fs-line-anchor "foo"))
+            (test-equal "FNV-1a anchor golden vector: hello" "cab" (fs-line-anchor "hello"))
+            (test-equal "FNV-1a anchor golden vector: empty line" "dc5" (fs-line-anchor ""))
+            (test-equal "anchor ignores trailing whitespace"
+                        (fs-line-anchor "abc")
+                        (fs-line-anchor "abc   "))
+            (test-assert "anchor is 3 lowercase hex chars"
+                         (let
+                             ((a (fs-line-anchor "(define (hello) 'old-world)")))
+                           (and (= 3 (string-length a)) (string->number a 16) (equal? a "f15"))))
+            (let
+                ((sample (string-append %test-dir "/anchors.txt")))
+              (call-with-output-file sample
+                                     (lambda (p)
+                                       (display "alpha\nbeta\ngamma\n" p)))
+              (let ((out (fs-read-file sample 0 3)))
+                (test-assert
+                  "read output annotates lines with N:HHH content prefix"
+                  (string-contains out "0:dab→alpha"))
+                (test-assert
+                  "read output annotates later lines with their own anchors"
+                  (string-contains out "1:4c7→beta"))
+                (test-assert
+                  "read header still reports the shown window"
+                  (string-contains out "showing lines 0..2")))))
+
+(test-group "fs-edit-lines"
+            (define el-file (string-append %test-dir "/edit-lines.txt"))
+            (define (write-el! content)
+                    (call-with-output-file el-file
+                                           (lambda (p)
+                                             (display content p))))
+            (define (el-content) (call-with-input-file el-file read-string))
+            ;; 1. Single anchored range replacement
+            (write-el! "one\ntwo\nthree\nfour\n")
+            (let
+                ((res
+                   (fs-edit-lines el-file
+                                  (list
+                                    '(("from" . 1) ("from_hash" . "829")
+                                      ("to" . 2)
+                                      ("to_hash" . "3c3")
+                                      ("new_text" . "TWO\nTHREE"))))))
+              (test-assert "reports the applied edit"
+                           (string-contains res "applied 1 edit(s)"))
+              (test-equal "replaces the anchored range on disk"
+                          "one\nTWO\nTHREE\nfour\n"
+                          (el-content)))
+            ;; 2. Stale anchor (e.g. lines inserted above since the read) fails closed
+            (write-el! "one\ntwo\nthree\nfour\n")
+            (let
+                ((res
+                   (fs-edit-lines el-file
+                                  (list
+                                    '(("from" . 1) ("from_hash" . "9ef")
+                                      ("to" . 1)
+                                      ("to_hash" . "9ef")
+                                      ("new_text" . "nah"))))))
+              (test-assert "stale anchor is rejected" (string-contains res "stale read"))
+              (test-assert
+                "stale anchor message asks for a re-read"
+                (string-contains res "re-read"))
+              (test-assert
+                "stale anchor leaves the file untouched"
+                (string-contains (el-content) "two\nthree")))
+            ;; 3. Batches are atomic: one stale edit rejects everything
+            (write-el! "one\ntwo\nthree\nfour\n")
+            (let
+                ((res
+                   (fs-edit-lines el-file
+                                  (list
+                                    '(("from" . 0) ("from_hash" . "9ef")
+                                      ("to" . 0)
+                                      ("to_hash" . "9ef")
+                                      ("new_text" . "ONE!"))
+                                    '(("from" . 2) ("from_hash" . "wrong")
+                                      ("to" . 2)
+                                      ("to_hash" . "3c3")
+                                      ("new_text" . "XXX"))))))
+              (test-assert
+                "batch with a stale edit is rejected"
+                (string-contains res "stale read"))
+              (test-assert
+                "batch rejection leaves the valid edit unapplied"
+                (string-contains (el-content) "one\ntwo\nthree\nfour\n")))
+            ;; 4. Two valid edits in one batch apply bottom-up
+            (write-el! "one\ntwo\nthree\nfour\n")
+            (let
+                ((res
+                   (fs-edit-lines el-file
+                                  (list
+                                    '(("from" . 0) ("from_hash" . "9ef")
+                                      ("to" . 0)
+                                      ("to_hash" . "9ef")
+                                      ("new_text" . "ONE!"))
+                                    '(("from" . 2) ("from_hash" . "3c3")
+                                      ("to" . 2)
+                                      ("to_hash" . "3c3")
+                                      ("new_text" . "THREE!"))))))
+              (test-assert "reports both applied edits"
+                           (string-contains res "applied 2 edit(s)"))
+              (test-equal "both batch edits land on disk"
+                          "ONE!\ntwo\nTHREE!\nfour\n"
+                          (el-content)))
+            ;; 5. Insertion via multi-line new_text keeps the anchored line
+            (write-el! "one\ntwo\nthree\n")
+            (let
+                ((res
+                   (fs-edit-lines el-file
+                                  (list
+                                    '(("from" . 1) ("from_hash" . "829")
+                                      ("to" . 1)
+                                      ("to_hash" . "829")
+                                      ("new_text" . "inserted\ntwo"))))))
+              (test-assert "insertion edit applies" (string-contains res "applied 1 edit(s)"))
+              (test-equal
+                "inserted lines appear above the anchored line"
+                "one\ninserted\ntwo\nthree\n"
+                (el-content)))
+            ;; 6. Deletion via empty new_text
+            (write-el! "one\ntwo\nthree\n")
+            (let
+                ((res
+                   (fs-edit-lines el-file
+                                  (list
+                                    '(("from" . 1) ("from_hash" . "829")
+                                      ("to" . 1)
+                                      ("to_hash" . "829")
+                                      ("new_text" . ""))))))
+              (test-assert "deletion edit applies" (string-contains res "applied 1 edit(s)"))
+              (test-equal "deleted range is gone from disk" "one\nthree\n" (el-content)))
+            ;; 7. Range and shape validation
+            (write-el! "one\ntwo\n")
+            (test-assert "out-of-range edit is rejected"
+                         (string-contains
+                           (fs-edit-lines el-file
+                                          (list
+                                            '(("from" . 0) ("from_hash" . "9ef")
+                                              ("to" . 5)
+                                              ("to_hash" . "e11")
+                                              ("new_text" . "X"))))
+                           "outside lines 0..1"))
+            (test-assert "inverted range is rejected"
+                         (string-contains
+                           (fs-edit-lines el-file
+                                          (list
+                                            '(("from" . 1) ("from_hash" . "829")
+                                              ("to" . 0)
+                                              ("to_hash" . "9ef")
+                                              ("new_text" . "X"))))
+                           "outside lines 0..1"))
+            (test-assert "overlapping edits are rejected"
+                         (string-contains
+                           (fs-edit-lines el-file
+                                          (list
+                                            '(("from" . 0) ("from_hash" . "9ef")
+                                              ("to" . 1)
+                                              ("to_hash" . "829")
+                                              ("new_text" . "A"))
+                                            '(("from" . 1) ("from_hash" . "829")
+                                              ("to" . 1)
+                                              ("to_hash" . "829")
+                                              ("new_text" . "B"))))
+                           "overlap"))
+            (test-assert "missing edit fields are rejected"
+                         (string-contains (fs-edit-lines el-file (list '(("from" . 0)))) "needs integer"))
+            (test-assert "empty edit list is rejected"
+                         (string-contains (fs-edit-lines el-file '()) "at least one edit"))
+            ;; 8. JSON-native shapes: vector of symbol-keyed alists
+            (write-el! "one\ntwo\nthree\n")
+            (let
+                ((res
+                   (fs-edit-lines el-file
+                                  (vector
+                                    '((from . 1) (from_hash . "829") (to . 1) (to_hash . "829") (new_text . "zwei"))))))
+              (test-assert
+                "JSON array/vector edits are accepted"
+                (string-contains res "applied 1 edit(s)"))
+              (test-equal "vector edit lands on disk" "one\nzwei\nthree\n" (el-content)))
+            ;; 9. Verification failure leaves the file untouched
+            (call-with-output-file
+              (string-append %test-dir "/edit-lines-check.scm")
+              (lambda (p)
+                (display "(define (valid-form) 42)\n" p)))
+            (let*
+                ((check-file (string-append %test-dir "/edit-lines-check.scm"))
+                 (h (fs-line-anchor "(define (valid-form) 42)"))
+                 (v (make-verifier #:check-syntax? #t #:run-tests? #f))
+                 (res
+                   (fs-edit-lines check-file
+                                  (vector
+                                    `(("from" . 0) ("from_hash" . ,h)
+                                      ("to" . 0)
+                                      ("to_hash" . ,h)
+                                      ("new_text" . "(broken-paren")))
+                                  #:verifier
+                                  v)))
+              (test-assert
+                "verified edit aborts on syntax failure"
+                (string-contains res "Edit aborted"))
+              (test-assert
+                "verified edit leaves the file untouched"
+                (string-contains
+                  (call-with-input-file check-file
+                                        (lambda (p)
+                                          (read-string p)))
+                  "42"))))
+
 (test-group "register-fs-tools!"
             (let ((reg (make-registry)))
-              (register-fs-tools! reg #:shell-executor (lambda (cmd) (list 'ok cmd)))
-              (test-assert "read_file registered" (procedure? (registry-lookup reg "read_file")))
-              (test-assert "write_file registered" (procedure? (registry-lookup reg "write_file")))
-              (test-assert "edit_file registered" (procedure? (registry-lookup reg "edit_file")))
+              (register-fs-tools! reg
+                                  #:shell-executor
+                                  (lambda (cmd)
+                                    (list 'ok cmd)))
+              (test-assert "read_file registered"
+                           (procedure? (registry-lookup reg "read_file")))
+              (test-assert "write_file registered"
+                           (procedure? (registry-lookup reg "write_file")))
+              (test-assert "edit_file registered"
+                           (procedure? (registry-lookup reg "edit_file")))
+              (test-assert "edit_lines registered"
+                           (procedure? (registry-lookup reg "edit_lines")))
               (test-assert "bash registered" (procedure? (registry-lookup reg "bash")))))
 
 (teardown-test-dir!)
