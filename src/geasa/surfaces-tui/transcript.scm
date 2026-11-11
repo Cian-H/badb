@@ -103,48 +103,56 @@
         "Process fenced code blocks in TEXT: colorize scheme/c/lisp code
 between ``` fences via highlight-text and mark segments with [CODE:...]
 roles for segment-line rendering; degrade to raw TEXT on any error."
-        (catch #t
-          (lambda ()
-            (let* ((lines (string-split text #\newline))
+        (if
+            (or (not (string? text)) (not (string-contains text "```")))
+          text
+          (catch #t
+            (lambda ()
+              (let*
+                  ((lines (string-split text #\newline))
                    (in-code-block? #f)
                    (lang "")
                    (result '()))
-              (let loop ((lines lines) (in-code-block? in-code-block?) (lang lang) (result result))
-                        (if (null? lines)
-                          (string-join (reverse result) "\n")
-                          (let* ((line (car lines))
-                                 (trimmed (string-trim-both line)))
-                            (cond
-                              ((and (not in-code-block?) (string-prefix? "```" trimmed))
-                                (let* ((lang-part (substring trimmed 3))
-                                       (lang-end (let loop-lang ((i 0))
-                                                                (if (or (>= i (string-length lang-part))
-                                                                        (memq (string-ref lang-part i) '(#\space #\tab #\newline)))
-                                                                  i
-                                                                  (loop-lang (+ i 1)))))
-                                       (block-lang (if lang-end (substring lang-part 0 lang-end) "")))
-                                  (loop (cdr lines) #t block-lang
-                                        (cons (format #f "```~a" block-lang) result))))
-                              ((and in-code-block? (string-prefix? "```" trimmed))
-                                (loop (cdr lines) #f ""
-                                      (cons "```" result)))
-                              (in-code-block?
-                                (let* ((segments (highlight-text line lang))
-                                       (formatted-line
-                                         (string-join
-                                           (map (lambda (seg)
-                                                  (let ((seg-text (car seg))
-                                                        (role (cadr seg)))
-                                                    (format #f "[CODE:~a]~a[/CODE]" role seg-text)))
-                                                segments)
-                                           "")))
-                                  (loop (cdr lines) in-code-block? lang
-                                        (cons formatted-line result))))
-                              (else
-                                (loop (cdr lines) in-code-block? lang
-                                      (cons line result)))))))))
-          (lambda (key . args)
-            text)))
+                (let loop
+                  ((lines lines) (in-code-block? in-code-block?) (lang lang) (result result))
+                  (if (null? lines)
+                    (string-join (reverse result) "\n")
+                    (let*
+                        ((line (car lines)) (trimmed (string-trim-both line)))
+                      (cond
+                        ((and (not in-code-block?) (string-prefix? "```" trimmed))
+                          (let*
+                              ((lang-part (substring trimmed 3))
+                               (lang-end
+                                 (let loop-lang
+                                   ((i 0))
+                                   (if
+                                       (or (>= i (string-length lang-part))
+                                           (memq (string-ref lang-part i) '(#\space #\tab #\newline)))
+                                     i
+                                     (loop-lang (+ i 1)))))
+                               (block-lang
+                                 (if lang-end
+                                   (substring lang-part 0 lang-end)
+                                   "")))
+                            (loop (cdr lines) #t block-lang (cons (format #f "```~a" block-lang) result))))
+                        ((and in-code-block? (string-prefix? "```" trimmed))
+                          (loop (cdr lines) #f "" (cons "```" result)))
+                        (in-code-block?
+                          (let*
+                              ((segments (highlight-text line lang))
+                               (formatted-line
+                                 (string-join
+                                   (map
+                                     (lambda (seg)
+                                       (let ((seg-text (car seg)) (role (cadr seg)))
+                                         (format #f "[CODE:~a]~a[/CODE]" role seg-text)))
+                                     segments)
+                                   "")))
+                            (loop (cdr lines) in-code-block? lang (cons formatted-line result))))
+                        (else (loop (cdr lines) in-code-block? lang (cons line result)))))))))
+            (lambda (key . args)
+              text))))
 
 ;;;
 ;;; Model Thoughts & Reasoning Separation Helper
@@ -225,9 +233,11 @@ by the renderer). The neutral 'default maps to white."
 (define (streaming-spinner-glyph)
         "Return the current braille spinner frame, advanced by wall-clock
 time so the prompt indicator animates on every streaming redraw."
-        (let* ((ms (quotient (get-internal-run-time)
-                             (quotient internal-time-units-per-second 1000)))
-               (i (modulo (quotient ms 80) (vector-length %spinner-frames))))
+        (let*
+            ((ms
+               (quotient (get-internal-real-time)
+                         (quotient internal-time-units-per-second 1000)))
+             (i (modulo (quotient ms 80) (vector-length %spinner-frames))))
           (vector-ref %spinner-frames i)))
 
 (define* (get-prompt-indicator input-buffer status-text #:optional (prompt-mode 'chat))
@@ -385,8 +395,7 @@ Return (values new-buffer action)."
         "Return #t when STATUS-TEXT indicates the autonomous ReAct loop is
 currently executing."
         (and (string? status-text)
-             (or (string-prefix? "REACT" status-text)
-                 (string-prefix? "TOOL:" status-text))
+             (or (string-prefix? "REACT" status-text) (string-prefix? "TOOL:" status-text))
              #t))
 
 ;;;
@@ -665,57 +674,68 @@ carrying LABEL and THEME-ROLE, then one block-body row per line."
 
 (define (format-message-entry msg content-width)
         "Format MSG into flat block rows for a viewport CONTENT-WIDTH wide."
-        (let* ((role-val (assoc-ref msg 'role))
-               (role
-                 (cond
-                   ((string? role-val) role-val)
-                   ((symbol? role-val) (symbol->string role-val))
-                   (else "system")))
-               (raw-content (or (assoc-ref msg 'content) ""))
-               (content
-                 (if (string? raw-content)
-                   raw-content
-                   (format #f "~a" raw-content)))
-               (raw-thoughts (assoc-ref msg 'thoughts))
-               (thoughts
-                 (and raw-thoughts
-                      (if (string? raw-thoughts)
-                        raw-thoughts
-                        (format #f "~a" raw-thoughts))))
-               ;; Process fenced code blocks in content and thoughts
-               (content (process-fenced-code-blocks content))
-               (thoughts (and thoughts (process-fenced-code-blocks thoughts))))
+        (let*
+            ((role-val (assoc-ref msg 'role))
+             (role
+               (cond
+                 ((string? role-val) role-val)
+                 ((symbol? role-val) (symbol->string role-val))
+                 (else "system")))
+             (raw-content (or (assoc-ref msg 'content) ""))
+             (content
+               (if (string? raw-content)
+                 raw-content
+                 (format #f "~a" raw-content)))
+             (raw-thoughts (assoc-ref msg 'thoughts))
+             (thoughts
+               (and raw-thoughts
+                    (if (string? raw-thoughts)
+                      raw-thoughts
+                      (format #f "~a" raw-thoughts))))
+             (is-streaming? (assoc-ref msg 'streaming))
+             ;; Only run syntax highlighting on finalized content (not while streaming)
+             ;; and never on thoughts (which uses 'thought theme role with plain text).
+             (content
+               (if is-streaming?
+                 content
+                 (process-fenced-code-blocks content))))
           (cond
             ((and (message-collapsed? msg) (message-collapsible? msg))
               (format-collapsed-message-rows msg role content thoughts content-width))
             ((string=? role "assistant")
-              (let* ((th-block
-                       (if (non-empty-string? thoughts)
-                         (make-block-entry "thinking"
-                                           'thought
-                                           (wrap-text (string-trim-both thoughts) content-width))
-                         '()))
-                     (ct-block
-                       (if (non-empty-string? content)
-                         (make-block-entry "assistant"
-                                           'assistant
-                                           (wrap-text content content-width))
-                         '())))
-                (append
-                  (if (and (null? th-block) (null? ct-block))
-                    (make-block-entry "assistant"
-                                      'assistant
-                                      (wrap-text
-                                        (if (string-null? content)
-                                          "(empty response)"
-                                          content)
-                                        content-width))
-                    (append th-block ct-block))
-                  (list (list "spacer" "")))))
+              (let*
+                  ((th-block
+                     (if (non-empty-string? thoughts)
+                       (make-block-entry "thinking"
+                                         'thought
+                                         (wrap-text (string-trim-both thoughts) content-width))
+                       '()))
+                   (ct-block
+                     (if (non-empty-string? content)
+                       (make-block-entry "assistant" 'assistant (wrap-text content content-width))
+                       '())))
+                (if
+                    (and is-streaming? (null? th-block) (null? ct-block))
+                  '()
+                  (append
+                    (if (and (null? th-block) (null? ct-block))
+                      (make-block-entry "assistant"
+                                        'assistant
+                                        (wrap-text
+                                          (if (string-null? content)
+                                            "(empty response)"
+                                            content)
+                                          content-width))
+                      (append th-block ct-block))
+                    (list (list "spacer" ""))))))
             (else
-              (let* ((theme-role (message-role->theme-role role))
-                     (label (message-block-label role content))
-                     (text (if (string=? role "user") (string-trim-both content) content)))
+              (let*
+                  ((theme-role (message-role->theme-role role))
+                   (label (message-block-label role content))
+                   (text
+                     (if (string=? role "user")
+                       (string-trim-both content)
+                       content)))
                 (append
                   (make-block-entry label theme-role (wrap-text text content-width))
                   (list (list "spacer" ""))))))))

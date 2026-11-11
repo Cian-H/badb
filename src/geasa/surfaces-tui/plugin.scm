@@ -554,6 +554,7 @@ verbatim, and fails open to a verbatim truncation."
       (define react-stream-content "")
       (define react-stream-thoughts "")
       (define react-stream-last-render 0)
+      (define last-spin-time 0)
       ;; Incremental rendering: formatted block rows are memoized per
       ;; message object so each frame only formats new messages.
       (define row-cache (make-row-cache))
@@ -1018,26 +1019,18 @@ and append it to the persistent history journal file."
                                          asm-msg-count
                                          (length messages)))
                                      (sel-idx (and (integer? msgsel-index) (< msgsel-index msg-count) msgsel-index)))
-                                  ;; Rebuild the assembled transcript view only when the messages list
-                                  ;; or the content width changed — every mutation installs a fresh
-                                  ;; list, so list identity is a sound cache key. Scrolling renders
-                                  ;; reuse the cached rows, per-message counts, and total instead of
-                                  ;; re-walking the whole transcript every frame.
+                                  ;; Rebuild row-count metadata only when the messages list or content width changed.
+                                  ;; Formatted rows come from row-cache; unchanged messages are never re-formatted.
                                   (unless asm-valid?
-                                    (row-cache-prune! row-cache messages)
-                                    (let*
-                                        ((indexed-rows
+                                    (when (< msg-count asm-msg-count) (row-cache-prune! row-cache messages))
+                                    (let
+                                        ((counts
                                            (map
-                                             (lambda (idx msg)
-                                               (map
-                                                 (lambda (entry)
-                                                   (cons idx entry))
-                                                 (row-cache-rows row-cache msg content-width)))
-                                             (iota msg-count)
+                                             (lambda (msg)
+                                               (length (row-cache-rows row-cache msg content-width)))
                                              messages)))
-                                      (set! asm-lines (apply append indexed-rows))
-                                      (set! asm-counts (map length indexed-rows))
-                                      (set! asm-total (length asm-lines))
+                                      (set! asm-counts counts)
+                                      (set! asm-total (apply + 0 counts))
                                       (set! asm-msg-count msg-count)
                                       (set! asm-messages messages)
                                       (set! asm-width content-width)))
@@ -1069,10 +1062,27 @@ and append it to the persistent history journal file."
                                     (let*
                                         ((safe-scroll (max 0 (min scroll-offset max-scroll)))
                                          (start-line (max 0 (- total-lines view-height safe-scroll)))
-                                         (clamped-start (min (length asm-lines) start-line))
+                                         (end-line (+ start-line (min view-height (max 0 (- total-lines start-line)))))
                                          (visible-lines
-                                           (take (drop asm-lines clamped-start)
-                                                 (min view-height (- (length asm-lines) clamped-start)))))
+                                           (let loop
+                                             ((msgs messages) (counts asm-counts) (idx 0) (pos 0) (acc '()))
+                                             (if (or (null? msgs) (>= pos end-line))
+                                               (reverse acc)
+                                               (let*
+                                                   ((msg (car msgs)) (cnt (car counts)) (next-pos (+ pos cnt)))
+                                                 (if (<= next-pos start-line)
+                                                   (loop (cdr msgs) (cdr counts) (+ idx 1) next-pos acc)
+                                                   (let*
+                                                       ((skip (max 0 (- start-line pos)))
+                                                        (take-count (min (- cnt skip) (- end-line (+ pos skip))))
+                                                        (rows (row-cache-rows row-cache msg content-width))
+                                                        (sliced (take (drop rows skip) take-count))
+                                                        (tagged
+                                                          (map
+                                                            (lambda (r)
+                                                              (cons idx r))
+                                                            sliced)))
+                                                     (loop (cdr msgs) (cdr counts) (+ idx 1) next-pos (append (reverse tagged) acc)))))))))
                                       (let loop
                                         ((lines visible-lines) (y view-top))
                                         (unless (or (null? lines) (>= y view-bottom))
@@ -1103,7 +1113,8 @@ and append it to the persistent history journal file."
                                   (lambda ()
                                     (get-prompt-indicator input-buffer status-text prompt-mode))
                                   (lambda (glyph theme-role bold?)
-                                    (when (string=? status-text "STREAMING...")
+                                    (when
+                                        (or (string=? status-text "STREAMING...") (agent-run-active? status-text))
                                       (set! glyph (streaming-spinner-glyph)))
                                     (draw-role! theme-role #t)
                                     (when bold? (attr-on! stdscr A_BOLD))
@@ -1252,10 +1263,18 @@ and append it to the persistent history journal file."
               (with-mutex %render-mutex
                           (cond
                             ((eq? type 'thought)
-                              (set! react-stream-thoughts (string-append react-stream-thoughts delta)))
+                              (set! react-stream-thoughts (string-append react-stream-thoughts delta))
+                              (set! status-text "THINKING..."))
                             ((eq? type 'content)
-                              (set! react-stream-content (string-append react-stream-content delta)))
+                              (set! react-stream-content (string-append react-stream-content delta))
+                              (set! status-text "STREAMING..."))
                             ((eq? type 'usage) (record-session-usage! delta))
+                            ((eq? type 'tool-call)
+                              (let
+                                  ((name (and (pair? delta) (assoc-ref delta 'name))))
+                                (if (non-empty-string? name)
+                                  (set! status-text (string-append "TOOL: " name "..."))
+                                  (set! status-text "TOOL CALL..."))))
                             (else #f))
                           (call-with-values
                             (lambda ()
@@ -1311,7 +1330,7 @@ placeholder flag, so the next streamed call starts a fresh card."
               "Journal entry count for the header, refreshed at most every two
 seconds: journal-count re-reads the whole journal file (~150ms on a
 grown journal), which the per-frame header render must not pay."
-              (let ((now (get-internal-run-time)))
+              (let ((now (get-internal-real-time)))
                 (when
                     (>= (- now %jrn-count-time) (* 2 internal-time-units-per-second))
                   (set! %jrn-count-time now)
@@ -1333,7 +1352,7 @@ grown journal), which the per-frame header render must not pay."
       (define (throttled-stream-render!)
               ;; Repaint at most ~15fps while streaming: every delta updates
               ;; state cheaply, full-frame paints are rate-limited.
-              (let ((now (get-internal-run-time)))
+              (let ((now (get-internal-real-time)))
                 (when
                     (>= (- now react-stream-last-render)
                         (quotient internal-time-units-per-second 15))
@@ -1390,60 +1409,60 @@ grown journal), which the per-frame header render must not pay."
                                                      (lambda (t-name t-args)
                                                        (evaluate-guardrail policy t-name t-args))
                                                      #:hooks
-                                                     (append
-                                                       (make-loop-guard-hooks loop-guard)
-                                                       (list
-                                                         (cons 'on-step
-                                                               (lambda (iter phase)
-                                                                 (when (eq? phase 'starting)
-                                                                   (commit-react-stream-message!)
-                                                                   (reset-react-stream-state!))
-                                                                 (set! status-text
-                                                                       (if max-react-iters
-                                                                         (format #f "REACT [~a/~a]" iter max-react-iters)
-                                                                         (format #f "REACT [~a]" iter)))
-                                                                 ;; Crash-safe persistence: sync the transcript
-                                                                 ;; from the live session and rewrite the session
-                                                                 ;; file after every executed step so /resume
-                                                                 ;; recovers mid-run state.
-                                                                 (when (memq phase '(tools-executed loop-detected))
-                                                                   (let ((sess (current-react-session)))
-                                                                     (when (react-session? sess)
-                                                                       (set! llm-history (react-session-messages sess))
-                                                                       (persist-session-file! session-file llm-history))))
-                                                                 (poll-steering-input!)
-                                                                 (render!)))
-                                                         (cons 'on-tool-call
-                                                               (lambda (tc)
-                                                                 (let
-                                                                     ((t-name (prop-ref tc 'name)) (t-args (prop-ref tc 'arguments)))
-                                                                   (set! status-text (format #f "TOOL: ~a..." t-name))
-                                                                   (add-msg! "tool-call" (format #f "Invoking tool: ~a (~s)" t-name t-args))
-                                                                   (poll-steering-input!)
-                                                                   (render!))))
-                                                         (cons 'on-tool-result
-                                                               (lambda (tc res err?)
-                                                                 (let*
-                                                                     ((t-name (prop-ref tc 'name))
-                                                                      (res-str
-                                                                        (if (string? res)
-                                                                          res
-                                                                          (safe-json-string res)))
-                                                                      (preview
-                                                                        (if (> (string-length res-str) 140)
-                                                                          (string-append (substring res-str 0 140) "...")
-                                                                          res-str)))
-                                                                   (add-msg! "tool-result"
-                                                                             (if err?
-                                                                               (format #f "Tool ~a failed: ~a" t-name preview)
-                                                                               (format #f "Tool ~a returned: ~a" t-name preview)))
-                                                                   (poll-steering-input!)
-                                                                   (render!))))
-                                                         (cons 'on-delta
-                                                               (lambda (delta type)
-                                                                 (update-react-stream-message! delta type)
-                                                                 (poll-steering-input!)
-                                                                 (throttled-stream-render!)))))
+                                                     (append (make-loop-guard-hooks loop-guard)
+                                                             (list
+                                                               (cons 'on-step
+                                                                     (lambda (iter phase)
+                                                                       (when (eq? phase 'starting)
+                                                                         (commit-react-stream-message!)
+                                                                         (reset-react-stream-state!))
+                                                                       (set! status-text
+                                                                             (if max-react-iters
+                                                                               (format #f "REACT [~a/~a]" iter max-react-iters)
+                                                                               (format #f "REACT [~a]" iter)))
+                                                                       ;; Crash-safe persistence: sync the transcript
+                                                                       ;; from the live session and rewrite the session
+                                                                       ;; file after every executed step so /resume
+                                                                       ;; recovers mid-run state.
+                                                                       (when
+                                                                           (memq phase '(tools-executed loop-detected))
+                                                                         (let ((sess (current-react-session)))
+                                                                           (when (react-session? sess)
+                                                                             (set! llm-history (react-session-messages sess))
+                                                                             (persist-session-file! session-file llm-history))))
+                                                                       (poll-steering-input!)
+                                                                       (render!)))
+                                                               (cons 'on-tool-call
+                                                                     (lambda (tc)
+                                                                       (let
+                                                                           ((t-name (prop-ref tc 'name)) (t-args (prop-ref tc 'arguments)))
+                                                                         (set! status-text (format #f "TOOL: ~a..." t-name))
+                                                                         (add-msg! "tool-call" (format #f "Invoking tool: ~a (~s)" t-name t-args))
+                                                                         (poll-steering-input!)
+                                                                         (render!))))
+                                                               (cons 'on-tool-result
+                                                                     (lambda (tc res err?)
+                                                                       (let*
+                                                                           ((t-name (prop-ref tc 'name))
+                                                                            (res-str
+                                                                              (if (string? res)
+                                                                                res
+                                                                                (safe-json-string res)))
+                                                                            (preview
+                                                                              (if (> (string-length res-str) 140)
+                                                                                (string-append (substring res-str 0 140) "...")
+                                                                                res-str)))
+                                                                         (add-msg! "tool-result"
+                                                                                   (if err?
+                                                                                     (format #f "Tool ~a failed: ~a" t-name preview)
+                                                                                     (format #f "Tool ~a returned: ~a" t-name preview)))
+                                                                         (poll-steering-input!)
+                                                                         (render!))))
+                                                               (cons 'on-delta
+                                                                     (lambda (delta type)
+                                                                       (update-react-stream-message! delta type)
+                                                                       (poll-steering-input!)
+                                                                       (throttled-stream-render!)))))
                                                      #:compactor
                                                      compactor
                                                      #:loop-detector
@@ -1554,16 +1573,18 @@ grown journal), which the per-frame header render must not pay."
                                    ;; llm-history (with its thinking trace) so the
                                    ;; model sees its own partial answer when the
                                    ;; next turn recovers from the stream failure.
-                                   (when (and (string? raw-api-content)
-                                              (not (string-null? (string-trim-both raw-api-content))))
+                                   (when
+                                       (and (string? raw-api-content)
+                                            (not (string-null? (string-trim-both raw-api-content))))
                                      (set! llm-history
                                            (append llm-history
-                                                   (list (append
-                                                           `((role . "assistant")
-                                                             ,@(if (non-empty-string? raw-api-thoughts)
-                                                                 `((reasoning_content . ,raw-api-thoughts))
-                                                                 '()))
-                                                           `((content . ,raw-api-content)))))))
+                                                   (list
+                                                     (append
+                                                       `((role . "assistant")
+                                                         ,@(if (non-empty-string? raw-api-thoughts)
+                                                             `((reasoning_content . ,raw-api-thoughts))
+                                                             '()))
+                                                       `((content . ,raw-api-content)))))))
                                    (add-err-msg! (format #f "Stream error (~a): ~s" key args)))))))))
                 (lambda (key . args)
                   (add-err-msg! (format #f "Execution error (~a): ~s" key args))))
@@ -2384,12 +2405,28 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                    (set! scroll-offset (max 0 (- scroll-offset 10)))
                                    (render!)
                                    (loop #f))
+                                 ((eqv? ch KEY_UP)
+                                   (set! scroll-offset (min max-scroll-seen (+ scroll-offset 1)))
+                                   (render!)
+                                   (loop #f))
+                                 ((eqv? ch KEY_DOWN)
+                                   (set! scroll-offset (max 0 (- scroll-offset 1)))
+                                   (render!)
+                                   (loop #f))
                                  ((and (integer? ch) (>= ch 32) (<= ch 126))
                                    (set! steering-buffer
                                          (string-append steering-buffer (string (integer->char ch))))
                                    (render!)
                                    (loop #f))
-                                 (else (usleep 20000) (loop #f)))
+                                 (else (usleep 20000)
+                                       (let*
+                                           ((now (get-internal-real-time))
+                                            (spin-due?
+                                              (and
+                                                (or (agent-run-active? status-text) (string=? status-text "STREAMING..."))
+                                                (>= (- now last-spin-time) (quotient internal-time-units-per-second 12)))))
+                                         (when spin-due? (set! last-spin-time now))
+                                         (loop spin-due?))))
                                (begin
                                  (when nodelay-proc (nodelay-proc stdscr #f))
                                  (unless
