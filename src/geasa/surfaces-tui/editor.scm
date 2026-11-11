@@ -102,6 +102,8 @@ breaking on whitespace when possible."
           ("resume" . "Resume a previous chat session from disk")
           ("checkpoint" . "Create a workspace and registry checkpoint")
           ("rollback" . "Revert to latest or specified checkpoint")
+          ("fork" . "Create a conversation branch at the current or saved checkpoint")
+          ("replay" . "Restore a saved conversation and workspace checkpoint")
           ("rules" . "Inspect discovered project rules & workspace tree")
           ("geis" . "Contract-gated dynamic harness synthesis (/geis add <desc>, model [name], list, verify, status)")
           ("context" . "View conversation token stats and metrics")
