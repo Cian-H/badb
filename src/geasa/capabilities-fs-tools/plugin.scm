@@ -15,6 +15,8 @@
   #:use-module
   (geasa capabilities-context-index plugin)
   #:use-module
+  (badb kernel digest)
+  #:use-module
   (ice-9 format)
   #:use-module
   (ice-9 rdelim)
@@ -42,15 +44,24 @@
 (define %read-file-max-chars-per-line 2000)
 
 ;;; Read-cache: avoid re-dumping file ranges already returned this session.
+;;; Each entry pairs a (start . end) range with a content hash of the file
+;;; at read time, so any change to the file (by us or anything else)
+;;; invalidates the cached ranges automatically.
 (define %read-file-cache (make-hash-table 64))
 
-(define (read-range-covered? path start end)
-        (let ((ranges (hash-ref %read-file-cache path '())))
-          (any (lambda (r) (and (<= (car r) start) (>= (cdr r) end))) ranges)))
+(define (read-range-covered? path start end current-hash)
+        (let ((entries (hash-ref %read-file-cache path '())))
+          (any (lambda (e)
+                 (let ((r (car e)) (h (cdr e)))
+                   (and (string=? h current-hash)
+                        (<= (car r) start)
+                        (>= (cdr r) end))))
+               entries)))
 
-(define (read-cache-record! path start end)
+(define (read-cache-record! path start end current-hash)
         (hash-set! %read-file-cache path
-                   (cons (cons start end) (hash-ref %read-file-cache path '()))))
+                   (cons (cons (cons start end) current-hash)
+                         (hash-ref %read-file-cache path '()))))
 
 (define (read-cache-invalidate! path)
         (hash-remove! %read-file-cache path))
@@ -136,7 +147,8 @@ retrievable via ctx_search under source_id \"read_file:<path>\"."
                               limit
                               (string->number (or limit "800"))))))
                  (end (min total (+ start max-lines)))
-                 (covered? (read-range-covered? path start end)))
+                 (file-hash (sha256-hex (string-join raw-lines "\n")))
+                 (covered? (read-range-covered? path start end file-hash)))
               (if (and covered? (not force))
                 (let ((idx-hint
                         (if ctx-idx
@@ -145,13 +157,14 @@ retrievable via ctx_search under source_id \"read_file:<path>\"."
                             (format #f "To pull specific lines without re-dumping: ctx_search(query, source_id=\"read_file:~a\").~%" path))
                           (format #f "Not indexed (no context index attached).~%"))))
                   (format #f
-                          "[file ~a - lines ~a..~a already read in this session; cached result reused.~%~aTo obtain fresh N:HHH→ anchors for editing: read_file(path, offset, limit, force=true). Do NOT re-read this range with bash/sed.]"
+                          "[file ~a - lines ~a..~a already read in this session (file unchanged since that read); cached result reused.~%~aYOU ALREADY HAVE THIS CONTENT in your context from the earlier read. Do NOT re-read it.~%• Recall specific lines cheaply: ctx_search(query, source_id=\"read_file:~a\").~%• force=true is ONLY useful AFTER you have edited this file (writes invalidate the cache); on an unchanged file it just re-dumps tokens.~%• Do NOT use bash/sed to re-read.]"
                           path
                           start
                           (- end 1)
-                          idx-hint))
+                          idx-hint
+                          path))
                 (begin
-                  (read-cache-record! path start end)
+                  (read-cache-record! path start end file-hash)
                   (let ((result
                           (let loop
                             ((i start) (cur (drop raw-lines (min total start))) (acc '()))
@@ -794,7 +807,7 @@ a single bash tool into REG."
                     (lambda (path offset limit start_line end_line force)
                       (fs-read-file path offset limit #:start-line start_line #:end-line end_line #:force force #:ctx-idx ctx-idx))
                     '((description .
-                       "Read a bounded slice of the file at PATH. Every line comes back as N:HHH→content with N the 0-based line number and HHH the line's content anchor, and offset/limit use the same 0-based numbering, so edit_lines from/from_hash/to/to_hash can copy them directly. For the 1-based line numbers compilers and stack traces give you, pass start_line/end_line (inclusive) instead of offset/limit - no offset arithmetic, no sed -n. Re-reading an already-read range returns a cached note; prefer symbols_overview/find_symbol for structure.")
+                       "Read a bounded slice of the file at PATH. Every line comes back as N:HHH→content with N the 0-based line number and HHH the line's content anchor, and offset/limit use the same 0-based numbering, so edit_lines from/from_hash/to/to_hash can copy them directly. For the 1-based line numbers compilers and stack traces give you, pass start_line/end_line (inclusive) instead of offset/limit - no offset arithmetic, no sed -n. A cached note means you ALREADY received those lines earlier in this session (file unchanged since); do NOT re-read them - recall via ctx_search(source_id) or use force=true only after editing the file.")
                       (parameters .
                        ((type . "object")
                         (properties .
