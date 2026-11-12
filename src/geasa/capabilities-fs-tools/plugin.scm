@@ -157,12 +157,14 @@ retrievable via ctx_search under source_id \"read_file:<path>\"."
                             (format #f "To pull specific lines without re-dumping: ctx_search(query, source_id=\"read_file:~a\").~%" path))
                           (format #f "Not indexed (no context index attached).~%"))))
                   (format #f
-                          "[file ~a - lines ~a..~a already read in this session (file unchanged since that read); cached result reused.~%~aYOU ALREADY HAVE THIS CONTENT in your context from the earlier read. Do NOT re-read it.~%• Recall specific lines cheaply: ctx_search(query, source_id=\"read_file:~a\").~%• force=true is ONLY useful AFTER you have edited this file (writes invalidate the cache); on an unchanged file it just re-dumps tokens.~%• Do NOT use bash/sed to re-read.]"
+                          "[file ~a - lines ~a..~a already read in this session (file unchanged since that read); cached result reused.~%~aYOU ALREADY HAVE THIS CONTENT in your context from the earlier read. Do NOT re-read it.~%• Recall specific lines cheaply: ctx_search(query, source_id=\"read_file:~a\").~%• If you need the EXACT text/anchors of these lines again (e.g. after context compaction), call read_file(path, offset=~a, limit=~a, force=true) — the file is unchanged so the result is identical, but it is returned fresh.~%• Do NOT use bash/sed to re-read.]"
                           path
                           start
                           (- end 1)
                           idx-hint
-                          path))
+                          path
+                          start
+                          (max 1 (- end start))))
                 (begin
                   (read-cache-record! path start end file-hash)
                   (let ((result
@@ -830,7 +832,7 @@ a single bash tool into REG."
                           (force .
                            ((type . "boolean")
                             (description .
-                             "Bypass the per-session read cache to obtain fresh N:HHH anchors for a range already read. Still bounded by limit/max chars. Use only when you need fresh anchors for edit_lines; prefer ctx_search(source_id) to recall cached content.")))))
+                             "Bypass the per-session read cache and return the file content fresh, even for a range already read. The file is unchanged so the result is identical, but it is re-emitted (useful after context compaction or when you need exact N:HHH anchors for edit_lines). Still bounded by limit/max chars. Prefer ctx_search(source_id) when you only need specific lines.")))))
                         (required . #("path"))))))
   (registry-attach! reg
                     "write_file"
