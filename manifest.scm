@@ -40,5 +40,6 @@
             "guile-lens"
             "guile-file-names"
             "guile-fslib"
-            "guile-lsp-server"))
+            "guile-lsp-server"
+            "tree-sitter-scheme"))
     (packages->manifest (list cl-indentify))))
