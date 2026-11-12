@@ -6,10 +6,14 @@
 ;;; fast "System 1" models evaluating risk in real-time.
 
 (define-module (geasa policies-guardrail plugin)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (geasa providers-model openai)
-               #:use-module (badb kernel journal)
-               #:use-module (json)
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (geasa providers-model openai)
+               #:use-module
+               (badb kernel journal)
+               #:use-module
+               (json)
                #:use-module
                (ice-9 format)
                #:use-module
@@ -18,6 +22,8 @@
                (srfi srfi-1)
                #:use-module
                (srfi srfi-9)
+               #:use-module
+               (srfi srfi-13)
                #:export
                (<guardrail-policy> make-guardrail-policy
                                    guardrail-policy?
@@ -37,6 +43,7 @@
                                    dangerous-operation?
                                    mutating-operation?
                                    guile-c-paren-imbalance
+                                   unix-file-op-violation
                                    scheme-paren-imbalance
                                    guardrail-command-string
                                    ;; Decision evaluation & level inspection
@@ -288,38 +295,286 @@ carry guile -c text as file content."
                                                    desc)))
                                     (else (loop (cdr ms)))))))))))
 
-(define* (default-cautious-evaluator tool-name args level #:optional (context '()))
-         "Default built-in evaluator applying standard cautious/permissive/strict policies.
-A shell command embedding an unbalanced guile -c payload is denied
-before any level-specific decision (except at 'disabled): a
-syntactically broken command cannot succeed, and the denial reason
-replaces the cryptic reader error the subprocess would produce."
-         (if (eq? level 'disabled)
-           (cons 'allow "Guardrails disabled")
-           (let ((imbalance (guile-c-paren-imbalance tool-name args)))
-             (if imbalance
-               (cons 'deny imbalance)
-               (case level
-                 ((permissive)
-                   (if (dangerous-operation? tool-name args)
-                     (cons 'ask "High-risk command detected in permissive mode")
-                     (cons 'allow "Permissive mode auto-approved")))
-                 ((cautious)
-                   (cond
-                     ((dangerous-operation? tool-name args)
-                       (cons 'deny "Dangerous destructive operation blocked in cautious mode"))
-                     ((mutating-operation? tool-name args)
-                       (cons 'ask "State mutation requires confirmation in cautious mode"))
-                     (else (cons 'allow "Read-only inspection permitted"))))
-                 ((strict)
-                   (if (dangerous-operation? tool-name args)
-                     (cons 'deny "Dangerous operation blocked in strict mode")
-                     (cons 'ask "All operations require confirmation in strict mode")))
-                 ((paranoid)
-                   (if (mutating-operation? tool-name args)
-                     (cons 'deny "All mutations prohibited in paranoid mode")
-                     (cons 'ask "Inspection requires confirmation in paranoid mode")))
-                 (else (cons 'ask "Unrecognized security level; defaulting to ask")))))))
+;;;
+(define %sq-char (integer->char 39))
+
+(define %dq-char (integer->char 34))
+
+(define %bt-char (integer->char 96))
+
+(define (%shell-copy-quoted cmd i open)
+        "Return (END . TEXT) where TEXT is the quoted chunk of CMD starting
+at I with OPEN as the quote character, verbatim, and END points just
+past the closing quote (or at the end of CMD when unterminated)."
+        (let ((n (string-length cmd)))
+          (let loop
+            ((j (+ i 1)) (acc (make-string 1 open)))
+            (cond
+              ((>= j n) (cons j acc))
+              ((char=? open %dq-char)
+                (let ((c (string-ref cmd j)))
+                  (cond
+                    ((and (char=? c #\\) (< (+ j 1) n))
+                      (loop (+ j 2) (string-append acc (substring cmd j (+ j 2)))))
+                    (else (loop (+ j 1) (string-append acc (make-string 1 c)))))))
+              (else
+                (let ((c (string-ref cmd j)))
+                  (if (char=? c open)
+                    (cons (+ j 1) (string-append acc (make-string 1 c)))
+                    (loop (+ j 1) (string-append acc (make-string 1 c))))))))))
+
+(define (%shell-copy-substitution cmd i)
+        "Return (END . BODY) for the balanced $(...) or backquote
+substitution of CMD starting at I (the '$' or backquote position),
+honoring nested parentheses and quotes inside BODY; END points just
+past the closing delimiter."
+        (let ((n (string-length cmd)))
+          (if (char=? (string-ref cmd i) %bt-char)
+            (let
+                ((close (string-index cmd %bt-char (+ i 1))))
+              (cons
+                (if close
+                  (+ close 1)
+                  n)
+                (substring cmd
+                           (+ i 1)
+                           (if close
+                             close
+                             n))))
+            (let ((start (+ i 2)))
+              (let scan
+                ((j start) (depth 1) (state 'normal))
+                (cond
+                  ((>= j n) (cons n (substring cmd start n)))
+                  ((eq? state 'normal)
+                    (let ((c (string-ref cmd j)))
+                      (cond
+                        ((char=? c %sq-char) (scan (+ j 1) depth 'single))
+                        ((char=? c %dq-char) (scan (+ j 1) depth 'double))
+                        ((char=? c #\() (scan (+ j 1) (+ depth 1) 'normal))
+                        ((char=? c #\))
+                          (if (= depth 1)
+                            (cons (+ j 1) (substring cmd start j))
+                            (scan (+ j 1) (- depth 1) 'normal)))
+                        (else (scan (+ j 1) depth 'normal)))))
+                  ((eq? state 'single)
+                    (if (char=? (string-ref cmd j) %sq-char)
+                      (scan (+ j 1) depth 'normal)
+                      (scan (+ j 1) depth 'single)))
+                  (else
+                    (cond
+                      ((char=? (string-ref cmd j) #\\) (scan (+ j 2) depth 'double))
+                      ((char=? (string-ref cmd j) %dq-char) (scan (+ j 1) depth 'normal))
+                      (else (scan (+ j 1) depth 'double))))))))))
+
+(define (%shell-first-stages cmd)
+        "Return the list of first pipe-stage texts of CMD.  Pipelines split
+at top-level ';', '&&', '||', '|', and newlines outside quotes; any
+other stage is downstream (fed from a pipe) and never reported.
+Substitution bodies are scanned recursively: a sed/grep/awk running
+inside a command substitution still reads or rewrites files wherever it
+sits in the outer text."
+        (let ((n (string-length cmd)))
+          (letrec
+            ((nul?
+               (lambda (s)
+                 (string-null? (string-trim s))))
+             (flush
+               (lambda (stage firsts new-pipeline?)
+                 (if (and (not (nul? stage)) new-pipeline?)
+                   (cons (string-trim stage) firsts)
+                   firsts)))
+             (walk
+               (lambda (i stage firsts new-pipeline? subs)
+                 (cond
+                   ((>= i n)
+                     (let
+                         ((firsts* (flush stage firsts new-pipeline?)))
+                       (append (reverse firsts*) (append-map %shell-first-stages subs))))
+                   (else
+                     (let ((c (string-ref cmd i)))
+                       (cond
+                         ((or (char=? c %sq-char) (char=? c %dq-char))
+                           (let ((q (%shell-copy-quoted cmd i c)))
+                             (walk (car q) (string-append stage (cdr q)) firsts new-pipeline? subs)))
+                         ((char=? c #\\)
+                           (walk (min n (+ i 2))
+                                 (string-append stage (substring cmd i (min n (+ i 2))))
+                                 firsts
+                                 new-pipeline?
+                                 subs))
+                         ((or
+                            (and (char=? c #\$) (< (+ i 1) n) (char=? (string-ref cmd (+ i 1)) #\())
+                            (char=? c %bt-char))
+                           (let ((sub (%shell-copy-substitution cmd i)))
+                             (walk (car sub)
+                                   (string-append stage " ")
+                                   firsts
+                                   new-pipeline?
+                                   (cons (cdr sub) subs))))
+                         ((char=? c #\|)
+                           (let
+                               ((firsts* (flush stage firsts new-pipeline?)))
+                             (if
+                                 (and (< (+ i 1) n) (char=? (string-ref cmd (+ i 1)) #\|))
+                               (walk (+ i 2) "" firsts* #t subs)
+                               (walk (+ i 1) "" firsts* #f subs))))
+                         ((or (char=? c #\;) (char=? c #\newline) (char=? c #\&))
+                           (let
+                               ((firsts* (flush stage firsts new-pipeline?)))
+                             (if
+                                 (and (char=? c #\&) (< (+ i 1) n) (char=? (string-ref cmd (+ i 1)) #\&))
+                               (walk (+ i 2) "" firsts* #t subs)
+                               (walk (+ i 1) "" firsts* #t subs))))
+                         (else
+                           (walk (+ i 1) (string-append stage (make-string 1 c)) firsts new-pipeline? subs)))))))))
+            (walk 0 "" '() #t '()))))
+
+(define (%unix-op-kind stage)
+        "Return a kind symbol ('sed-edit, 'sed-read, 'awk, or
+'grep-recursive) when STAGE, as the FIRST command of a pipeline,
+directly invokes sed -i, sed -n, awk, or recursive grep against files;
+return #f otherwise."
+        (let*
+            ((words
+               (filter
+                 (lambda (w)
+                   (and (> (string-length w) 0) (not (string-prefix? "#" w))))
+                 (string-tokenize stage)))
+             (flags
+               (filter
+                 (lambda (w)
+                   (string-prefix? "-" w))
+                 words)))
+          (and (pair? words)
+               (string? (car words))
+               (let ((prog (basename (car words))))
+                 (cond
+                   ((string=? prog "sed")
+                     (let opts
+                       ((rest flags))
+                       (cond
+                         ((null? rest) #f)
+                         ((string=? (car rest) "--") #f)
+                         ((string-prefix? "--in-place" (car rest)) 'sed-edit)
+                         ((or (string=? (car rest) "--quiet") (string=? (car rest) "--silent"))
+                           'sed-read)
+                         ((string-prefix? "--" (car rest)) (opts (cdr rest)))
+                         ((string-prefix? "-i" (car rest)) 'sed-edit)
+                         (else
+                           (let ((letters (cdr (string->list (car rest)))))
+                             (cond
+                               ((memv #\i letters) 'sed-edit)
+                               ((memv #\n letters) 'sed-read)
+                               (else (opts (cdr rest)))))))))
+                   ((string=? prog "awk") 'awk)
+                   ((string=? prog "grep")
+                     (let opts
+                       ((rest flags))
+                       (cond
+                         ((null? rest) #f)
+                         ((string-prefix? "--recursive" (car rest)) 'grep-recursive)
+                         ((string-prefix? "--" (car rest)) (opts (cdr rest)))
+                         (else
+                           (let ((letters (cdr (string->list (car rest)))))
+                             (cond
+                               ((memv #\r letters) 'grep-recursive)
+                               ((memv #\R letters) 'grep-recursive)
+                               (else (opts (cdr rest)))))))))
+                   (else #f))))))
+
+(define (%unix-op-reason kind)
+        "Return the instructional deny reason for detection KIND."
+        (case kind
+          ((sed-edit)
+            "[ACI guardrail: command not executed]
+Detected a direct file edit via 'sed -i'. Raw sed/awk edits bypass the hash-verified read/edit pipeline: after a stale read they silently land on the wrong lines, and a bad script destroys indentation.
+-> Use the edit_lines tool (multiple hunks in one call): read_file prints lines as N:HHH→content anchors; pass {from, from_hash, to, to_hash, new_text} and the batch applies atomically, with stale reads rejected instead of applied.
+-> edit_file also handles exact-text replacements (with replace_all for symbol renames).
+-> ESCAPE HATCH: append '# allow-unix-edit' to this exact bash command for a deliberate bulk transformation where edit_lines is impractical (e.g. one import path across dozens of files).")
+          ((sed-read)
+            "[ACI guardrail: command not executed]
+Detected a direct file read via 'sed -n'. Use read_file instead: pass start_line/end_line with the 1-based line numbers exactly as given (no offset arithmetic), and get bounded output whose N:HHH→content anchors feed edit_lines directly.
+-> ESCAPE HATCH: append '# allow-unix-edit' to this exact bash command for a deliberate raw stream slice (byte ranges, logs, non-code data).
+Filtering command stdout through sed in a pipeline is always fine; this block only hits direct file reads.")
+          ((awk)
+            "[ACI guardrail: command not executed]
+Detected a direct file operation via 'awk' on file operands. awk reads and field rewrites bypass hash verification: use the structured tools.
+-> For inspection: read_file (start_line/end_line, 1-based as reported).
+-> For edits: edit_lines or edit_file (hash-verified, atomic).
+-> For search: file_search (glob filter, context lines, output_mode files_with_matches or count).
+-> ESCAPE HATCH: append '# allow-unix-edit' to this exact bash command for deliberate bulk/log/CSV transformations.
+Piping command stdout into awk in a pipeline is always fine; this block only hits direct file operands.")
+          ((grep-recursive)
+            "[ACI guardrail: command not executed]
+Detected a recursive workspace search via 'grep -r'. Raw grep respects no ignore dirs and no output bound; its results flood the context window.
+-> Use the file_search tool: PATTERN + path, a glob filter, context lines, and output_mode content | files_with_matches | count to keep output small; content lines carry the same N:HHH→ anchors read_file and edit_lines use.
+-> ctx_search can recall previously offloaded command output.
+-> ESCAPE HATCH: append '# allow-unix-edit' to this exact bash command for deliberate raw-log/data searching.
+Filtering command stdout through grep in a pipeline is always fine.")
+          (else #f)))
+
+(define* (unix-file-op-violation tool-name args)
+         "Return a deny reason string when TOOL-NAME is a shell-like tool
+whose command directly invokes sed -i, sed -n, awk, or recursive grep
+against files - the direct file operations that bypass the structured
+read_file/edit_lines/file_search pipeline (and its hash verification);
+return #f otherwise. Piped stdout filtering never triggers this, and
+a command carrying '# allow-unix-edit' bypasses the block as an
+acknowledged deliberate bulk transformation."
+         (and (%shell-like-tool? tool-name)
+              (let ((cmd (guardrail-command-string args)))
+                (and (string? cmd)
+                     (not (string-contains cmd "# allow-unix-edit"))
+                     (let
+                         ((kinds (filter identity (map %unix-op-kind (%shell-first-stages cmd)))))
+                       (and (pair? kinds) (%unix-op-reason (car kinds))))))))
+
+(define*
+  (default-cautious-evaluator tool-name args level #:optional (context '()))
+  "Default built-in evaluator applying standard cautious/permissive/strict
+policies.  A shell command embedding an unbalanced guile -c payload is denied
+before any level-specific decision (except at 'disabled): a syntactically
+broken command cannot succeed, and the denial reason replaces the cryptic
+reader error the subprocess would produce.  Likewise denied (from 'cautious
+upwards) is a direct unix file operation - sed -i, sed -n, awk, or a
+recursive grep standing FIRST in a pipeline, acting on files instead of
+command stdout - with routing instructions to the hash-verified
+read_file/edit_lines/file_search tools; a trailing '# allow-unix-edit'
+acknowledges a deliberate bulk transformation and passes through."
+  (if (eq? level 'disabled)
+    (cons 'allow "Guardrails disabled")
+    (let
+        ((imbalance (guile-c-paren-imbalance tool-name args)))
+      (if imbalance
+        (cons 'deny imbalance)
+        (let
+            ((unix-violation
+               (and (memq level '(cautious strict paranoid))
+                    (unix-file-op-violation tool-name args))))
+          (if unix-violation
+            (cons 'deny unix-violation)
+            (case level
+              ((permissive)
+                (if (dangerous-operation? tool-name args)
+                  (cons 'ask "High-risk command detected in permissive mode")
+                  (cons 'allow "Permissive mode auto-approved")))
+              ((cautious)
+                (cond
+                  ((dangerous-operation? tool-name args)
+                    (cons 'deny "Dangerous destructive operation blocked in cautious mode"))
+                  ((mutating-operation? tool-name args)
+                    (cons 'ask "State mutation requires confirmation in cautious mode"))
+                  (else (cons 'allow "Read-only inspection permitted"))))
+              ((strict)
+                (if (dangerous-operation? tool-name args)
+                  (cons 'deny "Dangerous operation blocked in strict mode")
+                  (cons 'ask "All operations require confirmation in strict mode")))
+              ((paranoid)
+                (if (mutating-operation? tool-name args)
+                  (cons 'deny "All mutations prohibited in paranoid mode")
+                  (cons 'ask "Inspection requires confirmation in paranoid mode")))
+              (else (cons 'ask "Unrecognized security level; defaulting to ask")))))))))
 
 (define
   (make-scheme-predicate-evaluator predicate-fn)

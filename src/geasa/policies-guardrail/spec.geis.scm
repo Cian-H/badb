@@ -20,7 +20,6 @@
 ;;;
 ;;; 1. Levels & Ranking
 ;;;
-
 (test-group "guardrail-levels"
             (test-assert "paranoid is higher rank than cautious"
                          (> (guardrail-level-rank 'paranoid) (guardrail-level-rank 'cautious)))
@@ -41,7 +40,6 @@
 ;;;
 ;;; 2. Declarative Pattern Rules
 ;;;
-
 (test-group "guardrail-pattern-rules"
             (let* ((rule-rm (make-pattern-rule #f "rm -rf" 'deny "Refusing dangerous deletion"))
                    (rule-git (make-pattern-rule "git_.*" #f 'allow "All git commands approved"))
@@ -61,7 +59,6 @@
 ;;;
 ;;; 3. Default Cautious Evaluator Behavior
 ;;;
-
 (test-group "guardrail-default-evaluator"
             (let ((policy (make-guardrail-policy #:level 'cautious)))
               ;; Read-only: allowed (even if path or content mentions destructive string)
@@ -106,7 +103,6 @@
 ;;;
 ;;; 4. Custom Algorithmic Scheme Predicate Evaluator
 ;;;
-
 (test-group "guardrail-scheme-predicate"
             (let* ((workspace-guard
                      (make-scheme-predicate-evaluator
@@ -130,7 +126,6 @@
 ;;;
 ;;; 5. Algorithmic System 1 Fast Model Evaluator
 ;;;
-
 (test-group "guardrail-system1-model"
             (let* ((fast-client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "system1-guard"))
                    (mock-poster
@@ -150,7 +145,6 @@
 ;;;
 ;;; 6. Audit Logging & Journal Provenance
 ;;;
-
 (test-group "guardrail-guile-c-paren"
             ;; Balanced payloads pass (the dump4 self-check command shape)
             (define balanced-cmd
@@ -225,6 +219,65 @@
                 (test-equal "verdict logged is ask" "ask" (assoc-ref entry "verdict"))
                 (test-equal "tool logged is write_file" "write_file" (assoc-ref entry "tool-name"))
                 (test-equal "level logged is cautious" "cautious" (assoc-ref entry "level")))))
+
+(test-group "unix-file-op-violation routing"
+            (let
+                ((deny?
+                   (lambda (cmd)
+                     (unix-file-op-violation "bash" `(("command" . ,cmd))))))
+              (test-assert "sed -n direct read is blocked"
+                           (string-contains (deny? "sed -n '140,180p' src/foo.scm") "read_file"))
+              (test-assert "sed -i direct edit is blocked"
+                           (string-contains (deny? "sed -i s/a/b/ src/foo.scm") "edit_lines"))
+              (test-assert "awk on files is blocked"
+                           (string-contains (deny? "awk '{print $1}' data.csv") "read_file"))
+              (test-assert "recursive grep is blocked"
+                           (string-contains (deny? "grep -rn pattern .") "file_search"))
+              (test-assert "piped grep filtering is allowed"
+                           (not (deny? "guile build.scm | grep FAILED")))
+              (test-assert "piped awk stage is allowed"
+                           (not (deny? "cat log | awk '{print $1}'")))
+              (test-assert "single-file grep is allowed"
+                           (not (deny? "grep pattern notes.md")))
+              (test-assert
+                "plain sed transform without flags is allowed"
+                (not (deny? "sed s/x/y/ stream.txt")))
+              (test-assert "escape hatch bypasses the block"
+                           (not (deny? "sed -i s/a/b/ file.scm # allow-unix-edit")))
+              (test-assert
+                "substitution grep -rn is still blocked"
+                (string-contains (deny? "echo $(grep -rn x .)") "file_search"))
+              (test-assert "non-shell tools are exempt"
+                           (not (unix-file-op-violation "python" '(("command" . "sed -i x y")))))))
+
+(test-group "default-evaluator unix file ops"
+            (let*
+                ((cautious (make-guardrail-policy #:level 'cautious))
+                 (permissive (make-guardrail-policy #:level 'permissive)))
+              (test-equal "cautious denies a direct sed read"
+                          'deny
+                          (car
+                            (evaluate-guardrail cautious "bash" '(("command" . "sed -n 100,120p file.scm")))))
+              (test-equal "cautious denies a direct sed edit"
+                          'deny
+                          (car
+                            (evaluate-guardrail cautious
+                                                "bash"
+                                                '(("command" . "sed -i s/old/new/ file.scm")))))
+              (test-equal
+                "permissive keeps raw unix tools legal"
+                'allow
+                (car
+                  (evaluate-guardrail permissive
+                                      "bash"
+                                      '(("command" . "sed -n 100,120p file.scm")))))
+              (test-equal
+                "piped unix filtering never triggers the routing block"
+                'allow
+                (car
+                  (evaluate-guardrail permissive
+                                      "bash"
+                                      '(("command" . "guile test.scm | grep FAILED")))))))
 
 (spec-end)
 (spec-exit)
