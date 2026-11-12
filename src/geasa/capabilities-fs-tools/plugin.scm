@@ -36,6 +36,20 @@
 
 (define %read-file-max-chars-per-line 2000)
 
+;;; Read-cache: avoid re-dumping file ranges already returned this session.
+(define %read-file-cache (make-hash-table 64))
+
+(define (read-range-covered? path start end)
+        (let ((ranges (hash-ref %read-file-cache path '())))
+          (any (lambda (r) (and (<= (car r) start) (>= (cdr r) end))) ranges)))
+
+(define (read-cache-record! path start end)
+        (hash-set! %read-file-cache path
+                   (cons (cons start end) (hash-ref %read-file-cache path '()))))
+
+(define (read-cache-invalidate! path)
+        (hash-remove! %read-file-cache path))
+
 (define (fs-path-escapes? path)
         "Return #t if PATH attempts directory traversal: it carries `..'
 components that escape above its root, or is otherwise a complex
@@ -135,6 +149,7 @@ guile-fslib's complex-fsing?."
 
 (define* (fs-write-file path content #:key (rollback-mgr #f) (verifier #f))
          "Write CONTENT to PATH, checkpointing with ROLLBACK-MGR and verifying with VERIFIER."
+         (read-cache-invalidate! path)
          (if (fs-path-escapes? path)
            (format #f "Error: refusing to write to '~a': path traversal is not permitted" path)
            (catch #t
@@ -462,9 +477,16 @@ would silently land on the wrong lines."
   (registry-attach! reg
                     "read_file"
                     (lambda (path offset limit)
-                      (fs-read-file path offset limit))
+                      (let* ((start (max 0 (if (integer? offset) offset (or (string->number (or offset "0")) 0))))
+                             (lim (max 1 (if (integer? limit) limit (or (string->number (or limit "800")) 800))))
+                             (end (+ start lim)))
+                        (if (read-range-covered? path start end)
+                          (format #f "[file ~a - lines ~a..~a already read in this session; cached result reused. Use symbols_overview/find_symbol for structure, or a different offset/limit for new lines.]" path start (- end 1))
+                          (let ((res (fs-read-file path offset limit)))
+                            (read-cache-record! path start end)
+                            res))))
                     '((description .
-                       "Read a bounded slice of the file at PATH (line-based offset and limit; header shows total line count; call again with offset to continue)")
+                       "Read a bounded slice of the file at PATH (line-based offset and limit; header shows total line count; call again with offset to continue). Re-reading an already-read range returns a cached note; prefer symbols_overview/find_symbol for structure.")
                       (parameters .
                        ((type . "object")
                         (properties .
@@ -552,7 +574,7 @@ would silently land on the wrong lines."
                       (lambda (command)
                         (shell-executor command))
                       '((description .
-                         "Execute a shell command in bash and return stdout/stderr and exit code")
+                         "Execute a shell command in bash and return stdout/stderr and exit code. Do not use for reading files—use read_file/symbols_overview/find_symbol instead.")
                         (parameters .
                          ((type . "object")
                           (properties .

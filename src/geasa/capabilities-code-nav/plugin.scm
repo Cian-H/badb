@@ -606,7 +606,7 @@ If topic is 'all' or empty, lists all available memories."
 ;;;
 (define %symbols-overview-schema
         `((name . "symbols_overview")
-          (description . "Extract high-density symbol outline (functions, classes, records, macros) from a file or directory.")
+          (description . "Extract high-density symbol outline (functions, classes, records, macros) from a file or directory. Use this BEFORE read_file to avoid reading large files blindly.")
           (parameters .
                       ((type . "object")
                        (properties .

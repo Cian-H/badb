@@ -295,7 +295,7 @@ indexes oversized tool outputs and returns a compact virtualized pointer."
 
 (define %ctx-search-schema
         `((name . "ctx_search")
-          (description . "Search the BM25 context index for keywords, error patterns, or function names across indexed files and execution outputs.")
+          (description . "Search the BM25 context index for keywords, error patterns, or function names across indexed files and execution outputs. Use 1-3 distinctive keywords; prefer source_id to narrow. Avoid re-running similar queries—refine only if no results.")
           (parameters .
                       ((type . "object")
                        (properties .
