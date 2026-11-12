@@ -313,5 +313,101 @@
 
 (teardown-test-dir!)
 
+(test-group "fs-read-file compiler line numbers"
+            (let ((d "/tmp/badb-test-fs-lines"))
+              (when (file-exists? d) (system (format #f "rm -rf ~a" d)))
+              (mkdir d)
+              (let ((nums (string-append d "/numbers.txt")))
+                (call-with-output-file nums
+                                       (lambda (p)
+                                         (for-each
+                                           (lambda (i)
+                                             (format p "line ~a~%" i))
+                                           (iota 20 1))))
+                (let
+                    ((out (fs-read-file nums #f #f #:start-line 5 #:end-line 7)))
+                  (test-assert
+                    "1-based range maps to 0-based window 4..6"
+                    (string-contains out "showing lines 4..6"))
+                  (test-assert "window includes start_line content"
+                               (string-contains out "line 5"))
+                  (test-assert "window includes end_line content" (string-contains out "line 7")))
+                (test-assert "reversed range reports an error"
+                             (string-contains
+                               (fs-read-file nums #f #f #:start-line 9 #:end-line 3)
+                               "before start_line"))
+                (let ((out2 (fs-read-file nums "3" "4")))
+                  (test-assert "string offset/limit still accepted"
+                               (string-contains out2 "showing lines 3..6")))
+                (system (format #f "rm -rf ~a" d)))))
+
+(test-group "fs-file-search"
+            (let ((d "/tmp/badb-test-fs-search"))
+              (when (file-exists? d) (system (format #f "rm -rf ~a" d)))
+              (mkdir d)
+              (let
+                  ((a (string-append d "/searchable.scm")) (b (string-append d "/notes.md")))
+                (call-with-output-file a
+                                       (lambda (p)
+                                         (display "(define (hello)\n  'world)\n\n(define (helper)\n  'other)\n" p)))
+                (call-with-output-file b
+                                       (lambda (p)
+                                         (display "world note\nplain text\nworld again\n" p)))
+                (let
+                    ((content (fs-file-search "world" #:path d)))
+                  (test-assert "header reports match count" (string-contains content "match(es)"))
+                  (test-assert "content lines are anchor-annotated"
+                               (string-contains content "0:"))
+                  (test-assert "anchor arrow rendered" (string-contains content "→"))
+                  (test-assert "hash tip nudges edit_lines"
+                               (string-contains content "edit_lines from/from_hash")))
+                (let
+                    ((counted (fs-file-search "world" #:path d #:output-mode "count")))
+                  (test-assert "count mode lists per-file tallies"
+                               (string-contains counted "searchable.scm:1"))
+                  (test-assert "count mode omits content anchors"
+                               (not (string-contains counted "→"))))
+                (let
+                    ((files (fs-file-search "world" #:path d #:output-mode "files_with_matches")))
+                  (test-assert "files mode lists paths" (string-contains files "notes.md"))
+                  (test-assert "files mode omits line noise" (not (string-contains files ":0:"))))
+                (let
+                    ((globbed (fs-file-search "world" #:path d #:glob "*.md")))
+                  (test-assert
+                    "glob excludes non-matching suffixes"
+                    (not (string-contains globbed "searchable.scm")))
+                  (test-assert "glob keeps matching suffixes"
+                               (string-contains globbed "notes.md")))
+                (let
+                    ((contextual (fs-file-search "plain" #:path b #:context 1)))
+                  (test-assert "context spans surrounding lines"
+                               (string-contains contextual "world note")))
+                (test-assert "missing path errors cleanly"
+                             (string-contains
+                               (fs-file-search "x" #:path "/no/such/dir-here")
+                               "does not exist"))
+                (test-assert "invalid regexp errors cleanly"
+                             (string-contains (fs-file-search "[oops") "invalid regular expression"))
+                (system (format #f "rm -rf ~a" d)))))
+
+(test-group "fs-tools registration schemas"
+            (let ((reg (make-registry)))
+              (register-fs-tools! reg
+                                  #:shell-executor
+                                  (lambda (cmd)
+                                    "[exit 0]"))
+              (test-assert
+                "bash schema co-locates the routing constraint"
+                (string-contains
+                  (format #f "~s" (registry-metadata reg "bash"))
+                  "allow-unix-edit"))
+              (test-assert
+                "read_file schema advertises 1-based compiler lines"
+                (string-contains
+                  (format #f "~s" (registry-metadata reg "read_file"))
+                  "start_line"))
+              (test-assert "file_search is registered"
+                           (procedure? (registry-lookup reg "file_search")))))
+
 (spec-end)
 (spec-exit)

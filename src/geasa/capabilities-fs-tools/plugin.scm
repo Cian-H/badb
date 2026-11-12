@@ -17,6 +17,8 @@
   #:use-module
   (ice-9 rdelim)
   #:use-module
+  (ice-9 regex)
+  #:use-module
   (ice-9 string-fun)
   #:use-module
   (fslib)
@@ -31,6 +33,7 @@
                 fs-edit-file
                 fs-line-anchor
                 fs-file-lines
+                fs-file-search
                 fs-edit-lines
                 register-fs-tools!))
 
@@ -67,85 +70,121 @@ guile-fslib's complex-fsing?."
                           (or (<= depth 0) (loop (cdr parts) (1- depth))))
                         (else (loop (cdr parts) (1+ depth)))))))
 
+(define (%coerce-int-or-false v)
+        "Coerce V (#f, exact integer, or numeric string) to an integer; return
+#f when V is absent, non-numeric, or fractional."
+        (cond
+          ((not v) #f)
+          ((integer? v) v)
+          ((and (string? v) (string->number v) (integer? (string->number v)))
+            (string->number v))
+          (else #f)))
+
 (define*
-  (fs-read-file path #:optional (offset 0) (limit 800))
-  "Read a bounded slice of the file at PATH with 1-based OFFSET and LIMIT."
-  (catch #t
-    (lambda ()
-      (if (file-exists? path)
-        (let*
-            ((raw-lines
-               (call-with-input-file path
-                                     (lambda (p)
-                                       (let loop
-                                         ((acc '()))
-                                         (let ((l (read-line p)))
-                                           (if (eof-object? l)
-                                             (reverse acc)
-                                             (loop (cons l acc))))))))
-             (total (length raw-lines))
-             (start
-               (max 0
-                    (if (integer? offset)
-                      offset
-                      (string->number (or offset "0")))))
-             (max-lines
-               (max 1
-                    (if (integer? limit)
-                      limit
-                      (string->number (or limit "800")))))
-             (end (min total (+ start max-lines))))
-          (let loop
-            ((i start) (cur (drop raw-lines (min total start))) (acc '()))
-            (cond
-              ((or (>= i end) (null? cur))
-                (let*
-                    ((shown (reverse acc))
-                     (last-shown
-                       (if (null? shown)
-                         start
-                         (+ i -1)))
-                     (header
-                       (format #f
-                               "[file ~a - ~a total lines - showing lines ~a..~a]~%"
-                               path
-                               total
-                               start
-                               last-shown))
-                     (body (string-join shown "\n"))
-                     (footer
-                       (if (>= end total)
-                         (format #f "~%[end of file at line ~a of ~a]" total total)
-                         (format #f
-                                 "~%[~a more lines elided - call read_file with offset=~a to continue (total ~a lines)]"
-                                 (- total i)
-                                 i
-                                 total)))
-                     (tip
-                       (if (> total 200)
-                         (format #f
-                                 "~%[Tip: For large files, use symbols_overview or find_symbol to inspect specific definitions, or ctx_search for keyword search.]")
-                         "")))
-                  (string-append header body footer tip)))
-              (else
-                (let*
-                    ((line (car cur))
-                     (trim
-                       (if
-                           (> (string-length line) %read-file-max-chars-per-line)
-                         (string-append
-                           (substring line 0 %read-file-max-chars-per-line)
-                           (format #f
-                                   "... [line ~a truncated: ~a of ~a chars]"
-                                   i
-                                   (string-length line)
-                                   (string-length line)))
-                         line))
-                     (anchored (format #f "~a:~a→~a" i (fs-line-anchor line) trim)))
-                  (loop (+ i 1) (cdr cur) (cons anchored acc)))))))
-        (format #f "Error: file '~a' does not exist" path)))
-    (lambda (_k . a)
-      (format #f "Error reading file '~a': ~s" path a))))
+  (fs-read-file path
+                #:optional
+                (offset 0)
+                (limit 800)
+                #:key
+                (start-line #f)
+                (end-line #f))
+  "Read a bounded slice of the file at PATH.  OFFSET and LIMIT form the
+0-based line window that matches the N:HHH→anchors shown in the output,
+so a follow-up edit_lines call can copy the displayed line numbers and
+hashes verbatim.  Alternatively pass 1-based START-LINE and END-LINE
+(inclusive) exactly as compilers and stack traces report them - they
+take precedence over OFFSET and LIMIT and map 1:1 onto the numbers you
+were given, without the -1 arithmetic that makes sed -n tempting."
+  (let
+      ((sline (%coerce-int-or-false start-line))
+       (eline (%coerce-int-or-false end-line)))
+    (if (and sline eline (< eline sline))
+      (format #f "Error: end_line ~a is before start_line ~a" eline sline)
+      (catch #t
+        (lambda ()
+          (if (file-exists? path)
+            (let*
+                ((raw-lines
+                   (call-with-input-file path
+                                         (lambda (p)
+                                           (let loop
+                                             ((acc '()))
+                                             (let ((l (read-line p)))
+                                               (if (eof-object? l)
+                                                 (reverse acc)
+                                                 (loop (cons l acc))))))))
+                 (total (length raw-lines))
+                 (start
+                   (max 0
+                        (or (and sline (- sline 1))
+                            (if (integer? offset)
+                              offset
+                              (string->number (or offset "0"))))))
+                 (max-lines
+                   (max 1
+                        (or (and sline eline (- eline start))
+                            (and (not sline) eline (- eline start))
+                            (if (integer? limit)
+                              limit
+                              (string->number (or limit "800"))))))
+                 (end (min total (+ start max-lines))))
+              (if (read-range-covered? path start end)
+                (format #f
+                        "[file ~a - lines ~a..~a already read in this session; cached result reused. Use symbols_overview/find_symbol for structure, or a different offset/limit (or precise start_line/end_line) for new lines.]"
+                        path start (- end 1))
+                (begin
+                  (read-cache-record! path start end)
+                  (let loop
+                    ((i start) (cur (drop raw-lines (min total start))) (acc '()))
+                    (cond
+                      ((or (>= i end) (null? cur))
+                        (let*
+                            ((shown (reverse acc))
+                             (last-shown
+                               (if (null? shown)
+                                 start
+                                 (+ i -1)))
+                             (header
+                               (format #f
+                                       "[file ~a - ~a total lines - showing lines ~a..~a]~%"
+                                       path
+                                       total
+                                       start
+                                       last-shown))
+                             (body (string-join shown "\n"))
+                             (footer
+                               (if (>= end total)
+                                 (format #f "~%[end of file at line ~a of ~a]" total total)
+                                 (format #f
+                                         "~%[~a more lines elided - call read_file with offset=~a to continue (total ~a lines)]"
+                                         (- total i)
+                                         i
+                                         total)))
+                             (tip
+                               (if (> total 200)
+                                 (format #f
+                                         "~%[Tip: For large files, use symbols_overview or find_symbol to inspect specific definitions, or ctx_search for keyword search.]")
+                                 "")))
+                          (string-append header body footer tip)))
+                      (else
+                        (let*
+                            ((line (car cur))
+                             (trim
+                               (if
+                                   (> (string-length line) %read-file-max-chars-per-line)
+                                 (string-append
+                                   (substring line 0 %read-file-max-chars-per-line)
+                                   (format #f
+                                           "... [line ~a truncated: ~a of ~a chars]"
+                                           i
+                                           (string-length line)
+                                           (string-length line)))
+                                 line))
+                             (anchored (format #f "~a:~a→~a" i (fs-line-anchor line) trim)))
+                          (loop (+ i 1) (cdr cur) (cons anchored acc)))))))))
+            (format #f "Error: file '~a' does not exist" path)))
+        (lambda (_k . a)
+          (format #f "Error reading file '~a': ~s" path a))))))
 
 (define* (fs-write-file path content #:key (rollback-mgr #f) (verifier #f))
          "Write CONTENT to PATH, checkpointing with ROLLBACK-MGR and verifying with VERIFIER."
@@ -226,6 +265,7 @@ guile-fslib's complex-fsing?."
                                    (when rollback-mgr
                                      (create-checkpoint! rollback-mgr (format #f "pre-edit: ~a" path) #:files (list path)))
                                    (call-with-output-file path (lambda (p) (display new-text p)))
+                                   (read-cache-invalidate! path)
                                    (let ((old-lines (length (string-split old-text #\newline)))
                                          (new-lines (length (string-split new-text #\newline))))
                                      (format #f "Edited '~a': replaced ~a occurrence(s) (~a -> ~a lines, file total ~a lines)"
@@ -450,6 +490,7 @@ would silently land on the wrong lines."
                              (call-with-output-file path
                                                     (lambda (p)
                                                       (display new-text p)))
+                             (read-cache-invalidate! path)
                              (format #f
                                      "Edited '~a': applied ~a edit(s) (~a -> ~a lines, file total ~a lines)"
                                      path
@@ -467,36 +508,289 @@ would silently land on the wrong lines."
     (lambda (_k . a)
       (format #f "Error editing lines in '~a': ~s" path a))))
 
+(define (%file-binary? path)
+        "Return #t when PATH begins with a NUL byte in its first 8000
+characters (best-effort binary detection for search skipping)."
+        (catch #t
+          (lambda ()
+            (call-with-input-file path
+                                  (lambda (p)
+                                    (let ((chunk (read-string 8000 p)))
+                                      (and (string? chunk) (string-index chunk #\nul))))))
+          (lambda _
+            #f)))
+
+(define (%glob->regexp glob)
+        "Convert GLOB (e.g. \"*.scm\") into an anchored regexp matching whole basenames."
+        (let loop
+          ((i 0) (acc '()))
+          (if (>= i (string-length glob))
+            (make-regexp (string-append "^" (string-concatenate (reverse acc)) "$"))
+            (let ((c (string-ref glob i)))
+              (cond
+                ((char=? c #\*) (loop (+ i 1) (cons "[^/]*" acc)))
+                ((char=? c #\?) (loop (+ i 1) (cons "." acc)))
+                ((char=? c #\.) (loop (+ i 1) (cons "\\." acc)))
+                (else (loop (+ i 1) (cons (make-string 1 c) acc))))))))
+
+(define %file-search-skip-dirs
+        '(".git" "node_modules" ".badb" "dist" "build" ".cache" "target" ".guix-profile"))
+
+(define (%walk-search-files dir)
+        "Return all regular file paths under DIR in sorted order, skipping
+ignore-listed and dot directories, dot-log files cannot sneak in."
+        (let loop
+          ((items (sort (%dir-entry-names dir) string<?)) (acc '()))
+          (cond
+            ((null? items) (reverse acc))
+            ((or (string=? (car items) ".")
+                 (string=? (car items) "..")
+                 (member (car items) %file-search-skip-dirs)
+                 (string-prefix? "." (car items)))
+              (loop (cdr items) acc))
+            (else
+              (let ((full (string-append dir "/" (car items))))
+                (cond
+                  ((and (file-exists? full) (file-is-directory? full))
+                    (loop (cdr items) (append acc (%walk-search-files full))))
+                  ((string-suffix? ".log" (car items)) (loop (cdr items) acc))
+                  (else (loop (cdr items) (cons full acc)))))))))
+
+(define (%dir-entry-names dir)
+        "Return the entry names of DIR in sorted order, or the empty list when
+DIR cannot be read."
+        (catch 'system-error
+          (lambda ()
+            (let ((stream (opendir dir)))
+              (let loop
+                ((accum '()))
+                (let ((entry (readdir stream)))
+                  (if (eof-object? entry)
+                    (begin (closedir stream) (reverse accum))
+                    (loop (cons entry accum)))))))
+          (lambda _
+            '())))
+
+(define*
+  (fs-file-search pattern
+                  #:key
+                  (path ".")
+                  (glob #f)
+                  (context 0)
+                  (output-mode "content")
+                  (max-results 200))
+  "Search files under PATH (directory or single file) for the POSIX
+regexp PATTERN.  OUTPUT-MODE selects the report shape: 'content'
+renders each match together with surrounding CONTEXT lines as
+N:HHH→text using read_file's 0-based line numbers and content anchors,
+so a hit can be routed straight into an edit_lines call without a
+re-read; 'files_with_matches' lists only matching paths; 'count' lists
+path and match count.  GLOB restricts searched file basenames (e.g.
+\"*.scm\").  Dot and ignore-listed directories, dot-log files, and
+binary files are skipped.  This is the structured replacement for raw
+bash grep -r/find: bounded, ignore-aware output instead of unfiltered
+stdout."
+  (if (string? pattern)
+    (let*
+        ((rx
+           (catch #t
+             (lambda ()
+               (make-regexp pattern))
+             (lambda _
+               #f)))
+         (root
+           (if
+               (and (string? path) (not (string-null? (string-trim path))))
+             path
+             ".")))
+      (cond
+        ((not rx) (format #f "Error: invalid regular expression: ~a" pattern))
+        ((not (file-exists? root)) (format #f "Error: path '~a' does not exist" root))
+        (else
+          (let*
+              ((glob-rx
+                 (and glob
+                      (string? glob)
+                      (not (string-null? (string-trim glob)))
+                      (%glob->regexp glob)))
+               (ctxt (max 0 (or (%coerce-int-or-false context) 0)))
+               (maxr (max 1 (or (%coerce-int-or-false max-results) 200)))
+               (mode
+                 (let
+                     ((m (string-downcase (ensure-string output-mode))))
+                   (cond
+                     ((string-contains m "count") 'count)
+                     ((string-contains m "files") 'files)
+                     (else 'content))))
+               (files (%fs-search-filelist root glob-rx))
+               (%search
+                 (lambda (f)
+                   (let
+                       ((lines
+                          (catch #t
+                            (lambda ()
+                              (fs-file-lines f))
+                            (lambda _
+                              #f))))
+                     (and lines (cons (%fs-search-indexes rx lines) lines))))))
+            (let loop
+              ((rest files) (hits '()) (blocks '()) (truncated? #f))
+              (if (or (null? rest) truncated?)
+                (let*
+                    ((n-matches (fold + 0 (map cdr hits)))
+                     (hit-list (reverse hits))
+                     (header
+                       (format #f
+                               "[file_search pattern=~a path=~a - ~a match(es) in ~a file(s) of ~a searched~a]"
+                               pattern
+                               root
+                               n-matches
+                               (length hits)
+                               (length files)
+                               (if truncated?
+                                 " - RESULT LIMIT REACHED"
+                                 "")))
+                     (body
+                       (cond
+                         ((eq? mode 'count)
+                           (string-join
+                             (map
+                               (lambda (h)
+                                 (format #f "~a:~a" (car h) (cdr h)))
+                               hit-list)
+                             "\n"))
+                         ((eq? mode 'files) (string-join (map car hit-list) "\n"))
+                         (else (string-join (reverse blocks) "\n"))))
+                     (footer
+                       (cond
+                         (truncated?
+                           (format #f
+                                   "~%[result limit ~a reached - narrow with glob, switch to output_mode=files_with_matches or count, or raise max_results]"
+                                   maxr))
+                         ((and (eq? mode 'content) (> n-matches 0))
+                           "\n[Tip: the N:HHH→anchors above are read_file's 0-based line numbers and content hashes - pass them directly to edit_lines from/from_hash/to/to_hash.]")
+                         (else ""))))
+                  (string-append (string-append header "\n" body) footer))
+                (let ((r (%search (car rest))))
+                  (cond
+                    ((or (not r) (null? (car r))) (loop (cdr rest) hits blocks truncated?))
+                    (else
+                      (let*
+                          ((f (car rest)) (idxs (car r))
+                           (lines (cdr r))
+                           (hits* (cons (cons f (length idxs)) hits))
+                           (rendered
+                             (if (eq? mode 'content)
+                               (%fs-search-blocks f lines idxs ctxt)
+                               '())))
+                        (loop (cdr rest) hits* (append blocks rendered)
+                              (and (eq? mode 'content) (>= (+ (length blocks) (length rendered)) maxr)))))))))))))
+    (format #f "Error: 'pattern' must be a search string")))
+
+(define (%fs-search-indexes rx lines)
+        "Return the 0-based indexes of LINES matching RX."
+        (let lp
+          ((i 0) (ls lines) (acc '()))
+          (cond
+            ((null? ls) (reverse acc))
+            ((regexp-exec rx (car ls)) (lp (+ i 1) (cdr ls) (cons i acc)))
+            (else (lp (+ i 1) (cdr ls) acc)))))
+
+(define (%fs-search-blocks f lines indexes ctxt)
+        "Render content blocks for match INDEXES in LINES of file F, each
+surrounded by CTXT context lines, as N:HHH→text using read_file's
+0-based line numbering and content anchors."
+        (let
+            ((render-range
+               (lambda (lo hi)
+                 (let rb
+                   ((idx lo) (stop hi) (acc '()))
+                   (cond
+                     ((> idx stop) (reverse acc))
+                     (else
+                       (rb (+ idx 1)
+                           stop
+                           (cons
+                             (format #f
+                                     "~a:~a:~a→~a"
+                                     f
+                                     idx
+                                     (fs-line-anchor (list-ref lines idx))
+                                     (list-ref lines idx))
+                             acc))))))))
+          (map
+            (lambda (r)
+              (string-join (render-range (car r) (cadr r)) "\n"))
+            (%merge-ranges
+              (map
+                (lambda (i)
+                  (list (max 0 (- i ctxt)) (min (- (length lines) 1) (+ i ctxt))))
+                indexes)))))
+
+(define (%fs-search-filelist root glob-rx)
+        "Return the files to search under ROOT: ROOT itself when it is a
+file, else every walkable file below it, filtered by GLOB-RX basenames
+and binary detection."
+        (let
+            ((all
+               (if (file-is-directory? root)
+                 (%walk-search-files root)
+                 (list root))))
+          (filter
+            (lambda (f)
+              (and
+                (or (not glob-rx) (and (regexp-exec glob-rx (basename f)) #t))
+                (not (%file-binary? f))))
+            all)))
+
+(define (%merge-ranges rs)
+        "Merge overlapping or adjacent (START END) line ranges into a
+descending... ascending-ordered list of disjoint ranges."
+        (reverse
+          (fold
+            (lambda (r acc)
+              (if
+                  (and (pair? acc) (<= (car r) (+ 1 (cadr (car acc)))))
+                (cons (list (car (car acc)) (max (cadr (car acc)) (cadr r))) (cdr acc))
+                (cons r acc)))
+            '()
+            (sort rs
+                  (lambda (a b)
+                    (< (car a) (car b)))))))
+
 (define*
   (register-fs-tools! reg
                       #:key
                       (rollback-mgr #f)
                       (verifier #f)
                       (shell-executor #f))
-  "Register read_file, write_file, edit_file, edit_lines, and single bash tool into REG."
+  "Register read_file, write_file, edit_file, edit_lines, file_search, and
+a single bash tool into REG."
   (registry-attach! reg
                     "read_file"
-                    (lambda (path offset limit)
-                      (let* ((start (max 0 (if (integer? offset) offset (or (string->number (or offset "0")) 0))))
-                             (lim (max 1 (if (integer? limit) limit (or (string->number (or limit "800")) 800))))
-                             (end (+ start lim)))
-                        (if (read-range-covered? path start end)
-                          (format #f "[file ~a - lines ~a..~a already read in this session; cached result reused. Use symbols_overview/find_symbol for structure, or a different offset/limit for new lines.]" path start (- end 1))
-                          (let ((res (fs-read-file path offset limit)))
-                            (read-cache-record! path start end)
-                            res))))
+                    (lambda (path offset limit start_line end_line)
+                      (fs-read-file path offset limit #:start-line start_line #:end-line end_line))
                     '((description .
-                       "Read a bounded slice of the file at PATH (line-based offset and limit; header shows total line count; call again with offset to continue). Re-reading an already-read range returns a cached note; prefer symbols_overview/find_symbol for structure.")
+                       "Read a bounded slice of the file at PATH. Every line comes back as N:HHH→content with N the 0-based line number and HHH the line's content anchor, and offset/limit use the same 0-based numbering, so edit_lines from/from_hash/to/to_hash can copy them directly. For the 1-based line numbers compilers and stack traces give you, pass start_line/end_line (inclusive) instead of offset/limit - no offset arithmetic, no sed -n. Re-reading an already-read range returns a cached note; prefer symbols_overview/find_symbol for structure.")
                       (parameters .
                        ((type . "object")
                         (properties .
                          ((path . ((type . "string") (description . "Path to file to read")))
                           (offset .
                            ((type . "integer")
-                            (description . "0-based line number to start from (default 0)")))
+                            (description .
+                             "0-based first line to show, as printed by the header/footer (default 0)")))
                           (limit .
                            ((type . "integer")
-                            (description . "Maximum number of lines to return (default 800)")))))
+                            (description . "Maximum number of lines to return (default 800)")))
+                          (start_line .
+                           ((type . "integer")
+                            (description .
+                             "1-based first line to show, exactly as compilers/stack traces report it (overrides offset)")))
+                          (end_line .
+                           ((type . "integer")
+                            (description .
+                             "1-based last line to show, inclusive (trims limit; typically paired with start_line)")))))
                         (required . #("path"))))))
   (registry-attach! reg
                     "write_file"
@@ -568,15 +862,55 @@ would silently land on the wrong lines."
                                    "Replacement text for the range (may span lines; empty string deletes the range)")))))
                               (required . #("from" "from_hash" "to" "to_hash" "new_text"))))))))
                         (required . #("path" "edits"))))))
+  (registry-attach! reg
+                    "file_search"
+                    (lambda
+                        (pattern path glob context output_mode max_results)
+                      (fs-file-search pattern
+                                      #:path
+                                      (or path ".")
+                                      #:glob
+                                      glob
+                                      #:context
+                                      (or context 0)
+                                      #:output-mode
+                                      (or output_mode "content")
+                                      #:max-results
+                                      (or max_results 200)))
+                    '((description .
+                       "Bounded workspace search for the POSIX regex PATTERN under PATH: the structured replacement for bash grep -r/find, respecting ignore dirs, skipping binaries, and offering CONTEXT lines, a GLOB basename filter, and OUTPUT_MODE content|files_with_matches|count so output stays small. Content lines use read_file's N:HHH→anchors (0-based), so edit_lines can consume them without a re-read.")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((pattern .
+                           ((type . "string") (description . "POSIX regular expression to search for")))
+                          (path .
+                           ((type . "string")
+                            (description . "File or directory to search (default \".\")")))
+                          (glob .
+                           ((type . "string") (description . "Glob filter for file basenames, e.g. *.scm")))
+                          (context .
+                           ((type . "integer")
+                            (description . "Lines of context around each content match (default 0)")))
+                          (output_mode .
+                           ((type . "string")
+                            (description . "content | files_with_matches | count (default content)")))
+                          (max_results .
+                           ((type . "integer")
+                            (description . "Maximum content chunks to return (default 200)")))))
+                        (required . #("pattern"))))))
   (when shell-executor
     (registry-attach! reg
                       "bash"
                       (lambda (command)
                         (shell-executor command))
                       '((description .
-                         "Execute a shell command in bash and return stdout/stderr and exit code. Do not use for reading files—use read_file/symbols_overview/find_symbol instead.")
+                         "Execute a shell command for builds, tests, git, and other process pipelines. Do not use it for reading or searching files - use read_file (0-based offset/limit or 1-based start_line/end_line), file_search, or symbols_overview/find_symbol instead. grep, sed, awk and find belong inside stdout pipes here (cmd | grep ...); running them directly against workspace files is guardrail-blocked because read_file, edit_lines/edit_file (hash-verified, indentation-safe), and file_search do the same work with verification sed and awk cannot give you.")
                         (parameters .
                          ((type . "object")
                           (properties .
-                           ((command . ((type . "string") (description . "Command to execute")))))
+                           ((command .
+                             ((type . "string")
+                              (description .
+                               "The shell command to run. Do not read files with cat/sed -n or edit them with sed -i/awk here: direct file reads/edits bypass hash verification and indentation safety and are guardrail-blocked - use read_file (start_line/end_line), edit_lines or edit_file instead, and append '# allow-unix-edit' to this command only for deliberate bulk transformations (e.g. one symbol across many files). Piped filtering of command stdout with grep/sed/awk is always fine.")))))
                           (required . #("command"))))))))
