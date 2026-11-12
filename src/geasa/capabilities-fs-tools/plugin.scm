@@ -13,6 +13,8 @@
   #:use-module
   (geasa foundation-util plugin)
   #:use-module
+  (geasa capabilities-context-index plugin)
+  #:use-module
   (ice-9 format)
   #:use-module
   (ice-9 rdelim)
@@ -87,14 +89,20 @@ guile-fslib's complex-fsing?."
                 (limit 800)
                 #:key
                 (start-line #f)
-                (end-line #f))
+                (end-line #f)
+                (force #f)
+                (ctx-idx #f))
   "Read a bounded slice of the file at PATH.  OFFSET and LIMIT form the
 0-based line window that matches the N:HHH→anchors shown in the output,
 so a follow-up edit_lines call can copy the displayed line numbers and
 hashes verbatim.  Alternatively pass 1-based START-LINE and END-LINE
 (inclusive) exactly as compilers and stack traces report them - they
 take precedence over OFFSET and LIMIT and map 1:1 onto the numbers you
-were given, without the -1 arithmetic that makes sed -n tempting."
+were given, without the -1 arithmetic that makes sed -n tempting.
+FORCE bypasses the per-session read cache to obtain fresh anchors for a
+range already read (still bounded by LIMIT / max chars).  CTX-IDX, when
+supplied, is the shared BM25 context index used to make cached ranges
+retrievable via ctx_search under source_id \"read_file:<path>\"."
   (let
       ((sline (%coerce-int-or-false start-line))
        (eline (%coerce-int-or-false end-line)))
@@ -127,61 +135,75 @@ were given, without the -1 arithmetic that makes sed -n tempting."
                             (if (integer? limit)
                               limit
                               (string->number (or limit "800"))))))
-                 (end (min total (+ start max-lines))))
-              (if (read-range-covered? path start end)
-                (format #f
-                        "[file ~a - lines ~a..~a already read in this session; cached result reused. Use symbols_overview/find_symbol for structure, or a different offset/limit (or precise start_line/end_line) for new lines.]"
-                        path start (- end 1))
+                 (end (min total (+ start max-lines)))
+                 (covered? (read-range-covered? path start end)))
+              (if (and covered? (not force))
+                (let ((idx-hint
+                        (if ctx-idx
+                          (string-append
+                            (format #f "Indexed under source_id \"read_file:~a\" (accumulates all read slices of this file).~%" path)
+                            (format #f "To pull specific lines without re-dumping: ctx_search(query, source_id=\"read_file:~a\").~%" path))
+                          (format #f "Not indexed (no context index attached).~%"))))
+                  (format #f
+                          "[file ~a - lines ~a..~a already read in this session; cached result reused.~%~aTo obtain fresh N:HHH→ anchors for editing: read_file(path, offset, limit, force=true). Do NOT re-read this range with bash/sed.]"
+                          path
+                          start
+                          (- end 1)
+                          idx-hint))
                 (begin
                   (read-cache-record! path start end)
-                  (let loop
-                    ((i start) (cur (drop raw-lines (min total start))) (acc '()))
-                    (cond
-                      ((or (>= i end) (null? cur))
-                        (let*
-                            ((shown (reverse acc))
-                             (last-shown
-                               (if (null? shown)
-                                 start
-                                 (+ i -1)))
-                             (header
-                               (format #f
-                                       "[file ~a - ~a total lines - showing lines ~a..~a]~%"
-                                       path
-                                       total
-                                       start
-                                       last-shown))
-                             (body (string-join shown "\n"))
-                             (footer
-                               (if (>= end total)
-                                 (format #f "~%[end of file at line ~a of ~a]" total total)
-                                 (format #f
-                                         "~%[~a more lines elided - call read_file with offset=~a to continue (total ~a lines)]"
-                                         (- total i)
-                                         i
-                                         total)))
-                             (tip
-                               (if (> total 200)
-                                 (format #f
-                                         "~%[Tip: For large files, use symbols_overview or find_symbol to inspect specific definitions, or ctx_search for keyword search.]")
-                                 "")))
-                          (string-append header body footer tip)))
-                      (else
-                        (let*
-                            ((line (car cur))
-                             (trim
-                               (if
-                                   (> (string-length line) %read-file-max-chars-per-line)
-                                 (string-append
-                                   (substring line 0 %read-file-max-chars-per-line)
-                                   (format #f
-                                           "... [line ~a truncated: ~a of ~a chars]"
-                                           i
-                                           (string-length line)
-                                           (string-length line)))
-                                 line))
-                             (anchored (format #f "~a:~a→~a" i (fs-line-anchor line) trim)))
-                          (loop (+ i 1) (cdr cur) (cons anchored acc)))))))))
+                  (let ((result
+                          (let loop
+                            ((i start) (cur (drop raw-lines (min total start))) (acc '()))
+                            (cond
+                              ((or (>= i end) (null? cur))
+                                (let*
+                                    ((shown (reverse acc))
+                                     (last-shown
+                                       (if (null? shown)
+                                         start
+                                         (+ i -1)))
+                                     (header
+                                       (format #f
+                                               "[file ~a - ~a total lines - showing lines ~a..~a]~%"
+                                               path
+                                               total
+                                               start
+                                               last-shown))
+                                     (body (string-join shown "\n"))
+                                     (footer
+                                       (if (>= end total)
+                                         (format #f "~%[end of file at line ~a of ~a]" total total)
+                                         (format #f
+                                                 "~%[~a more lines elided - call read_file with offset=~a to continue (total ~a lines)]"
+                                                 (- total i)
+                                                 i
+                                                 total)))
+                                     (tip
+                                       (if (> total 200)
+                                         (format #f
+                                                 "~%[Tip: For large files, use symbols_overview or find_symbol to inspect specific definitions, or ctx_search for keyword search.]")
+                                         "")))
+                                  (string-append header body footer tip)))
+                              (else
+                                (let*
+                                    ((line (car cur))
+                                     (trim
+                                       (if
+                                           (> (string-length line) %read-file-max-chars-per-line)
+                                         (string-append
+                                           (substring line 0 %read-file-max-chars-per-line)
+                                           (format #f
+                                                   "... [line ~a truncated: ~a of ~a chars]"
+                                                   i
+                                                   (string-length line)
+                                                   (string-length line)))
+                                         line))
+                                     (anchored (format #f "~a:~a→~a" i (fs-line-anchor line) trim)))
+                                  (loop (+ i 1) (cdr cur) (cons anchored acc))))))))
+                    (when (and ctx-idx (not covered?))
+                      (ctx-index-content! ctx-idx (string-append "read_file:" path) result #f))
+                    result))))
             (format #f "Error: file '~a' does not exist" path)))
         (lambda (_k . a)
           (format #f "Error reading file '~a': ~s" path a))))))
@@ -763,13 +785,14 @@ descending... ascending-ordered list of disjoint ranges."
                       #:key
                       (rollback-mgr #f)
                       (verifier #f)
-                      (shell-executor #f))
+                      (shell-executor #f)
+                      (ctx-idx #f))
   "Register read_file, write_file, edit_file, edit_lines, file_search, and
 a single bash tool into REG."
   (registry-attach! reg
                     "read_file"
-                    (lambda (path offset limit start_line end_line)
-                      (fs-read-file path offset limit #:start-line start_line #:end-line end_line))
+                    (lambda (path offset limit start_line end_line force)
+                      (fs-read-file path offset limit #:start-line start_line #:end-line end_line #:force force #:ctx-idx ctx-idx))
                     '((description .
                        "Read a bounded slice of the file at PATH. Every line comes back as N:HHH→content with N the 0-based line number and HHH the line's content anchor, and offset/limit use the same 0-based numbering, so edit_lines from/from_hash/to/to_hash can copy them directly. For the 1-based line numbers compilers and stack traces give you, pass start_line/end_line (inclusive) instead of offset/limit - no offset arithmetic, no sed -n. Re-reading an already-read range returns a cached note; prefer symbols_overview/find_symbol for structure.")
                       (parameters .
@@ -790,7 +813,11 @@ a single bash tool into REG."
                           (end_line .
                            ((type . "integer")
                             (description .
-                             "1-based last line to show, inclusive (trims limit; typically paired with start_line)")))))
+                             "1-based last line to show, inclusive (trims limit; typically paired with start_line)")))
+                          (force .
+                           ((type . "boolean")
+                            (description .
+                             "Bypass the per-session read cache to obtain fresh N:HHH anchors for a range already read. Still bounded by limit/max chars. Use only when you need fresh anchors for edit_lines; prefer ctx_search(source_id) to recall cached content.")))))
                         (required . #("path"))))))
   (registry-attach! reg
                     "write_file"

@@ -506,7 +506,7 @@ unbounded raw search on the next turn."
                                       (policy #f))
          "Register built-in autonomous agent tools, MCP kernel tools, and spec gate tools on REG."
          ;; 1. Core filesystem & editing tools (read_file, write_file, edit_file, bash)
-         (register-fs-tools! reg #:rollback-mgr rollback-mgr #:verifier verifier #:shell-executor exec-shell-tool-impl)
+         (register-fs-tools! reg #:rollback-mgr rollback-mgr #:verifier verifier #:shell-executor exec-shell-tool-impl #:ctx-idx ctx-idx)
          ;; 1b. Input macro expansion (@@, @file:PATH, @SHORTCUT directives)
          (register-macro-tools! reg)
          ;; 2. Code navigation & persistent memories
