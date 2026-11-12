@@ -318,23 +318,90 @@ Follow the contract-gated dynamic synthesis workflow:
 ;;;
 ;;; Builtin TUI Tools
 ;;;
+(define %bash-output-max-lines 100)
+
+(define %bash-output-max-chars 4096)
+
+(define %bash-unix-token-names '("grep" "sed" "awk" "find"))
+
+(define (%unix-tool-in-command? cmd)
+        "Return #t when CMD mentions one of the raw unix text tools as a
+whitespace-, pipe-, or semicolon-delimited token (used to target the
+redirection tip on truncated output)."
+        (and (string? cmd)
+             (let*
+                 ((raw (string-downcase cmd))
+                  (space-tokens
+                    (filter
+                      (lambda (t)
+                        (> (string-length t) 0))
+                      (string-split raw #\space)))
+                  (tokens
+                    (append-map
+                      (lambda (t)
+                        (string-split t #\|))
+                      (append-map
+                        (lambda (t)
+                          (string-split t #\;))
+                        space-tokens))))
+               (any
+                 (lambda (tok)
+                   (member tok %bash-unix-token-names))
+                 tokens))))
+
+(define (%bounded-shell-output cmd out)
+        "Return OUT bounded to the bash output budget (~100 lines /
+~4KB) with an instructive footer.  When CMD mentioned raw unix text
+tools, the footer redirects to the structured search tools instead of
+only naming the truncation, teaching the loop not to repeat an
+unbounded raw search on the next turn."
+        (if (string? out)
+          (let*
+              ((lines (string-split out #\newline))
+               (n (length lines))
+               (over-lines? (> n %bash-output-max-lines))
+               (over-chars? (> (string-length out) %bash-output-max-chars)))
+            (if (and (not over-lines?) (not over-chars?))
+              out
+              (let*
+                  ((shown (take lines (min n %bash-output-max-lines)))
+                   (joined (string-join shown "\n"))
+                   (body
+                     (if
+                         (> (string-length joined) %bash-output-max-chars)
+                       (substring joined 0 %bash-output-max-chars)
+                       joined)))
+                (format #f
+                        "~a~%[Output truncated: ~a of ~a lines / ~a chars shown to protect the context window.]~a"
+                        body
+                        (min n %bash-output-max-lines)
+                        n
+                        (string-length body)
+                        (if (%unix-tool-in-command? cmd)
+                          "~%Tip: raw bash grep/sed/awk/find output ignores ignore-dirs and floods context. Use the file_search tool for workspace search (glob filter, output_mode files_with_matches or count), read_file for line slices, or ctx_search to recall offloaded command output."
+                          "")))))
+          (object->string out)))
+
 (define (exec-shell-tool-impl cmd-or-arg)
         "Execute a shell command passed as a string or tool-call argument alist."
-        (let ((cmd (cond
-                     ((string? cmd-or-arg) cmd-or-arg)
-                     ((and (pair? cmd-or-arg) (pair? (car cmd-or-arg)))
-                       (or (assoc-ref cmd-or-arg "command")
-                           (assoc-ref cmd-or-arg 'command)
-                           (assoc-ref cmd-or-arg "cmd")
-                           (assoc-ref cmd-or-arg 'cmd)
-                           (cdar cmd-or-arg)))
-                     (else (object->string cmd-or-arg)))))
+        (let
+            ((cmd
+               (cond
+                 ((string? cmd-or-arg) cmd-or-arg)
+                 ((and (pair? cmd-or-arg) (pair? (car cmd-or-arg)))
+                   (or (assoc-ref cmd-or-arg "command")
+                       (assoc-ref cmd-or-arg 'command)
+                       (assoc-ref cmd-or-arg "cmd")
+                       (assoc-ref cmd-or-arg 'cmd)
+                       (cdar cmd-or-arg)))
+                 (else (object->string cmd-or-arg)))))
           (call-with-values
-            (lambda () (execute-shell-command cmd))
+            (lambda ()
+              (execute-shell-command cmd))
             (lambda (out exit-val err)
               (if err
                 (format #f "Error: ~a" err)
-                (format #f "[exit ~a]\n~a" exit-val out))))))
+                (format #f "[exit ~a]\n~a" exit-val (%bounded-shell-output cmd out)))))))
 
 (define %read-file-default-limit 800)
 (define %read-file-max-chars-per-line 400)

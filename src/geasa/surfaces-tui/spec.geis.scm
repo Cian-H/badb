@@ -2,20 +2,34 @@
 ;;;
 ;;; Verifies text wrapping, command parsing, and TUI helper functions.
 
-(define-module (test test-tui)
-               #:use-module (srfi srfi-1)
-               #:use-module (badb spec)
-               #:use-module (srfi srfi-64)
-               #:use-module (geasa providers-model common)
-               #:use-module (geasa providers-model openai)
-               #:use-module (badb kernel registry)
-               #:use-module (badb kernel transaction)
-               #:use-module (badb kernel journal)
-               #:use-module (geasa foundation-config plugin)
-               #:use-module (geasa capabilities-mcp plugin)
-               #:use-module (geasa surfaces-tui plugin)
-               #:use-module (json)
-               #:use-module (ice-9 textual-ports))
+(define-module (test test-tui) #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (badb spec)
+               #:use-module
+               (srfi srfi-64)
+               #:use-module
+               (geasa providers-model common)
+               #:use-module
+               (geasa providers-model openai)
+               #:use-module
+               (badb kernel registry)
+               #:use-module
+               (badb kernel transaction)
+               #:use-module
+               (badb kernel journal)
+               #:use-module
+               (geasa foundation-config plugin)
+               #:use-module
+               (geasa capabilities-mcp plugin)
+               #:use-module
+               (geasa surfaces-tui plugin)
+               #:use-module
+               (geasa surfaces-tui tools)
+               #:use-module
+               (json)
+               #:use-module
+               (ice-9 textual-ports))
 
 (spec-begin "surfaces-tui")
 
@@ -1983,6 +1997,22 @@
                 (string-contains
                   (builtin-read-file "/tmp/badb-nonexistent-definitely.txt")
                   "does not exist"))))
+
+(test-group "exec-shell-tool-impl bounded output"
+            (let
+                ((plain (exec-shell-tool-impl "seq 1 5000"))
+                 (unixy (exec-shell-tool-impl "seq 1 5000 | grep 4")))
+              (test-assert "long output truncates"
+                           (string-contains plain "[Output truncated"))
+              (test-assert
+                "plain truncation carries no unix tip"
+                (not (string-contains plain "Tip: raw bash")))
+              (test-assert
+                "unix truncation carries the redirection tip"
+                (string-contains unixy "Tip: raw bash"))
+              (test-assert "tip points at file_search" (string-contains unixy "file_search"))
+              (test-assert "short output passes through"
+                           (string-contains (exec-shell-tool-impl "echo ok") "[exit 0]"))))
 
 (spec-end)
 (spec-exit)
