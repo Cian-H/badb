@@ -57,6 +57,9 @@
                                   read-rule-file
                                   ;; Tool Formatting
                                   format-tools-for-prompt
+                                  ;; Tool Routing
+                                  tool-name-set
+                                  build-tool-routing-rules
                                   ;; Prompt Assembly
                                   assemble-system-prompt
                                   split-system-prompt
@@ -410,6 +413,63 @@ Returns a string (or #f if empty)."
                 (format #f "## Project Memories\n~a" (string-join lines "\n")))))
           (else #f)))
 
+(define (tool-name-set tools)
+        "Return the set of tool NAMES in TOOLS: each spec's function name
+plus original registry id, tolerating symbol- or string-keyed
+entries and bare specs whose own name key carries the tool name."
+        (let loop
+          ((rest (or tools '())) (names '()))
+          (cond
+            ((null? rest) (reverse names))
+            (else
+              (let*
+                  ((t (car rest))
+                   (f (or (assoc-ref t 'function) (assoc-ref t "function")))
+                   (cands
+                     (list
+                       (and f (or (assoc-ref f 'name) (assoc-ref f "name")))
+                       (and f (or (assoc-ref f '_badb_original_id) (assoc-ref f "_badb_original_id")))
+                       (or (assoc-ref t 'name) (assoc-ref t "name"))
+                       (and (string? t) t))))
+                (loop (cdr rest) (append (reverse (filter string? cands)) names)))))))
+
+(define* (build-tool-routing-rules tools)
+         "Contrastive, loadout-aware tool routing rules for the active
+TOOLS list.  Each rule mentions only tools actually mounted (so no
+rule can point the model at a capability it lacks), positively states
+where raw unix tools belong instead of banning them, and routes edits
+to the hash-verified anchor-based tools.  Returns a string, or #f
+when nothing in the loadout applies."
+         (let*
+             ((names (tool-name-set tools))
+              (has?
+                (lambda (n)
+                  (member n names)))
+              (has-any?
+                (lambda (ns)
+                  (any has? ns)))
+              (rule
+                (lambda (needed line)
+                  (and (every has? needed) line)))
+              (rules
+                (filter identity
+                        (list
+                          (rule '("read_file")
+                                "File inspection (whole files or line ranges): use read_file, never cat/head/tail/sed -n/awk. Pass start_line/end_line with the 1-based line numbers exactly as reported (or 0-based offset/limit); lines return as N:HHH→content anchors and output is bounded. Plan a few windowed reads in advance instead of many tiny ones, and do not re-read a file you already hold in context.")
+                          (rule '("read_file" "edit_lines")
+                                "File edits: use edit_lines with the anchors read_file printed ({from, from_hash, to, to_hash, new_text}; multiple hunks in ONE atomic call; hash verification rejects stale reads instead of writing to the wrong lines), or edit_file for exact-text replacement (replace_all for renames). Never edit files with sed -i or awk one-liners.")
+                          (and (has? "edit_file")
+                               (not (has? "edit_lines"))
+                               "File edits: use edit_file for exact-text replacement. Never edit files with sed -i or awk one-liners.")
+                          (rule '("file_search")
+                                "Workspace code search: use file_search (pattern, path, glob, context, output_mode content|files_with_matches|count) instead of grep -r or find in bash.")
+                          (and (not (has-any? '("file_search")))
+                               (has-any? '("ctx_search" "find_symbol"))
+                               "Workspace code search: prefer ctx_search / find_symbol over spawning grep -r in bash.")
+                          (and (has-any? '("bash" "sh" "execute_command"))
+                               "bash is for builds, tests, git, and pipelines: grep/sed/awk/find belong PIPE-side, filtering command stdout (cmd | grep ...), which is always allowed. Pointed directly at files (sed -n X,Yp, sed -i, awk, grep -r) they are guardrail-blocked - the block message names the structured tool for the job. Append '# allow-unix-edit' to a command only for deliberate bulk transformations, e.g. one symbol across many files.")))))
+           (and (pair? rules) (string-join rules "\n"))))
+
 (define*
   (%assemble-system-sections composer
                              #:key
@@ -449,18 +509,7 @@ execution plan. Do not perform write operations."))
         (add-static-sec! "Operational Directives"
                          "Provide direct, concise assessments with minimal preamble.")))
     ;; 2b. Tool Usage Guidance
-    (add-static-sec! "Tool Usage"
-                     "Prefer the read_file tool (path, offset, limit) to inspect files rather than
-shelling out with cat/sed. read_file reports the file's total line count in its
-header and annotates every line as N:HHH→content, where N is the 0-based line
-number and HHH is the line's content anchor. For surgical edits, prefer the
-edit_lines tool: pass ranges as {from, from_hash, to, to_hash, new_text} using
-the anchors read_file showed you — the harness verifies them against the live
-file and rejects edits based on stale reads instead of corrupting the wrong
-lines. edit_file remains available for exact-text replacements. When you need
-more than the default window, plan a few windowed reads (explicit offset/limit)
-in advance instead of many tiny ones. Avoid re-reading a file you have already
-read in this session — retain what you learned and move forward.")
+    (add-static-sec! "Tool Usage" (build-tool-routing-rules tools))
     ;; 3. Environment & Workspace
     (let*
         ((env (collect-environment-info))

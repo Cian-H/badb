@@ -173,15 +173,17 @@
               (test-assert "formatted contains arch" (string-contains formatted "- arch: uses guile scheme"))))
 
 (test-group "static-prefix-invariance"
-            (let* ((prefix1 (compile-system-prompt #:workspace-dir "/dir/alpha"
+            (let* ((tools '(((name . "bash"))
+                            ((name . "read_file"))))
+                   (prefix1 (compile-system-prompt #:workspace-dir "/dir/alpha"
                                                    #:skills '(((name . "skill1") (description . "desc1")))
                                                    #:memories '(((title . "mem1") (content . "val1")))
-                                                   #:tools '(((name . "bash")))
+                                                   #:tools tools
                                                    #:static-only? #t))
                    (prefix2 (compile-system-prompt #:workspace-dir "/dir/beta"
                                                    #:skills '(((name . "skill2") (description . "desc2")))
                                                    #:memories '(((title . "mem2") (content . "val2")))
-                                                   #:tools '(((name . "read_file")))
+                                                   #:tools tools
                                                    #:static-only? #t)))
               (test-assert "static prefix contains identity" (string-contains prefix1 "You are badb"))
               (test-assert "static prefix contains Operational Directives" (string-contains prefix1 "## Operational Directives"))
@@ -189,7 +191,7 @@
               (test-assert "static prefix does NOT contain Environment" (not (string-contains prefix1 "## Environment")))
               (test-assert "static prefix does NOT contain Skills" (not (string-contains prefix1 "## Available Skills")))
               (test-assert "static prefix does NOT contain Memories" (not (string-contains prefix1 "## Project Memories")))
-              (test-equal "static prefix is completely invariant to dynamic inputs" prefix1 prefix2)))
+              (test-equal "static prefix is invariant to workspace/skills/memories inputs" prefix1 prefix2)))
 
 (test-group "compile-system-prompt-full"
             (let ((prompt (compile-system-prompt #:workspace-dir (getcwd)
@@ -203,10 +205,16 @@
 (test-group "split-system-prompt-halves"
             (let*
                 ((composer (make-prompt-composer))
+                 (tools
+                   '(((name . "read_file")) ((name . "edit_lines"))
+                     ((name . "file_search"))
+                     ((name . "bash"))))
                  (full
                    (assemble-system-prompt composer
                                            #:workspace-dir
                                            (getcwd)
+                                           #:tools
+                                           tools
                                            #:skills
                                            '(((name . "s") (description . "d")))
                                            #:memories
@@ -215,6 +223,8 @@
                    (assemble-system-prompt composer
                                            #:workspace-dir
                                            (getcwd)
+                                           #:tools
+                                           tools
                                            #:skills
                                            '(((name . "s") (description . "d")))
                                            #:memories
@@ -225,6 +235,8 @@
                    (split-system-prompt composer
                                         #:workspace-dir
                                         (getcwd)
+                                        #:tools
+                                        tools
                                         #:skills
                                         '(((name . "s") (description . "d")))
                                         #:memories
@@ -236,14 +248,60 @@
               (test-assert
                 "static half is invariant to workspace changes"
                 (equal?
-                  (car (split-system-prompt composer #:workspace-dir "/dir/alpha"))
-                  (car (split-system-prompt composer #:workspace-dir "/dir/beta"))))
+                  (car (split-system-prompt composer #:workspace-dir "/dir/alpha" #:tools tools))
+                  (car (split-system-prompt composer #:workspace-dir "/dir/beta" #:tools tools))))
               (test-assert
                 "dynamic half contains the Environment section"
                 (string-contains (cdr pair) "## Environment"))
               (test-assert
                 "static half contains the Tool Usage directives"
-                (string-contains (car pair) "## Tool Usage"))))
+                (string-contains (car pair) "## Tool Usage"))
+              (test-assert
+                "routing rules sit in the cached static half"
+                (string-contains (car pair) "use read_file"))))
+
+;;;
+(test-group "tool-routing-rules"
+            (let
+                ((spec
+                   (lambda (name)
+                     `((type . "function") (function . ((name . ,name)))))))
+              (let*
+                  ((full
+                     (build-tool-routing-rules
+                       (map spec
+                            '("read_file" "write_file" "edit_file" "edit_lines" "file_search" "bash"))))
+                   (minimal
+                     (build-tool-routing-rules
+                       (map spec '("read_file" "write_file" "edit_file" "bash")))))
+                (test-assert "full loadout routes reads" (string-contains full "use read_file"))
+                (test-assert
+                  "full loadout prefers hash-verified edit_lines"
+                  (string-contains full "edit_lines"))
+                (test-assert "routing copy names content anchors"
+                             (string-contains full "from_hash"))
+                (test-assert
+                  "full loadout routes search to file_search"
+                  (string-contains full "file_search"))
+                (test-assert
+                  "pipes stay legal in the routing copy"
+                  (string-contains full "PIPE-side"))
+                (test-assert
+                  "minimal loadout omits edit_lines routing"
+                  (not (string-contains minimal "edit_lines")))
+                (test-assert "minimal loadout still routes reads"
+                             (string-contains minimal "use read_file"))
+                (test-assert "empty loadout yields no section"
+                             (not (build-tool-routing-rules '())))
+                (test-assert "bare specs resolve names"
+                             (string-contains
+                               (build-tool-routing-rules '(((name . "bash"))))
+                               "bash is for builds"))
+                (test-assert
+                  "no file_search falls back to ctx_search guidance"
+                  (string-contains
+                    (build-tool-routing-rules '(((name . "ctx_search"))))
+                    "ctx_search")))))
 
 (spec-end)
 (spec-exit)
