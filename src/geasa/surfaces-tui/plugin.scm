@@ -457,11 +457,12 @@ verbatim, and fails open to a verbatim truncation."
                                                            #:summarize-fn
                                                            semantic-summarize-fn))
       (define discovered-context-limit
-              (catch #t
-                (lambda ()
-                  (fetch-model-context-limit client))
-                (lambda _
-                  #f)))
+              (or (badb-config-model-context-limit cfg cur-endpoint cur-model)
+                  (catch #t
+                    (lambda ()
+                      (fetch-model-context-limit client))
+                    (lambda _
+                      #f))))
       (when
           (and (integer? discovered-context-limit) (> discovered-context-limit 4096))
         (set-context-compactor-max-tokens! compactor discovered-context-limit))
@@ -654,11 +655,12 @@ and append it to the persistent history journal file."
               (module-define! repl-mod 'client client)
               (let
                   ((context-limit
-                     (catch #t
-                       (lambda ()
-                         (fetch-model-context-limit client))
-                       (lambda _
-                         #f))))
+                     (or (badb-config-model-context-limit cfg cur-endpoint cur-model)
+                         (catch #t
+                           (lambda ()
+                             (fetch-model-context-limit client))
+                           (lambda _
+                             #f)))))
                 (set-context-compactor-max-tokens! compactor
                                                    (if
                                                        (and (integer? context-limit) (> context-limit 4096))

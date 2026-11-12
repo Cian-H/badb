@@ -643,22 +643,33 @@ Returns 'done or 'eof."
 ;;; Model Listing & Auto-Detection
 ;;;
 (define (model-entry-id entry)
-        "Extract the model id string from a /models data entry, or #f."
-        (let ((id (and (pair? entry) (json-ref entry "id"))))
+        "Extract the model id/key string from a /models data entry, or #f."
+        (let ((id (and (pair? entry)
+                       (or (json-ref entry "id")
+                           (json-ref entry "key")
+                           (json-ref entry "name")
+                           (json-ref entry "model")))))
           (and (string? id) (not (string-null? id)) id)))
+
+(define (models-data-of obj)
+        (cond
+          ((pair? obj)
+            (or (json-ref obj "data")
+                (json-ref obj "models")))
+          ((vector? obj) obj)
+          ((list? obj) obj)
+          (else #f)))
 
 (define (parse-models-response response)
         "Parse an OpenAI-compatible GET /models response into the list of model id
 strings. RESPONSE may be a raw JSON body string or an already-parsed JSON
 alist. Returns '() when the payload is malformed or contains no models."
-        (let ((obj (if (string? response) (safe-json-parse response #f) response)))
-          (if (pair? obj)
-            (let ((data (json-ref obj "data")))
-              (cond
-                ((vector? data) (filter-map model-entry-id (vector->list data)))
-                ((list? data) (filter-map model-entry-id data))
-                (else '())))
-            '())))
+        (let* ((obj (if (string? response) (safe-json-parse response #f) response))
+               (data (models-data-of obj)))
+          (cond
+            ((vector? data) (filter-map model-entry-id (vector->list data)))
+            ((list? data) (filter-map model-entry-id data))
+            (else '()))))
 
 (define (generic-model? model)
         "Return #t when MODEL is an unset or generic placeholder
@@ -729,65 +740,119 @@ of available model id strings, or #f on failure."
                (values #f (format #f "list-models request failed: ~a"
                                   (format-exception key args)))))))
 
+(define (first-context-limit entries)
+        (cond
+          ((null? entries) #f)
+          ((not (list? entries)) #f)
+          (else
+            (let ((limit (model-entry-context-limit (car entries))))
+              (if limit limit (first-context-limit (cdr entries)))))))
+
 (define (model-entry-context-limit entry)
-        (let ((keys '("max_context_length" "max_model_context_length" "context_length" "context_window" "max_completion_tokens")))
-          (let loop ((keys keys))
-                    (cond
-                      ((null? keys) #f)
-                      ((and (pair? entry)
-                            (let ((val (json-ref entry (car keys))))
-                              (and (number? val) (positive? val))))
-                        (inexact->exact (floor (json-ref entry (car keys)))))
-                      (else (loop (cdr keys)))))))
+        (cond
+          ((not (pair? entry)) #f)
+          (else
+            (let* ((direct-loaded
+                     (let ((val (json-ref entry "loaded_context_length")))
+                       (and (number? val) (positive? val)
+                            (inexact->exact (floor val)))))
+                   (config-limit
+                     (let ((cfg (json-ref entry "config")))
+                       (and (pair? cfg) (model-entry-context-limit cfg))))
+                   (loaded-instances-limit
+                     (let ((li (json-ref entry "loaded_instances")))
+                       (cond
+                         ((vector? li) (first-context-limit (vector->list li)))
+                         ((list? li) (first-context-limit li))
+                         (else #f))))
+                   (meta-limit
+                     (let ((m (json-ref entry "meta")))
+                       (and (pair? m) (model-entry-context-limit m)))))
+              (or direct-loaded
+                  config-limit
+                  loaded-instances-limit
+                  meta-limit
+                  (let loop ((keys '("max_model_context_length"
+                                     "max_context_length"
+                                     "context_length"
+                                     "context_window"
+                                     "max_completion_tokens"
+                                     "n_ctx")))
+                            (cond
+                              ((null? keys) #f)
+                              (else
+                                (let ((val (json-ref entry (car keys))))
+                                  (if (and (number? val) (positive? val))
+                                    (inexact->exact (floor val))
+                                    (loop (cdr keys))))))))))))
 
 (define (parse-models-context-limits response)
-        (let ((obj (if (string? response) (safe-json-parse response #f) response)))
-          (if (pair? obj)
-            (let ((data (json-ref obj "data")))
-              (cond
-                ((vector? data)
-                  (filter-map
-                    (lambda (entry)
-                      (let ((id (model-entry-id entry)))
-                        (and id (cons id (model-entry-context-limit entry)))))
-                    (vector->list data)))
-                ((list? data)
-                  (filter-map
-                    (lambda (entry)
-                      (let ((id (model-entry-id entry)))
-                        (and id (cons id (model-entry-context-limit entry)))))
-                    data))
-                (else '())))
-            '())))
+        (let* ((obj (if (string? response) (safe-json-parse response #f) response))
+               (data (models-data-of obj)))
+          (cond
+            ((vector? data)
+              (filter-map
+                (lambda (entry)
+                  (let ((id (model-entry-id entry)))
+                    (and id (cons id (model-entry-context-limit entry)))))
+                (vector->list data)))
+            ((list? data)
+              (filter-map
+                (lambda (entry)
+                  (let ((id (model-entry-id entry)))
+                    (and id (cons id (model-entry-context-limit entry)))))
+                data))
+            (else '()))))
+
+(define (candidate-model-uris endpoint)
+        (let* ((standard (resolve-models-uri endpoint))
+               (u (if (string? endpoint) (string->uri endpoint) endpoint))
+               (origin (build-uri (uri-scheme u)
+                                  #:userinfo (uri-userinfo u)
+                                  #:host (uri-host u)
+                                  #:port (uri-port u))))
+          (list standard
+                (build-uri (uri-scheme origin) #:userinfo (uri-userinfo origin)
+                           #:host (uri-host origin) #:port (uri-port origin)
+                           #:path "/api/v0/models")
+                (build-uri (uri-scheme origin) #:userinfo (uri-userinfo origin)
+                           #:host (uri-host origin) #:port (uri-port origin)
+                           #:path "/api/v1/models"))))
 
 (define* (fetch-model-context-limit client #:key (model #f) (http-getter #f))
-         "Query GET /models exactly like list-models does (resolve-models-uri
-on (model-client-endpoint client), same http-getter/default request
-pattern and auth header). Return the integer context limit for the
-entry whose id equals MODEL, or — when MODEL is #f or generic
-(generic-model?) — for (model-client-model client). #f when the entry
-is missing, metadata absent, or the request/parse fails. MUST catch
-all errors, return #f instead of throwing."
+         "Query model listing endpoints for CLIENT and return the integer
+context limit for the entry whose id equals MODEL, or — when MODEL is #f
+or generic (generic-model?) — for (model-client-model client). Tries the
+standard OpenAI-compatible endpoint first, then LMStudio's native
+endpoints. #f when the entry is missing, metadata absent, or every
+request/parse fails. MUST catch all errors, return #f instead of throwing."
          (let* ((target-model (or (and model (not (generic-model? model)) model)
                                   (model-client-model client)))
-                (uri (resolve-models-uri (model-client-endpoint client)))
                 (headers (build-headers (model-client-api-key client) #f))
-                (getter (or http-getter (current-http-get))))
-           (catch #t
-             (lambda ()
-               (call-with-values
-                 (lambda () (getter uri #:headers headers))
-                 (lambda (response body)
-                   (let* ((code (response-code response))
-                          (body-str (response-body->string body "")))
-                     (if (<= 200 code 299)
-                       (let ((limits (parse-models-context-limits body-str)))
-                         (and target-model
-                              (let ((entry (assoc target-model limits)))
-                                (and entry (cdr entry)))))
-                       #f)))))
-             (lambda (key . args)
-               #f))))
+                (getter (or http-getter (current-http-get)))
+                (uris (candidate-model-uris (model-client-endpoint client))))
+           (let loop ((uris uris))
+                     (cond
+                       ((null? uris) #f)
+                       (else
+                         (let ((limit
+                                 (catch #t
+                                   (lambda ()
+                                     (call-with-values
+                                       (lambda () (getter (car uris) #:headers headers))
+                                       (lambda (response body)
+                                         (let* ((code (response-code response))
+                                                (body-str (response-body->string body "")))
+                                           (if (<= 200 code 299)
+                                             (let ((limits (parse-models-context-limits body-str)))
+                                               (and target-model
+                                                    (let ((entry (assoc target-model limits)))
+                                                      (and entry (cdr entry)))))
+                                             #f)))))
+                                   (lambda (key . args) #f))))
+                           (if (and (integer? limit) (> limit 0))
+                             limit
+                             (loop (cdr uris)))))))))
 (define* (model-available? client id #:key (http-getter #f))
          "Return #t when model ID is listed by CLIENT's /models endpoint.
 Issues a live HTTP request; returns #f on error or when ID is not found."

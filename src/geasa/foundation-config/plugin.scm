@@ -63,6 +63,7 @@
                  badb-config-providers
                  badb-config-get-provider
                  badb-config-provider-for-endpoint
+                 badb-config-model-context-limit
                  badb-config-allow-missing-thinking?
                  badb-config-agents
                  badb-config-get-agent
@@ -288,6 +289,18 @@ matches ENDPOINT, or #f.  The first matching preset wins."
                      ((equal? (focus endpoint-lens (cdar provs)) ep)
                        (cdar provs))
                      (else (loop (cdr provs))))))))
+
+(define (badb-config-model-context-limit config endpoint model)
+        "Return the configured context limit for MODEL at ENDPOINT, or #f.
+Provider presets may specify (context-limits (MODEL . TOKENS) ...)."
+        (let* ((provider (badb-config-provider-for-endpoint config endpoint))
+               (limits (and provider (get-prop provider 'context-limits '())))
+               (entry (and (list? limits)
+                           (or (assoc model limits)
+                               (assoc (if (symbol? model) (symbol->string model) model)
+                                      limits))))
+               (value (and entry (cdr entry))))
+          (and (integer? value) (positive? value) value)))
 
 (define
   (badb-config-allow-missing-thinking? config endpoint)
