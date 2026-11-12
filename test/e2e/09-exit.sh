@@ -2,7 +2,7 @@
 . "$(dirname "$0")/lib.sh"
 
 launch_tui
-expect_visible "Welcome to badb microharness TUI!" 20000
+expect_visible "badb microharness" 20000
 
 press ctrl+d
 expect_exited

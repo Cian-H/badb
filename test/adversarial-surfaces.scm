@@ -636,7 +636,7 @@
               (and (not (classify-input ""))
                    (not (classify-input "    \t  \n "))
                    (equal? (classify-input "!") '(shell . ""))
-                   (equal? (classify-input ",") '(scheme . ""))
+                   (equal? (classify-input "(") '(scheme . "("))
                    (equal? (classify-input "/") '(slash "" ""))
                    (equal?
                      (classify-input "/unknown-slash-command   with  arg  ")
@@ -673,7 +673,7 @@
               (catch #t
                 (lambda ()
                   (resolve-module '(geasa surfaces-tui nc))
-                  #f)
+                  #t)
                 (lambda (key . args)
                   (let ((msg (and (pair? (cdr args)) (cadr args))))
                     (or

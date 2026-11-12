@@ -83,7 +83,7 @@
            (let loop ()
                      (let ((msg (ipc-read-message chan)))
                        (cond
-                         ((eof-object? msg) (error "ipc-call: unexpected EOF waiting for response to request" req-id))
+                         ((eof-object? msg) (scm-error 'misc-error "ipc-call" "ipc-call: unexpected EOF waiting for response to request" (list "ipc-call: unexpected EOF waiting for response to request" req-id) #f))
                          ((not (list? msg)) (error "ipc-call: expected JSON object" msg))
                          (else
                            (let ((id-pair (or (assoc "id" msg) (assoc 'id msg))))
@@ -92,7 +92,7 @@
                                      (err-pair (or (assoc "error" msg) (assoc 'error msg)))
                                      (res-pair (or (assoc "result" msg) (assoc 'result msg))))
                                  (unless (equal? resp-id req-id)
-                                   (error "ipc-call: response ID mismatch" req-id resp-id msg))
+                                   (scm-error 'misc-error "ipc-call" "ipc-call: response ID mismatch" (list "ipc-call: response ID mismatch" req-id resp-id) #f))
                                  (if err-pair
                                    (scm-error 'ipc-error "ipc-call" "JSON-RPC error: ~s" (list (cdr err-pair)) (list (cdr err-pair)))
                                    (if res-pair (cdr res-pair)

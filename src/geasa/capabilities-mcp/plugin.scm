@@ -242,7 +242,7 @@ on a JSON-RPC error response."
                      (let ((msg (mcp-read-message client)))
                        (cond
                          ((eof-object? msg)
-                           (error "mcp-call: unexpected EOF waiting for response to request" req-id))
+                           (scm-error 'misc-error "mcp-call" "mcp-call: unexpected EOF waiting for response to request" (list "mcp-call: unexpected EOF waiting for response to request" req-id) #f))
                          ((not (list? msg)) (error "mcp-call: expected JSON object from server" msg))
                          (else
                            (let ((id-pair (json-member "id" msg)))
@@ -252,7 +252,7 @@ on a JSON-RPC error response."
                                      (err-pair (json-member "error" msg))
                                      (res-pair (json-member "result" msg)))
                                  (unless (equal? resp-id req-id)
-                                   (error "mcp-call: response ID mismatch" req-id resp-id msg))
+                                   (scm-error 'misc-error "mcp-call" "mcp-call: response ID mismatch" (list "mcp-call: response ID mismatch" req-id resp-id) #f))
                                  (if err-pair
                                    (let* ((err (cdr err-pair))
                                           (code (if (list? err) (prop-ref err 'code 0) 0))

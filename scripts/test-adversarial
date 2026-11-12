@@ -1,0 +1,52 @@
+#!/usr/bin/env -S guile -e main -s
+!#
+;;; test-adversarial — Run the adversarial challenger suites under fresh-source
+;;; semantics (GUILE_AUTO_COMPILE=0) so kernel error shapes are exercised from
+;;; current source rather than stale bytecode.
+
+(setenv "GUILE_AUTO_COMPILE" "0")
+
+(define %script-path
+  (canonicalize-path (car (command-line))))
+
+(define %root-dir
+  (canonicalize-path (string-append (dirname %script-path) "/..")))
+
+(set! %load-path (cons (string-append %root-dir "/src") %load-path))
+(set! %load-path (cons %root-dir %load-path))
+
+(unless (catch #t
+          (lambda () (resolve-interface '(fslib)) #t)
+          (lambda _ #f))
+  (let ((devenv (string-append %root-dir "/scripts/devenv")))
+    (apply execl devenv devenv "--" %script-path (cdr (command-line)))))
+
+(use-modules (srfi srfi-64)
+             (ice-9 ftw)
+             (ice-9 format))
+
+(define (find-adversarial-files dir)
+        (let ((files (scandir dir
+                              (lambda (name)
+                                (and (string-prefix? "adversarial-" name)
+                                     (string-suffix? ".scm" name))))))
+          (if files
+            (map (lambda (f) (string-append dir "/" f)) (sort files string<?))
+            '())))
+
+(define (run-one filename)
+        (format #t "Running adversarial file: ~a~%" filename)
+        (let ((runner (test-runner-simple)))
+          (test-runner-current runner)
+          (primitive-load filename)
+          (let ((fails (test-runner-fail-count runner))
+                (passes (test-runner-pass-count runner)))
+            (format #t "  -> ~a passed, ~a failed~%" passes fails)
+            fails)))
+
+(define (main args)
+        (chdir %root-dir)
+        (let* ((files (find-adversarial-files "test"))
+               (total-fails (apply + (map run-one files))))
+          (format #t "~%=== Adversarial Run Complete: ~a failure(s) ===~%" total-fails)
+          (if (zero? total-fails) (exit 0) (exit 1))))

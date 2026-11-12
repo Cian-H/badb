@@ -46,7 +46,7 @@ else
 fi
 
 launch_tui
-expect_visible "Welcome to badb microharness TUI!" 20000
+expect_visible "badb microharness" 20000
 
 submit_line "Please reply."
 expect_visible "Please reply." 10000

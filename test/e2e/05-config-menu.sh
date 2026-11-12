@@ -2,11 +2,11 @@
 . "$(dirname "$0")/lib.sh"
 
 launch_tui
-expect_visible "Welcome to badb microharness TUI!" 20000
+expect_visible "badb microharness" 20000
 
 type_text "/config"
 expect_visible "↑↓:choose · tab:complete · enter:run · esc:dismiss" 5000
-press Enter
+submit_line ""
 expect_visible "↑↓:move · enter:apply · esc:close" 5000
 
 press Escape

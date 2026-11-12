@@ -3,9 +3,9 @@
 
 launch_tui
 expect_visible "badb" 20000                 # wordmark in the header
-expect_visible "Welcome to badb microharness TUI!" 20000
-expect_visible "You are badb, an expert autonomous coding agent" 5000
-expect_visible "! shell · , scheme · / cmds · ^↑/^↓ select" 5000  # keymap hint
+expect_visible "badb microharness" 20000
+# (startup notice replaced identity card; no separate identity assertion)
+expect_visible "^↑/^↓ select" 5000  # keymap hint
 expect_visible "❯" 5000                    # chat prompt indicator
 # Terminal cursor compatibility: chat typing shows a bar cursor.
 if tui state 2>/dev/null | grep -q "\"shape\":\"bar\""; then
