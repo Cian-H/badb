@@ -1466,5 +1466,87 @@ data: [DONE]
                           "read_file"
                           (assoc-ref (assoc-ref (vector-ref tools-v 1) "function") "name"))))
 
+(test-group
+  "strict-tool-field-allowlist-and-indexless-stream"
+  ;; Regression for Gemini 400 Unknown name "category" at tools[N].function
+  ;; and concatenated parallel tool-call arguments when SSE omits "index".
+  (let*
+      ((wrapped-cat
+         '((type . "function") (extra_top . "drop-me")
+           (function .
+            ((name . "spec_lock") (description . "Lock spec")
+             (parameters . ((type . "object") (properties . ())))
+             (category . "spec-gate")
+             (_badb_defer . #t)))))
+       (flat-cat
+         '((name . "geis_index")
+           (description . "List geasa")
+           (category . "spec-gate")
+           (_badb_source . "registry")))
+       (parsed
+         (json-string->scm
+           (format-chat-request "x" #:model "m" #:tools (list wrapped-cat flat-cat))))
+       (tools-v (assoc-ref parsed "tools"))
+       (t0 (vector-ref tools-v 0))
+       (t1 (vector-ref tools-v 1)))
+    (test-assert "top-level extra key stripped" (not (assoc-ref t0 "extra_top")))
+    (test-assert
+      "function category stripped from wrapped tool"
+      (not (assoc-ref (assoc-ref t0 "function") "category")))
+    (test-assert
+      "function category stripped from flat tool"
+      (not (assoc-ref (assoc-ref t1 "function") "category")))
+    (test-equal "wrapped tool preserves name"
+                "spec_lock"
+                (assoc-ref (assoc-ref t0 "function") "name")))
+  (let*
+      ((g1
+         (json-string->scm
+           "{\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a.md\\\"}\"}}"))
+       (g2
+         (json-string->scm
+           "{\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"tool_search\",\"arguments\":\"{\\\"query\\\":\\\"file_search\\\"}\"}}"))
+       (acc (merge-tool-call-fragment (merge-tool-call-fragment #f g1) g2))
+       (final (finalize-tool-call-fragments acc)))
+    (test-equal "indexless parallel fragments produce two calls" 2 (length final))
+    (test-equal "first call keeps read_file"
+                "read_file"
+                (assoc-ref (car final) 'name))
+    (test-equal "first call parses own arguments"
+                '(("path" . "a.md"))
+                (assoc-ref (car final) 'arguments))
+    (test-equal "second call keeps tool_search"
+                "tool_search"
+                (assoc-ref (cadr final) 'name))
+    (test-equal "second call parses own arguments"
+                '(("query" . "file_search"))
+                (assoc-ref (cadr final) 'arguments))))
+
+(test-group
+  "tool-call-extra-content-preservation"
+  ;; Gemini requires extra_content.google.thought_signature echoed back on
+  ;; assistant tool_calls turns in both streamed and non-streamed paths.
+  (let*
+      ((raw-tc
+         "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"read_a\",\"arguments\":\"{}\"},\"extra_content\":{\"google\":{\"thought_signature\":\"sig123\"}}}]}}]}")
+       (parsed (extract-chat-tool-calls raw-tc))
+       (ec (assoc-ref (car parsed) 'extra_content)))
+    (test-assert "non-streaming tool call keeps extra_content" (pair? ec))
+    (test-equal
+      "non-streaming thought_signature preserved"
+      "sig123"
+      (assoc-ref (assoc-ref ec "google") "thought_signature")))
+  (let*
+      ((frag
+         (json-string->scm
+           "{\"id\":\"c2\",\"type\":\"function\",\"function\":{\"name\":\"read_a\",\"arguments\":\"{}\"},\"extra_content\":{\"google\":{\"thought_signature\":\"sig456\"}}}"))
+       (final (finalize-tool-call-fragments (merge-tool-call-fragment #f frag)))
+       (ec (assoc-ref (car final) 'extra_content)))
+    (test-assert "streaming tool call keeps extra_content" (pair? ec))
+    (test-equal
+      "streaming thought_signature preserved"
+      "sig456"
+      (assoc-ref (assoc-ref ec "google") "thought_signature"))))
+
 (spec-end)
 (spec-exit)

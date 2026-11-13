@@ -61,48 +61,51 @@
 ;;; Chat Request Formatting
 ;;;
 (define (strip-internal-tool-keys tool)
-        "Strip badb-internal _badb_* provenance keys from a TOOL spec (top
-level and its function object).  The harness carries them for tool-call
-dispatch routing, but strict OpenAI-compatible APIs (e.g.
-api.mistral.ai, LM Studio, vLLM) reject unknown body fields or missing
-function wrappers.  Tool specs carry the function entry under either a string
-or symbol key, so both spellings are handled.  If a flat tool spec is passed,
-it is automatically wrapped into an OpenAI-compliant (type . \"function\") envelope."
-        (define (badb-internal-key? key)
+        "Keep only standard OpenAI tool specification keys on TOOL and its
+function object.  Strips harness-internal provenance/routing keys (_badb_*,
+category, server, etc.) that strict OpenAI-compatible endpoints (Gemini,
+Mistral, LM Studio, vLLM) reject.  Handles both string and symbol keys,
+and wraps flat tool specs into a (type . \"function\") envelope."
+        (define (key-in? key allowed)
                 (and (or (symbol? key) (string? key))
-                     (string-prefix? "_badb_"
-                                     (if (symbol? key)
-                                       (symbol->string key)
-                                       key))))
-        (define (strip-level alist)
+                     (member
+                       (if (symbol? key)
+                         (symbol->string key)
+                         key)
+                       allowed)))
+        (define (filter-keys alist allowed)
                 (filter
                   (lambda (pair)
-                    (not (and (pair? pair) (badb-internal-key? (car pair)))))
+                    (and (pair? pair) (key-in? (car pair) allowed)))
                   (if (list? alist)
                     alist
                     '())))
         (define (function-entry? pair)
                 (and (pair? pair)
-                     (or (eq? (car pair) (quote function)) (equal? (car pair) "function"))))
+                     (or (eq? (car pair) 'function) (equal? (car pair) "function"))))
         (let*
-            ((tool* (strip-level tool))
-             (fn (or (assoc-ref tool* "function") (assq-ref tool* (quote function))))
-             (has-type? (or (assoc-ref tool* "type") (assq-ref tool* (quote type)))))
+            ((allowed-top '("type" "function"))
+             (allowed-fn '("name" "description" "parameters" "strict"))
+             (fn
+               (and (list? tool) (or (assoc-ref tool "function") (assq-ref tool 'function))))
+             (tool* (filter-keys tool allowed-top))
+             (has-type? (or (assoc-ref tool* "type") (assq-ref tool* 'type))))
           (cond
             ((pair? fn)
-              (let* ((fn* (strip-level fn))
-                     (mapped (map
-                               (lambda (pair)
-                                 (if (function-entry? pair)
-                                   (cons (car pair) fn*)
-                                   pair))
-                               tool*)))
+              (let*
+                  ((fn* (filter-keys fn allowed-fn))
+                   (mapped
+                     (map
+                       (lambda (pair)
+                         (if (function-entry? pair)
+                           (cons (car pair) fn*)
+                           pair))
+                       tool*)))
                 (if has-type?
                   mapped
                   (cons (cons "type" "function") mapped))))
-            ((or (assoc-ref tool* "name") (assq-ref tool* (quote name)))
-              `((type . "function")
-                (function . ,tool*)))
+            ((and (list? tool) (or (assoc-ref tool "name") (assq-ref tool 'name)))
+              `((type . "function") (function . ,(filter-keys tool allowed-fn))))
             (else tool*))))
 
 (define (dedup-tool-specs tools)
@@ -305,25 +308,39 @@ Returns the string content, or #f if not found."
             (clean-json-string obj))))
 
 (define (parse-single-tool-call tc)
-        "Parse a single raw tool call object from an API response."
-        (let* ((fn (json-ref tc "function"))
-               (id (or (json-ref tc "id") "call_0"))
-               (name (if (pair? fn) (or (json-ref fn "name") "") ""))
-               (raw-args (if (pair? fn) (or (json-ref fn "arguments") "{}") "{}"))
-               (parsed-args (safe-json-parse raw-args raw-args)))
-          `((id . ,id) (name . ,name) (arguments . ,parsed-args))))
+        "Parse a single raw tool call object from an API response, preserving
+provider-specific extra_content (e.g. Gemini thought_signature) when present."
+        (let*
+            ((fn (json-ref tc "function"))
+             (id (or (json-ref tc "id") "call_0"))
+             (name
+               (if (pair? fn)
+                 (or (json-ref fn "name") "")
+                 ""))
+             (raw-args
+               (if (pair? fn)
+                 (or (json-ref fn "arguments") "{}")
+                 "{}"))
+             (parsed-args (safe-json-parse raw-args raw-args))
+             (extra (json-ref tc "extra_content")))
+          `((id . ,id) (name . ,name)
+            (arguments . ,parsed-args)
+            ,@(if (pair? extra)
+                `((extra_content . ,extra))
+                '()))))
 
 ;;;
 ;;; Streamed Tool-Call Fragments
 ;;;
 (define (fragment-index fragment)
         "Extract the 0-based call index from a streamed tool-call FRAGMENT,
-defaulting to 0 when the endpoint omits it."
-        (let ((idx (or (json-ref fragment "index") (assoc-ref fragment 'index))))
+or #f when the endpoint omits it."
+        (let
+            ((idx (or (json-ref fragment "index") (assoc-ref fragment 'index))))
           (cond
             ((number? idx) (inexact->exact idx))
-            ((string? idx) (or (string->number idx) 0))
-            (else 0))))
+            ((string? idx) (string->number idx))
+            (else #f))))
 
 (define (fragment-function-field fragment json-key)
         "Fetch JSON-KEY from FRAGMENT's function object, or #f."
@@ -347,29 +364,79 @@ Returns the raw fragment alists, or '() when the chunk has none."
 
 (define (merge-tool-call-fragment acc fragment)
         "Merge a streamed tool-call FRAGMENT into accumulator ACC (an alist
-mapping call index to a (id name args-string) triple, or #f on the first
-fragment). The first fragment for an index contributes id and name;
-argument string pieces concatenate in arrival order. Returns the new
-accumulator."
-        (let* ((idx (fragment-index fragment))
-               (id (json-ref fragment "id"))
-               (name (fragment-function-field fragment "name"))
-               (args-frag (fragment-function-field fragment "arguments"))
-               (args-str (if (string? args-frag) args-frag ""))
-               (prev (and (pair? acc) (assv idx acc)))
-               (prev-val (and (pair? prev) (cdr prev)))
-               (prev-id (and (pair? prev-val) (car prev-val)))
-               (prev-name (and (pair? prev-val) (cadr prev-val)))
-               (prev-args (and (pair? prev-val) (caddr prev-val)))
-               (entry (list (or (and (string? id) (not (string-null? id)) id) (or prev-id "call_0"))
-                            (or (and (string? name) (not (string-null? name)) name) (or prev-name ""))
-                            (string-append (or prev-args "") args-str))))
+mapping call index to a (id name args-string extra-content) tuple, or #f on
+the first fragment). Handles endpoints (e.g. Gemini) that omit \"index\" on
+parallel tool calls by keying distinct non-empty IDs to fresh indices, and
+preserves extra_content (e.g. thought_signature). Returns the new accumulator."
+        (let*
+            ((explicit-idx (fragment-index fragment))
+             (id (json-ref fragment "id"))
+             (has-id? (and (string? id) (not (string-null? id))))
+             (latest-idx
+               (if (pair? acc)
+                 (fold
+                   (lambda (e m)
+                     (max m (car e)))
+                   0
+                   acc)
+                 0))
+             (next-idx
+               (if (pair? acc)
+                 (+ 1 latest-idx)
+                 0))
+             (id-hit
+               (and has-id?
+                    (pair? acc)
+                    (find
+                      (lambda (e)
+                        (equal? (cadr e) id))
+                      acc)))
+             (idx
+               (cond
+                 (explicit-idx
+                   (let
+                       ((existing (and (pair? acc) (assv explicit-idx acc))))
+                     (if
+                         (and existing
+                              has-id?
+                              (string? (cadr existing))
+                              (not (string-null? (cadr existing)))
+                              (not (string=? (cadr existing) "call_0"))
+                              (not (string=? id (cadr existing))))
+                       (if id-hit
+                         (car id-hit)
+                         next-idx)
+                       explicit-idx)))
+                 (has-id?
+                   (if id-hit
+                     (car id-hit)
+                     next-idx))
+                 (else latest-idx)))
+             (name (fragment-function-field fragment "name"))
+             (args-frag (fragment-function-field fragment "arguments"))
+             (args-str
+               (if (string? args-frag)
+                 args-frag
+                 ""))
+             (frag-extra (json-ref fragment "extra_content"))
+             (prev (and (pair? acc) (assv idx acc)))
+             (prev-val (and (pair? prev) (cdr prev)))
+             (prev-id (and (pair? prev-val) (car prev-val)))
+             (prev-name (and (pair? prev-val) (cadr prev-val)))
+             (prev-args (and (pair? prev-val) (caddr prev-val)))
+             (prev-extra (and (pair? prev-val) (> (length prev-val) 3) (cadddr prev-val)))
+             (entry
+               (list (or (and has-id? id) (or prev-id "call_0"))
+                     (or (and (string? name) (not (string-null? name)) name) (or prev-name ""))
+                     (string-append (or prev-args "") args-str)
+                     (or (and (pair? frag-extra) frag-extra) prev-extra))))
           (if (pair? prev)
-            (let rebuild ((rest (or acc '())))
-                         (cond
-                           ((null? rest) (list (cons idx entry)))
-                           ((= (caar rest) idx) (cons (cons idx entry) (cdr rest)))
-                           (else (cons (car rest) (rebuild (cdr rest))))))
+            (let rebuild
+              ((rest (or acc '())))
+              (cond
+                ((null? rest) (list (cons idx entry)))
+                ((= (caar rest) idx) (cons (cons idx entry) (cdr rest)))
+                (else (cons (car rest) (rebuild (cdr rest))))))
             (cons (cons idx entry) (or acc '())))))
 
 (define (finalize-tool-call-fragments acc)
@@ -378,19 +445,30 @@ tool-call alists ((id . ...) (name . ...) (arguments . parsed-args)),
 matching parse-single-tool-call's shape so streamed and non-streamed
 paths are interchangeable. Returns '() when nothing accumulated."
         (if (pair? acc)
-          (let ((max-idx (fold (lambda (e m) (max m (car e))) 0 acc)))
-            (let build ((i 0) (out '()))
-                       (if (> i max-idx)
-                         (reverse out)
-                         (let ((entry (assv i acc)))
-                           (build (+ i 1)
-                                  (if (pair? entry)
-                                    (let ((triple (cdr entry)))
-                                      (cons `((id . ,(car triple))
-                                              (name . ,(cadr triple))
-                                              (arguments . ,(safe-json-parse (caddr triple) (caddr triple))))
-                                            out))
-                                    out))))))
+          (let
+              ((max-idx
+                 (fold
+                   (lambda (e m)
+                     (max m (car e)))
+                   0
+                   acc)))
+            (let build
+              ((i 0) (out '()))
+              (if (> i max-idx)
+                (reverse out)
+                (let ((entry (assv i acc)))
+                  (build (+ i 1)
+                         (if (pair? entry)
+                           (let*
+                               ((triple (cdr entry)) (extra (and (> (length triple) 3) (cadddr triple))))
+                             (cons
+                               `((id . ,(car triple)) (name . ,(cadr triple))
+                                 (arguments . ,(safe-json-parse (caddr triple) (caddr triple)))
+                                 ,@(if (pair? extra)
+                                     `((extra_content . ,extra))
+                                     '()))
+                               out))
+                           out))))))
           '()))
 
 (define (extract-chat-tool-calls response-obj)

@@ -1360,5 +1360,52 @@
                 (tool-spec-description (car find-specs)))
               (test-equal "non-colliding extra tool preserved" 1 (length extra-specs))))
 
+(test-group
+  "assistant-tool-turn-preserves-extra-content"
+  (let*
+      ((reg (make-registry))
+       (_
+         (registry-attach! reg
+                           "ping"
+                           (lambda ()
+                             "pong")
+                           '((description . "Ping"))))
+       (client
+         (make-model-client #:endpoint
+                            "http://127.0.0.1:10100"
+                            #:model
+                            "gemini-extra-test"))
+       (turn-num 0)
+       (second-body #f)
+       (mock-poster
+         (lambda* (uri #:key body headers streaming?)
+                  (set! turn-num (+ turn-num 1))
+                  (if (= turn-num 1)
+                    (values (build-response #:code 200)
+                            "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"ping\",\"arguments\":\"{}\"},\"extra_content\":{\"google\":{\"thought_signature\":\"sig789\"}}}]}}]}")
+                    (begin (set! second-body body)
+                           (values (build-response #:code 200)
+                                   "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"done\"}}]}")))))
+       (session
+         (make-react-session client
+                             #:initial-messages
+                             '(((role . "user") (content . "go")))
+                             #:reg
+                             reg
+                             #:max-iterations
+                             4)))
+    (parameterize ((current-http-post mock-poster)) (react-run! session))
+    (let*
+        ((req2 (json-string->scm second-body))
+         (msgs (assoc-ref req2 "messages"))
+         (asst (vector-ref msgs 1))
+         (tc0 (vector-ref (assoc-ref asst "tool_calls") 0))
+         (ec (assoc-ref tc0 "extra_content")))
+      (test-assert "assistant tool_calls entry preserves extra_content" (pair? ec))
+      (test-equal
+        "thought_signature reaches wire payload"
+        "sig789"
+        (assoc-ref (assoc-ref ec "google") "thought_signature")))))
+
 (spec-end)
 (spec-exit)

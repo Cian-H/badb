@@ -1047,39 +1047,43 @@ Returns (values content reasoning)."
                  (else ""))))
           (values content reasoning)))
 
-(define (build-assistant-tool-turn tool-calls content reasoning)
-        "Construct the assistant message turn representing TOOL-CALLS with CONTENT and REASONING."
-        (let*
-            ((tool-calls-vec
-               (list->vector
-                 (map
-                   (lambda (tc)
-                     (let*
-                         ((tc-id (or (prop-ref tc 'id) "call_0"))
-                          (tc-name (or (prop-ref tc 'name) ""))
-                          (raw-args (or (prop-ref tc 'arguments) '()))
-                          (args-str (safe-json-string raw-args)))
-                       `((id . ,tc-id) (type . "function")
-                         (function . ((name . ,tc-name) (arguments . ,args-str))))))
-                   tool-calls)))
-             (eff-reasoning
-               (if (non-empty-string? reasoning)
-                 reasoning
-                 (format #f
-                         "Invoking ~a..."
-                         (or
-                           (and (pair? tool-calls)
-                                (let ((first-tc (car tool-calls)))
-                                  (or (prop-ref first-tc 'name) "")))
-                           "tool")))))
-          `((role . "assistant")
-            (reasoning_content . ,eff-reasoning)
-            (content .
-                     ,(if
-                          (and (string? content) (not (string-null? content)))
-                        content
-                        ""))
-            (tool_calls . ,tool-calls-vec))))
+(define
+  (build-assistant-tool-turn tool-calls content reasoning)
+  "Construct the assistant message turn representing TOOL-CALLS with CONTENT and REASONING."
+  (let*
+      ((tool-calls-vec
+         (list->vector
+           (map
+             (lambda (tc)
+               (let*
+                   ((tc-id (or (prop-ref tc 'id) "call_0"))
+                    (tc-name (or (prop-ref tc 'name) ""))
+                    (raw-args (or (prop-ref tc 'arguments) '()))
+                    (args-str (safe-json-string raw-args))
+                    (extra (prop-ref tc 'extra_content)))
+                 `((id . ,tc-id) (type . "function")
+                   (function . ((name . ,tc-name) (arguments . ,args-str)))
+                   ,@(if (pair? extra)
+                       `((extra_content . ,extra))
+                       '()))))
+             tool-calls)))
+       (eff-reasoning
+         (if (non-empty-string? reasoning)
+           reasoning
+           (format #f
+                   "Invoking ~a..."
+                   (or
+                     (and (pair? tool-calls)
+                          (let ((first-tc (car tool-calls))) (or (prop-ref first-tc 'name) "")))
+                     "tool")))))
+    `((role . "assistant")
+      (reasoning_content . ,eff-reasoning)
+      (content .
+               ,(if
+                    (and (string? content) (not (string-null? content)))
+                  content
+                  ""))
+      (tool_calls . ,tool-calls-vec))))
 
 (define* (run-isolated-hook! fn label #:rest hook-args)
          "Invoke FN with HOOK-ARGS when it is a procedure, reporting a failure on
