@@ -245,14 +245,28 @@ If 'properties' is missing from an object schema, inject an empty properties ali
                        (_badb_server . ,server)
                        (_badb_original_id . ,name))))))
 
-(define* (collect-available-tools reg mcp-mgr #:optional (extra-tools '()))
-         "Collect all tools from REG and MCP-MGR, plus any EXTRA-TOOLS."
-         (let* ((reg-features (if reg (registry-list reg) '()))
-                (reg-tools (map registry-feature->tool-spec reg-features))
-                (mcp-tools (if mcp-mgr
-                             (map mcp-tool->tool-spec (mcp-manager-list-tools mcp-mgr))
-                             '())))
-           (append reg-tools mcp-tools extra-tools)))
+(define*
+  (collect-available-tools reg mcp-mgr #:optional (extra-tools '()))
+  "Collect tools from REG, MCP-MGR, and EXTRA-TOOLS, deduplicated by name (first wins)."
+  (let*
+      ((reg-features
+         (if reg
+           (registry-list reg)
+           '()))
+       (reg-tools (map registry-feature->tool-spec reg-features))
+       (mcp-tools
+         (if mcp-mgr
+           (map mcp-tool->tool-spec (mcp-manager-list-tools mcp-mgr))
+           '()))
+       (seen (make-hash-table)))
+    (filter
+      (lambda (t)
+        (let ((name (tool-spec-name t)))
+          (cond
+            ((or (not (string? name)) (string-null? name)) #t)
+            ((hash-ref seen name) #f)
+            (else (hash-set! seen name #t) #t))))
+      (append reg-tools mcp-tools extra-tools))))
 
 ;;;
 ;;; Tool Call Parsing (Native API and Text/XML Fallback)

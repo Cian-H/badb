@@ -1325,5 +1325,40 @@
                                                                (any (lambda (m) (and (equal? (assoc-ref m 'role) "assistant") (assoc-ref m 'tool_calls)))
                                                                     msgs))))))))
 
+(test-group "collect-available-tools-dedup"
+            ;; Registry tools take precedence over MCP tools and extra-tools with the
+            ;; same normalized name, matching execute-tool-call dispatch order.
+            (let*
+                ((reg (make-registry))
+                 (_
+                   (registry-attach! reg
+                                     "find_symbol"
+                                     (lambda ()
+                                       "reg-impl")
+                                     '((description . "Registry find_symbol"))))
+                 (extra-dup
+                   '((type . "function")
+                     (function . ((name . "find_symbol") (description . "Extra find_symbol")))))
+                 (extra-new
+                   '((type . "function")
+                     (function . ((name . "custom_extra") (description . "Custom extra")))))
+                 (tools (collect-available-tools reg #f (list extra-dup extra-new)))
+                 (find-specs
+                   (filter
+                     (lambda (t)
+                       (equal? (tool-spec-name t) "find_symbol"))
+                     tools))
+                 (extra-specs
+                   (filter
+                     (lambda (t)
+                       (equal? (tool-spec-name t) "custom_extra"))
+                     tools)))
+              (test-equal "find_symbol appears once" 1 (length find-specs))
+              (test-equal
+                "registry definition wins on collision"
+                "Registry find_symbol"
+                (tool-spec-description (car find-specs)))
+              (test-equal "non-colliding extra tool preserved" 1 (length extra-specs))))
+
 (spec-end)
 (spec-exit)
