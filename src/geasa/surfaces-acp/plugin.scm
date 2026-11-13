@@ -42,6 +42,8 @@
                #:use-module
                (geasa runtimes-verify plugin)
                #:use-module
+               (geasa surfaces-acp client)
+               #:use-module
                (geasa surfaces-tui tools)
                #:use-module
                (ice-9 format)
@@ -59,6 +61,27 @@
                (srfi srfi-13)
                #:use-module
                (srfi srfi-9)
+               #:re-export
+               (<acp-client> make-acp-client
+                             acp-client?
+                             acp-client-in-port
+                             acp-client-out-port
+                             acp-client-pid
+                             acp-client-closed?
+                             acp-client-initialized?
+                             acp-client-protocol-version
+                             acp-client-server-capabilities
+                             acp-client-server-info
+                             acp-client-session-id
+                             acp-spawn-client
+                             acp-connect-tcp
+                             acp-connect-unix
+                             acp-client-initialize!
+                             acp-client-new-session!
+                             acp-client-handshake!
+                             acp-client-prompt!
+                             acp-client-cancel!
+                             acp-client-close!)
                #:export
                (<acp-server> <acp-session>
                              make-acp-server
@@ -100,6 +123,9 @@
                              acp-handle-request
                              acp-handle-notification
                              acp-handle-message
+                             acp-model-client
+                             acp-scope-registry-to-workspace!
+                             acp-filter-registry-tools!
                              acp-new-session
                              acp-run-prompt
                              acp-cancel-session!
@@ -141,7 +167,7 @@
                     (client-capabilities acp-server-client-capabilities set-acp-server-client-capabilities!))
 
 (define-record-type <acp-session>
-                    (%make-acp-session id cwd client reg react steering cancel?)
+                    (%make-acp-session id cwd client reg react steering cancel? streamed?)
                     acp-session?
                     (id acp-session-id)
                     (cwd acp-session-cwd)
@@ -149,7 +175,8 @@
                     (reg acp-session-reg)
                     (react acp-session-react)
                     (steering acp-session-steering)
-                    (cancel? acp-session-cancel? set-acp-session-cancel?!))
+                    (cancel? acp-session-cancel? set-acp-session-cancel?!)
+                    (streamed? acp-session-streamed? set-acp-session-streamed?!))
 
 ;;;
 ;;; JSON-RPC framing
@@ -348,8 +375,150 @@ or 'ask, and NOTIFIER receives every session/update notification."
 ;; MCP manager only carries servers from the badb config; wiring per-session
 ;; stdio servers requires workspace-aware mcp-manager-start-server! calls at
 ;; session construction time.
+(define (%acp-shell-quote s)
+        (string-append "'"
+                       (list->string
+                         (fold-right append
+                                     '()
+                                     (map
+                                       (lambda (c)
+                                         (if (eqv? c #\')
+                                           (list #\' #\\ #\' #\')
+                                           (list c)))
+                                       (string->list s))))
+                       "'"))
+
+(define (%acp-resolve-rel-path root p)
+        (cond
+          ((not (string? p)) p)
+          ((string-null? p) root)
+          ((string-prefix? "/" p) p)
+          (else (string-append root "/" p))))
+
+(define
+  (%acp-rewrite-alist-key alist keys transform)
+  (map
+    (lambda (pair)
+      (if (and (pair? pair) (member (car pair) keys))
+        (cons (car pair) (transform (cdr pair)))
+        pair))
+    alist))
+
+(define (%acp-wrap-path-tool reg name root)
+        (let
+            ((orig (registry-lookup reg name)) (meta (registry-metadata reg name)))
+          (when orig
+            (registry-attach! reg
+                              name
+                              (lambda args
+                                (if (and (= (length args) 1) (list? (car args)))
+                                  (apply orig
+                                         (list
+                                           (%acp-rewrite-alist-key (car args)
+                                                                   '("path" path "file" file)
+                                                                   (lambda (p)
+                                                                     (%acp-resolve-rel-path root p)))))
+                                  (apply orig
+                                         (if (and (pair? args) (string? (car args)))
+                                           (cons (%acp-resolve-rel-path root (car args)) (cdr args))
+                                           args))))
+                              #:metadata
+                              (or meta '())))))
+
+(define (%acp-wrap-shell-tool reg name root)
+        (let
+            ((orig (registry-lookup reg name))
+             (meta (registry-metadata reg name))
+             (prefix (string-append "cd " (%acp-shell-quote root) " && ")))
+          (when orig
+            (registry-attach! reg
+                              name
+                              (lambda args
+                                (if (and (= (length args) 1) (list? (car args)))
+                                  (let*
+                                      ((a (car args))
+                                       (has-cmd?
+                                         (or (assoc "command" a) (assoc 'command a) (assoc "cmd" a) (assoc 'cmd a))))
+                                    (apply orig
+                                           (list
+                                             (if has-cmd?
+                                               (%acp-rewrite-alist-key a
+                                                                       '("command" command "cmd" cmd)
+                                                                       (lambda (c)
+                                                                         (if (string? c)
+                                                                           (string-append prefix c)
+                                                                           c)))
+                                               a))))
+                                  (apply orig
+                                         (if (and (pair? args) (string? (car args)))
+                                           (cons (string-append prefix (car args)) (cdr args))
+                                           args))))
+                              #:metadata
+                              (or meta '())))))
+
+(define
+  (acp-scope-registry-to-workspace! reg root)
+  "Scope relative-path filesystem and shell tools in REG to workspace ROOT."
+  (let
+      ((clean-root
+         (if (file-exists? root)
+           (canonicalize-path root)
+           root)))
+    (for-each
+      (lambda (name)
+        (%acp-wrap-path-tool reg name clean-root))
+      '("read_file" "fs-read-file"
+        "write_file"
+        "fs-write-file"
+        "edit_file"
+        "fs-edit-file"
+        "edit_lines"
+        "fs-edit-lines"
+        "file_search"
+        "symbols_overview"
+        "find_symbol"
+        "read_symbol"
+        "replace_symbol_body"))
+    (for-each
+      (lambda (name)
+        (%acp-wrap-shell-tool reg name clean-root))
+      '("bash" "sh" "execute_command" "ctx_exec"))
+    reg))
+
+(define
+  (acp-filter-registry-tools! reg allowed-tools)
+  "Detach any tool in REG whose name is not in ALLOWED-TOOLS."
+  (let
+      ((allowed
+         (map
+           (lambda (x)
+             (if (symbol? x)
+               (symbol->string x)
+               x))
+           allowed-tools)))
+    (for-each
+      (lambda (entry)
+        (let*
+            ((raw-id (assoc-ref entry 'id))
+             (name
+               (if (symbol? raw-id)
+                 (symbol->string raw-id)
+                 raw-id)))
+          (unless (member name allowed) (registry-detach! reg raw-id))))
+      (registry-list reg))
+    reg))
+
 (define*
-  (acp-new-session server #:key (cwd #f) (client #f) (id #f))
+  (acp-new-session server
+                   #:key
+                   (cwd #f)
+                   (client #f)
+                   (id #f)
+                   (allowed-tools #f)
+                   (max-iterations #f)
+                   (system-prompt #f)
+                   (journal-path #f)
+                   (workspace-scope? #t))
   "Create an ACP session rooted at CWD and register it with SERVER."
   (let*
       ((session-id
@@ -362,14 +531,20 @@ or 'ask, and NOTIFIER receives every session/update notification."
        (root (or cwd (acp-server-workspace server)))
        (model-client (or client (acp-server-client server)))
        (reg (make-registry))
-       (jrn (make-journal (string-append root "/.badb/journal.jsonl")))
+       (jrn
+         (make-journal (or journal-path (string-append root "/.badb/journal.jsonl"))))
        (mgr (make-transaction-manager reg #:journal jrn))
        (rollback-mgr
          (make-rollback-manager #:workspace-dir root #:registry reg #:journal jrn))
        (verifier (make-verifier))
        (mcp-mgr (make-mcp-manager (acp-load-config)))
        (steering (make-steering-queue))
-       (sid session-id))
+       (sid session-id)
+       (initial-msgs
+         (if
+             (and (string? system-prompt) (not (string-null? system-prompt)))
+           (list `((role . "system") (content . ,system-prompt)))
+           '())))
     (register-builtin-tui-tools! reg
                                  rollback-mgr
                                  verifier
@@ -377,11 +552,22 @@ or 'ask, and NOTIFIER receives every session/update notification."
                                  (lambda ()
                                    '())
                                  #:client
-                                 model-client)
+                                 model-client
+                                 #:workspace
+                                 root)
+    (when
+        (and workspace-scope?
+             (string? root)
+             (file-exists? root)
+             (not (string=? (canonicalize-path root) (canonicalize-path (getcwd)))))
+      (acp-scope-registry-to-workspace! reg root))
+    (when allowed-tools (acp-filter-registry-tools! reg allowed-tools))
     (let*
         ((react
            (make-react-session #:client
                                model-client
+                               #:initial-messages
+                               initial-msgs
                                #:reg
                                reg
                                #:jrn
@@ -391,7 +577,7 @@ or 'ask, and NOTIFIER receives every session/update notification."
                                #:steering-queue
                                steering
                                #:max-iterations
-                               #f
+                               max-iterations
                                #:hooks
                                (list
                                  (cons 'on-delta
@@ -407,20 +593,29 @@ or 'ask, and NOTIFIER receives every session/update notification."
                                        (lambda (tc _sess)
                                          (acp-permission-veto server sid tc)))))))
       (let
-          ((session (%make-acp-session session-id root model-client reg react steering #f)))
+          ((session
+             (%make-acp-session session-id root model-client reg react steering #f #f)))
         (hash-set! (acp-server-sessions server) session-id session)
         session))))
 
 ;;;
 ;;; Runtime -> protocol bridge
 ;;;
-(define (acp-on-delta server session-id payload type)
-        "Forward a streamed ReAct delta to the client as a session update."
-        (if (string? payload)
-          (cond ((eq? type 'content) (acp-notify! server (acp-message-chunk session-id payload)))
-                ((eq? type 'thought) (acp-notify! server (acp-thought-chunk session-id payload)))
-                (else #t))
-          #t))
+(define
+  (acp-on-delta server session-id payload type)
+  "Forward a streamed ReAct delta to the client as a session update."
+  (if (string? payload)
+    (cond
+      ((eq? type 'content)
+        (let
+            ((sess (acp-session-find server session-id)))
+          (when (and sess (not (string-null? payload)))
+            (set-acp-session-streamed?! sess #t)))
+        (acp-notify! server (acp-message-chunk session-id payload)))
+      ((eq? type 'thought)
+        (acp-notify! server (acp-thought-chunk session-id payload)))
+      (else #t))
+    #t))
 
 (define (acp-on-tool-call server session-id tool-call)
         "Announce TOOL-CALL to the client."
@@ -468,12 +663,11 @@ The request id is a string so it can never collide with a client request id."
       (let ((value (car cell)))
         (if value
           (begin (unlock-mutex lock) value)
-          (if (> (car (gettimeofday)) deadline)
-            (begin (unlock-mutex lock) #f)
-            (begin
-              (wait-condition-variable cv lock (- deadline (car (gettimeofday))))
-              (unlock-mutex lock)
-              (loop deadline))))))))
+          (if (>= (car (gettimeofday)) deadline)
+            (begin (hash-remove! (acp-server-pending server) id) (unlock-mutex lock) #f)
+            (begin (wait-condition-variable cv lock deadline)
+                   (unlock-mutex lock)
+                   (loop deadline))))))))
 
 (define (acp-route-response! server message)
         "Deliver a client RESPONSE to the thread waiting for it; #t when routed."
@@ -489,26 +683,34 @@ The request id is a string so it can never collide with a client request id."
               #t)
             #f)))
 
-(define (acp-request-permission! server session-id tool-call)
-        "Ask the client whether TOOL-CALL may run; return 'allow or 'deny.
+(define
+  (acp-request-permission! server session-id tool-call)
+  "Ask the client whether TOOL-CALL may run; return 'allow or 'deny.
 A missing or unanswered request denies the call: the gate fails closed."
-        (let* ((name (or (prop-ref tool-call 'name) ""))
-               (params `((sessionId . ,session-id)
-                         (toolCall . ((toolCallId . ,(acp-tool-call-id tool-call))
-                                      (title . ,name)
-                                      (kind . ,(acp-tool-kind name))
-                                      (rawInput . ,(or (prop-ref tool-call 'arguments) '()))))
-                         (options #(((optionId . "allow") (name . "Allow") (kind . "allow_once"))
-                                    ((optionId . "reject") (name . "Reject") (kind . "reject_once"))))))
-               (response (acp-client-request! server "session/request_permission" params))
-               (result (and response (prop-ref response "result")))
-               (outcome (and result (prop-ref result "outcome")))
-               (kind (and outcome (prop-ref outcome "outcome")))
-               (option (and outcome (prop-ref outcome "optionId"))))
-          (if (and (string? kind) (string=? kind "selected")
-                   (string? option) (string=? option "allow"))
-            'allow
-            'deny)))
+  (let*
+      ((name (or (prop-ref tool-call 'name) ""))
+       (params
+         `((sessionId . ,session-id)
+           (toolCall .
+                     ((toolCallId . ,(acp-tool-call-id tool-call))
+                      (title . ,name)
+                      (kind . ,(acp-tool-kind name))
+                      (rawInput . ,(or (prop-ref tool-call 'arguments) '()))))
+           (options .
+                    #(((optionId . "allow") (name . "Allow") (kind . "allow_once"))
+                      ((optionId . "reject") (name . "Reject") (kind . "reject_once"))))))
+       (response (acp-client-request! server "session/request_permission" params))
+       (result (and response (prop-ref response "result")))
+       (outcome (and result (prop-ref result "outcome")))
+       (kind (and outcome (prop-ref outcome "outcome")))
+       (option (and outcome (prop-ref outcome "optionId"))))
+    (if
+        (and (string? kind)
+             (string=? kind "selected")
+             (string? option)
+             (string=? option "allow"))
+      'allow
+      'deny)))
 
 ;;;
 ;;; Prompt execution
@@ -518,6 +720,7 @@ A missing or unanswered request denies the call: the gate fails closed."
         (let*
             ((react (acp-session-react session)) (text (acp-prompt-text blocks)))
           (set-acp-session-cancel?! session #f)
+          (set-acp-session-streamed?! session #f)
           (set-react-session-messages! react
                                        (append (react-session-messages react)
                                                (list `((role . "user") (content . ,text)))))
@@ -529,6 +732,11 @@ A missing or unanswered request denies the call: the gate fails closed."
                        (lambda ()
                          (react-run! react))
                        (lambda (status content final)
+                         (when
+                             (and (not (acp-session-streamed? session))
+                                  (string? content)
+                                  (not (string-null? content)))
+                           (acp-notify! server (acp-message-chunk (acp-session-id session) content)))
                          status)))
                    (lambda (key . args)
                      'error))))
@@ -564,14 +772,34 @@ A missing or unanswered request denies the call: the gate fails closed."
 
 (define (acp-new-session-frame server id params)
         "Build the session/new response frame for request ID."
-        (let ((cwd (prop-ref params "cwd")))
+        (let
+            ((cwd (prop-ref params "cwd"))
+             (raw-allowed (prop-ref params "allowedTools"))
+             (max-iter (prop-ref params "maxIterations"))
+             (sys-prompt (prop-ref params "systemPrompt"))
+             (jrn-path (prop-ref params "journalPath")))
           (if
               (and (string? cwd) (not (string-null? (string-trim-both cwd))))
-            (let
-                ((session
+            (let*
+                ((allowed-tools
+                   (cond
+                     ((vector? raw-allowed) (vector->list raw-allowed))
+                     ((list? raw-allowed) raw-allowed)
+                     (else #f)))
+                 (session
                    (catch #t
                      (lambda ()
-                       (acp-new-session server #:cwd cwd))
+                       (acp-new-session server
+                                        #:cwd
+                                        cwd
+                                        #:allowed-tools
+                                        allowed-tools
+                                        #:max-iterations
+                                        (and (integer? max-iter) max-iter)
+                                        #:system-prompt
+                                        (and (string? sys-prompt) sys-prompt)
+                                        #:journal-path
+                                        (and (string? jrn-path) jrn-path)))
                      (lambda (key . args)
                        #f))))
               (if session

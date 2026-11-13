@@ -26,7 +26,13 @@
                (make-bm25-index load-bm25-index format-ctx-stats)
                #:autoload
                (geasa surfaces-acp plugin)
-               (run-acp-server)
+               (run-acp-server acp-model-client)
+               #:autoload
+               (geasa agents-subagent plugin)
+               (make-remote-superagent remote-superagent-start!
+                                       remote-superagent-wait
+                                       remote-superagent-port
+                                       remote-superagent-socket-path)
                #:export
                (%program-name %version main))
 
@@ -275,26 +281,84 @@
 
 (define (run-acp-command options)
         (let*
-            ((args (cdr options)) (permission 'allow) (endpoint #f) (model #f))
+            ((args (cdr options)) (permission 'allow)
+             (endpoint #f)
+             (model #f)
+             (listen-addr #f))
           (for-each
             (lambda (arg)
               (cond
                 ((string-prefix? "--permission=" arg)
                   (set! permission (string->symbol (substring arg 13))))
                 ((string-prefix? "--endpoint=" arg) (set! endpoint (substring arg 11)))
-                ((string-prefix? "--model=" arg) (set! model (substring arg 8)))))
+                ((string-prefix? "--model=" arg) (set! model (substring arg 8)))
+                ((string-prefix? "--listen=" arg) (set! listen-addr (substring arg 9)))))
             args)
-          (if (not (memq permission '(allow ask)))
+          (if (memq permission '(allow ask))
+            (cond
+              ((and listen-addr (string-prefix? "tcp://" listen-addr))
+                (let*
+                    ((spec (substring listen-addr 6))
+                     (colon (string-index-right spec #\:))
+                     (host
+                       (if colon
+                         (substring spec 0 colon)
+                         "127.0.0.1"))
+                     (port
+                       (if colon
+                         (or (string->number (substring spec (+ colon 1))) 0)
+                         0))
+                     (mc (acp-model-client #:endpoint endpoint #:model model))
+                     (sup
+                       (make-remote-superagent #:transport
+                                               'tcp
+                                               #:host
+                                               host
+                                               #:port
+                                               port
+                                               #:model-client
+                                               mc
+                                               #:permission-policy
+                                               permission)))
+                  (remote-superagent-start! sup)
+                  (format (current-error-port)
+                          "badb acp listening on tcp://~a:~a~%"
+                          host
+                          (remote-superagent-port sup))
+                  (remote-superagent-wait sup)))
+              ((and listen-addr (string-prefix? "unix://" listen-addr))
+                (let*
+                    ((sock-path (substring listen-addr 7))
+                     (mc (acp-model-client #:endpoint endpoint #:model model))
+                     (sup
+                       (make-remote-superagent #:transport
+                                               'unix
+                                               #:socket-path
+                                               sock-path
+                                               #:model-client
+                                               mc
+                                               #:permission-policy
+                                               permission)))
+                  (remote-superagent-start! sup)
+                  (format (current-error-port)
+                          "badb acp listening on unix://~a~%"
+                          (remote-superagent-socket-path sup))
+                  (remote-superagent-wait sup)))
+              (listen-addr
+                (format (current-error-port)
+                        "Error: badb acp --listen must be tcp://HOST:PORT or unix://PATH\n")
+                (exit 1))
+              (else
+                (run-acp-server #:permission-policy
+                                permission
+                                #:endpoint
+                                endpoint
+                                #:model
+                                model)))
             (begin
               (format (current-error-port)
                       "Error: badb acp --permission must be allow or ask\n")
-              (exit 1))
-            (run-acp-server #:permission-policy
-                            permission
-                            #:endpoint
-                            endpoint
-                            #:model
-                            model))))
+              (exit 1)))))
 
 (define (main args)
         (let ((options (cdr args)))

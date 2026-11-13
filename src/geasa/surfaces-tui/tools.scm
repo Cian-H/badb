@@ -497,236 +497,282 @@ unbounded raw search on the next turn."
     (lambda (_k . a)
       (format #f "Error reading file: ~s" a))))
 
-(define* (register-builtin-tui-tools! reg rollback-mgr verifier mcp-mgr get-llm-history
-                                      #:key
-                                      (ctx-idx (make-bm25-index))
-                                      (skill-reg (make-skill-registry))
-                                      (client #f)
-                                      (config #f)
-                                      (policy #f))
-         "Register built-in autonomous agent tools, MCP kernel tools, and spec gate tools on REG."
-         ;; 1. Core filesystem & editing tools (read_file, write_file, edit_file, bash)
-         (register-fs-tools! reg #:rollback-mgr rollback-mgr #:verifier verifier #:shell-executor exec-shell-tool-impl #:ctx-idx ctx-idx)
-         ;; 1b. Input macro expansion (@@, @file:PATH, @SHORTCUT directives)
-         (register-macro-tools! reg)
-         ;; 2. Code navigation & persistent memories
-         (register-code-nav-tools! reg #:workspace (getcwd))
-         ;; 3. Virtualized output & BM25 context indexing
-         (register-context-index-tools! reg ctx-idx #:shell-executor exec-shell-tool-impl)
-         ;; 4. Skills registry & loader
-         (register-skill-tools! reg skill-reg)
-         ;; 5. Delegated subagent investigation
-         (register-subagent-tools! reg #:client client)
-         ;; 6. Sandboxed Scheme evaluation
-         (register-scheme-eval-tools! reg)
-
-         ;; Backward-compatibility shell aliases
-         (registry-attach! reg
-                           "execute_command"
-                           exec-shell-tool-impl
-                           '((description . "Execute a shell command and return output and exit status")
-                             (parameters .
-                              ((type . "object")
-                               (properties .
-                                ((cmd . ((type . "string") (description . "Shell command to run")))))
-                               (required . #("cmd"))))))
-         (registry-attach! reg
-                           "sh"
-                           exec-shell-tool-impl
-                           '((description . "Execute a POSIX shell command and return output and exit code")
-                             (parameters .
-                              ((type . "object")
-                               (properties .
-                                ((command . ((type . "string") (description . "Shell command line")))))
-                               (required . #("command"))))))
-         (registry-attach! reg
-                           "checkpoint_create"
-                           (lambda (description)
-                             (let* ((c (create-checkpoint! rollback-mgr (or description "agent-checkpoint")))
-                                    (sess (current-react-session)))
-                               (when sess
-                                 (set-react-session-active-tools! sess '()))
+(define*
+  (register-builtin-tui-tools! reg
+                               rollback-mgr
+                               verifier
+                               mcp-mgr
+                               get-llm-history
+                               #:key
+                               (ctx-idx (make-bm25-index))
+                               (skill-reg (make-skill-registry))
+                               (client #f)
+                               (config #f)
+                               (policy #f)
+                               (workspace (getcwd)))
+  "Register built-in autonomous agent tools, MCP kernel tools, and spec gate tools on REG."
+  ;; 1. Core filesystem & editing tools (read_file, write_file, edit_file, bash)
+  (register-fs-tools! reg
+                      #:rollback-mgr
+                      rollback-mgr
+                      #:verifier
+                      verifier
+                      #:shell-executor
+                      exec-shell-tool-impl
+                      #:ctx-idx
+                      ctx-idx)
+  ;; 1b. Input macro expansion (@@, @file:PATH, @SHORTCUT directives)
+  (register-macro-tools! reg)
+  ;; 2. Code navigation & persistent memories
+  (register-code-nav-tools! reg #:workspace (getcwd))
+  ;; 3. Virtualized output & BM25 context indexing
+  (register-context-index-tools! reg
+                                 ctx-idx
+                                 #:shell-executor
+                                 exec-shell-tool-impl)
+  ;; 4. Skills registry & loader
+  (register-skill-tools! reg skill-reg)
+  ;; 5. Delegated subagent investigation
+  (register-subagent-tools! reg #:client client)
+  ;; 6. Sandboxed Scheme evaluation
+  (register-scheme-eval-tools! reg)
+  ;; Backward-compatibility shell aliases
+  (registry-attach! reg
+                    "execute_command"
+                    exec-shell-tool-impl
+                    '((description . "Execute a shell command and return output and exit status")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((cmd . ((type . "string") (description . "Shell command to run")))))
+                        (required . #("cmd"))))))
+  (registry-attach! reg
+                    "sh"
+                    exec-shell-tool-impl
+                    '((description . "Execute a POSIX shell command and return output and exit code")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((command . ((type . "string") (description . "Shell command line")))))
+                        (required . #("command"))))))
+  (registry-attach! reg
+                    "checkpoint_create"
+                    (lambda (description)
+                      (let*
+                          ((c (create-checkpoint! rollback-mgr (or description "agent-checkpoint")))
+                           (sess (current-react-session)))
+                        (when sess (set-react-session-active-tools! sess '()))
+                        (format #f
+                                "Created checkpoint: ~a (~a) covering ~a workspace file(s) and the registry. Active tools reset to baseline."
+                                (checkpoint-id c)
+                                (checkpoint-description c)
+                                (length (checkpoint-files c)))))
+                    '((description .
+                       "Create a rollback checkpoint for current workspace files and registry. Only files under the workspace directory are captured; paths outside it are silently left out of the checkpoint.")
+                      (_badb_defer . #t)
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((description . ((type . "string") (description . "Checkpoint description")))))))))
+  (registry-attach! reg
+                    "checkpoint_rollback"
+                    (lambda* (#:optional id)
+                             (let
+                                 ((res
+                                    (if (and id (not (string-null? id)))
+                                      (rollback-to-checkpoint! rollback-mgr id)
+                                      (rollback-latest! rollback-mgr))))
                                (format #f
-                                       "Created checkpoint: ~a (~a) covering ~a workspace file(s) and the registry. Active tools reset to baseline."
-                                       (checkpoint-id c)
-                                       (checkpoint-description c)
-                                       (length (checkpoint-files c)))))
-                           '((description .
-                              "Create a rollback checkpoint for current workspace files and registry. Only files under the workspace directory are captured; paths outside it are silently left out of the checkpoint.")
-                             (_badb_defer . #t)
-                             (parameters .
-                              ((type . "object")
-                               (properties .
-                                ((description . ((type . "string") (description . "Checkpoint description")))))))))
-         (registry-attach! reg
-                           "checkpoint_rollback"
-                           (lambda* (#:optional id)
-                                    (let ((res (if (and id (not (string-null? id)))
-                                                 (rollback-to-checkpoint! rollback-mgr id)
-                                                 (rollback-latest! rollback-mgr))))
-                                      (format #f
-                                              "Rollback: ~a (restored ~a file(s), removed ~a file(s)). Only files captured by the checkpoint are restored; files outside the workspace were never captured."
-                                              (assoc-ref res 'status)
-                                              (length (or (assoc-ref res 'restored-files) '()))
-                                              (length (or (assoc-ref res 'removed-files) '())))))
-                           '((description .
-                              "Rollback to specified or latest checkpoint. Only files captured by the checkpoint (workspace files at creation time) are restored.")
-                             (_badb_defer . #t)
-                             (parameters .
-                              ((type . "object")
-                               (properties . ((id . ((type . "string") (description . "Checkpoint ID")))))))))
-         (registry-attach! reg
-                           "run_tests"
-                           (lambda* (#:optional (cmd "./scripts/test"))
-                                    (let ((res (verify-test-suite #:command (or cmd "./scripts/test"))))
-                                      (format #f
-                                              "Tests: ~a (exit ~a)\n~a"
-                                              (if (assoc-ref res 'passed?)
-                                                "PASS"
-                                                "FAIL")
-                                              (assoc-ref res 'exit-code)
-                                              (assoc-ref res 'output))))
-                           '((description . "Run project test suite and return verdict")
-                             (_badb_defer . #t)
-                             (parameters .
-                              ((type . "object")
-                               (properties . ((cmd . ((type . "string") (description . "Test command")))))))))
-         (registry-attach! reg
-                           "history/summarize"
-                           (lambda ()
-                             (let ((summary (summarize-turns (get-llm-history)))
-                                   (hist-file (getenv "BADB_HISTORY_FILE")))
-                               (if (and hist-file (not (string-null? hist-file)))
-                                 (let ((file-summary (summarize-history-file hist-file)))
-                                   (if file-summary
-                                     (string-append summary "\n\n--- " hist-file " ---\n" file-summary)
-                                     summary))
-                                 summary)))
-                           '((description .
-                              "Summarize the current conversation: turn counts, token estimate, recent topics")
-                             (_badb_defer . #t)
-                             (parameters . ((type . "object") (properties . ()) (required . #())))))
-         ;; Register MCP Kernel Features (deferred)
-         (registry-attach! reg
-                           "mcp.list"
-                           (lambda ()
-                             (mcp-manager-list-servers mcp-mgr))
-                           '((description . "List all configured MCP servers and their status")
-                             (_badb_defer . #t)))
-         (registry-attach! reg
-                           "mcp.start"
-                           (lambda (name)
-                             (mcp-manager-start-server! mcp-mgr name))
-                           '((description . "Start a configured MCP server by name")
-                             (_badb_defer . #t)))
-         (registry-attach! reg
-                           "mcp.stop"
-                           (lambda (name)
-                             (mcp-manager-stop-server! mcp-mgr name))
-                           '((description . "Stop a running MCP server by name")
-                             (_badb_defer . #t)))
-         (registry-attach! reg
-                           "mcp.add"
-                           (lambda (name cmd args)
-                             (mcp-manager-add-server! mcp-mgr name cmd args #:auto-start #t))
-                           '((description . "Add a new MCP server specification and persist to config")
-                             (_badb_defer . #t)))
-         (registry-attach! reg
-                           "mcp.remove"
-                           (lambda (name)
-                             (mcp-manager-remove-server! mcp-mgr name))
-                           '((description . "Remove an MCP server from configuration and stop it")
-                             (_badb_defer . #t)))
-         (registry-attach! reg
-                           "mcp.tools"
-                           (lambda* (#:optional server-name) (mcp-manager-list-tools mcp-mgr server-name))
-                           '((description . "List available tools discovered from running MCP servers")
-                             (_badb_defer . #t)))
-         (registry-attach! reg
-                           "mcp.call"
-                           (lambda (name-or-server tool-or-args . maybe-args)
-                             (if (pair? maybe-args)
-                               (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args (car maybe-args))
-                               (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args)))
-                           '((description . "Call a tool on an MCP server")
-                             (_badb_defer . #t)))
-
-         ;; Progressive geis discovery & just-in-time hydration tools
-         (registry-attach! reg
-                           "geis.index"
-                           (lambda* (#:optional category query)
-                                    (geis-index-query #:category category #:query query))
-                           '((description .
-                              "Query the geis capability index for available domain tools, test runners, or workflows. Returns a concise summary table without hydrating schemas into context. To use a discovered tool, activate it with geis.activate(feature_id).")
-                             (parameters .
-                              ((type . "object")
-                               (properties .
-                                ((category . ((type . "string") (description . "Optional category filter (e.g. 'test', 'lint', 'spec-gate', 'project')")))
-                                 (query . ((type . "string") (description . "Optional search keyword for feature-id or description")))))
-                               (required . #())))))
-
-         (registry-attach! reg
-                           "geis.activate"
-                           (lambda (feature-id)
-                             (let* ((fid (ensure-string feature-id))
-                                    (sess (current-react-session))
-                                    (all-index (geis-catalog-index))
-                                    (matched (find (lambda (e)
-                                                     (let ((efid (assoc-ref e 'fid))
-                                                           (tools (assoc-ref e 'tools)))
-                                                       (or (string=? efid fid)
-                                                           (member fid (ensure-list tools)))))
-                                                   all-index))
-                                    (tools-to-add (if matched
-                                                    (cons fid (or (assoc-ref matched 'tools) '()))
-                                                    (list fid))))
-                               (if sess
-                                 (let ((cur (react-session-active-tools sess)))
-                                   (set-react-session-active-tools! sess (delete-duplicates (append cur tools-to-add)))
-                                   (format #f "Activated capability '~a' (~a tool(s) hydrated into active toolset: ~a). The tool parameter schemas are now available for subsequent turns."
-                                           fid (length tools-to-add) (string-join tools-to-add ", ")))
-                                 (format #f "Capability '~a' marked active (~a)." fid (string-join tools-to-add ", ")))))
-                           '((description .
-                              "Activate a geis capability by feature-id (from geis.index), hydrating its full tool parameter schema into your active toolset for the current task.")
-                             (parameters .
-                              ((type . "object")
-                               (properties .
-                                ((feature-id . ((type . "string") (description . "Feature ID or tool name to activate")))))
-                               (required . #("feature-id"))))))
-
-         (registry-attach! reg
-                           "geis.deactivate"
-                           (lambda (feature-id)
-                             (let* ((fid (ensure-string feature-id))
-                                    (sess (current-react-session))
-                                    (all-index (geis-catalog-index))
-                                    (matched (find (lambda (e) (string=? (assoc-ref e 'fid) fid)) all-index))
-                                    (tools-to-remove (if matched
-                                                       (cons fid (or (assoc-ref matched 'tools) '()))
-                                                       (list fid))))
-                               (if sess
-                                 (let* ((cur (react-session-active-tools sess))
-                                        (remaining (filter (lambda (t) (not (member t tools-to-remove))) cur)))
-                                   (set-react-session-active-tools! sess remaining)
-                                   (format #f "Deactivated capability '~a'. Tools demoted back to deferred status." fid))
-                                 (format #f "Capability '~a' deactivated." fid))))
-                           '((description .
-                              "Deactivate a geis capability, demoting its schema back to deferred status to save context.")
-                             (parameters .
-                              ((type . "object")
-                               (properties .
-                                ((feature-id . ((type . "string") (description . "Feature ID or tool name to deactivate")))))
-                               (required . #("feature-id"))))))
-
-         ;; Project geasa and workflows auto-mount
-         (catch #t
-           (lambda ()
-             (discover-and-mount-project-geasa! reg #:workspace (getcwd))
-             (mount-bundle-workflows! reg #:workspace (getcwd)))
-           (lambda _ #f))
-
-         ;; Register kernel-owned spec gate tools
-         (register-spec-tools! reg))
+                                       "Rollback: ~a (restored ~a file(s), removed ~a file(s)). Only files captured by the checkpoint are restored; files outside the workspace were never captured."
+                                       (assoc-ref res 'status)
+                                       (length (or (assoc-ref res 'restored-files) '()))
+                                       (length (or (assoc-ref res 'removed-files) '())))))
+                    '((description .
+                       "Rollback to specified or latest checkpoint. Only files captured by the checkpoint (workspace files at creation time) are restored.")
+                      (_badb_defer . #t)
+                      (parameters .
+                       ((type . "object")
+                        (properties . ((id . ((type . "string") (description . "Checkpoint ID")))))))))
+  (registry-attach! reg
+                    "run_tests"
+                    (lambda* (#:optional (cmd "./scripts/test"))
+                             (let
+                                 ((res (verify-test-suite #:command (or cmd "./scripts/test"))))
+                               (format #f
+                                       "Tests: ~a (exit ~a)\n~a"
+                                       (if (assoc-ref res 'passed?)
+                                         "PASS"
+                                         "FAIL")
+                                       (assoc-ref res 'exit-code)
+                                       (assoc-ref res 'output))))
+                    '((description . "Run project test suite and return verdict")
+                      (_badb_defer . #t)
+                      (parameters .
+                       ((type . "object")
+                        (properties . ((cmd . ((type . "string") (description . "Test command")))))))))
+  (registry-attach! reg
+                    "history/summarize"
+                    (lambda ()
+                      (let
+                          ((summary (summarize-turns (get-llm-history)))
+                           (hist-file (getenv "BADB_HISTORY_FILE")))
+                        (if
+                            (and hist-file (not (string-null? hist-file)))
+                          (let
+                              ((file-summary (summarize-history-file hist-file)))
+                            (if file-summary
+                              (string-append summary "\n\n--- " hist-file " ---\n" file-summary)
+                              summary))
+                          summary)))
+                    '((description .
+                       "Summarize the current conversation: turn counts, token estimate, recent topics")
+                      (_badb_defer . #t)
+                      (parameters . ((type . "object") (properties . ()) (required . #())))))
+  ;; Register MCP Kernel Features (deferred)
+  (registry-attach! reg
+                    "mcp.list"
+                    (lambda ()
+                      (mcp-manager-list-servers mcp-mgr))
+                    '((description . "List all configured MCP servers and their status")
+                      (_badb_defer . #t)))
+  (registry-attach! reg
+                    "mcp.start"
+                    (lambda (name)
+                      (mcp-manager-start-server! mcp-mgr name))
+                    '((description . "Start a configured MCP server by name") (_badb_defer . #t)))
+  (registry-attach! reg
+                    "mcp.stop"
+                    (lambda (name)
+                      (mcp-manager-stop-server! mcp-mgr name))
+                    '((description . "Stop a running MCP server by name") (_badb_defer . #t)))
+  (registry-attach! reg
+                    "mcp.add"
+                    (lambda (name cmd args)
+                      (mcp-manager-add-server! mcp-mgr name cmd args #:auto-start #t))
+                    '((description . "Add a new MCP server specification and persist to config")
+                      (_badb_defer . #t)))
+  (registry-attach! reg
+                    "mcp.remove"
+                    (lambda (name)
+                      (mcp-manager-remove-server! mcp-mgr name))
+                    '((description . "Remove an MCP server from configuration and stop it")
+                      (_badb_defer . #t)))
+  (registry-attach! reg
+                    "mcp.tools"
+                    (lambda* (#:optional server-name) (mcp-manager-list-tools mcp-mgr server-name))
+                    '((description . "List available tools discovered from running MCP servers")
+                      (_badb_defer . #t)))
+  (registry-attach! reg
+                    "mcp.call"
+                    (lambda
+                        (name-or-server tool-or-args . maybe-args)
+                      (if (pair? maybe-args)
+                        (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args (car maybe-args))
+                        (mcp-manager-call-tool mcp-mgr name-or-server tool-or-args)))
+                    '((description . "Call a tool on an MCP server") (_badb_defer . #t)))
+  ;; Progressive geis discovery & just-in-time hydration tools
+  (registry-attach! reg
+                    "geis.index"
+                    (lambda* (#:optional category query)
+                             (geis-index-query #:category category #:query query))
+                    '((description .
+                       "Query the geis capability index for available domain tools, test runners, or workflows. Returns a concise summary table without hydrating schemas into context. To use a discovered tool, activate it with geis.activate(feature_id).")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((category .
+                           ((type . "string")
+                            (description .
+                             "Optional category filter (e.g. 'test', 'lint', 'spec-gate', 'project')")))
+                          (query .
+                           ((type . "string")
+                            (description . "Optional search keyword for feature-id or description")))))
+                        (required . #())))))
+  (registry-attach! reg
+                    "geis.activate"
+                    (lambda (feature-id)
+                      (let*
+                          ((fid (ensure-string feature-id))
+                           (sess (current-react-session))
+                           (all-index (geis-catalog-index))
+                           (matched
+                             (find
+                               (lambda (e)
+                                 (let
+                                     ((efid (assoc-ref e 'fid)) (tools (assoc-ref e 'tools)))
+                                   (or (string=? efid fid) (member fid (ensure-list tools)))))
+                               all-index))
+                           (tools-to-add
+                             (if matched
+                               (cons fid (or (assoc-ref matched 'tools) '()))
+                               (list fid))))
+                        (if sess
+                          (let ((cur (react-session-active-tools sess)))
+                            (set-react-session-active-tools! sess
+                                                             (delete-duplicates (append cur tools-to-add)))
+                            (format #f
+                                    "Activated capability '~a' (~a tool(s) hydrated into active toolset: ~a). The tool parameter schemas are now available for subsequent turns."
+                                    fid
+                                    (length tools-to-add)
+                                    (string-join tools-to-add ", ")))
+                          (format #f
+                                  "Capability '~a' marked active (~a)."
+                                  fid
+                                  (string-join tools-to-add ", ")))))
+                    '((description .
+                       "Activate a geis capability by feature-id (from geis.index), hydrating its full tool parameter schema into your active toolset for the current task.")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((feature-id .
+                           ((type . "string") (description . "Feature ID or tool name to activate")))))
+                        (required . #("feature-id"))))))
+  (registry-attach! reg
+                    "geis.deactivate"
+                    (lambda (feature-id)
+                      (let*
+                          ((fid (ensure-string feature-id))
+                           (sess (current-react-session))
+                           (all-index (geis-catalog-index))
+                           (matched
+                             (find
+                               (lambda (e)
+                                 (string=? (assoc-ref e 'fid) fid))
+                               all-index))
+                           (tools-to-remove
+                             (if matched
+                               (cons fid (or (assoc-ref matched 'tools) '()))
+                               (list fid))))
+                        (if sess
+                          (let*
+                              ((cur (react-session-active-tools sess))
+                               (remaining
+                                 (filter
+                                   (lambda (t)
+                                     (not (member t tools-to-remove)))
+                                   cur)))
+                            (set-react-session-active-tools! sess remaining)
+                            (format #f
+                                    "Deactivated capability '~a'. Tools demoted back to deferred status."
+                                    fid))
+                          (format #f "Capability '~a' deactivated." fid))))
+                    '((description .
+                       "Deactivate a geis capability, demoting its schema back to deferred status to save context.")
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((feature-id .
+                           ((type . "string") (description . "Feature ID or tool name to deactivate")))))
+                        (required . #("feature-id"))))))
+  ;; Project geasa and workflows auto-mount
+  (catch #t
+    (lambda ()
+      (discover-and-mount-project-geasa! reg #:workspace workspace)
+      (mount-bundle-workflows! reg #:workspace workspace))
+    (lambda _
+      #f))
+  ;; Register kernel-owned spec gate tools
+  (register-spec-tools! reg))
 
 (define (auto-start-mcp-servers! cfg mcp-mgr)
         "Auto-start configured MCP servers that specify auto-start: #t."

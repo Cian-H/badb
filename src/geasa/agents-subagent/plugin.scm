@@ -11,49 +11,125 @@
 ;;; Supports verification before merge and atomic merge back to parent checkout.
 
 (define-module (geasa agents-subagent plugin)
-               #:use-module (badb kernel registry)
-               #:use-module (geasa runtimes-react plugin)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (geasa capabilities-fs-tools plugin)
-               #:use-module (geasa runtimes-verify plugin)
-               #:use-module (json)
-               #:use-module (ice-9 threads)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 popen)
-               #:use-module (ice-9 rdelim)
-               #:use-module (ice-9 ftw)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-9)
-               #:use-module (srfi srfi-13)
-               #:use-module (uuid generate)
-               #:use-module (uuid utils)
-               #:export (<subagent-worktree>
-                          make-subagent-worktree
-                          subagent-worktree?
-                          subagent-worktree-id
-                          subagent-worktree-path
-                          subagent-worktree-branch
-                          subagent-worktree-base
-                          subagent-worktree-repo
-                          subagent-worktree-status
-                          subagent-worktree-is-git?
-                          set-subagent-worktree-status!
-                          create-subagent-worktree
-                          cleanup-subagent-worktree!
-                          call-with-subagent-worktree
-                          make-isolated-subagent-registry
-                          subagent-worktree-verify
-                          subagent-worktree-merge!
-                          run-subagent-worktree
-                          run-subagent
-                          run-subagents-parallel
-                          register-subagent-tools!
-                          load-wt-premerge-command
-                          %default-investigate-tools
-                          %default-worktree-tools
-                          %investigate-tool-schema
-                          %investigate-parallel-tool-schema
-                          %subagent-transaction-tool-schema))
+               #:use-module
+               (badb kernel registry)
+               #:use-module
+               (geasa surfaces-acp client)
+               #:use-module
+               (geasa runtimes-react plugin)
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (geasa capabilities-fs-tools plugin)
+               #:use-module
+               (geasa runtimes-verify plugin)
+               #:use-module
+               (json)
+               #:use-module
+               (ice-9 threads)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 popen)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 ftw)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:use-module
+               (srfi srfi-13)
+               #:use-module
+               (uuid generate)
+               #:use-module
+               (uuid utils)
+               #:export
+               (<subagent-worktree> make-subagent-worktree
+                                    subagent-worktree?
+                                    subagent-worktree-id
+                                    subagent-worktree-path
+                                    subagent-worktree-branch
+                                    subagent-worktree-base
+                                    subagent-worktree-repo
+                                    subagent-worktree-status
+                                    subagent-worktree-is-git?
+                                    set-subagent-worktree-status!
+                                    create-subagent-worktree
+                                    cleanup-subagent-worktree!
+                                    call-with-subagent-worktree
+                                    make-isolated-subagent-registry
+                                    subagent-worktree-verify
+                                    subagent-worktree-merge!
+                                    create-agent-pipe-pair
+                                    create-agent-server
+                                    create-agent-client
+                                    agent-handshake!
+                                    <local-subagent>
+                                    make-local-subagent
+                                    local-subagent?
+                                    local-subagent-id
+                                    local-subagent-workspace
+                                    local-subagent-client
+                                    local-subagent-server
+                                    local-subagent-status
+                                    local-subagent-session-id
+                                    local-subagent-start!
+                                    local-subagent-prompt!
+                                    local-subagent-cancel!
+                                    local-subagent-stop!
+                                    <remote-subagent>
+                                    make-remote-subagent
+                                    make-remote-subagent/spawn
+                                    make-remote-subagent/tcp
+                                    make-remote-subagent/unix
+                                    make-remote-subagent/ports
+                                    remote-subagent?
+                                    remote-subagent-id
+                                    remote-subagent-transport
+                                    remote-subagent-workspace
+                                    remote-subagent-client
+                                    remote-subagent-status
+                                    remote-subagent-session-id
+                                    remote-subagent-start!
+                                    remote-subagent-prompt!
+                                    remote-subagent-cancel!
+                                    remote-subagent-stop!
+                                    <remote-superagent>
+                                    make-remote-superagent
+                                    remote-superagent?
+                                    remote-superagent-id
+                                    remote-superagent-transport
+                                    remote-superagent-host
+                                    remote-superagent-port
+                                    remote-superagent-socket-path
+                                    remote-superagent-workspace
+                                    remote-superagent-status
+                                    remote-superagent-endpoint
+                                    remote-superagent-start!
+                                    remote-superagent-stop!
+                                    remote-superagent-wait
+                                    subagent?
+                                    subagent-start!
+                                    subagent-prompt!
+                                    subagent-cancel!
+                                    subagent-stop!
+                                    subagent-status
+                                    subagent-session-id
+                                    subagent-client
+                                    call-with-subagent
+                                    run-agent-transaction
+                                    run-subagent-worktree
+                                    run-subagent
+                                    run-subagents-parallel
+                                    register-subagent-tools!
+                                    load-wt-premerge-command
+                                    %default-investigate-tools
+                                    %default-worktree-tools
+                                    %investigate-tool-schema
+                                    %investigate-parallel-tool-schema
+                                    %subagent-transaction-tool-schema))
 
 (define %default-investigate-tools
         '("read_file" "fs-read-file" "ctx_search" "find_symbol" "symbols_overview"
@@ -497,151 +573,1148 @@ Returns '((merged? . #t/#f) (reason . reason) ...)."
 
 ;; ---- Subagent Runners -------------------------------------------------------
 
-(define* (run-subagent-worktree prompt
-                                #:key
-                                (client #f)
-                                (parent-reg #f)
-                                (repo (getcwd))
-                                (base "HEAD")
-                                (allowed-tools #f)
-                                (max-iterations #f)
-                                (verify? #t)
-                                (auto-merge? #f)
-                                (keep-worktree? #f)
-                                (verifier #f)
-                                (verify-command #f)
-                                (journal-dir ".badb/journal/subagents"))
-         "Execute an isolated subagent in an ephemeral Git worktree sandbox.
-Returns an alist describing the subagent transaction result."
-         (let* ((sw (create-subagent-worktree #:repo repo #:base base))
-                (sub-id (subagent-worktree-id sw))
-                (wt-path (subagent-worktree-path sw))
-                (sub-reg (make-isolated-subagent-registry parent-reg wt-path
-                                                          #:allowed-tools (or allowed-tools %default-worktree-tools)
-                                                          #:parent-repo repo))
-                (sys-prompt
-                  "You are an autonomous sub-agent working in an isolated Git worktree sandbox. Inspect, modify, or test files inside your sandbox to fulfill the task. Changes stay on an isolated branch until verified.")
-                (session (make-react-session client
-                                             #:initial-messages
-                                             `(((role . "system") (content . ,sys-prompt))
-                                               ((role . "user") (content . ,prompt)))
-                                             #:reg sub-reg
-                                             #:max-iterations max-iterations)))
-           (call-with-values
-             (lambda () (react-run! session))
-             (lambda (status content final-session)
-               ;; Dump trajectory
-               (catch #t
-                 (lambda ()
-                   (mkdir-p journal-dir)
-                   (let ((traj-file (format #f "~a/~a.jsonl" journal-dir sub-id)))
-                     (call-with-output-file traj-file
-                                            (lambda (p)
-                                              (for-each
-                                                (lambda (msg)
-                                                  (display (safe-json-string msg) p)
-                                                  (newline p))
-                                                (react-session-messages final-session))))))
-                 (lambda _ #f))
+(define (%acp-server-proc sym)
+        (module-ref (resolve-module '(geasa surfaces-acp plugin)) sym))
 
-               ;; Check if changes were made
-               (let* ((status-res (%git wt-path "status" "--porcelain=v1"))
-                      (has-uncommitted? (and (car status-res) (not (string-null? (cdr status-res)))))
-                      (diff-res (%git wt-path "diff" "HEAD" base))
-                      (has-commits? (and (car diff-res) (not (string-null? (cdr diff-res)))))
-                      (has-changes? (or has-uncommitted? has-commits?))
-                      ;; Stage and commit uncommitted changes if any
-                      (_ (when has-uncommitted?
-                           (%git wt-path "add" "-A")
-                           (%git wt-path "commit" "-m" (format #f "Subagent transaction ~a auto-commit" sub-id))))
-                      (diff-after (%git wt-path "diff" "HEAD" base))
-                      (has-real-changes? (and (car diff-after) (not (string-null? (cdr diff-after))))))
+(define (%gen-subagent-id)
+        (substring (uuid->string (generate-uuid 'uuidv4)) 0 8))
 
-                 (let* ((v-res (if (and has-real-changes? verify?)
-                                 (subagent-worktree-verify sw #:verifier verifier #:command verify-command)
-                                 '((passed? . #t))))
-                        (verified? (assoc-ref v-res 'passed?))
-                        (m-res (if (and auto-merge? verified? has-real-changes?)
-                                 (subagent-worktree-merge! sw #:verifier verifier #:command verify-command)
-                                 `((merged? . #f) (reason . ,(if auto-merge? "no-changes-to-merge" "auto-merge-disabled")))))
-                        (merged? (assoc-ref m-res 'merged?)))
+(define (create-agent-pipe-pair)
+        "Create a bidirectional pair of OS pipes for in-process ACP communication.
+Returns (values server-in server-out client-in client-out)."
+        (let ((c2s (pipe)) (s2c (pipe)))
+          (values (car c2s) (cdr s2c) (car s2c) (cdr c2s))))
 
-                   (unless keep-worktree?
-                     (cleanup-subagent-worktree! sw #:delete-branch? (not merged?)))
-
-                   `((sub-id . ,sub-id)
-                     (status . ,status)
-                     (content . ,(or content (format #f "[Sub-agent finished with status: ~a]" status)))
-                     (worktree-path . ,wt-path)
-                     (branch . ,(subagent-worktree-branch sw))
-                     (has-changes? . ,has-real-changes?)
-                     (verified? . ,verified?)
-                     (verification . ,v-res)
-                     (merged? . ,merged?)
-                     (merge-result . ,m-res))))))))
-
-(define* (run-subagent prompt
-                       #:key
+(define*
+  (create-agent-server #:key
+                       (in-port (current-input-port))
+                       (out-port (current-output-port))
                        (client #f)
-                       (parent-reg #f)
-                       (allowed-tools %default-investigate-tools)
+                       (workspace (getcwd))
+                       (permission-policy 'allow)
+                       (notifier #f)
+                       (client-capabilities '()))
+  "Create the ACP server side (a literal badb instance) for an agent transaction."
+  (let
+      ((make-srv (%acp-server-proc 'make-acp-server)))
+    (make-srv #:in-port
+              in-port
+              #:out-port
+              out-port
+              #:client
+              client
+              #:workspace
+              workspace
+              #:permission-policy
+              permission-policy
+              #:notifier
+              notifier
+              #:client-capabilities
+              client-capabilities)))
+
+(define*
+  (create-agent-client #:key
+                       in-port
+                       out-port
+                       (pid #f)
+                       (on-update #f)
+                       (permission-handler #f)
+                       (client-info '((name . "badb-subagent-client") (version . "0.1.0")))
+                       (client-capabilities '())
+                       (on-close #f))
+  "Create the ACP client side for an agent transaction."
+  (make-acp-client #:in-port
+                   in-port
+                   #:out-port
+                   out-port
+                   #:pid
+                   pid
+                   #:on-update
+                   on-update
+                   #:permission-handler
+                   permission-handler
+                   #:client-info
+                   client-info
+                   #:client-capabilities
+                   client-capabilities
+                   #:on-close
+                   on-close))
+
+(define*
+  (agent-handshake! client
+                    #:key
+                    (cwd (getcwd))
+                    (allowed-tools #f)
+                    (max-iterations #f)
+                    (system-prompt #f)
+                    (journal-path #f)
+                    (capabilities #f)
+                    (client-info #f))
+  "Perform the ACP handshake (initialize + session/new) on CLIENT and
+return the created sessionId."
+  (acp-client-handshake! client
+                         #:cwd
+                         cwd
+                         #:allowed-tools
+                         allowed-tools
+                         #:max-iterations
+                         max-iterations
+                         #:system-prompt
+                         system-prompt
+                         #:journal-path
+                         journal-path
+                         #:capabilities
+                         capabilities
+                         #:client-info
+                         client-info))
+
+(define-record-type <local-subagent>
+                    (%make-local-subagent id
+                                          workspace
+                                          model-client
+                                          permission-policy
+                                          permission-handler
+                                          on-update
+                                          allowed-tools
+                                          max-iterations
+                                          system-prompt
+                                          journal-path
+                                          client
+                                          server
+                                          server-thread
+                                          server-in
+                                          server-out
+                                          status)
+                    local-subagent?
+                    (id local-subagent-id)
+                    (workspace local-subagent-workspace)
+                    (model-client local-subagent-model-client)
+                    (permission-policy local-subagent-permission-policy)
+                    (permission-handler local-subagent-permission-handler)
+                    (on-update local-subagent-on-update)
+                    (allowed-tools local-subagent-allowed-tools)
+                    (max-iterations local-subagent-max-iterations)
+                    (system-prompt local-subagent-system-prompt)
+                    (journal-path local-subagent-journal-path)
+                    (client local-subagent-client set-local-subagent-client!)
+                    (server local-subagent-server set-local-subagent-server!)
+                    (server-thread local-subagent-server-thread set-local-subagent-server-thread!)
+                    (server-in local-subagent-server-in set-local-subagent-server-in!)
+                    (server-out local-subagent-server-out set-local-subagent-server-out!)
+                    (status local-subagent-status set-local-subagent-status!))
+
+(define*
+  (make-local-subagent #:key
+                       (id #f)
+                       (workspace (getcwd))
+                       (model-client #f)
+                       (permission-policy 'allow)
+                       (permission-handler #f)
+                       (on-update #f)
+                       (allowed-tools #f)
                        (max-iterations #f)
-                       (worktree-isolated? #f)
-                       (repo (getcwd))
-                       (base "HEAD")
-                       (verify? #t)
-                       (auto-merge? #f)
-                       (keep-worktree? #f)
-                       (journal-dir ".badb/journal/subagents"))
-         "Execute a ReAct sub-agent. When WORKTREE-ISOLATED? is true, runs inside an ephemeral Git worktree sandbox."
-         (if worktree-isolated?
-           (let ((res (run-subagent-worktree prompt
-                                             #:client client
-                                             #:parent-reg parent-reg
-                                             #:repo repo
-                                             #:base base
-                                             #:allowed-tools allowed-tools
-                                             #:max-iterations max-iterations
-                                             #:verify? verify?
-                                             #:auto-merge? auto-merge?
-                                             #:keep-worktree? keep-worktree?
-                                             #:journal-dir journal-dir)))
-             (or (assoc-ref res 'content) ""))
-           (let* ((sub-id (uuid->string (generate-uuid 'uuidv4)))
-                  (sub-reg (make-registry))
-                  (_ (when parent-reg
-                       (for-each
-                         (lambda (t-name)
-                           (let ((impl (registry-lookup parent-reg t-name))
-                                 (meta (registry-metadata parent-reg t-name)))
-                             (when impl
-                               (registry-attach! sub-reg t-name impl #:metadata meta))))
-                         (or allowed-tools %default-investigate-tools))))
-                  (sys-prompt
-                    "You are a focused research sub-agent. Analyze files and query search tools to answer the user request directly, concisely, and factually. Do not provide fluff.")
-                  (session (make-react-session client
-                                               #:initial-messages
-                                               `(((role . "system") (content . ,sys-prompt))
-                                                 ((role . "user") (content . ,prompt)))
-                                               #:reg sub-reg
-                                               #:max-iterations max-iterations)))
-             (call-with-values
-               (lambda () (react-run! session))
-               (lambda (status content final-session)
-                 ;; Dump trajectory to journal-dir
-                 (catch #t
+                       (system-prompt #f)
+                       (journal-path #f))
+  "Create a <local-subagent> that attaches both an ACP client and an ACP
+server (a full badb instance) to the current badb instance."
+  (%make-local-subagent
+    (or id (string-append "lsub_" (%gen-subagent-id)))
+    workspace
+    model-client
+    permission-policy
+    permission-handler
+    on-update
+    allowed-tools
+    max-iterations
+    system-prompt
+    journal-path
+    #f
+    #f
+    #f
+    #f
+    #f
+    'created))
+
+(define (local-subagent-session-id agent)
+        (let ((cli (local-subagent-client agent)))
+          (and cli (acp-client-session-id cli))))
+
+(define (local-subagent-start! agent)
+        "Attach both an ACP server (literal badb instance) and an ACP client to the
+current badb instance over in-process pipes, start the server loop thread, and
+perform the ACP handshake."
+        (call-with-values create-agent-pipe-pair
+                          (lambda (srv-in srv-out cli-in cli-out)
+                            (let*
+                                ((srv
+                                   (create-agent-server #:in-port
+                                                        srv-in
+                                                        #:out-port
+                                                        srv-out
+                                                        #:client
+                                                        (local-subagent-model-client agent)
+                                                        #:workspace
+                                                        (local-subagent-workspace agent)
+                                                        #:permission-policy
+                                                        (local-subagent-permission-policy agent)))
+                                 (acp-serve (%acp-server-proc 'acp-serve-stdio))
+                                 (thr
+                                   (call-with-new-thread
+                                     (lambda ()
+                                       (catch #t
+                                         (lambda ()
+                                           (acp-serve srv))
+                                         (lambda _
+                                           #f)))))
+                                 (cli
+                                   (create-agent-client #:in-port
+                                                        cli-in
+                                                        #:out-port
+                                                        cli-out
+                                                        #:permission-handler
+                                                        (local-subagent-permission-handler agent)
+                                                        #:on-update
+                                                        (local-subagent-on-update agent))))
+                              (set-local-subagent-server-in! agent srv-in)
+                              (set-local-subagent-server-out! agent srv-out)
+                              (set-local-subagent-server! agent srv)
+                              (set-local-subagent-server-thread! agent thr)
+                              (set-local-subagent-client! agent cli)
+                              (catch #t
+                                (lambda ()
+                                  (agent-handshake! cli
+                                                    #:cwd
+                                                    (local-subagent-workspace agent)
+                                                    #:allowed-tools
+                                                    (local-subagent-allowed-tools agent)
+                                                    #:max-iterations
+                                                    (local-subagent-max-iterations agent)
+                                                    #:system-prompt
+                                                    (local-subagent-system-prompt agent)
+                                                    #:journal-path
+                                                    (local-subagent-journal-path agent))
+                                  (set-local-subagent-status! agent 'running)
+                                  agent)
+                                (lambda (key . args)
+                                  (set-local-subagent-status! agent 'failed)
+                                  (catch #t
+                                    (lambda ()
+                                      (local-subagent-stop! agent))
+                                    (lambda _
+                                      #f))
+                                  (apply throw key args)))))))
+
+(define*
+  (local-subagent-prompt! agent prompt #:key (on-update #f))
+  "Execute PROMPT on AGENT's local badb ACP server via its ACP client."
+  (let ((cli (local-subagent-client agent)))
+    (unless cli (error "local-subagent-prompt!: agent is not started" agent))
+    (acp-client-prompt! cli prompt #:on-update on-update)))
+
+(define (local-subagent-cancel! agent)
+        "Send session/cancel to AGENT's local ACP server."
+        (let ((cli (local-subagent-client agent))) (when cli (acp-client-cancel! cli))))
+
+(define (local-subagent-stop! agent)
+        "Close AGENT's local ACP client, stop its in-process ACP server, and join
+the server thread. Idempotent."
+        (unless
+            (eq? (local-subagent-status agent) 'stopped)
+          (let
+              ((cli (local-subagent-client agent))
+               (s-in (local-subagent-server-in agent))
+               (s-out (local-subagent-server-out agent))
+               (thr (local-subagent-server-thread agent)))
+            (when cli
+              (catch #t
+                (lambda ()
+                  (acp-client-close! cli))
+                (lambda _
+                  #f)))
+            (when thr
+              (catch #t
+                (lambda ()
+                  (join-thread thr (+ (car (gettimeofday)) 2)))
+                (lambda _
+                  #f)))
+            (when (and s-in (not (port-closed? s-in)))
+              (catch #t
+                (lambda ()
+                  (close-port s-in))
+                (lambda _
+                  #f)))
+            (when (and s-out (not (port-closed? s-out)))
+              (catch #t
+                (lambda ()
+                  (close-port s-out))
+                (lambda _
+                  #f)))
+            (set-local-subagent-status! agent 'stopped)))
+        #t)
+
+(define-record-type <remote-subagent>
+                    (%make-remote-subagent id
+                                           transport
+                                           command
+                                           host
+                                           port
+                                           socket-path
+                                           in-port
+                                           out-port
+                                           workspace
+                                           permission-handler
+                                           on-update
+                                           allowed-tools
+                                           max-iterations
+                                           system-prompt
+                                           journal-path
+                                           client
+                                           status)
+                    remote-subagent?
+                    (id remote-subagent-id)
+                    (transport remote-subagent-transport)
+                    (command remote-subagent-command)
+                    (host remote-subagent-host)
+                    (port remote-subagent-port)
+                    (socket-path remote-subagent-socket-path)
+                    (in-port remote-subagent-in-port)
+                    (out-port remote-subagent-out-port)
+                    (workspace remote-subagent-workspace)
+                    (permission-handler remote-subagent-permission-handler)
+                    (on-update remote-subagent-on-update)
+                    (allowed-tools remote-subagent-allowed-tools)
+                    (max-iterations remote-subagent-max-iterations)
+                    (system-prompt remote-subagent-system-prompt)
+                    (journal-path remote-subagent-journal-path)
+                    (client remote-subagent-client set-remote-subagent-client!)
+                    (status remote-subagent-status set-remote-subagent-status!))
+
+(define*
+  (make-remote-subagent #:key
+                        (id #f)
+                        (transport 'tcp)
+                        (command #f)
+                        (host "127.0.0.1")
+                        (port #f)
+                        (socket-path #f)
+                        (in-port #f)
+                        (out-port #f)
+                        (workspace (getcwd))
+                        (permission-handler #f)
+                        (on-update #f)
+                        (allowed-tools #f)
+                        (max-iterations #f)
+                        (system-prompt #f)
+                        (journal-path #f))
+  "Create a <remote-subagent> that attaches an ACP client in the current
+badb instance to a remote ACP server."
+  (%make-remote-subagent
+    (or id (string-append "rsub_" (%gen-subagent-id)))
+    transport
+    command
+    host
+    port
+    socket-path
+    in-port
+    out-port
+    workspace
+    permission-handler
+    on-update
+    allowed-tools
+    max-iterations
+    system-prompt
+    journal-path
+    #f
+    'created))
+
+(define*
+  (make-remote-subagent/spawn command #:rest rest)
+  (apply make-remote-subagent #:transport 'spawn #:command command rest))
+
+(define*
+  (make-remote-subagent/tcp host port #:rest rest)
+  (apply make-remote-subagent #:transport 'tcp #:host host #:port port rest))
+
+(define*
+  (make-remote-subagent/unix socket-path #:rest rest)
+  (apply make-remote-subagent #:transport 'unix #:socket-path socket-path rest))
+
+(define*
+  (make-remote-subagent/ports in-port out-port #:rest rest)
+  (apply make-remote-subagent
+         #:transport
+         'ports
+         #:in-port
+         in-port
+         #:out-port
+         out-port
+         rest))
+
+(define (remote-subagent-session-id agent)
+        (let ((cli (remote-subagent-client agent)))
+          (and cli (acp-client-session-id cli))))
+
+(define (remote-subagent-start! agent)
+        "Connect AGENT's client to the remote ACP server and perform the handshake."
+        (let*
+            ((tr (remote-subagent-transport agent))
+             (on-upd (remote-subagent-on-update agent))
+             (perm-h (remote-subagent-permission-handler agent))
+             (cwd (remote-subagent-workspace agent))
+             (cli
+               (cond
+                 ((eq? tr 'spawn)
+                   (acp-spawn-client
+                     (or (remote-subagent-command agent) '("badb" "acp"))
+                     #:cwd
+                     cwd
+                     #:on-update
+                     on-upd
+                     #:permission-handler
+                     perm-h))
+                 ((eq? tr 'tcp)
+                   (acp-connect-tcp
+                     (or (remote-subagent-host agent) "127.0.0.1")
+                     (remote-subagent-port agent)
+                     #:on-update
+                     on-upd
+                     #:permission-handler
+                     perm-h))
+                 ((eq? tr 'unix)
+                   (acp-connect-unix
+                     (remote-subagent-socket-path agent)
+                     #:on-update
+                     on-upd
+                     #:permission-handler
+                     perm-h))
+                 ((eq? tr 'ports)
+                   (create-agent-client #:in-port
+                                        (remote-subagent-in-port agent)
+                                        #:out-port
+                                        (remote-subagent-out-port agent)
+                                        #:on-update
+                                        on-upd
+                                        #:permission-handler
+                                        perm-h))
+                 (else (error "remote-subagent-start!: unsupported transport" tr)))))
+          (set-remote-subagent-client! agent cli)
+          (catch #t
+            (lambda ()
+              (agent-handshake! cli
+                                #:cwd
+                                cwd
+                                #:allowed-tools
+                                (remote-subagent-allowed-tools agent)
+                                #:max-iterations
+                                (remote-subagent-max-iterations agent)
+                                #:system-prompt
+                                (remote-subagent-system-prompt agent)
+                                #:journal-path
+                                (remote-subagent-journal-path agent))
+              (set-remote-subagent-status! agent 'running)
+              agent)
+            (lambda (key . args)
+              (set-remote-subagent-status! agent 'failed)
+              (catch #t
+                (lambda ()
+                  (acp-client-close! cli))
+                (lambda _
+                  #f))
+              (apply throw key args)))))
+
+(define*
+  (remote-subagent-prompt! agent prompt #:key (on-update #f))
+  "Execute PROMPT on the remote badb ACP server attached to AGENT."
+  (let ((cli (remote-subagent-client agent)))
+    (unless cli (error "remote-subagent-prompt!: agent is not started" agent))
+    (acp-client-prompt! cli prompt #:on-update on-update)))
+
+(define (remote-subagent-cancel! agent)
+        "Send session/cancel to AGENT's remote ACP server."
+        (let ((cli (remote-subagent-client agent))) (when cli (acp-client-cancel! cli))))
+
+(define (remote-subagent-stop! agent)
+        "Close the remote ACP client attached to AGENT. Idempotent."
+        (unless
+            (eq? (remote-subagent-status agent) 'stopped)
+          (let ((cli (remote-subagent-client agent)))
+            (when cli
+              (catch #t
+                (lambda ()
+                  (acp-client-close! cli))
+                (lambda _
+                  #f)))
+            (set-remote-subagent-status! agent 'stopped)))
+        #t)
+
+(define-record-type <remote-superagent>
+                    (%make-remote-superagent id
+                                             transport
+                                             host
+                                             port
+                                             socket-path
+                                             in-port
+                                             out-port
+                                             workspace
+                                             model-client
+                                             permission-policy
+                                             notifier
+                                             listener-socket
+                                             accept-thread
+                                             servers
+                                             client-ports
+                                             client-threads
+                                             stop?
+                                             lock
+                                             status)
+                    remote-superagent?
+                    (id remote-superagent-id)
+                    (transport remote-superagent-transport)
+                    (host remote-superagent-host)
+                    (port remote-superagent-port set-remote-superagent-port!)
+                    (socket-path remote-superagent-socket-path)
+                    (in-port remote-superagent-in-port)
+                    (out-port remote-superagent-out-port)
+                    (workspace remote-superagent-workspace)
+                    (model-client remote-superagent-model-client)
+                    (permission-policy remote-superagent-permission-policy)
+                    (notifier remote-superagent-notifier)
+                    (listener-socket
+                      remote-superagent-listener-socket
+                      set-remote-superagent-listener-socket!)
+                    (accept-thread remote-superagent-accept-thread
+                                   set-remote-superagent-accept-thread!)
+                    (servers remote-superagent-servers set-remote-superagent-servers!)
+                    (client-ports remote-superagent-client-ports
+                                  set-remote-superagent-client-ports!)
+                    (client-threads remote-superagent-client-threads
+                                    set-remote-superagent-client-threads!)
+                    (stop? remote-superagent-stop? set-remote-superagent-stop?!)
+                    (lock remote-superagent-lock)
+                    (status remote-superagent-status set-remote-superagent-status!))
+
+(define*
+  (make-remote-superagent #:key
+                          (id #f)
+                          (transport 'tcp)
+                          (host "127.0.0.1")
+                          (port 0)
+                          (socket-path #f)
+                          (in-port #f)
+                          (out-port #f)
+                          (workspace (getcwd))
+                          (model-client #f)
+                          (permission-policy 'allow)
+                          (notifier #f))
+  "Create a <remote-superagent> that spins up an ACP server exposing a full
+badb instance over TRANSPORT ('tcp, 'unix, 'stdio, or 'ports)."
+  (%make-remote-superagent
+    (or id (string-append "sup_" (%gen-subagent-id)))
+    transport
+    host
+    port
+    socket-path
+    in-port
+    out-port
+    workspace
+    model-client
+    permission-policy
+    notifier
+    #f
+    #f
+    '()
+    '()
+    '()
+    #f
+    (make-mutex)
+    'created))
+
+(define (remote-superagent-endpoint superagent)
+        "Return an endpoint descriptor alist suitable for connecting a <remote-subagent>."
+        (case (remote-superagent-transport superagent)
+          ((tcp)
+            `((transport . tcp)
+              (host . ,(remote-superagent-host superagent))
+              (port . ,(remote-superagent-port superagent))))
+          ((unix)
+            `((transport . unix) (socket-path . ,(remote-superagent-socket-path superagent))))
+          (else `((transport . ,(remote-superagent-transport superagent))))))
+
+(define (remote-superagent-start! superagent)
+        "Spin up SUPERAGENT's ACP server over its configured transport."
+        (set-remote-superagent-stop?! superagent #f)
+        (let
+            ((tr (remote-superagent-transport superagent)))
+          (cond
+            ((eq? tr 'tcp)
+              (let ((sock (%superagent-bind-tcp superagent)))
+                (set-remote-superagent-listener-socket! superagent sock)
+                (set-remote-superagent-accept-thread! superagent
+                                                      (call-with-new-thread
+                                                        (lambda ()
+                                                          (%superagent-accept-loop superagent sock))))))
+            ((eq? tr 'unix)
+              (let ((sock (%superagent-bind-unix superagent)))
+                (set-remote-superagent-listener-socket! superagent sock)
+                (set-remote-superagent-accept-thread! superagent
+                                                      (call-with-new-thread
+                                                        (lambda ()
+                                                          (%superagent-accept-loop superagent sock))))))
+            ((or (eq? tr 'stdio) (eq? tr 'ports))
+              (let*
+                  ((in (or (remote-superagent-in-port superagent) (current-input-port)))
+                   (out (or (remote-superagent-out-port superagent) (current-output-port)))
+                   (srv
+                     (create-agent-server #:in-port
+                                          in
+                                          #:out-port
+                                          out
+                                          #:client
+                                          (remote-superagent-model-client superagent)
+                                          #:workspace
+                                          (remote-superagent-workspace superagent)
+                                          #:permission-policy
+                                          (remote-superagent-permission-policy superagent)
+                                          #:notifier
+                                          (remote-superagent-notifier superagent)))
+                   (acp-serve (%acp-server-proc 'acp-serve-stdio)))
+                (set-remote-superagent-servers! superagent (list srv))
+                (set-remote-superagent-accept-thread! superagent
+                                                      (call-with-new-thread
+                                                        (lambda ()
+                                                          (catch #t
+                                                            (lambda ()
+                                                              (acp-serve srv))
+                                                            (lambda _
+                                                              #f)))))))
+            (else (error "remote-superagent-start!: unsupported transport" tr)))
+          (set-remote-superagent-status! superagent 'running)
+          superagent))
+
+(define (%superagent-bind-tcp superagent)
+        (let
+            ((sock (socket PF_INET SOCK_STREAM 0))
+             (host (remote-superagent-host superagent))
+             (port (or (remote-superagent-port superagent) 0)))
+          (catch #t
+            (lambda ()
+              (setsockopt sock SOL_SOCKET SO_REUSEADDR 1)
+              (bind sock AF_INET (inet-pton AF_INET host) port)
+              (listen sock 8)
+              (set-remote-superagent-port! superagent (sockaddr:port (getsockname sock)))
+              sock)
+            (lambda (key . args)
+              (catch #t
+                (lambda ()
+                  (close-port sock))
+                (lambda _
+                  #f))
+              (apply throw key args)))))
+
+(define (%superagent-bind-unix superagent)
+        (let
+            ((path (remote-superagent-socket-path superagent)))
+          (unless
+              (and (string? path) (not (string-null? path)))
+            (error "remote-superagent-start!: unix transport requires socket-path"))
+          (when (file-exists? path) (delete-file path))
+          (let ((sock (socket PF_UNIX SOCK_STREAM 0)))
+            (catch #t
+              (lambda ()
+                (bind sock AF_UNIX path)
+                (listen sock 8)
+                sock)
+              (lambda (key . args)
+                (catch #t
+                  (lambda ()
+                    (close-port sock))
+                  (lambda _
+                    #f))
+                (apply throw key args))))))
+
+(define (%superagent-accept-loop superagent sock)
+        (let loop
+          ()
+          (unless (remote-superagent-stop? superagent)
+            (let
+                ((ready
+                   (catch #t
+                     (lambda ()
+                       (select (list sock) '() '() 0 50000))
+                     (lambda _
+                       '(() () ())))))
+              (when
+                  (and (not (remote-superagent-stop? superagent)) (pair? (car ready)))
+                (let
+                    ((pair
+                       (catch #t
+                         (lambda ()
+                           (accept sock))
+                         (lambda _
+                           #f))))
+                  (when (pair? pair) (%superagent-serve-conn! superagent (car pair)))))
+              (unless (remote-superagent-stop? superagent) (loop))))))
+
+(define (%superagent-serve-conn! superagent conn)
+        (let
+            ((srv
+               (create-agent-server #:in-port
+                                    conn
+                                    #:out-port
+                                    conn
+                                    #:client
+                                    (remote-superagent-model-client superagent)
+                                    #:workspace
+                                    (remote-superagent-workspace superagent)
+                                    #:permission-policy
+                                    (remote-superagent-permission-policy superagent)
+                                    #:notifier
+                                    (remote-superagent-notifier superagent)))
+             (acp-serve (%acp-server-proc 'acp-serve-stdio)))
+          (with-mutex (remote-superagent-lock superagent)
+                      (set-remote-superagent-servers! superagent
+                                                      (cons srv (remote-superagent-servers superagent)))
+                      (set-remote-superagent-client-ports! superagent
+                                                           (cons conn (remote-superagent-client-ports superagent))))
+          (let
+              ((t
+                 (call-with-new-thread
                    (lambda ()
-                     (mkdir-p journal-dir)
-                     (let ((traj-file (format #f "~a/~a.jsonl" journal-dir sub-id)))
-                       (call-with-output-file traj-file
-                                              (lambda (p)
-                                                (for-each
-                                                  (lambda (msg)
-                                                    (display (safe-json-string msg) p)
-                                                    (newline p))
-                                                  (react-session-messages final-session))))))
-                   (lambda _ #f))
-                 (or content (format #f "[Sub-agent finished with status: ~a]" status)))))))
+                     (catch #t
+                       (lambda ()
+                         (acp-serve srv))
+                       (lambda _
+                         #f))
+                     (catch #t
+                       (lambda ()
+                         (unless (port-closed? conn) (close-port conn)))
+                       (lambda _
+                         #f))))))
+            (with-mutex (remote-superagent-lock superagent)
+                        (set-remote-superagent-client-threads! superagent
+                                                               (cons t (remote-superagent-client-threads superagent)))))))
+
+(define (remote-superagent-stop! superagent)
+        "Stop SUPERAGENT's listener, close active client connections, and join
+background threads. Idempotent."
+        (unless
+            (eq? (remote-superagent-status superagent) 'stopped)
+          (set-remote-superagent-stop?! superagent #t)
+          (let
+              ((sock (remote-superagent-listener-socket superagent))
+               (t-acc (remote-superagent-accept-thread superagent))
+               (ports
+                 (with-mutex (remote-superagent-lock superagent)
+                             (remote-superagent-client-ports superagent)))
+               (threads
+                 (with-mutex (remote-superagent-lock superagent)
+                             (remote-superagent-client-threads superagent))))
+            (when sock
+              (catch #t
+                (lambda ()
+                  (shutdown sock 2))
+                (lambda _
+                  #f))
+              (catch #t
+                (lambda ()
+                  (close-port sock))
+                (lambda _
+                  #f))
+              (set-remote-superagent-listener-socket! superagent #f))
+            (for-each
+              (lambda (p)
+                (catch #t
+                  (lambda ()
+                    (shutdown p 2))
+                  (lambda _
+                    #f))
+                (when (and p (not (port-closed? p)))
+                  (catch #t
+                    (lambda ()
+                      (close-port p))
+                    (lambda _
+                      #f))))
+              ports)
+            (let ((deadline (+ (car (gettimeofday)) 2)))
+              (when t-acc
+                (catch #t
+                  (lambda ()
+                    (join-thread t-acc deadline))
+                  (lambda _
+                    #f)))
+              (for-each
+                (lambda (t)
+                  (catch #t
+                    (lambda ()
+                      (join-thread t deadline))
+                    (lambda _
+                      #f)))
+                threads))
+            (when
+                (and
+                  (eq? (remote-superagent-transport superagent) 'unix)
+                  (string? (remote-superagent-socket-path superagent))
+                  (file-exists? (remote-superagent-socket-path superagent)))
+              (catch #t
+                (lambda ()
+                  (delete-file (remote-superagent-socket-path superagent)))
+                (lambda _
+                  #f)))
+            (set-remote-superagent-status! superagent 'stopped)))
+        #t)
+
+(define (remote-superagent-wait superagent)
+        "Wait for SUPERAGENT's accept/serve thread to finish."
+        (let
+            ((t (remote-superagent-accept-thread superagent)))
+          (when t (join-thread t)))
+        #t)
+
+(define (subagent? x) (or (local-subagent? x) (remote-subagent? x)))
+
+(define (subagent-start! agent)
+        (cond
+          ((local-subagent? agent) (local-subagent-start! agent))
+          ((remote-subagent? agent) (remote-subagent-start! agent))
+          ((remote-superagent? agent) (remote-superagent-start! agent))
+          (else (error "subagent-start!: expected subagent or superagent" agent))))
+
+(define*
+  (subagent-prompt! agent prompt #:key (on-update #f))
+  (cond
+    ((local-subagent? agent)
+      (local-subagent-prompt! agent prompt #:on-update on-update))
+    ((remote-subagent? agent)
+      (remote-subagent-prompt! agent prompt #:on-update on-update))
+    (else
+      (error "subagent-prompt!: expected <local-subagent> or <remote-subagent>" agent))))
+
+(define (subagent-cancel! agent)
+        (cond
+          ((local-subagent? agent) (local-subagent-cancel! agent))
+          ((remote-subagent? agent) (remote-subagent-cancel! agent))
+          (else
+            (error "subagent-cancel!: expected <local-subagent> or <remote-subagent>" agent))))
+
+(define (subagent-stop! agent)
+        (cond
+          ((local-subagent? agent) (local-subagent-stop! agent))
+          ((remote-subagent? agent) (remote-subagent-stop! agent))
+          ((remote-superagent? agent) (remote-superagent-stop! agent))
+          (else (error "subagent-stop!: expected subagent or superagent" agent))))
+
+(define (subagent-status agent)
+        (cond
+          ((local-subagent? agent) (local-subagent-status agent))
+          ((remote-subagent? agent) (remote-subagent-status agent))
+          ((remote-superagent? agent) (remote-superagent-status agent))
+          (else (error "subagent-status: expected subagent or superagent" agent))))
+
+(define (subagent-session-id agent)
+        (cond
+          ((local-subagent? agent) (local-subagent-session-id agent))
+          ((remote-subagent? agent) (remote-subagent-session-id agent))
+          (else
+            (error
+              "subagent-session-id: expected <local-subagent> or <remote-subagent>"
+              agent))))
+
+(define (subagent-client agent)
+        (cond
+          ((local-subagent? agent) (local-subagent-client agent))
+          ((remote-subagent? agent) (remote-subagent-client agent))
+          (else
+            (error "subagent-client: expected <local-subagent> or <remote-subagent>" agent))))
+
+(define (call-with-subagent agent proc)
+        "Start AGENT (performing ACP handshake), invoke (PROC AGENT), and always
+stop AGENT on exit (normal or exceptional)."
+        (dynamic-wind
+          (lambda ()
+            (subagent-start! agent))
+          (lambda ()
+            (proc agent))
+          (lambda ()
+            (catch #t
+              (lambda ()
+                (subagent-stop! agent))
+              (lambda _
+                #f)))))
+
+(define
+  (%write-subagent-trajectory! journal-dir sub-id prompt res)
+  (catch #t
+    (lambda ()
+      (unless (file-exists? journal-dir) (mkdir-p journal-dir))
+      (let
+          ((traj-file (string-append journal-dir "/" sub-id ".jsonl")))
+        (call-with-output-file traj-file
+                               (lambda (p)
+                                 (display (safe-json-string `((role . "user") (content . ,prompt))) p)
+                                 (newline p)
+                                 (for-each
+                                   (lambda (tc)
+                                     (display (safe-json-string `((role . "tool_call") (update . ,tc))) p)
+                                     (newline p))
+                                   (or (assoc-ref res 'tool-calls) '()))
+                                 (let ((content (assoc-ref res 'content)))
+                                   (when (string? content)
+                                     (display (safe-json-string `((role . "assistant") (content . ,content))) p)
+                                     (newline p)))))))
+    (lambda _
+      #f)))
+
+(define*
+  (run-subagent-worktree prompt
+                         #:key
+                         (client #f)
+                         (parent-reg #f)
+                         (repo (getcwd))
+                         (base "HEAD")
+                         (allowed-tools #f)
+                         (max-iterations #f)
+                         (verify? #t)
+                         (auto-merge? #f)
+                         (keep-worktree? #f)
+                         (verifier #f)
+                         (verify-command #f)
+                         (permission-policy 'allow)
+                         (permission-handler #f)
+                         (on-update #f)
+                         (remote #f)
+                         (system-prompt #f)
+                         (journal-dir ".badb/journal/subagents"))
+  "Execute an isolated subagent transaction in an ephemeral Git worktree
+using a literal badb instance over ACP (separated client & server + handshake).
+Returns an alist summarizing status, content, worktree-path, branch, verification,
+and merge results."
+  (let*
+      ((sw (create-subagent-worktree #:repo repo #:base base))
+       (sub-id (subagent-worktree-id sw))
+       (wt-path (subagent-worktree-path sw))
+       (sys-prompt
+         (or system-prompt
+             "You are an autonomous sub-agent working in an isolated Git worktree sandbox. Inspect, modify, or test files inside your sandbox to fulfill the task. Changes are committed and verified before merging."))
+       (agent
+         (cond
+           ((remote-subagent? remote) remote)
+           ((pair? remote)
+             (make-remote-subagent #:id
+                                   sub-id
+                                   #:transport
+                                   (or (assoc-ref remote 'transport) 'tcp)
+                                   #:host
+                                   (or (assoc-ref remote 'host) "127.0.0.1")
+                                   #:port
+                                   (assoc-ref remote 'port)
+                                   #:socket-path
+                                   (assoc-ref remote 'socket-path)
+                                   #:command
+                                   (assoc-ref remote 'command)
+                                   #:workspace
+                                   wt-path
+                                   #:permission-handler
+                                   permission-handler
+                                   #:on-update
+                                   on-update
+                                   #:allowed-tools
+                                   (or allowed-tools %default-worktree-tools)
+                                   #:max-iterations
+                                   max-iterations
+                                   #:system-prompt
+                                   sys-prompt))
+           (else
+             (make-local-subagent #:id
+                                  sub-id
+                                  #:workspace
+                                  wt-path
+                                  #:model-client
+                                  client
+                                  #:permission-policy
+                                  permission-policy
+                                  #:permission-handler
+                                  permission-handler
+                                  #:on-update
+                                  on-update
+                                  #:allowed-tools
+                                  (or allowed-tools %default-worktree-tools)
+                                  #:max-iterations
+                                  max-iterations
+                                  #:system-prompt
+                                  sys-prompt)))))
+    (let*
+        ((res
+           (call-with-subagent agent
+                               (lambda (ag)
+                                 (subagent-prompt! ag prompt))))
+         (status (assoc-ref res 'status))
+         (content (assoc-ref res 'content)))
+      (%write-subagent-trajectory! journal-dir sub-id prompt res)
+      (let*
+          ((status-res (%git wt-path "status" "--porcelain=v1"))
+           (has-uncommitted? (and (car status-res) (not (string-null? (cdr status-res)))))
+           (_
+             (when has-uncommitted?
+               (%git wt-path "add" "-A")
+               (%git wt-path
+                     "commit"
+                     "-m"
+                     (format #f "Subagent transaction ~a auto-commit" sub-id))))
+           (diff-after (%git wt-path "diff" "HEAD" base))
+           (has-real-changes? (and (car diff-after) (not (string-null? (cdr diff-after)))))
+           (v-res
+             (if (and has-real-changes? verify?)
+               (subagent-worktree-verify sw #:verifier verifier #:command verify-command)
+               '((passed? . #t))))
+           (verified? (assoc-ref v-res 'passed?))
+           (m-res
+             (if (and auto-merge? verified? has-real-changes?)
+               (subagent-worktree-merge! sw #:verifier verifier #:command verify-command)
+               `((merged? . #f)
+                 (reason .
+                         ,(if auto-merge?
+                            "no-changes-to-merge"
+                            "auto-merge-disabled")))))
+           (merged? (assoc-ref m-res 'merged?)))
+        (unless keep-worktree? (cleanup-subagent-worktree! sw))
+        `((sub-id . ,sub-id) (status . ,status)
+          (content .
+                   ,(or
+                      (and (string? content) (not (string-null? content)) content)
+                      (format #f "[Sub-agent finished with status: ~a]" status)))
+          (worktree-path . ,wt-path)
+          (branch . ,(subagent-worktree-branch sw))
+          (has-changes? . ,has-real-changes?)
+          (verified? . ,verified?)
+          (merged? . ,merged?)
+          (verification . ,v-res)
+          (merge-result . ,m-res))))))
+
+(define run-agent-transaction run-subagent-worktree)
+
+(define*
+  (run-subagent prompt
+                #:key
+                (client #f)
+                (parent-reg #f)
+                (allowed-tools %default-investigate-tools)
+                (max-iterations #f)
+                (worktree-isolated? #f)
+                (repo (getcwd))
+                (base "HEAD")
+                (verify? #t)
+                (auto-merge? #f)
+                (keep-worktree? #f)
+                (workspace (getcwd))
+                (permission-policy 'allow)
+                (permission-handler #f)
+                (on-update #f)
+                (remote #f)
+                (system-prompt #f)
+                (journal-dir ".badb/journal/subagents"))
+  "Execute a full badb sub-agent over ACP. When WORKTREE-ISOLATED? is true,
+runs inside an ephemeral Git worktree sandbox. When REMOTE is provided (a
+<remote-subagent> or endpoint alist), delegates to the remote ACP server."
+  (if worktree-isolated?
+    (let
+        ((res
+           (run-subagent-worktree prompt
+                                  #:client
+                                  client
+                                  #:parent-reg
+                                  parent-reg
+                                  #:allowed-tools
+                                  (or allowed-tools %default-worktree-tools)
+                                  #:max-iterations
+                                  max-iterations
+                                  #:repo
+                                  repo
+                                  #:base
+                                  base
+                                  #:verify?
+                                  verify?
+                                  #:auto-merge?
+                                  auto-merge?
+                                  #:keep-worktree?
+                                  keep-worktree?
+                                  #:permission-policy
+                                  permission-policy
+                                  #:permission-handler
+                                  permission-handler
+                                  #:on-update
+                                  on-update
+                                  #:remote
+                                  remote
+                                  #:journal-dir
+                                  journal-dir)))
+      (assoc-ref res 'content))
+    (let*
+        ((sub-id (%gen-subagent-id))
+         (sys
+           (or system-prompt
+               "You are a focused research sub-agent. Analyze files and query search tools to answer the user request directly, concisely, and factually. Do not provide fluff."))
+         (agent
+           (cond
+             ((remote-subagent? remote) remote)
+             ((local-subagent? remote) remote)
+             ((pair? remote)
+               (make-remote-subagent #:id
+                                     sub-id
+                                     #:transport
+                                     (or (assoc-ref remote 'transport) 'tcp)
+                                     #:host
+                                     (or (assoc-ref remote 'host) "127.0.0.1")
+                                     #:port
+                                     (assoc-ref remote 'port)
+                                     #:socket-path
+                                     (assoc-ref remote 'socket-path)
+                                     #:command
+                                     (assoc-ref remote 'command)
+                                     #:in-port
+                                     (assoc-ref remote 'in-port)
+                                     #:out-port
+                                     (assoc-ref remote 'out-port)
+                                     #:workspace
+                                     workspace
+                                     #:permission-handler
+                                     permission-handler
+                                     #:on-update
+                                     on-update
+                                     #:allowed-tools
+                                     allowed-tools
+                                     #:max-iterations
+                                     max-iterations
+                                     #:system-prompt
+                                     sys))
+             (else
+               (make-local-subagent #:id
+                                    sub-id
+                                    #:workspace
+                                    workspace
+                                    #:model-client
+                                    client
+                                    #:permission-policy
+                                    permission-policy
+                                    #:permission-handler
+                                    permission-handler
+                                    #:on-update
+                                    on-update
+                                    #:allowed-tools
+                                    allowed-tools
+                                    #:max-iterations
+                                    max-iterations
+                                    #:system-prompt
+                                    sys))))
+         (res
+           (call-with-subagent agent
+                               (lambda (ag)
+                                 (subagent-prompt! ag prompt))))
+         (status (assoc-ref res 'status))
+         (content (assoc-ref res 'content)))
+      (%write-subagent-trajectory! journal-dir sub-id prompt res)
+      (or
+        (and (string? content) (not (string-null? content)) content)
+        (format #f "[Sub-agent finished with status: ~a]" status)))))
 
 (define* (run-subagents-parallel queries
                                  #:key
@@ -702,83 +1775,184 @@ Returns an alist describing the subagent transaction result."
                                     (max_iterations . ((type . "integer") (description . "Max ReAct iterations (default: unlimited)")))))
                        (required . #("prompt"))))))
 
-(define* (register-subagent-tools! reg
-                                   #:key
-                                   (client #f)
-                                   (journal-dir ".badb/journal/subagents")
-                                   (default-allowed-tools %default-investigate-tools))
-         "Register 'investigate', 'investigate_parallel', and 'subagent_transaction' tools in REG."
-         (registry-attach!
-           reg
-           "investigate"
-           (lambda (args)
-             (with-tool-args args ((prompt prompt "")
-                                   (tools-raw allowed_tools #f)
-                                   (isolated-raw isolated #f)
-                                   (max-iter max_iterations #f))
-                             (let ((tools (cond
-                                            ((vector? tools-raw) (vector->list tools-raw))
-                                            ((list? tools-raw) tools-raw)
-                                            (else default-allowed-tools)))
-                                   (isolated? (and isolated-raw (not (eq? isolated-raw #f)))))
-                               (run-subagent prompt
-                                             #:client client
-                                             #:parent-reg reg
-                                             #:allowed-tools tools
-                                             #:worktree-isolated? isolated?
-                                             #:max-iterations max-iter
-                                             #:journal-dir journal-dir))))
-           #:metadata %investigate-tool-schema)
-
-         (registry-attach!
-           reg
-           "investigate_parallel"
-           (lambda (args)
-             (with-tool-args args ((queries-raw queries '())
-                                   (max-iter max_iterations #f))
-                             (let ((queries (cond
-                                              ((vector? queries-raw) (vector->list queries-raw))
-                                              ((list? queries-raw) queries-raw)
-                                              ((string? queries-raw) (list queries-raw))
-                                              (else '()))))
-                               (run-subagents-parallel queries
-                                                       #:client client
-                                                       #:parent-reg reg
-                                                       #:allowed-tools default-allowed-tools
-                                                       #:max-iterations max-iter
-                                                       #:journal-dir journal-dir))))
-           #:metadata %investigate-parallel-tool-schema)
-
-         (registry-attach!
-           reg
-           "subagent_transaction"
-           (lambda (args)
-             (with-tool-args args ((prompt prompt "")
-                                   (tools-raw allowed_tools #f)
-                                   (verify-raw verify #t)
-                                   (auto-merge-raw auto_merge #f)
-                                   (keep-wt-raw keep_worktree #f)
-                                   (max-iter max_iterations #f))
-                             (let* ((tools (cond
-                                             ((vector? tools-raw) (vector->list tools-raw))
-                                             ((list? tools-raw) tools-raw)
-                                             (else #f)))
-                                    (verify? (not (eq? verify-raw #f)))
-                                    (auto-merge? (and auto-merge-raw (not (eq? auto-merge-raw #f))))
-                                    (keep-wt? (and keep-wt-raw (not (eq? keep-wt-raw #f))))
-                                    (res (run-subagent-worktree prompt
-                                                                #:client client
-                                                                #:parent-reg reg
-                                                                #:allowed-tools tools
-                                                                #:verify? verify?
-                                                                #:auto-merge? auto-merge?
-                                                                #:keep-worktree? keep-wt?
-                                                                #:max-iterations max-iter
-                                                                #:journal-dir journal-dir)))
-                               (format #f "Subagent Transaction Result [id: ~a, status: ~a, verified: ~a, merged: ~a]:\n~a"
-                                       (assoc-ref res 'sub-id)
-                                       (assoc-ref res 'status)
-                                       (assoc-ref res 'verified?)
-                                       (assoc-ref res 'merged?)
-                                       (assoc-ref res 'content)))))
-           #:metadata %subagent-transaction-tool-schema))
+(define*
+  (register-subagent-tools! reg
+                            #:key
+                            (client #f)
+                            (journal-dir ".badb/journal/subagents")
+                            (default-allowed-tools %default-investigate-tools))
+  "Register 'investigate', 'investigate_parallel', 'subagent_transaction',
+and deferred 'remote_subagent' tools in REG."
+  (registry-attach! reg
+                    "investigate"
+                    (lambda (args)
+                      (with-tool-args args
+                                      ((prompt prompt "") (tools-raw allowed_tools #f)
+                                       (isolated-raw isolated #f)
+                                       (max-iter max_iterations #f))
+                                      (let
+                                          ((tools
+                                             (cond
+                                               ((vector? tools-raw) (vector->list tools-raw))
+                                               ((list? tools-raw) tools-raw)
+                                               (else default-allowed-tools))))
+                                        (run-subagent prompt
+                                                      #:client
+                                                      client
+                                                      #:parent-reg
+                                                      reg
+                                                      #:allowed-tools
+                                                      tools
+                                                      #:max-iterations
+                                                      max-iter
+                                                      #:worktree-isolated?
+                                                      (eq? isolated-raw #t)
+                                                      #:journal-dir
+                                                      journal-dir))))
+                    #:metadata
+                    %investigate-tool-schema)
+  (registry-attach! reg
+                    "investigate_parallel"
+                    (lambda (args)
+                      (with-tool-args args
+                                      ((queries-raw queries '()) (max-iter max_iterations #f))
+                                      (let
+                                          ((queries
+                                             (cond
+                                               ((vector? queries-raw) (vector->list queries-raw))
+                                               ((list? queries-raw) queries-raw)
+                                               ((string? queries-raw) (list queries-raw))
+                                               (else '()))))
+                                        (run-subagents-parallel queries
+                                                                #:client
+                                                                client
+                                                                #:parent-reg
+                                                                reg
+                                                                #:allowed-tools
+                                                                default-allowed-tools
+                                                                #:max-iterations
+                                                                max-iter
+                                                                #:journal-dir
+                                                                journal-dir))))
+                    #:metadata
+                    %investigate-parallel-tool-schema)
+  (registry-attach! reg
+                    "subagent_transaction"
+                    (lambda (args)
+                      (with-tool-args args
+                                      ((prompt prompt "") (tools-raw allowed_tools #f)
+                                       (verify-raw verify #t)
+                                       (auto-merge-raw auto_merge #f)
+                                       (keep-wt-raw keep_worktree #f)
+                                       (max-iter max_iterations #f))
+                                      (let*
+                                          ((tools
+                                             (cond
+                                               ((vector? tools-raw) (vector->list tools-raw))
+                                               ((list? tools-raw) tools-raw)
+                                               (else %default-worktree-tools)))
+                                           (res
+                                             (run-subagent-worktree prompt
+                                                                    #:client
+                                                                    client
+                                                                    #:parent-reg
+                                                                    reg
+                                                                    #:allowed-tools
+                                                                    tools
+                                                                    #:verify?
+                                                                    (not (eq? verify-raw #f))
+                                                                    #:auto-merge?
+                                                                    (eq? auto-merge-raw #t)
+                                                                    #:keep-worktree?
+                                                                    (eq? keep-wt-raw #t)
+                                                                    #:max-iterations
+                                                                    max-iter
+                                                                    #:journal-dir
+                                                                    journal-dir)))
+                                        (format #f
+                                                "[Transaction ~a | status: ~a, verified: ~a, merged: ~a]:\n~a"
+                                                (assoc-ref res 'sub-id)
+                                                (assoc-ref res 'status)
+                                                (assoc-ref res 'verified?)
+                                                (assoc-ref res 'merged?)
+                                                (assoc-ref res 'content)))))
+                    #:metadata
+                    %subagent-transaction-tool-schema)
+  (registry-attach! reg
+                    "remote_subagent"
+                    (lambda (args)
+                      (with-tool-args args
+                                      ((prompt prompt "")
+                                       (transport-raw transport "tcp")
+                                       (host-raw host "127.0.0.1")
+                                       (port-raw port #f)
+                                       (socket-raw socket_path #f)
+                                       (command-raw command #f)
+                                       (cwd-raw cwd (getcwd))
+                                       (tools-raw allowed_tools #f)
+                                       (max-iter max_iterations #f))
+                                      (let*
+                                          ((tools
+                                             (cond
+                                               ((vector? tools-raw) (vector->list tools-raw))
+                                               ((list? tools-raw) tools-raw)
+                                               (else #f)))
+                                           (transport-sym
+                                             (cond
+                                               ((symbol? transport-raw) transport-raw)
+                                               ((string? transport-raw) (string->symbol transport-raw))
+                                               (else 'tcp)))
+                                           (cmd-list
+                                             (cond
+                                               ((vector? command-raw) (vector->list command-raw))
+                                               ((list? command-raw) command-raw)
+                                               ((string? command-raw) (list command-raw))
+                                               (else #f)))
+                                           (agent
+                                             (make-remote-subagent #:transport
+                                                                   transport-sym
+                                                                   #:host
+                                                                   (or host-raw "127.0.0.1")
+                                                                   #:port
+                                                                   (and (integer? port-raw) port-raw)
+                                                                   #:socket-path
+                                                                   socket-raw
+                                                                   #:command
+                                                                   cmd-list
+                                                                   #:workspace
+                                                                   (or cwd-raw (getcwd))
+                                                                   #:allowed-tools
+                                                                   tools
+                                                                   #:max-iterations
+                                                                   max-iter))
+                                           (res
+                                             (call-with-subagent agent
+                                                                 (lambda (ag)
+                                                                   (subagent-prompt! ag prompt)))))
+                                        (or (assoc-ref res 'content)
+                                            (format #f "[Remote subagent finished with status: ~a]" (assoc-ref res 'status))))))
+                    #:metadata
+                    '((description .
+                       "Connect to a remote badb ACP server over TCP, Unix socket, or spawned subprocess, perform the ACP handshake, and execute a prompt.")
+                      (_badb_defer . #t)
+                      (parameters .
+                       ((type . "object")
+                        (properties .
+                         ((prompt .
+                           ((type . "string") (description . "Task prompt for the remote badb instance")))
+                          (transport .
+                           ((type . "string")
+                            (description . "Transport: tcp, unix, or spawn (default: tcp)")))
+                          (host . ((type . "string") (description . "TCP host (default: 127.0.0.1)")))
+                          (port . ((type . "integer") (description . "TCP port")))
+                          (socket_path . ((type . "string") (description . "Unix domain socket path")))
+                          (command .
+                           ((type . "array") (items . ((type . "string")))
+                            (description . "Command argv for spawn transport")))
+                          (cwd .
+                           ((type . "string") (description . "Workspace directory for session/new")))
+                          (allowed_tools .
+                           ((type . "array") (items . ((type . "string")))
+                            (description . "Optional tool allowlist")))
+                          (max_iterations . ((type . "integer") (description . "Max ReAct iterations")))))
+                        (required . #("prompt")))))))

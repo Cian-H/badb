@@ -425,6 +425,122 @@
                             (prop-ref (prop-ref response "result") "protocolVersion")))
               (join-thread server-thread 5)))
 
+(test-group
+  "acp-client-handshake-and-prompt-over-pipes"
+  (let*
+      ((tmp-dir (mkdtemp "/tmp/badb-acp-client-XXXXXX"))
+       (c2s (pipe))
+       (s2c (pipe))
+       (mock-poster
+         (lambda* (uri #:key body headers streaming?)
+                  (values (build-response #:code 200)
+                          (open-input-string (acp-sse (acp-content-chunk "Hello via ACP client."))))))
+       (server
+         (make-acp-server #:in-port
+                          (car c2s)
+                          #:out-port
+                          (cdr s2c)
+                          #:client
+                          (acp-mock-client)
+                          #:workspace
+                          tmp-dir
+                          #:permission-policy
+                          'allow))
+       (client (make-acp-client #:in-port (car s2c) #:out-port (cdr c2s))))
+    (parameterize ((current-http-post mock-poster))
+                  (let
+                      ((srv-thread
+                         (call-with-new-thread
+                           (lambda ()
+                             (acp-serve-stdio server)))))
+                    (test-assert "client initially not initialized"
+                                 (not (acp-client-initialized? client)))
+                    (let
+                        ((sid (acp-client-handshake! client #:cwd tmp-dir)))
+                      (test-assert "client initialized after handshake"
+                                   (acp-client-initialized? client))
+                      (test-assert "session-id returned" (string? sid))
+                      (let
+                          ((res (acp-client-prompt! client "Say hello")))
+                        (test-equal "stopReason is end_turn" "end_turn" (assoc-ref res 'stop-reason))
+                        (test-assert "streamed content captured"
+                                     (string-contains (assoc-ref res 'content) "Hello via ACP client."))))
+                    (acp-client-close! client)
+                    (test-assert "client marked closed" (acp-client-closed? client))
+                    (close-port (car c2s))
+                    (close-port (cdr s2c))
+                    (join-thread srv-thread (+ (car (gettimeofday)) 2))))
+    (system* "rm" "-rf" tmp-dir)))
+
+(test-group
+  "acp-client-permission-gate-and-workspace-scoping"
+  (let*
+      ((tmp-dir (mkdtemp "/tmp/badb-acp-client-perm-XXXXXX"))
+       (c2s (pipe))
+       (s2c (pipe))
+       (turn 0)
+       (perm-calls '())
+       (updates '())
+       (mock-poster
+         (lambda* (uri #:key body headers streaming?)
+                  (set! turn (+ turn 1))
+                  (if (= turn 1)
+                    (values (build-response #:code 200)
+                            (open-input-string
+                              (acp-sse
+                                (acp-tool-chunk "write_file"
+                                                (acp-tool-arguments '(("path" . "note.txt") ("content" . "hello-acp")))))))
+                    (values (build-response #:code 200)
+                            (open-input-string (acp-sse (acp-content-chunk "File written.")))))))
+       (server
+         (make-acp-server #:in-port
+                          (car c2s)
+                          #:out-port
+                          (cdr s2c)
+                          #:client
+                          (acp-mock-client)
+                          #:workspace
+                          tmp-dir
+                          #:permission-policy
+                          'ask))
+       (client
+         (make-acp-client #:in-port
+                          (car s2c)
+                          #:out-port
+                          (cdr c2s)
+                          #:on-update
+                          (lambda (_sid upd)
+                            (set! updates (cons upd updates)))
+                          #:permission-handler
+                          (lambda (params)
+                            (set! perm-calls (cons params perm-calls))
+                            'allow))))
+    (parameterize ((current-http-post mock-poster))
+                  (let
+                      ((srv-thread
+                         (call-with-new-thread
+                           (lambda ()
+                             (acp-serve-stdio server)))))
+                    (acp-client-handshake! client
+                                           #:cwd
+                                           tmp-dir
+                                           #:allowed-tools
+                                           '("write_file" "read_file"))
+                    (let
+                        ((res (acp-client-prompt! client "Write note.txt")))
+                      (test-equal "stopReason end_turn" "end_turn" (assoc-ref res 'stop-reason))
+                      (test-assert "content received"
+                                   (string-contains (assoc-ref res 'content) "File written."))
+                      (test-assert "permission handler was consulted" (pair? perm-calls))
+                      (test-assert "on-update callback received updates" (pair? updates))
+                      (test-assert "file written inside workspace cwd"
+                                   (file-exists? (string-append tmp-dir "/note.txt"))))
+                    (acp-client-close! client)
+                    (close-port (car c2s))
+                    (close-port (cdr s2c))
+                    (join-thread srv-thread (+ (car (gettimeofday)) 2))))
+    (system* "rm" "-rf" tmp-dir)))
+
 (spec-end)
 
 (spec-exit)

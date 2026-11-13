@@ -1,19 +1,36 @@
 ;;; (geasa agents-subagent spec.geis) — Contract verification for Sub-Agent Specialization & Worktree Transactions
 
 (define-module (test test-agents-subagent)
-               #:use-module (srfi srfi-64)
-               #:use-module (badb spec)
-               #:use-module (badb kernel registry)
-               #:use-module (geasa providers-model common)
-               #:use-module (geasa providers-model mock)
-               #:use-module (geasa agents-subagent plugin)
-               #:use-module (web response)
-               #:use-module (json)
-               #:use-module (ice-9 ftw)
-               #:use-module (ice-9 textual-ports)
-               #:use-module (ice-9 popen)
-               #:use-module (ice-9 rdelim)
-               #:use-module (srfi srfi-1))
+               #:use-module
+               (srfi srfi-64)
+               #:use-module
+               (badb spec)
+               #:use-module
+               (badb kernel registry)
+               #:use-module
+               (geasa providers-model common)
+               #:use-module
+               (geasa providers-model mock)
+               #:use-module
+               (geasa surfaces-acp client)
+               #:use-module
+               (geasa agents-subagent plugin)
+               #:use-module
+               (web response)
+               #:use-module
+               (json)
+               #:use-module
+               (ice-9 ftw)
+               #:use-module
+               (ice-9 textual-ports)
+               #:use-module
+               (ice-9 popen)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 threads)
+               #:use-module
+               (srfi srfi-1))
 
 (spec-begin "agents-subagent")
 
@@ -238,6 +255,236 @@
                                 (test-assert "trajectory was written" (file-exists? journal-dir)))))
 
               (system* "rm" "-rf" tmp-repo)))
+
+(test-group
+  "acp-separated-client-server-and-handshake"
+  (let*
+      ((tmp-dir (mkdtemp "/tmp/badb-sep-cs-XXXXXX"))
+       (client
+         (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "mock-llm"))
+       (mock-poster
+         (lambda* (uri #:key body headers streaming?)
+                  (values (build-response #:code 200)
+                          (scm->json-string
+                            '((choices .
+                               #(((message . ((role . "assistant") (content . "Separated client/server ok."))))))))))))
+    (parameterize ((current-http-post mock-poster))
+                  (call-with-values create-agent-pipe-pair
+                                    (lambda (srv-in srv-out cli-in cli-out)
+                                      (let*
+                                          ((srv
+                                             (create-agent-server #:in-port
+                                                                  srv-in
+                                                                  #:out-port
+                                                                  srv-out
+                                                                  #:client
+                                                                  client
+                                                                  #:workspace
+                                                                  tmp-dir))
+                                           (acp-mod (resolve-module '(geasa surfaces-acp plugin)))
+                                           (serve-fn (module-ref acp-mod 'acp-serve-stdio))
+                                           (thr
+                                             (call-with-new-thread
+                                               (lambda ()
+                                                 (catch #t
+                                                   (lambda ()
+                                                     (serve-fn srv))
+                                                   (lambda _
+                                                     #f)))))
+                                           (cli (create-agent-client #:in-port cli-in #:out-port cli-out)))
+                                        (let ((sid (agent-handshake! cli #:cwd tmp-dir)))
+                                          (test-assert "handshake initialized client" (acp-client-initialized? cli))
+                                          (test-assert "handshake created sessionId" (string? sid))
+                                          (let
+                                              ((res (acp-client-prompt! cli "Verify handshake")))
+                                            (test-equal "stopReason is end_turn" "end_turn" (assoc-ref res 'stop-reason))
+                                            (test-assert "response text delivered"
+                                                         (string-contains (assoc-ref res 'content) "Separated client/server ok."))))
+                                        (acp-client-close! cli)
+                                        (join-thread thr (+ (car (gettimeofday)) 2))
+                                        (close-port srv-in)
+                                        (close-port srv-out)))))
+    (system* "rm" "-rf" tmp-dir)))
+
+(test-group "local-subagent-full-badb-instance"
+            (let*
+                ((tmp-dir (mkdtemp "/tmp/badb-lsub-XXXXXX"))
+                 (client
+                   (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "mock-llm"))
+                 (turn 0)
+                 (perm-asked? #f)
+                 (tool-args-json
+                   (scm->json-string '((path . "sub-out.txt") (content . "local-badb"))))
+                 (mock-poster
+                   (lambda* (uri #:key body headers streaming?)
+                            (set! turn (+ turn 1))
+                            (let
+                                ((resp
+                                   (if (= turn 1)
+                                     `((choices .
+                                                #(((message .
+                                                            ((role . "assistant") (content . "")
+                                                             (tool_calls .
+                                                                         #(((id . "tc_1") (type . "function")
+                                                                            (function . ((name . "write_file") (arguments . ,tool-args-json))))))))))))
+                                     '((choices .
+                                        #(((message . ((role . "assistant") (content . "Local badb completed."))))))))))
+                              (values (build-response #:code 200) (scm->json-string resp)))))
+                 (agent
+                   (make-local-subagent #:workspace
+                                        tmp-dir
+                                        #:model-client
+                                        client
+                                        #:permission-policy
+                                        'ask
+                                        #:permission-handler
+                                        (lambda (_params)
+                                          (set! perm-asked? #t)
+                                          'allow))))
+              (test-assert "local-subagent? true" (local-subagent? agent))
+              (test-assert "subagent? true" (subagent? agent))
+              (test-equal "initial status is created" 'created (subagent-status agent))
+              (parameterize ((current-http-post mock-poster))
+                            (let
+                                ((res
+                                   (call-with-subagent agent
+                                                       (lambda (ag)
+                                                         (test-equal "running status" 'running (subagent-status ag))
+                                                         (test-assert
+                                                           "both client and server attached locally"
+                                                           (and (acp-client? (local-subagent-client ag)) (local-subagent-server ag)))
+                                                         (test-assert "session-id active" (string? (subagent-session-id ag)))
+                                                         (subagent-prompt! ag "Write sub-out.txt")))))
+                              (test-assert "permission gate fired over ACP" perm-asked?)
+                              (test-assert "file written in subagent workspace"
+                                           (file-exists? (string-append tmp-dir "/sub-out.txt")))
+                              (test-assert "final assistant content returned"
+                                           (string-contains (assoc-ref res 'content) "Local badb completed."))))
+              (test-equal "stopped after call-with-subagent" 'stopped (subagent-status agent))
+              (test-assert "stop is idempotent" (local-subagent-stop! agent))
+              (system* "rm" "-rf" tmp-dir)))
+
+(test-group
+  "remote-superagent-and-remote-subagent-tcp"
+  (let*
+      ((tmp-dir (mkdtemp "/tmp/badb-rsub-tcp-XXXXXX"))
+       (client
+         (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "mock-llm"))
+       (mock-poster
+         (lambda* (uri #:key body headers streaming?)
+                  (values (build-response #:code 200)
+                          (scm->json-string
+                            '((choices .
+                               #(((message . ((role . "assistant") (content . "TCP remote response.")))))))))))
+       (sup
+         (make-remote-superagent #:transport
+                                 'tcp
+                                 #:host
+                                 "127.0.0.1"
+                                 #:port
+                                 0
+                                 #:workspace
+                                 tmp-dir
+                                 #:model-client
+                                 client)))
+    (test-assert "remote-superagent? true" (remote-superagent? sup))
+    (test-equal "superagent starts in created status"
+                'created
+                (subagent-status sup))
+    (parameterize ((current-http-post mock-poster))
+                  (remote-superagent-start! sup)
+                  (test-equal "superagent status running" 'running (subagent-status sup))
+                  (test-assert "ephemeral tcp port assigned" (> (remote-superagent-port sup) 0))
+                  (let*
+                      ((ep (remote-superagent-endpoint sup))
+                       (sub
+                         (make-remote-subagent/tcp (assoc-ref ep 'host)
+                                                   (assoc-ref ep 'port)
+                                                   #:workspace
+                                                   tmp-dir)))
+                    (test-assert "remote-subagent? true" (remote-subagent? sub))
+                    (let
+                        ((res
+                           (call-with-subagent sub
+                                               (lambda (ag)
+                                                 (test-equal "remote subagent running" 'running (subagent-status ag))
+                                                 (test-assert "remote subagent has client" (acp-client? (subagent-client ag)))
+                                                 (subagent-prompt! ag "Hello over TCP")))))
+                      (test-equal "tcp stop-reason end_turn" "end_turn" (assoc-ref res 'stop-reason))
+                      (test-assert "tcp subagent received response"
+                                   (string-contains (assoc-ref res 'content) "TCP remote response.")))
+                    (test-equal "remote subagent stopped" 'stopped (subagent-status sub)))
+                  (remote-superagent-stop! sup)
+                  (test-equal "superagent status stopped" 'stopped (subagent-status sup))
+                  (test-assert "superagent stop is idempotent" (remote-superagent-stop! sup)))
+    (system* "rm" "-rf" tmp-dir)))
+
+(test-group
+  "remote-superagent-and-remote-subagent-unix"
+  (let*
+      ((tmp-dir (mkdtemp "/tmp/badb-rsub-unix-XXXXXX"))
+       (sock-path (string-append tmp-dir "/badb-acp.sock"))
+       (client
+         (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "mock-llm"))
+       (mock-poster
+         (lambda* (uri #:key body headers streaming?)
+                  (values (build-response #:code 200)
+                          (scm->json-string
+                            '((choices .
+                               #(((message . ((role . "assistant") (content . "Unix remote response.")))))))))))
+       (sup
+         (make-remote-superagent #:transport
+                                 'unix
+                                 #:socket-path
+                                 sock-path
+                                 #:workspace
+                                 tmp-dir
+                                 #:model-client
+                                 client)))
+    (parameterize ((current-http-post mock-poster))
+                  (remote-superagent-start! sup)
+                  (test-assert "unix socket file created" (file-exists? sock-path))
+                  (let*
+                      ((ep (remote-superagent-endpoint sup))
+                       (sub
+                         (make-remote-subagent/unix (assoc-ref ep 'socket-path) #:workspace tmp-dir)))
+                    (let
+                        ((res
+                           (call-with-subagent sub
+                                               (lambda (ag)
+                                                 (subagent-prompt! ag "Hello unix")))))
+                      (test-assert "unix subagent received response"
+                                   (string-contains (assoc-ref res 'content) "Unix remote response.")))
+                    (test-equal "unix subagent stopped" 'stopped (subagent-status sub)))
+                  (remote-superagent-stop! sup)
+                  (test-assert "unix socket cleaned up on stop" (not (file-exists? sock-path))))
+    (system* "rm" "-rf" tmp-dir)))
+
+(test-group "remote-subagent-spawn-subprocess"
+            (let*
+                ((tmp-dir (mkdtemp "/tmp/badb-rsub-spawn-XXXXXX"))
+                 (script (string-append tmp-dir "/echo-acp.scm"))
+                 (agent #f))
+              (call-with-output-file script
+                                     (lambda (p)
+                                       (display
+                                         "(use-modules (ice-9 rdelim) (json))\n(let loop ()\n  (let ((line (read-line)))\n    (unless (eof-object? line)\n      (let* ((msg (json-string->scm line))\n             (id (assoc-ref msg \"id\"))\n             (method (assoc-ref msg \"method\")))\n        (cond\n          ((equal? method \"initialize\")\n           (display (scm->json-string `((jsonrpc . \"2.0\") (id . ,id) (result . ((protocolVersion . 1) (agentCapabilities . ()) (agentInfo . ((name . \"mock-acp\") (version . \"0.1.0\"))))))))\n           (newline) (force-output))\n          ((equal? method \"session/new\")\n           (display (scm->json-string `((jsonrpc . \"2.0\") (id . ,id) (result . ((sessionId . \"spawn_sess_1\"))))))\n           (newline) (force-output))\n          ((equal? method \"session/prompt\")\n           (display (scm->json-string `((jsonrpc . \"2.0\") (method . \"session/update\") (params . ((sessionId . \"spawn_sess_1\") (update . ((sessionUpdate . \"agent_message_chunk\") (content . ((type . \"text\") (text . \"spawn-ok\"))))))))))\n           (newline) (force-output)\n           (display (scm->json-string `((jsonrpc . \"2.0\") (id . ,id) (result . ((stopReason . \"end_turn\"))))))\n           (newline) (force-output)))\n        (loop)))))\n"
+                                         p)))
+              (set! agent
+                    (make-remote-subagent/spawn (list "guile" script) #:workspace tmp-dir))
+              (test-assert "remote-subagent? true" (remote-subagent? agent))
+              (let
+                  ((res
+                     (call-with-subagent agent
+                                         (lambda (ag)
+                                           (test-equal "session id from spawned handshake"
+                                                       "spawn_sess_1"
+                                                       (subagent-session-id ag))
+                                           (subagent-prompt! ag "Ping spawned ACP")))))
+                (test-equal "spawned prompt stopReason" "end_turn" (assoc-ref res 'stop-reason))
+                (test-equal "spawned prompt content" "spawn-ok" (assoc-ref res 'content)))
+              (test-equal "spawned subagent stopped" 'stopped (subagent-status agent))
+              (system* "rm" "-rf" tmp-dir)))
 
 (spec-end)
 (spec-exit)
