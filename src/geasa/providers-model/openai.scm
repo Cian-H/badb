@@ -105,6 +105,29 @@ it is automatically wrapped into an OpenAI-compliant (type . \"function\") envel
                 (function . ,tool*)))
             (else tool*))))
 
+(define (dedup-tool-specs tools)
+        "Drop duplicate tool specs with the same function name, keeping the first."
+        (let ((seen (make-hash-table)))
+          (filter
+            (lambda (tool)
+              (let*
+                  ((fn (or (assoc-ref tool "function") (assq-ref tool 'function)))
+                   (raw
+                     (cond
+                       ((pair? fn) (or (assoc-ref fn "name") (assq-ref fn 'name)))
+                       ((pair? tool) (or (assoc-ref tool "name") (assq-ref tool 'name)))
+                       (else #f)))
+                   (name
+                     (cond
+                       ((symbol? raw) (symbol->string raw))
+                       ((string? raw) raw)
+                       (else #f))))
+                (cond
+                  ((or (not name) (string-null? name)) #t)
+                  ((hash-ref seen name) #f)
+                  (else (hash-set! seen name #t) #t))))
+            tools)))
+
 (define*
   (format-chat-request messages
                        #:key
@@ -145,7 +168,9 @@ Optional keyword arguments:
                        (and
                          (and tools (or (pair? tools) (vector? tools)))
                          (cons "tools"
-                               (list->vector (map strip-internal-tool-keys (filter pair? (ensure-list tools))))))
+                               (list->vector
+                                 (dedup-tool-specs
+                                   (map strip-internal-tool-keys (filter pair? (ensure-list tools)))))))
                        (and tool-choice (cons "tool_choice" tool-choice))
                        (and allow-missing-thinking (cons "allow_missing_thinking" #t))
                        (cons "stream"
@@ -431,6 +456,24 @@ returning FALLBACK when it is neither."
           ((string? body) body)
           (else fallback)))
 
+(define (strict-openai-endpoint? endpoint)
+        "Return #t when ENDPOINT targets a strict cloud OpenAI-compatible API
+known to reject Qwen3/LM Studio non-protocol fields (allow_missing_thinking,
+reasoning_content)."
+        (let*
+            ((u
+               (cond
+                 ((uri? endpoint) endpoint)
+                 ((string? endpoint) (string->uri endpoint))
+                 (else #f)))
+             (host (and u (uri-host u))))
+          (and (string? host)
+               (or
+                 (equal? host "generativelanguage.googleapis.com")
+                 (equal? host "api.mistral.ai")
+                 (equal? host "api.anthropic.com")
+                 (equal? host "api.openai.com")))))
+
 (define*
   (model-complete client
                   messages
@@ -450,9 +493,13 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
        (api-key (model-client-api-key client))
        (model (model-client-model client))
        (uri (resolve-endpoint-uri endpoint))
+       (allow-thinking?
+         (and
+           (model-client-allow-missing-thinking? client)
+           (not (strict-openai-endpoint? endpoint))))
        (payload
          (parameterize
-           ((current-send-reasoning? (model-client-allow-missing-thinking? client)))
+           ((current-send-reasoning? allow-thinking?))
            (format-chat-request messages
                                 #:model
                                 model
@@ -467,7 +514,7 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
                                 #:tool-choice
                                 tool-choice
                                 #:allow-missing-thinking
-                                (model-client-allow-missing-thinking? client)
+                                allow-thinking?
                                 #:cache-markers?
                                 (model-client-cache-markers? client))))
        (headers (build-headers api-key #f))
@@ -541,9 +588,13 @@ Returns 'done or 'eof."
        (api-key (model-client-api-key client))
        (model (model-client-model client))
        (uri (resolve-endpoint-uri endpoint))
+       (allow-thinking?
+         (and
+           (model-client-allow-missing-thinking? client)
+           (not (strict-openai-endpoint? endpoint))))
        (payload
          (parameterize
-           ((current-send-reasoning? (model-client-allow-missing-thinking? client)))
+           ((current-send-reasoning? allow-thinking?))
            (format-chat-request messages
                                 #:model
                                 model
@@ -558,7 +609,7 @@ Returns 'done or 'eof."
                                 #:stream
                                 #t
                                 #:allow-missing-thinking
-                                (model-client-allow-missing-thinking? client)
+                                allow-thinking?
                                 #:cache-markers?
                                 (model-client-cache-markers? client))))
        (headers (build-headers api-key #t))

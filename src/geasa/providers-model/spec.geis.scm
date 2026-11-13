@@ -500,23 +500,29 @@
                     "captured request body stream is false"
                     #f
                     (assoc-ref body-json "stream")))))
-
             ;; The client-level allow-missing-thinking flag flows into
             ;; the request body built by model-complete.
             (let*
-                ((strict (make-model-client #:endpoint "https://api.mistral.ai/v1"
-                                            #:api-key "mstrl-test"
-                                            #:model "mistral-large-latest"
-                                            #:allow-missing-thinking? #f))
-                 (lenient (make-model-client #:endpoint "http://127.0.0.1:1234/v1"
-                                             #:model "qwen3.6-35b-a3b"))
+                ((strict
+                   (make-model-client #:endpoint
+                                      "https://api.mistral.ai/v1"
+                                      #:api-key
+                                      "mstrl-test"
+                                      #:model
+                                      "mistral-large-latest"
+                                      #:allow-missing-thinking?
+                                      #f))
+                 (lenient
+                   (make-model-client #:endpoint
+                                      "http://127.0.0.1:1234/v1"
+                                      #:model
+                                      "qwen3.6-35b-a3b"))
                  (seen '())
                  (poster
                    (lambda*
                      (uri #:key (body #f) (headers '()) (streaming? #f))
-                     (set! seen (cons (assoc-ref (json-string->scm body)
-                                                 "allow_missing_thinking")
-                                      seen))
+                     (set! seen
+                           (cons (assoc-ref (json-string->scm body) "allow_missing_thinking") seen))
                      (values
                        (build-response #:code
                                        200
@@ -525,8 +531,56 @@
                        "{\"choices\": [{\"message\": {\"content\": \"ok\"}}]}")))
                  (%strict-call (model-complete strict "hi" #:http-poster poster))
                  (%lenient-call (model-complete lenient "hi" #:http-poster poster)))
-              (test-equal "strict client request omits allow_missing_thinking"
-                          '(#t #f) seen))
+              (test-equal "strict client request omits allow_missing_thinking" '(#t #f) seen))
+            (let*
+                ((gem
+                   (make-model-client #:endpoint
+                                      "https://generativelanguage.googleapis.com/v1beta/openai/"
+                                      #:api-key
+                                      "g-key"
+                                      #:model
+                                      "models/gemini-4-hydrogen"))
+                 (captured '())
+                 (poster
+                   (lambda*
+                     (uri #:key (body #f) (headers '()) (streaming? #f))
+                     (set! captured (cons (json-string->scm body) captured))
+                     (values
+                       (build-response #:code 200 #:headers '((content-type application/json)))
+                       (if streaming?
+                         "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}
+
+data: [DONE]
+
+"
+                         "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"))))
+                 (msgs
+                   (list
+                     (list (cons "role" "assistant")
+                           (cons "reasoning_content" "internal")
+                           (cons "content" "hi"))
+                     (list (cons "role" "user") (cons "content" "next")))))
+              (model-complete gem msgs #:http-poster poster)
+              (model-stream gem
+                            msgs
+                            (lambda _
+                              #f)
+                            #:http-poster
+                            poster)
+              (let
+                  ((stream-body (car captured)) (complete-body (cadr captured)))
+                (test-assert
+                  "Gemini endpoint strips allow_missing_thinking on model-complete"
+                  (not (assoc-ref complete-body "allow_missing_thinking")))
+                (test-assert
+                  "Gemini endpoint strips allow_missing_thinking on model-stream"
+                  (not (assoc-ref stream-body "allow_missing_thinking")))
+                (test-assert
+                  "Gemini endpoint strips reasoning_content on wire"
+                  (not
+                    (assoc-ref
+                      (vector-ref (assoc-ref complete-body "messages") 0)
+                      "reasoning_content")))))
             ;; model-complete with raw? #t returns parsed JSON
             (let*
                 ((client (make-model-client #:endpoint "http://test-server/v1" #:model "m"))
@@ -1389,6 +1443,28 @@
                   #f)
                 (lambda _
                   #t))))
+
+(test-group "format-chat-request-tool-dedup"
+            ;; Strict endpoints (Gemini) reject duplicate function declarations with 400.
+            ;; format-chat-request deduplicates by function name, keeping the first entry.
+            (let*
+                ((t1
+                   '((type . "function")
+                     (function . ((name . "find_symbol") (description . "First")))))
+                 (t2
+                   '(("type" . "function")
+                     ("function" . (("name" . "find_symbol") ("description" . "Duplicate")))))
+                 (t3 '((name . "read_file") (description . "Flat unique")))
+                 (parsed
+                   (json-string->scm (format-chat-request "x" #:model "m" #:tools (list t1 t2 t3))))
+                 (tools-v (assoc-ref parsed "tools")))
+              (test-equal "duplicate tool declaration dropped" 2 (vector-length tools-v))
+              (test-equal "first declaration preserved"
+                          "First"
+                          (assoc-ref (assoc-ref (vector-ref tools-v 0) "function") "description"))
+              (test-equal "second unique tool preserved"
+                          "read_file"
+                          (assoc-ref (assoc-ref (vector-ref tools-v 1) "function") "name"))))
 
 (spec-end)
 (spec-exit)
