@@ -46,6 +46,10 @@
                #:use-module
                (geasa runtimes-loop-guard plugin)
                #:use-module
+               (geasa providers-systemone plugin)
+               #:use-module
+               (geasa policies-systemone-gate plugin)
+               #:use-module
                (geasa policies-guardrail plugin)
                #:use-module
                (geasa runtimes-context plugin)
@@ -457,12 +461,13 @@ verbatim, and fails open to a verbatim truncation."
                                                            #:summarize-fn
                                                            semantic-summarize-fn))
       (define discovered-context-limit
-              (or (badb-config-model-context-limit cfg cur-endpoint cur-model)
-                  (catch #t
-                    (lambda ()
-                      (fetch-model-context-limit client))
-                    (lambda _
-                      #f))))
+              (or
+                (badb-config-model-context-limit cfg cur-endpoint cur-model)
+                (catch #t
+                  (lambda ()
+                    (fetch-model-context-limit client))
+                  (lambda _
+                    #f))))
       (when
           (and (integer? discovered-context-limit) (> discovered-context-limit 4096))
         (set-context-compactor-max-tokens! compactor discovered-context-limit))
@@ -655,12 +660,13 @@ and append it to the persistent history journal file."
               (module-define! repl-mod 'client client)
               (let
                   ((context-limit
-                     (or (badb-config-model-context-limit cfg cur-endpoint cur-model)
-                         (catch #t
-                           (lambda ()
-                             (fetch-model-context-limit client))
-                           (lambda _
-                             #f)))))
+                     (or
+                       (badb-config-model-context-limit cfg cur-endpoint cur-model)
+                       (catch #t
+                         (lambda ()
+                           (fetch-model-context-limit client))
+                         (lambda _
+                           #f)))))
                 (set-context-compactor-max-tokens! compactor
                                                    (if
                                                        (and (integer? context-limit) (> context-limit 4096))
@@ -1398,6 +1404,40 @@ grown journal), which the per-frame header render must not pay."
                           (let*
                               ((max-react-iters (badb-config-react-max-iterations cfg))
                                (loop-guard (make-loop-guard))
+                               (gate-options
+                                 (systemone-gate-config->options cfg
+                                                                 #:warn
+                                                                 (lambda (msg)
+                                                                   (add-sys-msg! msg))))
+                               (gate-client
+                                 (and (systemone-gate-options-enabled? gate-options)
+                                      (make-systemone-client #:endpoint
+                                                             (or (systemone-gate-options-endpoint gate-options)
+                                                                 "https://api.typesafe.ai/v1/systemone")
+                                                             #:api-key
+                                                             (or (systemone-gate-options-api-key gate-options) (getenv "TYPESAFE_API_KEY"))
+                                                             #:model
+                                                             (systemone-gate-options-model gate-options))))
+                               (gate
+                                 (and gate-client
+                                      (make-systemone-gate #:options
+                                                           gate-options
+                                                           #:check
+                                                           (lambda (state)
+                                                             (systemone-gate-check gate-client state))
+                                                           #:journal
+                                                           jrn
+                                                           #:model
+                                                           (badb-config-model-name cfg)
+                                                           #:active-geasa
+                                                           (map
+                                                             (lambda (entry)
+                                                               (ensure-string (assoc-ref entry (quote id))))
+                                                             (registry-list reg))
+                                                           #:on-verdict
+                                                           (lambda (action verdict)
+                                                             (set! status-text (format #f "SYSTEMONE: ~a" action))
+                                                             (render!)))))
                                (session
                                  (make-react-session #:client
                                                      client
@@ -1426,6 +1466,9 @@ grown journal), which the per-frame header render must not pay."
                                                        (evaluate-guardrail policy t-name t-args))
                                                      #:hooks
                                                      (append (make-loop-guard-hooks loop-guard)
+                                                             (if gate
+                                                               (make-systemone-gate-hooks gate)
+                                                               '())
                                                              (list
                                                                (cons 'on-step
                                                                      (lambda (iter phase)

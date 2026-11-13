@@ -282,6 +282,52 @@ To extend badb with a new capability at runtime:
 
 ---
 
+## Optional System-1 Geis Gate
+
+An optional gate in the autonomous ReAct loop consults a cheap "system 1"
+judgment model after tool calls have executed. When it judges that the recent
+activity repeats a reusable capability the harness lacks, it pauses the task
+and injects the contract-gated geis synthesis instruction; otherwise it fails
+open and the loop continues unchanged.
+
+- **Provider:** `providers-systemone` speaks the TypeSafe Jev HTTP API directly
+  (`POST https://api.typesafe.ai/v1/systemone`, bearer `TYPESAFE_API_KEY`).
+  It never routes through the jev MCP server.
+- **Policy:** `policies-systemone-gate` acts only on a confident `generate_geis`
+  (stop and synthesize) or `ask_user` (escalate) choice with companion-Noul
+  agreement. Low confidence, a failed Noul, transport errors, timeouts, or an
+  unparseable answer all fail open to `continue`.
+- **Triggers:** the ReAct `post-turn` hook (throttled by `every-nth-step`) and
+  the `detect-step-loops!` exploration tripwire. Both respect the post-stop
+  cooldown and skip while `spec.lock`/`spec.synthesize` are running.
+- **Disabled by default:** an absent config block means zero hooks and
+  byte-identical loop behavior.
+
+Every evaluated or skipped step journals one row with
+`feature-id: systemone-gate` and checkpoint `post-turn` or
+`exploration-checkpoint`. To enable it in `.badb/config.scm`:
+
+```scheme
+(options
+  (providers
+    (typesafe
+      (endpoint "https://api.typesafe.ai/v1/systemone")
+      (api-key "...") ; or export TYPESAFE_API_KEY
+      (kind systemone)))
+  (systemone-gate
+    (enabled #t)
+    (provider typesafe)
+    (model "jev-latest")
+    (auto-accept 0.8)
+    (noul-floor 0.5)
+    (every-nth-step 1)
+    (max-history 24)
+    (cooldown-steps 5)
+    (max-context-chars 4000)))
+```
+
+---
+
 ## Model & MCP Configuration
 
 ### Model Providers & Endpoints
@@ -380,8 +426,10 @@ badb/
 │       ├── capabilities-*        # fs-tools, context-index, code-nav, mcp, history, skills
 │       ├── runtimes-*            # react, react-stream, context, prompt, rollback, synthesis
 │       ├── providers-model       # Model client adapters (OpenAI, Anthropic, mock)
+│       ├── providers-systemone     # TypeSafe System One (Jev) HTTP provider
 │       ├── surfaces-tui          # Interactive terminal UI (editor, session, transcript, menus)
 │       ├── policies-guardrail    # Safety policies & security levels
+│       ├── policies-systemone-gate # Optional system-1 geis gate (ReAct hooks)
 │       └── persona-*             # Personas (base, badb, synthesizer)
 ├── workflows/                    # Declarative Sema workflows
 └── test/                         # Test fixtures, adversarial suites, specs & e2e tests

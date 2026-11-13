@@ -840,46 +840,72 @@ duplicate-blocked ERROR payload rather than a real execution result."
 
 
 
-(define* (detect-step-loops! session tool-calls #:key (jrn #f))
-         "Observe TOOL-CALLS signatures against SESSION's loop detector (a
+(define (session-exploration-checkpoint! sess)
+        "Consult SESS's 'exploration-checkpoint hook ((FN SESS) -> handled?).
+Return #t only when the hook is present, receives the session, and returns
+#t; a missing or throwing hook degrades to #f so the caller can fall back
+to the hardcoded checkpoint message.  Keeps runtimes-react generic: the
+gate bundle is never imported here."
+        (let*
+            ((hooks (and sess (react-session-hooks sess)))
+             (fn (and hooks (assoc-ref hooks 'exploration-checkpoint))))
+          (if (procedure? fn)
+            (catch #t
+              (lambda ()
+                (eq? #t (fn sess)))
+              (lambda _
+                #f))
+            #f)))
+
+(define*
+  (detect-step-loops! session tool-calls #:key (jrn #f))
+  "Observe TOOL-CALLS signatures against SESSION's loop detector (a
 no-op without one). Returns 'halt once the halt threshold trips, 'warn
-when a corrective user message was injected this step, else #f."
-         (let ((det (react-session-loop-detector session)))
-           (if (loop-detector? det)
-             (begin
-               ;; Track exploratory turn thrashing without workspace mutations
-               (let ((has-mutation? (any mutation-tool-call? tool-calls)))
-                 (if has-mutation?
-                   (set-loop-detector-exploratory-turns! det 0)
-                   (let ((count (+ (or (loop-detector-exploratory-turns det) 0) 1)))
-                     (set-loop-detector-exploratory-turns! det count)
-                     (when (= count 3)
-                       (set-react-session-messages!
-                         session
-                         (append
-                           (react-session-messages session)
-                           (list `((role . "user")
-                                   (content . "[Exploration checkpoint] You've spent three tool turns investigating without an edit or test. Briefly summarize what you've learned and name the next question or action. If more exploration is needed, continue with a specific question to resolve; don't make an edit or create a geis bundle just to satisfy this reminder. Check 'geis.index' only if a relevant project capability could help.")))))))))
-               ;; Track identical tool call repetitions
-               (let loop ((rest tool-calls) (outcome #f))
-                         (if (null? rest)
-                           outcome
-                           (let ((verdict (loop-detector-observe! det (tool-call-signature (car rest)))))
-                             (cond
-                               ((eq? (car verdict) 'halt) 'halt)
-                               ((eq? (car verdict) 'warn)
-                                 (set-react-session-messages!
-                                   session
-                                   (append
-                                     (react-session-messages session)
-                                     (list `((role . "user")
-                                             (content . ,(loop-detector-warn-text
-                                                           (tool-call-signature (car rest))
-                                                           (cdr verdict)
-                                                           (loop-detector-window det)))))))
-                                 (loop (cdr rest) 'warn))
-                               (else (loop (cdr rest) outcome)))))))
-             #f)))
+when a corrective user message was injected this step, else #f.  The
+exploration tripwire delegates to an 'exploration-checkpoint hook when
+present; otherwise it injects the hardcoded checkpoint message."
+  (let
+      ((det (react-session-loop-detector session)))
+    (if (loop-detector? det)
+      (begin
+        ;; Track exploratory turn thrashing without workspace mutations
+        (let
+            ((has-mutation? (any mutation-tool-call? tool-calls)))
+          (if has-mutation?
+            (set-loop-detector-exploratory-turns! det 0)
+            (let
+                ((count (+ (or (loop-detector-exploratory-turns det) 0) 1)))
+              (set-loop-detector-exploratory-turns! det count)
+              (when (= count 3)
+                (unless (session-exploration-checkpoint! session)
+                  (set-react-session-messages! session
+                                               (append (react-session-messages session)
+                                                       (list
+                                                         `((role . "user")
+                                                           (content .
+                                                                    "[Exploration checkpoint] You've spent three tool turns investigating without an edit or test. Briefly summarize what you've learned and name the next question or action. If more exploration is needed, continue with a specific question to resolve; don't make an edit or create a geis bundle just to satisfy this reminder. Check 'geis.index' only if a relevant project capability could help."))))))))))
+        ;; Track identical tool call repetitions
+        (let loop
+          ((rest tool-calls) (outcome #f))
+          (if (null? rest)
+            outcome
+            (let
+                ((verdict (loop-detector-observe! det (tool-call-signature (car rest)))))
+              (cond
+                ((eq? (car verdict) 'halt) 'halt)
+                ((eq? (car verdict) 'warn)
+                  (set-react-session-messages! session
+                                               (append (react-session-messages session)
+                                                       (list
+                                                         `((role . "user")
+                                                           (content .
+                                                                    ,(loop-detector-warn-text
+                                                                       (tool-call-signature (car rest))
+                                                                       (cdr verdict)
+                                                                       (loop-detector-window det)))))))
+                  (loop (cdr rest) 'warn))
+                (else (loop (cdr rest) outcome)))))))
+      #f)))
 
 (define (make-react-session . args)
         "Construct a new <react-session> record.
@@ -1271,13 +1297,13 @@ call (decoding constraints, re-rolls, forced reflection turns),
                             ;; failing step accumulates lives in these cells so
                             ;; the error handler can commit the partial turn to
                             ;; the transcript instead of dropping it.
-                            (let ((step-content #f)
-                                  (step-reasoning #f)
-                                  (step-tool-calls #f)
-                                  (step-pre-turns #f)
-                                  (step-progress (cons '() #f))
-                                  (step-committed? #f)
-                                  (stream-acc (cons "" "")))
+                            (let
+                                ((step-content #f) (step-reasoning #f)
+                                 (step-tool-calls #f)
+                                 (step-pre-turns #f)
+                                 (step-progress (cons '() #f))
+                                 (step-committed? #f)
+                                 (stream-acc (cons "" "")))
                               (catch #t
                                 (lambda ()
                                   (let*
@@ -1293,7 +1319,8 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                        ;; Ephemeral recitation for outbound model completion only (strict append-only history for KV cache)
                                        (outbound-msgs
                                          (if (react-session-recitation? session)
-                                           (append msgs (list `((role . "user") (content . ,(react-recitation-text session)))))
+                                           (append msgs
+                                                   (list `((role . "user") (content . ,(react-recitation-text session)))))
                                            msgs))
                                        ;; Completion seam: the base closure runs one streamed
                                        ;; completion for this loop; a session 'completion hook
@@ -1305,38 +1332,42 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                        ;; turn. Without the hook behavior is unchanged.
                                        (completion-delta-fn
                                          (lambda (payload . type-args)
-                                           (let ((type (if (pair? type-args)
-                                                         (car type-args)
-                                                         'content)))
+                                           (let
+                                               ((type
+                                                  (if (pair? type-args)
+                                                    (car type-args)
+                                                    'content)))
                                              (when (string? payload)
                                                (case type
-                                                 ((content) (set-car! stream-acc
-                                                                      (string-append (car stream-acc) payload)))
-                                                 ((thought) (set-cdr! stream-acc
-                                                                      (string-append (cdr stream-acc) payload))))))
+                                                 ((content) (set-car! stream-acc (string-append (car stream-acc) payload)))
+                                                 ((thought) (set-cdr! stream-acc (string-append (cdr stream-acc) payload))))))
                                            (if (procedure? on-delta-fn)
                                              (catch #t
-                                               (lambda () (apply on-delta-fn payload type-args))
-                                               (lambda _ #f))
+                                               (lambda ()
+                                                 (apply on-delta-fn payload type-args))
+                                               (lambda _
+                                                 #f))
                                              #t)))
                                        (base-completion
-                                         (lambda* (eff-msgs eff-tools #:key (temperature #f) (tool-choice #f))
-                                                  (stream-model-completion client
-                                                                           eff-msgs
-                                                                           eff-tools
-                                                                           max-tokens
-                                                                           completion-delta-fn
-                                                                           #:steering-queue
-                                                                           (react-session-steering-queue session)
-                                                                           #:temperature
-                                                                           (or temperature 0.7)
-                                                                           #:tool-choice
-                                                                           tool-choice)))
+                                         (lambda*
+                                           (eff-msgs eff-tools #:key (temperature #f) (tool-choice #f))
+                                           (stream-model-completion client
+                                                                    eff-msgs
+                                                                    eff-tools
+                                                                    max-tokens
+                                                                    completion-delta-fn
+                                                                    #:steering-queue
+                                                                    (react-session-steering-queue session)
+                                                                    #:temperature
+                                                                    (or temperature 0.7)
+                                                                    #:tool-choice
+                                                                    tool-choice)))
                                        (completion-fn
                                          (or (assoc-ref hooks 'completion)
                                              (lambda (base eff-msgs eff-tools)
                                                (call-with-values
-                                                 (lambda () (base eff-msgs eff-tools))
+                                                 (lambda ()
+                                                   (base eff-msgs eff-tools))
                                                  (lambda (c r t)
                                                    (values c r t '())))))))
                                     (let-values*
@@ -1347,19 +1378,18 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                           (react-session-active-tools session)
                                           (react-session-deferred-tools? session)))
                                        ((content reasoning tool-calls pre-turns)
-                                        (completion-fn base-completion
-                                                       outbound-msgs
-                                                       tools)))
+                                        (completion-fn base-completion outbound-msgs tools)))
                                       (set! step-content content)
                                       (set! step-reasoning reasoning)
                                       (set! step-tool-calls tool-calls)
                                       (set! step-pre-turns pre-turns)
                                       (if (null? tool-calls)
                                         (let
-                                            ((final-msg `((role . "assistant")
-                                                          (content . ,(completion-turn-content content reasoning)))))
+                                            ((final-msg
+                                               `((role . "assistant") (content . ,(completion-turn-content content reasoning)))))
                                           (set! step-committed? #t)
-                                          (set-react-session-messages! session (append msgs (append pre-turns (list final-msg))))
+                                          (set-react-session-messages! session
+                                                                       (append msgs (append pre-turns (list final-msg))))
                                           (set-react-session-status! session 'completed)
                                           (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'completed))
                                           (values 'completed content))
@@ -1396,8 +1426,10 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                                ;; counts toward the warn/halt thresholds.
                                                (executed-tcs
                                                  (map car
-                                                      (filter (lambda (r) (not (tool-result-blocked? r)))
-                                                              (filter pair? results)))))
+                                                      (filter
+                                                        (lambda (r)
+                                                          (not (tool-result-blocked? r)))
+                                                        (filter pair? results)))))
                                             (set-react-session-messages! session (append msgs (append pre-turns new-turn)))
                                             (set! step-committed? #t)
                                             (let
@@ -1406,9 +1438,12 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                               ;; after loop detection, letting a session hook (FN
                                               ;; SESSION) rewrite the transcript (context surgery)
                                               ;; before the next iteration. Isolated like all hooks.
-                                              (run-isolated-hook! (assoc-ref hooks 'post-turn)
-                                                                  "post-turn"
-                                                                  session)
+                                              (for-each
+                                                (lambda (entry)
+                                                  (when
+                                                      (and (pair? entry) (eq? (car entry) (quote post-turn)))
+                                                    (run-isolated-hook! (cdr entry) "post-turn" session)))
+                                                (or hooks (quote ())))
                                               (cond
                                                 ((eq? loop-outcome 'halt)
                                                   (set-react-session-status! session 'loop-detected)
@@ -1432,15 +1467,15 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                     (unless step-committed?
                                       (catch #t
                                         (lambda ()
-                                          (commit-partial-step!
-                                            session
-                                            (or step-content (car stream-acc))
-                                            (or step-reasoning (cdr stream-acc))
-                                            step-tool-calls
-                                            step-pre-turns
-                                            (reverse (car step-progress))
-                                            err-msg))
-                                        (lambda _ #f)))
+                                          (commit-partial-step! session
+                                                                (or step-content (car stream-acc))
+                                                                (or step-reasoning (cdr stream-acc))
+                                                                step-tool-calls
+                                                                step-pre-turns
+                                                                (reverse (car step-progress))
+                                                                err-msg))
+                                        (lambda _
+                                          #f)))
                                     (set-react-session-status! session 'error)
                                     (values 'error err-msg))))))))))
 
