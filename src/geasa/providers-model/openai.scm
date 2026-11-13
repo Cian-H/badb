@@ -752,43 +752,51 @@ of available model id strings, or #f on failure."
         (cond
           ((not (pair? entry)) #f)
           (else
-            (let* ((direct-loaded
-                     (let ((val (json-ref entry "loaded_context_length")))
-                       (and (number? val) (positive? val)
-                            (inexact->exact (floor val)))))
-                   (config-limit
-                     (let ((cfg (json-ref entry "config")))
-                       (and (pair? cfg) (model-entry-context-limit cfg))))
-                   (loaded-instances-limit
-                     (let ((li (json-ref entry "loaded_instances")))
-                       (cond
-                         ((vector? li) (first-context-limit (vector->list li)))
-                         ((list? li) (first-context-limit li))
-                         (else #f))))
-                   (meta-limit
-                     (let ((m (json-ref entry "meta")))
-                       (and (pair? m) (model-entry-context-limit m)))))
+            (let*
+                ((direct-loaded
+                   (let
+                       ((val (json-ref entry "loaded_context_length")))
+                     (and (number? val) (positive? val) (inexact->exact (floor val)))))
+                 (config-limit
+                   (let ((cfg (json-ref entry "config")))
+                     (and (pair? cfg) (model-entry-context-limit cfg))))
+                 (loaded-instances-limit
+                   (let ((li (json-ref entry "loaded_instances")))
+                     (cond
+                       ((vector? li) (first-context-limit (vector->list li)))
+                       ((list? li) (first-context-limit li))
+                       (else #f))))
+                 (meta-limit
+                   (let ((m (json-ref entry "meta")))
+                     (and (pair? m) (model-entry-context-limit m)))))
               (or direct-loaded
                   config-limit
                   loaded-instances-limit
                   meta-limit
-                  (let loop ((keys '("max_model_context_length"
-                                     "max_context_length"
-                                     "context_length"
-                                     "context_window"
-                                     "max_completion_tokens"
-                                     "n_ctx")))
-                            (cond
-                              ((null? keys) #f)
-                              (else
-                                (let ((val (json-ref entry (car keys))))
-                                  (if (and (number? val) (positive? val))
-                                    (inexact->exact (floor val))
-                                    (loop (cdr keys))))))))))))
+                  (let loop
+                    ((keys
+                       '("max_model_context_length" "max_context_length"
+                         "context_length"
+                         "context_window"
+                         "inputTokenLimit"
+                         "input_token_limit"
+                         "max_completion_tokens"
+                         "n_ctx")))
+                    (cond
+                      ((null? keys) #f)
+                      (else
+                        (let ((val (json-ref entry (car keys))))
+                          (if (and (number? val) (positive? val))
+                            (inexact->exact (floor val))
+                            (loop (cdr keys))))))))))))
 
 (define (parse-models-context-limits response)
-        (let* ((obj (if (string? response) (safe-json-parse response #f) response))
-               (data (models-data-of obj)))
+        (let*
+            ((obj
+               (if (string? response)
+                 (safe-json-parse response #f)
+                 response))
+             (data (models-data-of obj)))
           (cond
             ((vector? data)
               (filter-map
@@ -802,6 +810,9 @@ of available model id strings, or #f on failure."
                   (let ((id (model-entry-id entry)))
                     (and id (cons id (model-entry-context-limit entry)))))
                 data))
+            ((and (pair? obj) (model-entry-id obj)) =>
+                                                    (lambda (id)
+                                                      (list (cons id (model-entry-context-limit obj)))))
             (else '()))))
 
 (define (candidate-model-uris endpoint)
@@ -819,40 +830,138 @@ of available model id strings, or #f on failure."
                            #:host (uri-host origin) #:port (uri-port origin)
                            #:path "/api/v1/models"))))
 
-(define* (fetch-model-context-limit client #:key (model #f) (http-getter #f))
-         "Query model listing endpoints for CLIENT and return the integer
+(define (strip-models-prefix id)
+        (if
+            (and (string? id) (string-prefix? "models/" id))
+          (substring id 7)
+          id))
+
+(define
+  (lookup-model-context-limit target-model limits)
+  (and target-model
+       (let
+           ((alt
+              (if (string-prefix? "models/" target-model)
+                (strip-models-prefix target-model)
+                (string-append "models/" target-model))))
+         (or
+           (let ((e (assoc target-model limits))) (and e (cdr e)))
+           (let ((e (assoc alt limits))) (and e (cdr e)))))))
+
+(define (gemini-endpoint? uri)
+        (let
+            ((host (and uri (uri-host uri)))
+             (path (string-trim-right (or (and uri (uri-path uri)) "") #\/)))
+          (or
+            (equal? host "generativelanguage.googleapis.com")
+            (string-suffix? "/v1beta/openai" path)
+            (string-suffix? "/v1beta/openai/chat/completions" path)
+            (string-suffix? "/v1beta/openai/completions" path))))
+
+(define (gemini-model-uri endpoint target-model)
+        (let*
+            ((u
+               (if (string? endpoint)
+                 (string->uri endpoint)
+                 endpoint))
+             (short-model (strip-models-prefix target-model)))
+          (and u
+               (non-empty-string? short-model)
+               (gemini-endpoint? u)
+               (let*
+                   ((path (or (uri-path u) "/"))
+                    (base
+                      (cond
+                        ((string-suffix? "/chat/completions" path)
+                          (substring path 0 (- (string-length path) 17)))
+                        ((string-suffix? "/completions" path)
+                          (substring path 0 (- (string-length path) 12)))
+                        ((string-suffix? "/messages" path)
+                          (substring path 0 (- (string-length path) 9)))
+                        ((string-suffix? "/chat" path) (substring path 0 (- (string-length path) 5)))
+                        (else (string-trim-right path #\/))))
+                    (native-base
+                      (if (string-suffix? "/openai" base)
+                        (substring base 0 (- (string-length base) 7))
+                        base))
+                    (version-base
+                      (if (string-null? native-base)
+                        "/v1beta"
+                        native-base)))
+                 (build-uri (uri-scheme u)
+                            #:userinfo
+                            (uri-userinfo u)
+                            #:host
+                            (uri-host u)
+                            #:port
+                            (uri-port u)
+                            #:path
+                            (string-append version-base "/models/" short-model)
+                            #:query
+                            (uri-query u)
+                            #:fragment
+                            (uri-fragment u))))))
+
+(define (build-gemini-headers api-key)
+        (let ((base (build-headers #f #f)))
+          (if
+              (and api-key (string? api-key) (not (string-null? api-key)))
+            (cons (cons 'x-goog-api-key api-key) base)
+            base)))
+
+(define*
+  (fetch-model-context-limit client #:key (model #f) (http-getter #f))
+  "Query model listing endpoints for CLIENT and return the integer
 context limit for the entry whose id equals MODEL, or — when MODEL is #f
 or generic (generic-model?) — for (model-client-model client). Tries the
-standard OpenAI-compatible endpoint first, then LMStudio's native
-endpoints. #f when the entry is missing, metadata absent, or every
-request/parse fails. MUST catch all errors, return #f instead of throwing."
-         (let* ((target-model (or (and model (not (generic-model? model)) model)
-                                  (model-client-model client)))
-                (headers (build-headers (model-client-api-key client) #f))
-                (getter (or http-getter (current-http-get)))
-                (uris (candidate-model-uris (model-client-endpoint client))))
-           (let loop ((uris uris))
-                     (cond
-                       ((null? uris) #f)
-                       (else
-                         (let ((limit
-                                 (catch #t
-                                   (lambda ()
-                                     (call-with-values
-                                       (lambda () (getter (car uris) #:headers headers))
-                                       (lambda (response body)
-                                         (let* ((code (response-code response))
-                                                (body-str (response-body->string body "")))
-                                           (if (<= 200 code 299)
-                                             (let ((limits (parse-models-context-limits body-str)))
-                                               (and target-model
-                                                    (let ((entry (assoc target-model limits)))
-                                                      (and entry (cdr entry)))))
-                                             #f)))))
-                                   (lambda (key . args) #f))))
-                           (if (and (integer? limit) (> limit 0))
-                             limit
-                             (loop (cdr uris)))))))))
+standard OpenAI-compatible endpoint first, then Gemini's native model
+metadata endpoint when applicable, then LMStudio's native endpoints.
+#f when the entry is missing, metadata absent, or every request/parse
+fails. MUST catch all errors, return #f instead of throwing."
+  (let*
+      ((target-model
+         (or (and model (not (generic-model? model)) model) (model-client-model client)))
+       (api-key (model-client-api-key client))
+       (openai-headers (build-headers api-key #f))
+       (getter (or http-getter (current-http-get)))
+       (endpoint (model-client-endpoint client))
+       (uris (candidate-model-uris endpoint))
+       (gem-uri (and target-model (gemini-model-uri endpoint target-model)))
+       (requests
+         (append (list (cons (car uris) openai-headers))
+                 (if gem-uri
+                   (list (cons gem-uri (build-gemini-headers api-key)))
+                   '())
+                 (map
+                   (lambda (u)
+                     (cons u openai-headers))
+                   (cdr uris)))))
+    (let loop
+      ((reqs requests))
+      (cond
+        ((null? reqs) #f)
+        (else
+          (let
+              ((limit
+                 (catch #t
+                   (lambda ()
+                     (call-with-values
+                       (lambda ()
+                         (getter (caar reqs) #:headers (cdar reqs)))
+                       (lambda (response body)
+                         (let*
+                             ((code (response-code response)) (body-str (response-body->string body "")))
+                           (if (<= 200 code 299)
+                             (let
+                                 ((limits (parse-models-context-limits body-str)))
+                               (lookup-model-context-limit target-model limits))
+                             #f)))))
+                   (lambda (key . args)
+                     #f))))
+            (if (and (integer? limit) (> limit 0))
+              limit
+              (loop (cdr reqs)))))))))
+
 (define* (model-available? client id #:key (http-getter #f))
          "Return #t when model ID is listed by CLIENT's /models endpoint.
 Issues a live HTTP request; returns #f on error or when ID is not found."

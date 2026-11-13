@@ -1000,52 +1000,142 @@
             (test-equal "raw string response yields #f" #f (extract-usage "plain text")))
 
 (test-group "model-entry-context-limit"
-            (let ((entry (json-string->scm "{\"id\":\"gpt-4\",\"max_context_length\":131072}")))
+            (let
+                ((entry (json-string->scm "{\"id\":\"gpt-4\",\"max_context_length\":131072}")))
               (test-equal "max_context_length 131072 -> 131072"
-                          131072 (model-entry-context-limit entry)))
-            (let ((entry (json-string->scm "{\"id\":\"gpt-4\",\"context_window\":8192}")))
+                          131072
+                          (model-entry-context-limit entry)))
+            (let
+                ((entry (json-string->scm "{\"id\":\"gpt-4\",\"context_window\":8192}")))
               (test-equal "only context_window -> that value"
-                          8192 (model-entry-context-limit entry)))
-            (let ((entry (json-string->scm "{\"id\":\"gpt-4\",\"max_model_context_length\":16384,\"context_length\":4096}")))
-              (test-equal "priority order: max_model_context_length before context_length"
-                          16384 (model-entry-context-limit entry)))
-            (let ((entry (json-string->scm "{\"id\":\"gpt-4\"}")))
+                          8192
+                          (model-entry-context-limit entry)))
+            (let
+                ((entry
+                   (json-string->scm
+                     "{\"id\":\"gpt-4\",\"max_model_context_length\":16384,\"context_length\":4096}")))
+              (test-equal
+                "priority order: max_model_context_length before context_length"
+                16384
+                (model-entry-context-limit entry)))
+            (let
+                ((entry (json-string->scm "{\"id\":\"gpt-4\"}")))
               (test-equal "no known keys -> #f" #f (model-entry-context-limit entry)))
-            (let ((entry (json-string->scm "{\"id\":\"gpt-4\",\"max_context_length\":131072.5}")))
+            (let
+                ((entry (json-string->scm "{\"id\":\"gpt-4\",\"max_context_length\":131072.5}")))
               (test-equal "float floors to exact int"
-                          131072 (model-entry-context-limit entry)))
-            (test-equal "non-pair entry -> #f" #f (model-entry-context-limit "not an alist"))
+                          131072
+                          (model-entry-context-limit entry)))
+            (test-equal "non-pair entry -> #f"
+                        #f
+                        (model-entry-context-limit "not an alist"))
+            (let
+                ((entry
+                   (json-string->scm
+                     "{\"name\":\"models/gemini-4-hydrogen\",\"inputTokenLimit\":1048576,\"outputTokenLimit\":65536}")))
+              (test-equal "Gemini inputTokenLimit -> 1048576"
+                          1048576
+                          (model-entry-context-limit entry)))
             (test-equal "null entry -> #f" #f (model-entry-context-limit '())))
 
 (test-group "parse-models-context-limits"
-            (let ((response "{\"data\":[{\"id\":\"a\",\"max_context_length\":131072},{\"id\":\"b\"}]}"))
-              (test-equal "two models (one with limit one without) -> alist with #f for missing"
-                          '(("a" . 131072) ("b" . #f)) (parse-models-context-limits response)))
+            (let
+                ((response
+                   "{\"data\":[{\"id\":\"a\",\"max_context_length\":131072},{\"id\":\"b\"}]}"))
+              (test-equal
+                "two models (one with limit one without) -> alist with #f for missing"
+                '(("a" . 131072) ("b" . #f))
+                (parse-models-context-limits response)))
             (test-equal "malformed -> '()" '() (parse-models-context-limits "not json"))
-            (test-equal "empty data -> '()" '() (parse-models-context-limits "{\"data\":[]}"))
-            (test-equal "parsed alist equals raw string input"
-                        '(("a" . 131072))
-                        (parse-models-context-limits (json-string->scm "{\"data\":[{\"id\":\"a\",\"max_context_length\":131072}]}"))))
+            (test-equal "empty data -> '()"
+                        '()
+                        (parse-models-context-limits "{\"data\":[]}"))
+            (test-equal
+              "single Gemini model object -> single-entry alist"
+              '(("models/gemini-4-hydrogen" . 1048576))
+              (parse-models-context-limits
+                "{\"name\":\"models/gemini-4-hydrogen\",\"inputTokenLimit\":1048576,\"outputTokenLimit\":65536}"))
+            (test-equal
+              "parsed alist equals raw string input"
+              '(("a" . 131072))
+              (parse-models-context-limits
+                (json-string->scm "{\"data\":[{\"id\":\"a\",\"max_context_length\":131072}]}"))))
 
 (test-group "fetch-model-context-limit"
-            (let* ((canned-response "{\"data\":[{\"id\":\"gpt-4\",\"max_context_length\":131072},{\"id\":\"gpt-3\",\"context_length\":4096}]}")
-                   (fake-getter
-                     (lambda* (uri #:key (headers '()))
-                              (values (build-response #:code 200)
-                                      canned-response)))
-                   (client (make-model-client #:endpoint "https://api.example.com" #:api-key "test-key" #:model "gpt-4"))
-                   (throwing-getter (lambda* (uri #:key (headers '())) (error "network error")))
-                   (malformed-getter (lambda* (uri #:key (headers '())) (values (build-response #:code 200) "not json"))))
-              (test-equal "canned response returns matching limit for explicit model"
-                          131072 (fetch-model-context-limit client #:model "gpt-4" #:http-getter fake-getter))
-              (test-equal "canned response returns matching limit for client model"
-                          131072 (fetch-model-context-limit client #:http-getter fake-getter))
+            (let*
+                ((canned-response
+                   "{\"data\":[{\"id\":\"gpt-4\",\"max_context_length\":131072},{\"id\":\"gpt-3\",\"context_length\":4096}]}")
+                 (fake-getter
+                   (lambda* (uri #:key (headers '()))
+                            (values (build-response #:code 200) canned-response)))
+                 (client
+                   (make-model-client #:endpoint
+                                      "https://api.example.com"
+                                      #:api-key
+                                      "test-key"
+                                      #:model
+                                      "gpt-4"))
+                 (throwing-getter (lambda* (uri #:key (headers '())) (error "network error")))
+                 (malformed-getter
+                   (lambda* (uri #:key (headers '()))
+                            (values (build-response #:code 200) "not json"))))
+              (test-equal
+                "canned response returns matching limit for explicit model"
+                131072
+                (fetch-model-context-limit client #:model "gpt-4" #:http-getter fake-getter))
+              (test-equal
+                "canned response returns matching limit for client model"
+                131072
+                (fetch-model-context-limit client #:http-getter fake-getter))
               (test-equal "unknown model -> #f"
-                          #f (fetch-model-context-limit client #:model "unknown" #:http-getter fake-getter))
-              (test-equal "getter that throws -> #f (no escape)"
-                          #f (fetch-model-context-limit client #:http-getter throwing-getter))
+                          #f
+                          (fetch-model-context-limit client #:model "unknown" #:http-getter fake-getter))
+              (test-equal
+                "getter that throws -> #f (no escape)"
+                #f
+                (fetch-model-context-limit client #:http-getter throwing-getter))
+              (let*
+                  ((gem-client
+                     (make-model-client #:endpoint
+                                        "https://generativelanguage.googleapis.com/v1beta/openai/"
+                                        #:api-key
+                                        "gem-key"
+                                        #:model
+                                        "models/gemini-4-hydrogen"))
+                   (short-client
+                     (make-model-client #:endpoint
+                                        "https://generativelanguage.googleapis.com/v1beta/openai/"
+                                        #:api-key
+                                        "gem-key"
+                                        #:model
+                                        "gemini-4-hydrogen"))
+                   (gem-getter
+                     (lambda* (uri #:key (headers '()))
+                              (let ((path (uri-path uri)))
+                                (cond
+                                  ((string=? path "/v1beta/openai/models")
+                                    (values (build-response #:code 200)
+                                            "{\"object\":\"list\",\"data\":[{\"id\":\"models/gemini-4-hydrogen\",\"object\":\"model\"}]}"))
+                                  ((string=? path "/v1beta/models/gemini-4-hydrogen")
+                                    (if
+                                        (and
+                                          (equal? (assoc-ref headers 'x-goog-api-key) "gem-key")
+                                          (not (assoc-ref headers 'authorization)))
+                                      (values (build-response #:code 200)
+                                              "{\"name\":\"models/gemini-4-hydrogen\",\"inputTokenLimit\":1048576,\"outputTokenLimit\":65536}")
+                                      (values (build-response #:code 401) "unauthorized")))
+                                  (else (values (build-response #:code 404) "not found")))))))
+                (test-equal
+                  "Gemini bridge falls back to native v1beta model with x-goog-api-key"
+                  1048576
+                  (fetch-model-context-limit gem-client #:http-getter gem-getter))
+                (test-equal
+                  "Gemini bare model id matches models/-prefixed metadata"
+                  1048576
+                  (fetch-model-context-limit short-client #:http-getter gem-getter)))
               (test-equal "malformed response -> #f"
-                          #f (fetch-model-context-limit client #:http-getter malformed-getter))))
+                          #f
+                          (fetch-model-context-limit client #:http-getter malformed-getter))))
 
 (test-group "cache-control-markers"
             ;; client flag
