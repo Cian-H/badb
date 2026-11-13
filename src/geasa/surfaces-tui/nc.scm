@@ -64,7 +64,6 @@
 ;;;
 ;;; Library discovery and FFI plumbing
 ;;;
-
 (define (library-candidates soname)
         (append
           (filter-map
@@ -260,7 +259,6 @@
 ;;;
 ;;; Emulated curses state
 ;;;
-
 (define %nc %null-pointer)
 (define %plane %null-pointer)
 (define %pairs (make-hash-table 61))       ; pair id -> (fg . bg) rgb
@@ -295,7 +293,6 @@ text style: curses' A_DIM renders as reduced foreground intensity."
 ;;;
 ;;; Session lifecycle
 ;;;
-
 (define (initscr)
         ;; The TUI runs on the alternate screen: on exit the terminal
         ;; restores the pre-TUI screen, so no rendered frame leaks into the
@@ -348,7 +345,6 @@ text style: curses' A_DIM renders as reduced foreground intensity."
 ;;;
 ;;; Geometry, drawing, rendering
 ;;;
-
 (define %dim-y (make-bytevector 4))
 (define %dim-x (make-bytevector 4))
 (define (refresh-dims!)
@@ -436,7 +432,6 @@ so the TUI never leaves the user's cursor style clobbered."
 ;;;
 ;;; Attributes and colors (curses emulation)
 ;;;
-
 (define %default-fg-slot (make-bytevector 4))
 (define %default-bg-slot (make-bytevector 4))
 
@@ -525,7 +520,6 @@ reversed cards) and stays opaque."
 ;;;
 ;;; Input
 ;;;
-
 ;; ncinput layout (x86_64, notcurses 3.0.16):
 ;;   uint32 id (0) | int y (4) | int x (8) | char utf8[5] (12) |
 ;;   bool alt (17) | bool shift (18) | bool ctrl (19) |
@@ -548,9 +542,7 @@ reversed cards) and stays opaque."
                     (loop (+ i 1)))))
 
 (define (push-back-event! id)
-        (set! %pushback
-              (append %pushback
-                      (list (cons id (bytevector-copy %ncinput))))))
+        (set! %pushback (cons (cons id (bytevector-copy %ncinput)) %pushback)))
 
 (define (pushback-count)
         "Number of events currently held in the pushback queue. The queue
@@ -559,20 +551,19 @@ tests use this to probe that no event was lost or duplicated."
         (length %pushback))
 
 (define (input-pending?)
-        "Return #t when another input event is immediately available,
-WITHOUT consuming it: a non-empty pushback queue counts, and one
-non-blocking peek is made otherwise - a real event found by the peek
-is pushed back so the next read delivers it intact. #f when nothing
-is queued (or outside a session, before initscr). notcurses reports
-\"no input available\" as 0 and errors as (uint32)-1."
-        (cond
-          ((pair? %pushback) #t)
-          ((null-pointer? %nc) #f)
-          (else
-            (let ((id (%get-nblock %nc %ncinput-ptr)))
-              (if (or (= id 0) (= id %u32-err))
-                #f
-                (begin (push-back-event! id) #t))))))
+        "Return #t when another deliverable key event is immediately
+available, WITHOUT consuming it. Drains and discards leading non-key
+noise (release events, NCKEY_INVALID, undelivered preterunicode keys)
+and queues leading mouse events, pushing back the first deliverable
+event found so the next read delivers it intact. #f when nothing
+deliverable is queued (or outside a session, before initscr)."
+        (let loop
+          ()
+          (let ((id (read-raw-id-nblock)))
+            (cond
+              ((not id) #f)
+              ((%consume-non-key-event? id) (loop))
+              (else (push-back-event! id) #t)))))
 
 ;; Consume and discard one event if one is immediately available,
 ;; pushback first: drain-input! must throw input away, unlike the
@@ -672,78 +663,91 @@ and clear the queue."
               KEY_NPAGE KEY_PPAGE KEY_HOME KEY_END KEY_ENTER KEY_RESIZE
               KEY_FIND KEY_OPEN))
 
+(define (%consume-non-key-event? id)
+        "Consume ID if it is not a deliverable key event (release, invalid
+sentinel, mouse event, or undelivered preterunicode key); mouse
+presses/wheel ticks are queued as getch would. Return #t when ID was
+consumed, #f when ID is a key event getch would deliver."
+        (cond
+          ((or (= id %nckey-invalid) (input-release?)) #t)
+          ((and (>= id (+ %preterunicode-base 201)) (<= id (+ %preterunicode-base 210)))
+            (queue-mouse-event! id)
+            #t)
+          ((and (>= id %preterunicode-base) (not (memv id %delivered-keys))) #t)
+          (else #f)))
+
 (define (getch win)
-        (let loop ((id (read-raw-id)))
-                  (cond
-                    ((not id) ERR)
-                    ;; 0 = no input available, (uint32)-1 = error, and the
-                    ;; never-delivered NCKEY_INVALID sentinel: all are ERR.
-                    ((or (= id 0) (= id %u32-err) (= id %nckey-invalid)) ERR)
-                    ;; Terminals with the kitty keyboard protocol negotiated send a
-                    ;; release event after every press; curses has no releases, so
-                    ;; skip them lest each keypress dispatch twice.
-                    ((input-release?) (loop (read-raw-id)))
-                    ;; Mouse: button presses and wheel ticks queue as mouse events;
-                    ;; button releases are skipped. ERR wakes the blocking main loop
-                    ;; so the app drains the event right away.
-                    ((and (>= id (+ %preterunicode-base 201))
-                          (<= id (+ %preterunicode-base 210)))
-                      (if (input-release?)
-                        (loop (read-raw-id))
-                        (begin (queue-mouse-event! id) ERR)))
-                    ;; Ctrl+Up / Ctrl+Down arrive as NCKEY_UP/DOWN with the ctrl
-                    ;; modifier; synthesize the sentinels key-defined reports for
-                    ;; the xterm sequences so existing dispatch keeps working.
-                    ((and (= id KEY_UP) (input-ctrl?)) KEY_FIND)
-                    ((and (= id KEY_DOWN) (input-ctrl?)) KEY_OPEN)
-                    ;; notcurses resizes its planes lazily (at the next render);
-                    ;; notcurses_refresh applies the new geometry immediately, so
-                    ;; the TUI's render that follows this KEY_RESIZE lays out at
-                    ;; the correct size. NULL out-params: we read dims via
-                    ;; ncplane_dim_yx as usual.
-                    ((= id KEY_RESIZE)
-                      (catch #t
-                        (lambda ()
-                          (%nc-refresh %nc %null-pointer %null-pointer)
-                          (when %ioctl (sync-known-size!)))
-                        (lambda _ #f))
-                      KEY_RESIZE)
-                    ;; The kitty protocol reports plain keys as their unmodified id
-                    ;; plus a modifier bitmask ('!' is 1+shift). Compose to curses
-                    ;; semantics:
-                    ;;   - notcurses' eff_text is only safe for shift/capslock
-                    ;;     composition of printables: for ctrl input it gives the
-                    ;;     UPPERCASE letter (ctrl+e -> 'E'), and it must never
-                    ;;     override an already-composed control code.
-                    ;;   - special NCKEY_* ids never reach here.
-                    ;; ctrl+letter is the classic control code (a=1..z=26). notcurses
-                    ;; reports it two ways: kitty protocol sends the lowercase id
-                    ;; plus the ctrl modifier, while legacy control codes arrive
-                    ;; normalized to the UPPERCASE letter with the ctrl modifier
-                    ;; (0x05 -> 'E'). Compose both to the control code.
-                    ((and (input-ctrl?)
-                          (or (and (>= id 97) (<= id 122))
-                              (and (>= id 65) (<= id 90))))
-                      (if (< id 97) (- id 64) (- id 96)))
-                    ((and (not (input-ctrl?))
-                          (>= id 32)
-                          (< id %preterunicode-base)
-                          (> (input-eff-text) 0))
-                      (input-eff-text))
-                    ;; Synthesized keys we do not deliver (modifier keys like
-                    ;; NCKEY_LSHIFT, media keys, mouse buttons, ...) are noise under
-                    ;; the kitty protocol; skip them and read the next event rather
-                    ;; than leaking a huge codepoint into printable-character
-                    ;; handling, where integer->char would crash the app.
-                    ((and (>= id %preterunicode-base)
-                          (not (memv id %delivered-keys)))
-                      (loop (read-raw-id)))
-                    (else id))))
+        (let loop
+          ((id (read-raw-id)))
+          (cond
+            ((not id) ERR)
+            ;; 0 = no input available, (uint32)-1 = error, and the
+            ;; never-delivered NCKEY_INVALID sentinel: all are ERR.
+            ((or (= id 0) (= id %u32-err) (= id %nckey-invalid)) ERR)
+            ;; Terminals with the kitty keyboard protocol negotiated send a
+            ;; release event after every press; curses has no releases, so
+            ;; skip them lest each keypress dispatch twice.
+            ((input-release?) (loop (read-raw-id)))
+            ;; Mouse: button presses and wheel ticks queue as mouse events;
+            ;; button releases are skipped. ERR wakes the blocking main loop
+            ;; so the app drains the event right away.
+            ((and (>= id (+ %preterunicode-base 201)) (<= id (+ %preterunicode-base 210)))
+              (if (input-release?)
+                (loop (read-raw-id))
+                (begin (queue-mouse-event! id) ERR)))
+            ;; Ctrl+Up / Ctrl+Down arrive as NCKEY_UP/DOWN with the ctrl
+            ;; modifier; synthesize the sentinels key-defined reports for
+            ;; the xterm sequences so existing dispatch keeps working.
+            ((and (= id KEY_UP) (input-ctrl?)) KEY_FIND)
+            ((and (= id KEY_DOWN) (input-ctrl?)) KEY_OPEN)
+            ;; notcurses resizes its planes lazily (at the next render);
+            ;; notcurses_refresh applies the new geometry immediately, so
+            ;; the TUI's render that follows this KEY_RESIZE lays out at
+            ;; the correct size. NULL out-params: we read dims via
+            ;; ncplane_dim_yx as usual.
+            ((= id KEY_RESIZE)
+              (catch #t
+                (lambda ()
+                  (%nc-refresh %nc %null-pointer %null-pointer)
+                  (when %ioctl (sync-known-size!)))
+                (lambda _
+                  #f))
+              KEY_RESIZE)
+            ;; The kitty protocol reports plain keys as their unmodified id
+            ;; plus a modifier bitmask ('!' is 1+shift). Compose to curses
+            ;; semantics:
+            ;;   - notcurses' eff_text is only safe for shift/capslock
+            ;;     composition of printables: for ctrl input it gives the
+            ;;     UPPERCASE letter (ctrl+e -> 'E'), and it must never
+            ;;     override an already-composed control code.
+            ;;   - special NCKEY_* ids never reach here.
+            ;; ctrl+letter is the classic control code (a=1..z=26). notcurses
+            ;; reports it two ways: kitty protocol sends the lowercase id
+            ;; plus the ctrl modifier, while legacy control codes arrive
+            ;; normalized to the UPPERCASE letter with the ctrl modifier
+            ;; (0x05 -> 'E'). Compose both to the control code.
+            ((and (input-ctrl?)
+                  (or (and (>= id 97) (<= id 122)) (and (>= id 65) (<= id 90))))
+              (if (< id 97)
+                (- id 64)
+                (- id 96)))
+            ((and (not (input-ctrl?))
+                  (>= id 32)
+                  (< id %preterunicode-base)
+                  (> (input-eff-text) 0))
+              (input-eff-text))
+            ;; Synthesized keys we do not deliver (modifier keys like
+            ;; NCKEY_LSHIFT, media keys, mouse buttons, ...) are noise under
+            ;; the kitty protocol; skip them and read the next event rather
+            ;; than leaking a huge codepoint into printable-character
+            ;; handling, where integer->char would crash the app.
+            ((and (>= id %preterunicode-base) (not (memv id %delivered-keys)))
+              (loop (read-raw-id)))
+            (else id))))
 
 ;;;
 ;;; Paste bursts
 ;;;
-
 ;; A terminal paste arrives as a dense run of individual key events;
 ;; rendering once per event shows one-by-one latency, and a pasted
 ;; newline (id 10 or 13) is indistinguishable from Enter, so multiline
@@ -771,33 +775,31 @@ instead of submitting on its first line."
 
 (define (drain-input-burst!)
         "Collect the contiguous burst of paste-payload input currently
-queued, as codepoint ids in arrival order. Release events are
-skipped and interleaved mouse events are queued (as getch would)
-without ending the burst; the first event getch would deliver as a
-real key - arrows, escape, KEY_ENTER, specials, ctrl compositions -
-is pushed back for the next read and ends the burst. An emptied
-queue does not end the burst outright: one 4ms quiescence re-check
-catches a paste still in flight across two reads, and quiet ends the
-burst. Returns '() without waiting when nothing is queued and
-nothing has been collected, so a consumer that calls this on regular
-typing never blocks."
-        (let loop ((acc '()) (slept? #f))
-                  (let ((id (read-raw-id-nblock)))
-                    (cond
-                      ((not id)
-                        (if (or slept? (null? acc))
-                          (reverse! acc)
-                          (begin (%sleep-ms 4) (loop acc #t))))
-                      ((input-release?) (loop acc #f))
-                      ((and (>= id (+ %preterunicode-base 201))
-                            (<= id (+ %preterunicode-base 210)))
-                        (queue-mouse-event! id)
-                        (loop acc #f))
-                      (else
-                        (let ((cp (%burst-payload-codepoint id)))
-                          (if cp
-                            (loop (cons cp acc) #f)
-                            (begin (push-back-event! id) (reverse! acc)))))))))
+queued, as codepoint ids in arrival order. Release events, invalid
+sentinels and undelivered preterunicode keys are skipped and
+interleaved mouse events are queued (as getch would) without ending
+the burst; the first event getch would deliver as a real key -
+arrows, escape, KEY_ENTER, specials, ctrl compositions - is pushed
+back for the next read and ends the burst. An emptied queue does not
+end the burst outright: one 4ms quiescence re-check catches a paste
+still in flight across two reads, and quiet ends the burst. Returns
+'() without waiting when nothing is queued and nothing has been
+collected, so a consumer that calls this on regular typing never
+blocks."
+        (let loop
+          ((acc '()) (slept? #f))
+          (let ((id (read-raw-id-nblock)))
+            (cond
+              ((not id)
+                (if (or slept? (null? acc))
+                  (reverse! acc)
+                  (begin (%sleep-ms 4) (loop acc #t))))
+              ((%consume-non-key-event? id) (loop acc #f))
+              (else
+                (let ((cp (%burst-payload-codepoint id)))
+                  (if cp
+                    (loop (cons cp acc) #f)
+                    (begin (push-back-event! id) (reverse! acc)))))))))
 
 (define (nodelay! win enabled?)
         (set! %nodelay? (if enabled? #t #f))

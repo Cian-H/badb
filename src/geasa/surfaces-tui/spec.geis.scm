@@ -2014,5 +2014,113 @@
               (test-assert "short output passes through"
                            (string-contains (exec-shell-tool-impl "echo ok") "[exit 0]"))))
 
+(test-group "tui-enter-burst"
+            (test-equal "enter with no pending input submits"
+                        #f
+                        (collect-enter-burst 10
+                                             (lambda ()
+                                               #f)
+                                             (lambda ()
+                                               '(97))))
+            (test-equal
+              "enter with pending non-payload key (empty burst) submits"
+              #f
+              (collect-enter-burst 1115121
+                                   (lambda ()
+                                     #t)
+                                   (lambda ()
+                                     '())))
+            (test-equal
+              "enter with pending payload codepoints collects multiline burst"
+              '(10 104 105)
+              (collect-enter-burst 10
+                                   (lambda ()
+                                     #t)
+                                   (lambda ()
+                                     '(104 105)))))
+
+(let
+    ((nc-mod (false-if-exception (resolve-module '(geasa surfaces-tui nc)))))
+  (when nc-mod
+    (let*
+        ((bv-mod (resolve-module '(rnrs bytevectors)))
+         (bv-fill! (module-ref bv-mod 'bytevector-fill!))
+         (bv-s32-set! (module-ref bv-mod 'bytevector-s32-native-set!))
+         (bv-copy (module-ref bv-mod 'bytevector-copy))
+         (bv-len (module-ref bv-mod 'bytevector-length))
+         (bv-u8-ref (module-ref bv-mod 'bytevector-u8-ref))
+         (bv-u8-set! (module-ref bv-mod 'bytevector-u8-set!))
+         (ncinput (module-ref nc-mod '%ncinput))
+         (nctype-release (module-ref nc-mod '%nctype-release))
+         (nckey-invalid (module-ref nc-mod '%nckey-invalid))
+         (pre-base (module-ref nc-mod '%preterunicode-base))
+         (key-enter (module-ref nc-mod 'KEY_ENTER))
+         (key-up (module-ref nc-mod 'KEY_UP))
+         (input-pending? (module-ref nc-mod 'input-pending?))
+         (drain-burst! (module-ref nc-mod 'drain-input-burst!))
+         (pushback-count (module-ref nc-mod 'pushback-count))
+         (drain-mouse! (module-ref nc-mod 'drain-mouse-events))
+         (push-evt!
+           (lambda (id evtype)
+             (bv-fill! ncinput 0)
+             (bv-s32-set! ncinput 20 evtype)
+             (module-set! nc-mod
+                          '%pushback
+                          (append (module-ref nc-mod '%pushback) (list (cons id (bv-copy ncinput)))))))
+         (saved-pushback (module-ref nc-mod '%pushback))
+         (saved-mouse (module-ref nc-mod '%mouse-queue))
+         (saved-ncinput (bv-copy ncinput)))
+      (dynamic-wind
+        (lambda ()
+          #f)
+        (lambda ()
+          (test-group "nc-input-pending-and-burst"
+                      (module-set! nc-mod '%pushback '())
+                      (module-set! nc-mod '%mouse-queue '())
+                      (push-evt! key-enter nctype-release)
+                      (test-assert
+                        "trailing kitty release is not pending input"
+                        (not (input-pending?)))
+                      (test-equal "release noise is drained from pushback" 0 (pushback-count))
+                      (push-evt! (+ pre-base 99) 1)
+                      (push-evt! nckey-invalid 1)
+                      (test-assert
+                        "undelivered preterunicode and invalid sentinels are not pending"
+                        (not (input-pending?)))
+                      (test-equal "undelivered preterunicode noise is drained" 0 (pushback-count))
+                      (push-evt! (+ pre-base 201) 1)
+                      (test-assert
+                        "mouse press is queued rather than treated as pending key"
+                        (not (input-pending?)))
+                      (test-equal "mouse press queued during peek" '((1 0 0)) (drain-mouse!))
+                      (push-evt! key-enter nctype-release)
+                      (push-evt! 97 1)
+                      (test-assert "payload after release still reports pending" (input-pending?))
+                      (test-equal
+                        "drain-input-burst! collects payload after release"
+                        '(97)
+                        (drain-burst!))
+                      (test-equal "pushback empty after payload burst" 0 (pushback-count))
+                      (push-evt! key-up 1)
+                      (push-evt! 97 1)
+                      (test-assert "deliverable non-payload key reports pending" (input-pending?))
+                      (test-equal
+                        "drain-input-burst! returns empty on non-payload key"
+                        '()
+                        (drain-burst!))
+                      (test-equal
+                        "non-payload key and trailing input keep FIFO pushback order"
+                        (list key-up 97)
+                        (map car (module-ref nc-mod '%pushback)))))
+        (lambda ()
+          (module-set! nc-mod '%pushback saved-pushback)
+          (module-set! nc-mod '%mouse-queue saved-mouse)
+          (let loop
+            ((i 0))
+            (when (< i (bv-len saved-ncinput))
+              (bv-u8-set! ncinput i (bv-u8-ref saved-ncinput i))
+              (loop (+ i 1)))))))))
+
 (spec-end)
+
 (spec-exit)

@@ -110,7 +110,7 @@
                #:use-module
                (ice-9 threads)
                #:export
-               (run-tui)
+               (run-tui collect-enter-burst)
                #:re-export
                (format-conversation-transcript wrap-line
                                                wrap-text
@@ -215,6 +215,14 @@
 ;; DEV-DEBT [complexity]: run-tui is the largest form in the repo (9209 AST nodes,
 ;; cyclomatic ~447 per ast_complexity_metrics). Covered by the 582-assertion bundle
 ;; spec, but the prime candidate for decomposition into smaller units.
+(define
+  (collect-enter-burst ch input-pending? drain-input-burst!)
+  "Return (cons ch burst) when Enter is part of a multiline paste
+(INPUT-PENDING? is true and DRAIN-INPUT-BURST! returns at least one
+payload codepoint), or #f when Enter should submit."
+  (and (input-pending?)
+       (let ((burst (drain-input-burst!))) (and (pair? burst) (cons ch burst)))))
+
 (define*
   (run-tui #:key
            (endpoint #f)
@@ -1410,14 +1418,16 @@ grown journal), which the per-frame header render must not pay."
                                                                  (lambda (msg)
                                                                    (add-sys-msg! msg))))
                                (gate-client
-                                 (and (systemone-gate-options-enabled? gate-options)
-                                      (make-systemone-client #:endpoint
-                                                             (or (systemone-gate-options-endpoint gate-options)
-                                                                 "https://api.typesafe.ai/v1/systemone")
-                                                             #:api-key
-                                                             (or (systemone-gate-options-api-key gate-options) (getenv "TYPESAFE_API_KEY"))
-                                                             #:model
-                                                             (systemone-gate-options-model gate-options))))
+                                 (and
+                                   (systemone-gate-options-enabled? gate-options)
+                                   (make-systemone-client #:endpoint
+                                                          (or
+                                                            (systemone-gate-options-endpoint gate-options)
+                                                            "https://api.typesafe.ai/v1/systemone")
+                                                          #:api-key
+                                                          (or (systemone-gate-options-api-key gate-options) (getenv "TYPESAFE_API_KEY"))
+                                                          #:model
+                                                          (systemone-gate-options-model gate-options))))
                                (gate
                                  (and gate-client
                                       (make-systemone-gate #:options
@@ -2593,105 +2603,107 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                    ;; complete selector. Under cbreak the tty's ICRNL maps the
                                    ;; Enter key to 10, so 10 must submit (Ctrl+N is select-next)
                                    ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
-                                     (if (input-pending?)
-                                       ;; Enter with input still queued is a pasted newline,
-                                       ;; not a submit: collect the burst and insert it as
-                                       ;; multiline text.
-                                       (begin (insert-burst! (cons ch (drain-input-burst!))) (loop))
-                                       (if (selector-active? input-buffer)
-                                         (let
-                                             ((matches (matching-slash-commands input-buffer)))
-                                           (if (null? matches)
-                                             (let ((trimmed (string-trim-both input-buffer)))
-                                               (set! input-buffer "")
-                                               (set! cursor-pos 0)
-                                               (set! selector-index 0)
-                                               (if (string-null? trimmed)
-                                                 (loop)
-                                                 (let*
-                                                     ((action (classify-input trimmed))
-                                                      (res
-                                                        (if (and action (eq? (car action) 'slash))
-                                                          (handle-command! (cons (cadr action) (caddr action)))
-                                                          #f)))
-                                                   (unless (eq? res 'exit) (loop)))))
-                                             (let ((chosen (selected-command-name matches)))
-                                               (cond
-                                                 ;; Commands that still need a typed argument get
-                                                 ;; prefilled; model/endpoint/config now open their
-                                                 ;; interactive menus via the no-argument flow.
-                                                 ((member chosen '("provider" "sh" "eval" "steer" "geis"))
-                                                   (set! input-buffer (string-append "/" chosen " "))
-                                                   (set! cursor-pos (string-length input-buffer))
-                                                   (set! selector-index 0)
-                                                   (loop))
-                                                 (else (set! input-buffer "")
-                                                       (set! cursor-pos 0)
-                                                       (set! selector-index 0)
-                                                       (let ((res (handle-command! (cons chosen "")))) (unless (eq? res 'exit) (loop))))))))
-                                         (let ((trimmed (string-trim-both input-buffer)))
-                                           (set! input-buffer "")
-                                           (set! cursor-pos 0)
-                                           (set! selector-index 0)
-                                           (cond
-                                             ((string-null? trimmed) (loop))
-                                             ((eq? prompt-mode 'shell)
-                                               (record-history! trimmed 'shell)
-                                               (add-cmd-msg! trimmed)
-                                               (execute-shell! trimmed)
-                                               (loop))
-                                             ((eq? prompt-mode 'scheme)
-                                               (record-history! trimmed 'scheme)
-                                               (add-scm-msg! trimmed)
-                                               (execute-scheme! trimmed)
-                                               (loop))
-                                             (else
-                                               (let ((action (classify-input trimmed)))
-                                                 (case (car action)
-                                                   ((slash)
-                                                     (let*
-                                                         ((cmd (cadr action)) (arg (caddr action))
-                                                          (res (handle-command! (cons cmd arg))))
-                                                       (unless (eq? res 'exit) (loop))))
-                                                   ((shell)
-                                                     (let ((shell-cmd (cdr action)))
-                                                       (record-history! shell-cmd 'shell)
-                                                       (add-cmd-msg! shell-cmd)
-                                                       (execute-shell! shell-cmd)
-                                                       (loop)))
-                                                   ((scheme)
-                                                     (let ((code-str (cdr action)))
-                                                       (record-history! code-str 'scheme)
-                                                       (add-scm-msg! code-str)
-                                                       (execute-scheme! code-str)
-                                                       (loop)))
-                                                   ((chat)
-                                                     (let*
-                                                         ((user-text (cdr action))
-                                                          ;; Expand @@, @file:PATH, and @SHORTCUT
-                                                          ;; directives before the turn reaches
-                                                          ;; ReAct (see capabilities-macro). The
-                                                          ;; expansion never raises, so failures
-                                                          ;; surface as @error: markers.
-                                                          (delivered (expand-macros user-text)))
-                                                       (record-history! delivered 'chat)
-                                                       (add-user-msg! delivered)
-                                                       (set! %agent-thread
-                                                             (call-with-new-thread
-                                                               (lambda ()
-                                                                 (catch #t
-                                                                   (lambda ()
-                                                                     (execute-chat-stream! delivered)
-                                                                     ;; The ReAct loop ran for a while:
-                                                                     ;; ring the terminal bell so an
-                                                                     ;; away-from-keyboard user knows badb
-                                                                     ;; is waiting for them again.
-                                                                     (beep))
-                                                                   (lambda (key . args)
-                                                                     (add-err-msg! (format #f "Chat error (~a): ~s" key args))
-                                                                     (set! status-text "READY")
-                                                                     (render!))))))
-                                                       (loop)))))))))))
+                                     (let
+                                         ((burst (collect-enter-burst ch input-pending? drain-input-burst!)))
+                                       (if burst
+                                         ;; Enter with input still queued is a pasted newline,
+                                         ;; not a submit: collect the burst and insert it as
+                                         ;; multiline text.
+                                         (begin (insert-burst! burst) (loop))
+                                         (if (selector-active? input-buffer)
+                                           (let
+                                               ((matches (matching-slash-commands input-buffer)))
+                                             (if (null? matches)
+                                               (let ((trimmed (string-trim-both input-buffer)))
+                                                 (set! input-buffer "")
+                                                 (set! cursor-pos 0)
+                                                 (set! selector-index 0)
+                                                 (if (string-null? trimmed)
+                                                   (loop)
+                                                   (let*
+                                                       ((action (classify-input trimmed))
+                                                        (res
+                                                          (if (and action (eq? (car action) 'slash))
+                                                            (handle-command! (cons (cadr action) (caddr action)))
+                                                            #f)))
+                                                     (unless (eq? res 'exit) (loop)))))
+                                               (let ((chosen (selected-command-name matches)))
+                                                 (cond
+                                                   ;; Commands that still need a typed argument get
+                                                   ;; prefilled; model/endpoint/config now open their
+                                                   ;; interactive menus via the no-argument flow.
+                                                   ((member chosen '("provider" "sh" "eval" "steer" "geis"))
+                                                     (set! input-buffer (string-append "/" chosen " "))
+                                                     (set! cursor-pos (string-length input-buffer))
+                                                     (set! selector-index 0)
+                                                     (loop))
+                                                   (else (set! input-buffer "")
+                                                         (set! cursor-pos 0)
+                                                         (set! selector-index 0)
+                                                         (let ((res (handle-command! (cons chosen "")))) (unless (eq? res 'exit) (loop))))))))
+                                           (let ((trimmed (string-trim-both input-buffer)))
+                                             (set! input-buffer "")
+                                             (set! cursor-pos 0)
+                                             (set! selector-index 0)
+                                             (cond
+                                               ((string-null? trimmed) (loop))
+                                               ((eq? prompt-mode 'shell)
+                                                 (record-history! trimmed 'shell)
+                                                 (add-cmd-msg! trimmed)
+                                                 (execute-shell! trimmed)
+                                                 (loop))
+                                               ((eq? prompt-mode 'scheme)
+                                                 (record-history! trimmed 'scheme)
+                                                 (add-scm-msg! trimmed)
+                                                 (execute-scheme! trimmed)
+                                                 (loop))
+                                               (else
+                                                 (let ((action (classify-input trimmed)))
+                                                   (case (car action)
+                                                     ((slash)
+                                                       (let*
+                                                           ((cmd (cadr action)) (arg (caddr action))
+                                                            (res (handle-command! (cons cmd arg))))
+                                                         (unless (eq? res 'exit) (loop))))
+                                                     ((shell)
+                                                       (let ((shell-cmd (cdr action)))
+                                                         (record-history! shell-cmd 'shell)
+                                                         (add-cmd-msg! shell-cmd)
+                                                         (execute-shell! shell-cmd)
+                                                         (loop)))
+                                                     ((scheme)
+                                                       (let ((code-str (cdr action)))
+                                                         (record-history! code-str 'scheme)
+                                                         (add-scm-msg! code-str)
+                                                         (execute-scheme! code-str)
+                                                         (loop)))
+                                                     ((chat)
+                                                       (let*
+                                                           ((user-text (cdr action))
+                                                            ;; Expand @@, @file:PATH, and @SHORTCUT
+                                                            ;; directives before the turn reaches
+                                                            ;; ReAct (see capabilities-macro). The
+                                                            ;; expansion never raises, so failures
+                                                            ;; surface as @error: markers.
+                                                            (delivered (expand-macros user-text)))
+                                                         (record-history! delivered 'chat)
+                                                         (add-user-msg! delivered)
+                                                         (set! %agent-thread
+                                                               (call-with-new-thread
+                                                                 (lambda ()
+                                                                   (catch #t
+                                                                     (lambda ()
+                                                                       (execute-chat-stream! delivered)
+                                                                       ;; The ReAct loop ran for a while:
+                                                                       ;; ring the terminal bell so an
+                                                                       ;; away-from-keyboard user knows badb
+                                                                       ;; is waiting for them again.
+                                                                       (beep))
+                                                                     (lambda (key . args)
+                                                                       (add-err-msg! (format #f "Chat error (~a): ~s" key args))
+                                                                       (set! status-text "READY")
+                                                                       (render!))))))
+                                                         (loop))))))))))))
                                    ;; Tab key: autocomplete selected slash command
                                    ((eqv? ch 9)
                                      (when (selector-active? input-buffer)
