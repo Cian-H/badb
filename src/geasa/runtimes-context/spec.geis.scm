@@ -372,5 +372,39 @@
               (test-assert "k=0: turn 3 stripped"
                            (not (assoc-ref (list-ref pruned-k0 6) (quote reasoning_content))))))
 
+(test-group
+  "compaction-preserves-tool-boundaries"
+  (let*
+      ((msgs
+         (list '((role . "system") (content . "sys"))
+               '((role . "user") (content . "q1"))
+               '((role . "assistant") (content . "a1"))
+               '((role . "assistant") (content . "")
+                 (tool_calls .
+                  #(((id . "c1") (type . "function")
+                     (function . ((name . "read_file") (arguments . "{}")))))))
+               '((role . "tool") (tool_call_id . "c1") (name . "read_file") (content . "r1"))))
+       (strat
+         (strategy-summarize-older-turns
+           (lambda (_)
+             "summary")
+           #:keep-recent-turns
+           1))
+       (out (strat msgs 1000 char-heuristic-estimator)))
+    ;; keep-recent-turns 1 -> raw split would land on the tool message;
+    ;; boundary alignment must keep the assistant+tool pair together.
+    (test-assert
+      "no orphaned tool message at start of recent turns"
+      (not
+        (any
+          (lambda (m)
+            (and (equal? (assoc-ref m 'role) "tool")
+                 (not
+                   (any
+                     (lambda (a)
+                       (and (equal? (assoc-ref a 'role) "assistant") (assoc-ref a 'tool_calls)))
+                     out))))
+          out)))))
+
 (spec-end)
 (spec-exit)

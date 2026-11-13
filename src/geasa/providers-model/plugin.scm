@@ -26,6 +26,8 @@
                                         model-client-allow-missing-thinking?
                                         model-client-cache-markers?
                                         valid-api-message?
+                                        validate-conversation-messages
+                                        repair-conversation-messages
                                         normalize-messages
                                         format-chat-request
                                         parse-sse-line
@@ -39,6 +41,11 @@
                                         default-http-post
                                         current-http-get
                                         %request-timeout-seconds
+                                        current-http-retry-sleeper
+                                        current-on-http-retry
+                                        parse-retry-delay-seconds
+                                        classify-http-error
+                                        http-post-with-retry
                                         extract-tool-call-deltas
                                         merge-tool-call-fragment
                                         finalize-tool-call-fragments

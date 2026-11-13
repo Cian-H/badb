@@ -215,63 +215,82 @@ SESSION with a fresh call id."
 ;;;
 (test-group "loop-guard-forced-reflection"
             (call-with-values
-              (lambda () (prime-with-first-turn
-                           "read_file"
-                           (dup-args)
-                           (make-loop-guard #:reflect-after 2
-                                            #:mask-after 6
-                                            #:roll-attempts 1)))
+              (lambda ()
+                (prime-with-first-turn "read_file"
+                                       (dup-args)
+                                       (make-loop-guard #:reflect-after 2 #:mask-after 6 #:roll-attempts 1)))
               (lambda (guard session)
                 ;; second (blocked) emission reaches reflect-after
                 (append-turn! session "read_file" (dup-args))
                 (set-react-session-iteration! session 2)
                 (guard-post-turn guard session)
-                (let* ((base-calls '())
-                       (messages (react-session-messages session))
-                       (tools (list (tool-spec "read_file")))
-                       (fake-base
-                         (lambda* (msgs eff-tools #:key (temperature #f) (tool-choice #f))
-                                  (set! base-calls
-                                        (cons (list (map tool-spec-name eff-tools)
-                                                    tool-choice
-                                                    temperature
-                                                    (length msgs))
-                                              base-calls))
-                                  (if (equal? tool-choice "none")
-                                    (values "Missing: nothing. The executed call sufficed." "" '())
-                                    (values "Final answer from the original data." ""
-                                            (list (cons (cons 'name "read_file")
-                                                        (cons 'arguments (list (cons "path" "other.json"))))))))))
+                (let*
+                    ((base-calls '()) (last-msgs #f)
+                     (messages (react-session-messages session))
+                     (tools (list (tool-spec "read_file")))
+                     (fake-base
+                       (lambda*
+                         (msgs eff-tools #:key (temperature #f) (tool-choice #f))
+                         (set! last-msgs msgs)
+                         (set! base-calls
+                               (cons
+                                 (list (map tool-spec-name eff-tools) tool-choice temperature (length msgs))
+                                 base-calls))
+                         (if (equal? tool-choice "none")
+                           (values "Missing: nothing. The executed call sufficed." "" '())
+                           (values "Final answer from the original data."
+                                   ""
+                                   (list
+                                     (cons (cons 'name "read_file")
+                                           (cons 'arguments (list (cons "path" "other.json"))))))))))
                   (call-with-values
-                    (lambda () (guard-completion guard fake-base messages tools))
+                    (lambda ()
+                      (guard-completion guard fake-base messages tools))
                     (lambda (content reasoning tool-calls pre-turns)
                       (let ((calls (reverse base-calls)))
-                        (test-equal "one reflection turn plus one real turn"
-                                    2 (length calls))
-                        (test-equal "reflection turn is tool-less via tool_choice"
-                                    "none" (cadr (car calls)))
-                        (test-assert "reflection tool-less turn advertises no tools"
-                                     (null? (car (car calls))))
-                        (test-equal "reflection prompt rides as ephemeral message"
-                                    (+ 1 (length messages)) (cadddr (car calls)))
-                        (test-equal "reflection turn feeds the subsequent real call"
-                                    (+ 2 (length messages)) (cadddr (cadr calls)))
-                        (test-equal "reflection exchange persisted as pre-turns"
-                                    2 (length pre-turns))
+                        (test-equal "one reflection turn plus one real turn" 2 (length calls))
+                        (test-equal
+                          "reflection turn is tool-less via tool_choice"
+                          "none"
+                          (cadr (car calls)))
+                        (test-assert
+                          "reflection tool-less turn advertises no tools"
+                          (null? (car (car calls))))
+                        (test-equal
+                          "reflection prompt rides as ephemeral message"
+                          (+ 1 (length messages))
+                          (cadddr (car calls)))
+                        (test-equal
+                          "reflection exchange + resume user prompt feed subsequent real call"
+                          (+ 3 (length messages))
+                          (cadddr (cadr calls)))
+                        (test-equal
+                          "subsequent real call ends on user turn, never model turn"
+                          "user"
+                          (assoc-ref (last last-msgs) 'role))
+                        (test-equal
+                          "reflection exchange + resume prompt persisted as pre-turns"
+                          3
+                          (length pre-turns))
                         (test-assert "reflection user prompt persisted"
-                                     (string-contains (assoc-ref (car pre-turns) 'content)
-                                                      "temporarily disabled"))
-                        (test-assert "reflection assistant answer persisted"
-                                     (equal? (assoc-ref (cadr pre-turns) 'role) "assistant")))))
+                                     (string-contains (assoc-ref (car pre-turns) 'content) "temporarily disabled"))
+                        (test-assert
+                          "reflection assistant answer persisted"
+                          (equal? (assoc-ref (cadr pre-turns) 'role) "assistant"))
+                        (test-assert
+                          "trailing resume user prompt persisted"
+                          (equal? (assoc-ref (caddr pre-turns) 'role) "user")))))
                   ;; pending-reflect was consumed: the next completion is single-shot
                   (let ((before (length base-calls)))
                     (call-with-values
-                      (lambda () (guard-completion guard fake-base messages tools))
+                      (lambda ()
+                        (guard-completion guard fake-base messages tools))
                       (lambda (_c _r _t pre-turns2)
-                        (test-equal "no reflection on the following turn"
-                                    0 (length pre-turns2))
-                        (test-equal "single completion after reflection was used"
-                                    (+ 1 before) (length base-calls)))))))))
+                        (test-equal "no reflection on the following turn" 0 (length pre-turns2))
+                        (test-equal
+                          "single completion after reflection was used"
+                          (+ 1 before)
+                          (length base-calls)))))))))
 
 ;;;
 ;;; 5. Dynamic tool masking (mechanism 4b): past the mask threshold the
@@ -486,6 +505,70 @@ SESSION with a fresh call id."
                                                    (any (lambda (n) (>= n 1)) marker-counts))
                                       (test-assert "at most one ERROR block ever accumulated in context"
                                                    (every (lambda (n) (<= n 1)) marker-counts))))))))))
+
+(test-group
+  "loop-guard-static-analysis-and-failed-retries"
+  (test-assert
+    "ast_modify is classified as mutation"
+    (not (default-idempotent? "ast_modify")))
+  (test-assert
+    "workspace_manage is classified as mutation"
+    (not (default-idempotent? "workspace_manage")))
+  (test-assert
+    "commit_workspace is classified as mutation"
+    (not (default-idempotent? "commit_workspace")))
+  (call-with-values
+    (lambda ()
+      (prime-with-first-turn "ast_lint" '(("path" . #(0 1)) ("dialect" . ":scheme"))))
+    (lambda (guard session)
+      (let
+          ((verdict
+             (guard-intercept guard
+                              '((name . "ast_lint") (arguments . (("path" . #(0 1)) ("dialect" . ":scheme"))))
+                              session)))
+        (test-assert
+          "ast_lint returns cached pair instead of blocking"
+          (and (pair? verdict) (eq? (car verdict) 'cached)))
+        (test-equal
+          "cached result matches original output"
+          "THE REAL OUTPUT"
+          (cdr verdict)))
+      (let
+          ((mut-turn
+             (list
+               (assistant-turn (call-entry "c_mut" "ast_modify" '(("path" . #(0 1 2)))))
+               (tool-msg "c_mut" "ast_modify" "Modified node"))))
+        (set-react-session-messages! session
+                                     (append (react-session-messages session) mut-turn))
+        (set-react-session-iteration! session 2)
+        (guard-post-turn guard session)
+        (test-equal
+          "mutation clears seen signatures for fresh verification"
+          '()
+          (loop-guard-seen-signatures guard))
+        (test-equal
+          "ast_lint passes through fresh after mutation"
+          #f
+          (guard-intercept guard
+                           '((name . "ast_lint") (arguments . (("path" . #(0 1)) ("dialect" . ":scheme"))))
+                           session)))))
+  (let*
+      ((guard (make-loop-guard))
+       (fail-msgs
+         (list %user0
+               (assistant-turn (call-entry "c_fail" "read_file" (dup-args)))
+               (tool-msg "c_fail"
+                         "read_file"
+                         "Execution of tool 'read_file' failed (misc-error): transient")))
+       (fail-sess (session-at fail-msgs 1)))
+    (guard-post-turn guard fail-sess)
+    (test-equal "failed call is not recorded in seen"
+                0
+                (loop-guard-emissions guard (signature-of (dup-tc))))
+    (test-equal
+      "retry after failed call is not blocked"
+      #f
+      (guard-intercept guard (dup-tc) fail-sess))))
 
 (spec-end)
 (spec-exit)

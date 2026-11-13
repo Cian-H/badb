@@ -1407,5 +1407,68 @@
         "sig789"
         (assoc-ref (assoc-ref ec "google") "thought_signature")))))
 
+(test-group "react-validation-and-429-resilience"
+            (let*
+                ((client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "m"))
+                 (http-called? #f)
+                 (poster
+                   (lambda* (uri #:key body headers streaming?)
+                            (set! http-called? #t)
+                            (values (build-response #:code 200) "{}")))
+                 (session
+                   (make-react-session client
+                                       #:initial-messages
+                                       '(((role . "user") (content . "hi"))
+                                         ((role . "assistant") (content . "model turn"))))))
+              (parameterize ((current-http-post poster))
+                            (call-with-values
+                              (lambda ()
+                                (react-step! session))
+                              (lambda (status payload)
+                                (test-equal "malformed history returns 'error locally" 'error status)
+                                (test-assert "no HTTP request made for malformed history" (not http-called?))
+                                (test-assert
+                                  "error mentions invalid-conversation-history"
+                                  (string-contains payload "invalid-conversation-history"))))))
+            (let*
+                ((client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "m"))
+                 (attempts 0)
+                 (poster
+                   (lambda* (uri #:key body headers streaming?)
+                            (set! attempts (+ attempts 1))
+                            (if (= attempts 1)
+                              (values (build-response #:code 429)
+                                      (open-input-string
+                                        (scm->json-string
+                                          #((("error" .
+                                              (("code" . 429)
+                                               ("message" . "Please retry in 1s.")
+                                               ("details" .
+                                                #((("@type" . "type.googleapis.com/google.rpc.RetryInfo") ("retryDelay" . "1s")))))))))))
+                              (values (build-response #:code 200)
+                                      (open-input-string
+                                        (string-append "data: "
+                                                       (scm->json-string '((choices . #(((delta . ((content . "Recovered!"))))))))
+                                                       "
+
+data: [DONE]
+"))))))
+                 (session
+                   (make-react-session client
+                                       #:initial-messages
+                                       '(((role . "user") (content . "go"))))))
+              (parameterize
+                ((current-http-post poster)
+                 (current-http-retry-sleeper
+                   (lambda (_s)
+                     #t)))
+                (call-with-values
+                  (lambda ()
+                    (react-run! session))
+                  (lambda (verdict content _sess)
+                    (test-equal "react-run! recovers from transient 429" 'completed verdict)
+                    (test-equal "recovered content matches" "Recovered!" content)
+                    (test-equal "took 2 HTTP attempts" 2 attempts))))))
+
 (spec-end)
 (spec-exit)

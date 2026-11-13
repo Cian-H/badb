@@ -787,14 +787,19 @@ and THOUGHTS fields, followed by the trailing spacer row."
 
 (define (row-cache-rows cache msg content-width)
         "Return the formatted block rows of MSG at CONTENT-WIDTH, memoized in
-CACHE per message object."
-        (unless (eq? (row-cache-width cache) content-width)
+CACHE per finalized message object. In-flight streaming messages are
+formatted directly without caching so intermediate frames never leak."
+        (unless
+            (eq? (row-cache-width cache) content-width)
           (set-row-cache-width! cache content-width)
           (hash-clear! (row-cache-table cache)))
-        (or (hashq-ref (row-cache-table cache) msg)
-            (let ((rows (format-message-entry msg content-width)))
-              (hashq-set! (row-cache-table cache) msg rows)
-              rows)))
+        (if (and (pair? msg) (assoc-ref msg 'streaming))
+          (format-message-entry msg content-width)
+          (or (hashq-ref (row-cache-table cache) msg)
+              (let
+                  ((rows (format-message-entry msg content-width)))
+                (hashq-set! (row-cache-table cache) msg rows)
+                rows))))
 
 (define (row-cache-prune! cache messages)
         "Drop cache entries whose message objects are no longer in MESSAGES."

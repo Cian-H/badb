@@ -423,12 +423,15 @@ configured model client. Derives only from raw turns, keeps identifiers
 verbatim, and fails open to a verbatim truncation."
               (let*
                   ((rendered
-                     (string-join
-                       (map
-                         (lambda (m)
-                           (format #f "~a: ~a" (or (assoc-ref m 'role) "?") (or (assoc-ref m 'content) "")))
-                         older-msgs)
-                       "\n"))
+                     (let loop ((rest older-msgs) (acc '()) (total 0))
+                               (if (or (null? rest) (>= total 24000))
+                                 (string-join (reverse acc) "\n")
+                                 (let* ((m (car rest))
+                                        (line (format #f "~a: ~a"
+                                                      (or (assoc-ref m 'role) "?")
+                                                      (or (assoc-ref m 'content) "")))
+                                        (len (string-length line)))
+                                   (loop (cdr rest) (cons line acc) (+ total len 1))))))
                    (truncate-to
                      (lambda (s n)
                        (if (> (string-length s) n)
@@ -468,12 +471,15 @@ verbatim, and fails open to a verbatim truncation."
                                                            #t
                                                            #:summarize-fn
                                                            semantic-summarize-fn))
+      (define configured-context-limit
+              (badb-config-model-context-limit cfg cur-endpoint cur-model))
       (define discovered-context-limit
               (or
-                (badb-config-model-context-limit cfg cur-endpoint cur-model)
+                configured-context-limit
                 (catch #t
                   (lambda ()
-                    (fetch-model-context-limit client))
+                    (let ((lim (fetch-model-context-limit client)))
+                      (and (integer? lim) (min lim 131072))))
                   (lambda _
                     #f))))
       (when
@@ -567,8 +573,8 @@ verbatim, and fails open to a verbatim truncation."
       (define last-render-error-sig #f)
       ;; Live-stream state for the ReAct loop: accumulated deltas of the
       ;; in-flight model call and the timestamp of the last streamed paint.
-      (define react-stream-content "")
-      (define react-stream-thoughts "")
+      (define react-stream-content-chunks '())
+      (define react-stream-thoughts-chunks '())
       (define react-stream-last-render 0)
       (define last-spin-time 0)
       ;; Incremental rendering: formatted block rows are memoized per
@@ -595,9 +601,14 @@ verbatim, and fails open to a verbatim truncation."
       (define steering-buffer "")
       (define interrupt-requested? #f)
       (define %render-mutex (make-mutex 'recursive))
+      (define render-dirty? #f)
       (define %agent-thread #f)
       (define (agent-running?)
               (and (thread? %agent-thread) (not (thread-exited? %agent-thread))))
+      (define (request-render!)
+              (if (agent-running?)
+                (set! render-dirty? #t)
+                (render!)))
       ;; Message appending helpers
       (define (add-msg! role content)
               (with-mutex %render-mutex
@@ -1293,10 +1304,12 @@ and append it to the persistent history journal file."
               (with-mutex %render-mutex
                           (cond
                             ((eq? type 'thought)
-                              (set! react-stream-thoughts (string-append react-stream-thoughts delta))
+                              (when (string? delta)
+                                (set! react-stream-thoughts-chunks (cons delta react-stream-thoughts-chunks)))
                               (set! status-text "THINKING..."))
                             ((eq? type 'content)
-                              (set! react-stream-content (string-append react-stream-content delta))
+                              (when (string? delta)
+                                (set! react-stream-content-chunks (cons delta react-stream-content-chunks)))
                               (set! status-text "STREAMING..."))
                             ((eq? type 'usage) (record-session-usage! delta))
                             ((eq? type 'tool-call)
@@ -1306,25 +1319,27 @@ and append it to the persistent history journal file."
                                   (set! status-text (string-append "TOOL: " name "..."))
                                   (set! status-text "TOOL CALL..."))))
                             (else #f))
-                          (call-with-values
-                            (lambda ()
-                              (split-thoughts-and-content react-stream-content))
-                            (lambda (inline-th inline-ct)
-                              (let*
-                                  ((total-th
-                                     (cond
-                                       ((and (non-empty-string? react-stream-thoughts) inline-th)
-                                         (string-append react-stream-thoughts "\n\n" inline-th))
-                                       ((non-empty-string? react-stream-thoughts) react-stream-thoughts)
-                                       (else inline-th)))
-                                   (updated
-                                     (cons (cons 'streaming #t)
-                                           (default-collapse-message
-                                             `((role . "assistant") (thoughts . ,total-th) (content . ,inline-ct))))))
-                                (let ((idx (react-stream-placeholder-index)))
-                                  (if idx
-                                    (set! messages (replace-nth messages idx updated))
-                                    (set! messages (append messages (list updated))))))))))
+                          (let ((react-stream-content (string-concatenate (reverse react-stream-content-chunks)))
+                                (react-stream-thoughts (string-concatenate (reverse react-stream-thoughts-chunks))))
+                            (call-with-values
+                              (lambda ()
+                                (split-thoughts-and-content react-stream-content))
+                              (lambda (inline-th inline-ct)
+                                (let*
+                                    ((total-th
+                                       (cond
+                                         ((and (non-empty-string? react-stream-thoughts) inline-th)
+                                           (string-append react-stream-thoughts "\n\n" inline-th))
+                                         ((non-empty-string? react-stream-thoughts) react-stream-thoughts)
+                                         (else inline-th)))
+                                     (updated
+                                       (cons (cons 'streaming #t)
+                                             (default-collapse-message
+                                               `((role . "assistant") (thoughts . ,total-th) (content . ,inline-ct))))))
+                                  (let ((idx (react-stream-placeholder-index)))
+                                    (if idx
+                                      (set! messages (replace-nth messages idx updated))
+                                      (set! messages (append messages (list updated)))))))))))
       (define (commit-react-stream-message!)
               "Keep the streamed assistant card permanently but drop its
 placeholder flag, so the next streamed call starts a fresh card."
@@ -1347,8 +1362,8 @@ placeholder flag, so the next streamed call starts a fresh card."
                                     (not (assoc-ref m 'streaming)))
                                   messages))))
       (define (reset-react-stream-state!)
-              (set! react-stream-content "")
-              (set! react-stream-thoughts ""))
+              (set! react-stream-content-chunks '())
+              (set! react-stream-thoughts-chunks '()))
       ;; Live context gauge for the header: estimated conversation tokens
       ;; over the compactor ceiling, e.g. "ctx 12.4k/16k". Cheap enough to
       ;; compute per frame; tells the user when /compact is due.
@@ -1387,7 +1402,7 @@ grown journal), which the per-frame header render must not pay."
                     (>= (- now react-stream-last-render)
                         (quotient internal-time-units-per-second 15))
                   (set! react-stream-last-render now)
-                  (render!))))
+                  (request-render!))))
       ;; Execute streaming query against LLM with separated thoughts
       (define (execute-chat-stream! user-prompt)
               (set! scroll-offset 0)
@@ -1486,9 +1501,13 @@ grown journal), which the per-frame header render must not pay."
                                                                          (commit-react-stream-message!)
                                                                          (reset-react-stream-state!))
                                                                        (set! status-text
-                                                                             (if max-react-iters
-                                                                               (format #f "REACT [~a/~a]" iter max-react-iters)
-                                                                               (format #f "REACT [~a]" iter)))
+                                                                             (cond
+                                                                               ((and (pair? phase) (eq? (car phase) 'rate-limited))
+                                                                                 (format #f "RATE LIMITED (~as)..."
+                                                                                         (inexact->exact (ceiling (or (cdr phase) 1)))))
+                                                                               (max-react-iters
+                                                                                 (format #f "REACT [~a/~a]" iter max-react-iters))
+                                                                               (else (format #f "REACT [~a]" iter))))
                                                                        ;; Crash-safe persistence: sync the transcript
                                                                        ;; from the live session and rewrite the session
                                                                        ;; file after every executed step so /resume
@@ -1500,7 +1519,7 @@ grown journal), which the per-frame header render must not pay."
                                                                              (set! llm-history (react-session-messages sess))
                                                                              (persist-session-file! session-file llm-history))))
                                                                        (poll-steering-input!)
-                                                                       (render!)))
+                                                                       (request-render!)))
                                                                (cons 'on-tool-call
                                                                      (lambda (tc)
                                                                        (let
@@ -1508,11 +1527,12 @@ grown journal), which the per-frame header render must not pay."
                                                                          (set! status-text (format #f "TOOL: ~a..." t-name))
                                                                          (add-msg! "tool-call" (format #f "Invoking tool: ~a (~s)" t-name t-args))
                                                                          (poll-steering-input!)
-                                                                         (render!))))
+                                                                         (request-render!))))
                                                                (cons 'on-tool-result
                                                                      (lambda (tc res err?)
                                                                        (let*
                                                                            ((t-name (prop-ref tc 'name))
+                                                                            (blocked? (tool-result-blocked-payload? res))
                                                                             (res-str
                                                                               (if (string? res)
                                                                                 res
@@ -1522,11 +1542,15 @@ grown journal), which the per-frame header render must not pay."
                                                                                 (string-append (substring res-str 0 140) "...")
                                                                                 res-str)))
                                                                          (add-msg! "tool-result"
-                                                                                   (if err?
-                                                                                     (format #f "Tool ~a failed: ~a" t-name preview)
-                                                                                     (format #f "Tool ~a returned: ~a" t-name preview)))
+                                                                                   (cond
+                                                                                     (blocked?
+                                                                                       (format #f "Tool ~a blocked (duplicate call): ~a" t-name preview))
+                                                                                     (err?
+                                                                                       (format #f "Tool ~a failed: ~a" t-name preview))
+                                                                                     (else
+                                                                                       (format #f "Tool ~a returned: ~a" t-name preview))))
                                                                          (poll-steering-input!)
-                                                                         (render!))))
+                                                                         (request-render!))))
                                                                (cons 'on-delta
                                                                      (lambda (delta type)
                                                                        (update-react-stream-message! delta type)
@@ -2519,7 +2543,9 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                            ;; Rendering is skipped only for no-op scroll keys in a key
                            ;; burst: a held or pasted run of scroll keys must not trigger
                            ;; a full-transcript render per key.
-                           (when (or needs-render? mouse-dirty?) (render!))
+                           (when (or needs-render? mouse-dirty? render-dirty?)
+                             (set! render-dirty? #f)
+                             (render!))
                            (when (and nodelay-proc (agent-running?)) (nodelay-proc stdscr #t))
                            (let ((ch (key->code (getch stdscr))))
                              (if (agent-running?)

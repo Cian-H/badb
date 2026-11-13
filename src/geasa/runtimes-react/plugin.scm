@@ -10,6 +10,8 @@
                #:use-module
                (geasa foundation-util plugin)
                #:use-module
+               (geasa providers-model common)
+               #:use-module
                (geasa providers-model openai)
                #:use-module
                (geasa runtimes-context plugin)
@@ -35,6 +37,8 @@
                (uuid generate)
                #:use-module
                (uuid utils)
+               #:re-export
+               (validate-conversation-messages repair-conversation-messages)
                #:export
                (<react-session> <steering-queue>
                                 <react-agent>
@@ -105,6 +109,7 @@
                                 blocked-tool-payload
                                 session-intercept-tool-call
                                 tool-result-blocked?
+                                tool-result-blocked-payload?
                                 aborted-tool-msg
                                 completion-turn-content
                                 commit-partial-step!
@@ -340,11 +345,17 @@ ENTRY is either a steering instruction string or the symbol 'interrupt."
              (memq 'interrupt (steering-queue-entries queue))
              #t))
 
-(define* (stream-model-completion client messages tools max-tokens on-delta
-                                  #:key (steering-queue #f)
-                                  (temperature 0.7)
-                                  (tool-choice #f))
-         "Run one streamed chat completion for the ReAct loop: accumulate content
+(define*
+  (stream-model-completion client
+                           messages
+                           tools
+                           max-tokens
+                           on-delta
+                           #:key
+                           (steering-queue #f)
+                           (temperature 0.7)
+                           (tool-choice #f))
+  "Run one streamed chat completion for the ReAct loop: accumulate content
 and reasoning deltas and assemble streamed tool-call fragments
 (merge-tool-call-fragment), invoking (ON-DELTA payload type) for every
 chunk - guarded, so a throwing ON-DELTA never aborts the stream. Return
@@ -352,76 +363,103 @@ chunk - guarded, so a throwing ON-DELTA never aborts the stream. Return
 non-streaming path (finalize-tool-call-fragments matches
 parse-single-tool-call). When the endpoint ignored streaming and
 delivered nothing, fall back to a single model-complete call."
-         (let ((content "") (reasoning "") (frag-acc #f) (complete-result #f) (interrupted? #f))
-           (model-stream client messages
-                         (lambda (payload . type-opt)
-                           (let ((type (if (pair? type-opt) (car type-opt) 'content))
-                                 (int? (and (steering-queue? steering-queue)
-                                            (steering-has-interrupt? steering-queue))))
-                             (if int?
-                               (begin
-                                 (set! interrupted? #t)
-                                 (set! frag-acc #f)
-                                 'stop)
-                               (begin
-                                 (case type
-                                   ((thought) (set! reasoning (string-append reasoning payload)))
-                                   ((content) (set! content (string-append content payload)))
-                                   ((tool-call)
-                                     (set! frag-acc (merge-tool-call-fragment frag-acc payload)))
-                                   ((complete-json)
-                                     ;; Endpoint ignored stream:true: whole completion at once.
-                                     ;; Its usage block, when present, rides out through the
-                                     ;; delta channel (type 'usage) for session token accounting.
-                                     (let ((usage (extract-usage payload)))
-                                       (when (and usage (procedure? on-delta))
-                                         (ignore-errors (on-delta usage 'usage))))
-                                     (receive (c r) (determine-step-content payload)
-                                              (set! complete-result (list c r (parse-tool-calls payload c)))))
-                                   (else #f))
-                                 (if (procedure? on-delta)
-                                   (let ((res (catch #t
-                                                (lambda () (on-delta payload type))
-                                                (lambda _
-                                                  (catch #t
-                                                    (lambda () (on-delta payload))
-                                                    (lambda _ #f))))))
-                                     (if (eq? res 'stop)
-                                       'stop
-                                       #t))
-                                   #t)))))
-                         #:tools tools
-                         #:max-tokens max-tokens
-                         #:temperature temperature
-                         #:tool-choice tool-choice)
-           (if interrupted?
-             (values content reasoning '())
-             (if complete-result
-               (apply values complete-result)
-               (if (and (string-null? (string-trim-both content))
-                        (string-null? (string-trim-both reasoning))
-                        (not (pair? frag-acc)))
-                 (let ((raw-resp (model-complete client messages
-                                                 #:tools tools
-                                                 #:max-tokens max-tokens
-                                                 #:temperature temperature
-                                                 #:tool-choice tool-choice
-                                                 #:raw? #t)))
-                   (let ((usage (extract-usage raw-resp)))
-                     (when (and usage (procedure? on-delta))
-                       (ignore-errors (on-delta usage 'usage))))
-                   (receive (fb-content fb-reasoning) (determine-step-content raw-resp)
-                            (values fb-content fb-reasoning (parse-tool-calls raw-resp fb-content))))
-                 (let ((native-calls (finalize-tool-call-fragments frag-acc))
-                       (final-content
-                         (cond
-                           ((not (string-null? (string-trim-both content))) content)
-                           ((non-empty-string? reasoning) (reasoning-fallback-content reasoning))
-                           (else ""))))
-                   (values final-content reasoning
-                           (if (pair? native-calls)
-                             native-calls
-                             (parse-xml-tool-calls content)))))))))
+  (let
+      ((content-chunks '()) (reasoning-chunks '())
+       (frag-acc #f)
+       (complete-result #f)
+       (interrupted? #f))
+    (model-stream client
+                  messages
+                  (lambda (payload . type-opt)
+                    (let
+                        ((type
+                           (if (pair? type-opt)
+                             (car type-opt)
+                             'content))
+                         (int?
+                           (and (steering-queue? steering-queue) (steering-has-interrupt? steering-queue))))
+                      (if int?
+                        (begin (set! interrupted? #t) (set! frag-acc #f) 'stop)
+                        (begin
+                          (case type
+                            ((thought)
+                              (when (string? payload) (set! reasoning-chunks (cons payload reasoning-chunks))))
+                            ((content)
+                              (when (string? payload) (set! content-chunks (cons payload content-chunks))))
+                            ((tool-call) (set! frag-acc (merge-tool-call-fragment frag-acc payload)))
+                            ((complete-json)
+                              (let ((usage (extract-usage payload)))
+                                (when (and usage (procedure? on-delta)) (ignore-errors (on-delta usage 'usage))))
+                              (receive (c r)
+                                       (determine-step-content payload)
+                                       (set! complete-result (list c r (parse-tool-calls payload c)))))
+                            (else #f))
+                          (if (procedure? on-delta)
+                            (let
+                                ((res
+                                   (catch #t
+                                     (lambda ()
+                                       (on-delta payload type))
+                                     (lambda _
+                                       (catch #t
+                                         (lambda ()
+                                           (on-delta payload))
+                                         (lambda _
+                                           #f))))))
+                              (if (eq? res 'stop)
+                                'stop
+                                #t))
+                            #t)))))
+                  #:tools
+                  tools
+                  #:max-tokens
+                  max-tokens
+                  #:temperature
+                  temperature
+                  #:tool-choice
+                  tool-choice)
+    (let
+        ((content (string-concatenate (reverse content-chunks)))
+         (reasoning (string-concatenate (reverse reasoning-chunks))))
+      (if interrupted?
+        (values content reasoning '())
+        (if complete-result
+          (apply values complete-result)
+          (if
+              (and (string-null? (string-trim-both content))
+                   (string-null? (string-trim-both reasoning))
+                   (not (pair? frag-acc)))
+            (let
+                ((raw-resp
+                   (model-complete client
+                                   messages
+                                   #:tools
+                                   tools
+                                   #:max-tokens
+                                   max-tokens
+                                   #:temperature
+                                   temperature
+                                   #:tool-choice
+                                   tool-choice
+                                   #:raw?
+                                   #t)))
+              (let ((usage (extract-usage raw-resp)))
+                (when (and usage (procedure? on-delta)) (ignore-errors (on-delta usage 'usage))))
+              (receive (fb-content fb-reasoning)
+                       (determine-step-content raw-resp)
+                       (values fb-content fb-reasoning (parse-tool-calls raw-resp fb-content))))
+            (let
+                ((native-calls (finalize-tool-call-fragments frag-acc))
+                 (final-content
+                   (cond
+                     ((not (string-null? (string-trim-both content))) content)
+                     ((non-empty-string? reasoning) (reasoning-fallback-content reasoning))
+                     (else ""))))
+              (values final-content
+                      reasoning
+                      (if (pair? native-calls)
+                        native-calls
+                        (parse-xml-tool-calls content))))))))))
 
 (define (parse-tool-calls raw-response content-text)
         "Extract tool calls from RAW-RESPONSE (native OpenAI format) or CONTENT-TEXT (XML tags)."
@@ -832,17 +870,25 @@ the hook's block reason."
 
 (define (session-intercept-tool-call sess tc)
         "Consult session SESS's 'intercept-tool-call hook ((FN TC SESS) ->
-block-reason-string | #f). Return the block reason string when the hook
-vetoes execution of TC, #f otherwise. Never raises: a throwing hook
-degrades to a pass-through."
-        (let* ((hooks (and sess (react-session-hooks sess)))
-               (fn (and hooks (assoc-ref hooks 'intercept-tool-call))))
+block-reason-string | (cached . result) | #f). Return the block reason
+string or (cached . result) pair when the hook intercepts TC, #f
+otherwise. Never raises: a throwing hook degrades to a pass-through."
+        (let*
+            ((hooks (and sess (react-session-hooks sess)))
+             (fn (and hooks (assoc-ref hooks 'intercept-tool-call))))
           (if (procedure? fn)
             (catch #t
               (lambda ()
-                (let ((verdict (fn tc sess)))
-                  (and (string? verdict) verdict)))
-              (lambda _ #f))
+                (let
+                    ((verdict
+                       (fn tc
+                           sess)))
+                  (cond
+                    ((string? verdict) verdict)
+                    ((and (pair? verdict) (eq? (car verdict) 'cached)) verdict)
+                    (else #f))))
+              (lambda _
+                #f))
             #f)))
 
 (define (tool-result-blocked? result-pair)
@@ -853,6 +899,17 @@ duplicate-blocked ERROR payload rather than a real execution result."
                (string-contains content %duplicate-blocked-marker))))
 
 
+
+(define (tool-result-blocked-payload? res)
+        "Return #t when RES is a structured DuplicateToolCallException blocked
+payload alist (or JSON string containing it)."
+        (cond
+          ((pair? res)
+            (equal?
+              (or (assoc-ref res 'error_type) (assoc-ref res "error_type"))
+              %duplicate-blocked-marker))
+          ((string? res) (string-contains res %duplicate-blocked-marker))
+          (else #f)))
 
 (define (session-exploration-checkpoint! sess)
         "Consult SESS's 'exploration-checkpoint hook ((FN SESS) -> handled?).
@@ -1114,103 +1171,127 @@ stderr as a warning instead of letting it abort the caller."
 Hook exceptions are isolated: a failing on-tool-call or on-tool-result
 callback is reported on stderr and skipped, never aborting the loop.
 A session 'intercept-tool-call hook may veto execution of a call before
-it runs; vetoed calls are never dispatched to the tool environment and
-return a structured DuplicateToolCallException ERROR payload instead.
+it runs (returning a string reason -> DuplicateToolCallException ERROR),
+or return (cached . result) to reuse a cached result without re-running.
 When a non-#f PROGRESS-CELL (a mutable pair) is supplied, its car is
 updated with the reversed list of completed (tool-call . tool-msg) pairs
 after every tool, so a crashing step can still preserve finished results.
 When the tool message's content exceeds the threshold and dir is set,
 its content becomes (offload-tool-result! dir name content-str threshold #:offload-hook offload-hook) —
 applied AFTER log-tool-execution!."
-  (let loop ((rest tool-calls) (acc '()))
-            (if (null? rest)
-              (reverse acc)
-              (let* ((tc (car rest))
-                     (sess (or session (current-react-session)))
-                     (interrupted? (and sess (steering-has-interrupt? (react-session-steering-queue sess)))))
-                (if interrupted?
-                  (let ((cancelled-msgs
-                          (map (lambda (unrun-tc)
-                                 (let ((tc-id (or (prop-ref unrun-tc 'id) "call_0"))
-                                       (tc-name (or (prop-ref unrun-tc 'name) "")))
-                                   (cons unrun-tc
-                                         `((role . "tool")
-                                           (tool_call_id . ,tc-id)
-                                           (name . ,tc-name)
-                                           (content . "Tool execution aborted: user requested interrupt.")))))
-                               rest)))
-                    (append (reverse acc) cancelled-msgs))
-                  (begin
-                    (run-isolated-hook! on-tool-call-fn "on-tool-call" tc)
-                    (let ((name (prop-ref tc 'name))
-                          (args (or (prop-ref tc 'arguments) '())))
-                      (call-with-values
-                        (lambda ()
-                          (let ((blocked-reason (session-intercept-tool-call sess tc)))
-                            (if (and (string? blocked-reason) (not (string-null? blocked-reason)))
-                              (begin
-                                (log-tool-execution! jrn
-                                                     name
-                                                     args
-                                                     "blocked"
-                                                     '((blocked . "duplicate")))
-                                (values (blocked-tool-payload name blocked-reason) #t))
-                              (if (string=? (or name "") "tool_search")
-                                (let* ((query (or (assoc-ref args 'query) (assoc-ref args "query") "all"))
-                                       (q-str (string-downcase (if (string? query) query (format #f "~a" query))))
-                                       (matches
-                                         (filter
-                                           (lambda (t)
-                                             (let ((n (tool-spec-name t))
-                                                   (d (tool-spec-description t)))
-                                               (or (string=? q-str "all")
-                                                   (string-contains (string-downcase n) q-str)
-                                                   (string-contains (string-downcase d) q-str))))
-                                           deferred-tools))
-                                       (matched-names (map tool-spec-name matches)))
-                                  (when session
-                                    (let ((cur (react-session-active-tools session)))
-                                      (set-react-session-active-tools!
-                                        session
-                                        (delete-duplicates (append cur matched-names)))))
-                                  (values
-                                    (if (null? matches)
-                                      (format #f "No deferred tools matched query '~a'." query)
-                                      (format #f "Found ~a deferred tool(s) (schemas hydrated for next turn):\n~a"
-                                              (length matches)
-                                              (string-join
-                                                (map (lambda (t)
-                                                       (let ((entry (tool-spec-entry-alist t)))
-                                                         (format #f "### ~a\n~a\nParameters: ~s"
-                                                                 (tool-spec-name t)
-                                                                 (tool-spec-description t)
-                                                                 (or (assoc-ref entry 'parameters) (assoc-ref entry "parameters") '()))))
-                                                     matches)
-                                                "\n\n")))
-                                    #f))
-                                (call-with-values
-                                  (lambda ()
-                                    (execute-tool-call tc reg mcp-mgr #:jrn jrn #:mgr mgr #:guardrail guardrail-fn))
-                                  (lambda (res err?)
-                                    (when (and session name (not (string-null? name)))
-                                      (let ((cur (react-session-active-tools session)))
-                                        (unless (member name cur)
-                                          (set-react-session-active-tools! session (cons name cur)))))
-                                    (values res err?)))))))
-                        (lambda (res err?)
-                          (run-isolated-hook! on-tool-result-fn "on-tool-result" tc res err?)
-                          (let*
-                              ((content-str (safe-json-string res))
-                               (tc-id (or (prop-ref tc 'id) "call_0"))
-                               (tc-name (or (prop-ref tc 'name) ""))
-                               (final-content (offload-tool-result! result-offload-dir tc-name content-str result-offload-chars #:offload-hook offload-hook))
-                               (tool-msg `((role . "tool") (tool_call_id . ,tc-id)
-                                           (name . ,tc-name)
-                                           (content . ,final-content)))
-                               (pair (cons tc tool-msg)))
-                            (when (pair? progress-cell)
-                              (set-car! progress-cell (cons pair (car progress-cell))))
-                            (loop (cdr rest) (cons pair acc))))))))))))
+  (let loop
+    ((rest tool-calls) (acc '()))
+    (if (null? rest)
+      (reverse acc)
+      (let*
+          ((tc (car rest))
+           (sess (or session (current-react-session)))
+           (interrupted?
+             (and sess (steering-has-interrupt? (react-session-steering-queue sess)))))
+        (if interrupted?
+          (let
+              ((cancelled-msgs
+                 (map
+                   (lambda (unrun-tc)
+                     (let
+                         ((tc-id (or (prop-ref unrun-tc 'id) "call_0"))
+                          (tc-name (or (prop-ref unrun-tc 'name) "")))
+                       (cons unrun-tc
+                             `((role . "tool") (tool_call_id . ,tc-id)
+                               (name . ,tc-name)
+                               (content . "Tool execution aborted: user requested interrupt.")))))
+                   rest)))
+            (append (reverse acc) cancelled-msgs))
+          (begin
+            (run-isolated-hook! on-tool-call-fn "on-tool-call" tc)
+            (let
+                ((name (prop-ref tc 'name)) (args (or (prop-ref tc 'arguments) '())))
+              (call-with-values
+                (lambda ()
+                  (let
+                      ((verdict (session-intercept-tool-call sess tc)))
+                    (cond
+                      ((and (pair? verdict) (eq? (car verdict) 'cached))
+                        (log-tool-execution! jrn name args "cached" '((cached . #t)))
+                        (values (cdr verdict) #f))
+                      ((and (string? verdict) (not (string-null? verdict)))
+                        (log-tool-execution! jrn name args "blocked" '((blocked . "duplicate")))
+                        (values (blocked-tool-payload name verdict) #t))
+                      ((string=? (or name "") "tool_search")
+                        (let*
+                            ((query (or (assoc-ref args 'query) (assoc-ref args "query") "all"))
+                             (q-str
+                               (string-downcase
+                                 (if (string? query)
+                                   query
+                                   (format #f "~a" query))))
+                             (matches
+                               (filter
+                                 (lambda (t)
+                                   (let
+                                       ((n (tool-spec-name t)) (d (tool-spec-description t)))
+                                     (or (string=? q-str "all")
+                                         (string-contains (string-downcase n) q-str)
+                                         (string-contains (string-downcase d) q-str))))
+                                 deferred-tools))
+                             (matched-names (map tool-spec-name matches)))
+                          (when session
+                            (let ((cur (react-session-active-tools session)))
+                              (set-react-session-active-tools! session
+                                                               (delete-duplicates (append cur matched-names)))))
+                          (values
+                            (if (null? matches)
+                              (format #f "No deferred tools matched query '~a'." query)
+                              (format #f
+                                      "Found ~a deferred tool(s) (schemas hydrated for next turn):\n~a"
+                                      (length matches)
+                                      (string-join
+                                        (map
+                                          (lambda (t)
+                                            (let ((entry (tool-spec-entry-alist t)))
+                                              (format #f
+                                                      "### ~a\n~a\nParameters: ~s"
+                                                      (tool-spec-name t)
+                                                      (tool-spec-description t)
+                                                      (or (assoc-ref entry 'parameters) (assoc-ref entry "parameters") '()))))
+                                          matches)
+                                        "\n\n")))
+                            #f)))
+                      (else
+                        (call-with-values
+                          (lambda ()
+                            (execute-tool-call tc reg mcp-mgr #:jrn jrn #:mgr mgr #:guardrail guardrail-fn))
+                          (lambda (res err?)
+                            (when
+                                (and session name (not (string-null? name)))
+                              (let ((cur (react-session-active-tools session)))
+                                (unless (member name cur)
+                                  (set-react-session-active-tools! session (cons name cur)))))
+                            (values res err?)))))))
+                (lambda (res err?)
+                  (run-isolated-hook! on-tool-result-fn "on-tool-result" tc res err?)
+                  (let*
+                      ((content-str
+                         (if (string? res)
+                           res
+                           (safe-json-string res)))
+                       (tc-id (or (prop-ref tc 'id) "call_0"))
+                       (tc-name (or (prop-ref tc 'name) ""))
+                       (final-content
+                         (offload-tool-result! result-offload-dir
+                                               tc-name
+                                               content-str
+                                               result-offload-chars
+                                               #:offload-hook
+                                               offload-hook))
+                       (tool-msg
+                         `((role . "tool") (tool_call_id . ,tc-id)
+                           (name . ,tc-name)
+                           (content . ,final-content)))
+                       (pair (cons tc tool-msg)))
+                    (when (pair? progress-cell)
+                      (set-car! progress-cell (cons pair (car progress-cell))))
+                    (loop (cdr rest) (cons pair acc))))))))))))
 
 ;;;
 ;;; Premature-stop preservation: a step that dies mid-flight (stream
@@ -1302,7 +1383,8 @@ call (decoding constraints, re-rolls, forced reflection turns),
                            (on-step-fn (assoc-ref hooks 'on-step))
                            (on-tool-call-fn (assoc-ref hooks 'on-tool-call))
                            (on-tool-result-fn (assoc-ref hooks 'on-tool-result))
-                           (on-delta-fn (assoc-ref hooks 'on-delta)))
+                           (on-delta-fn (assoc-ref hooks 'on-delta))
+                           (steering-q (react-session-steering-queue session)))
                         (if (and (number? max-iter) (>= iter max-iter))
                           (begin
                             (set-react-session-status! session 'max-iterations-reached)
@@ -1311,22 +1393,18 @@ call (decoding constraints, re-rolls, forced reflection turns),
                             (set-react-session-iteration! session (+ iter 1))
                             (set-react-session-status! session 'running)
                             (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'starting))
-                            ;; Premature-stop tracking: everything a possibly
-                            ;; failing step accumulates lives in these cells so
-                            ;; the error handler can commit the partial turn to
-                            ;; the transcript instead of dropping it.
                             (let
                                 ((step-content #f) (step-reasoning #f)
                                  (step-tool-calls #f)
                                  (step-pre-turns #f)
                                  (step-progress (cons '() #f))
                                  (step-committed? #f)
-                                 (stream-acc (cons "" "")))
+                                 (stream-acc (cons '() '())))
                               (catch #t
                                 (lambda ()
                                   (let*
                                       ((raw-msgs (react-session-messages session))
-                                       (msgs
+                                       (compacted-msgs
                                          (if
                                              (and compactor (compaction-needed? compactor raw-msgs))
                                            (let
@@ -1334,20 +1412,12 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                              (set-react-session-messages! session compacted)
                                              compacted)
                                            raw-msgs))
-                                       ;; Ephemeral recitation for outbound model completion only (strict append-only history for KV cache)
+                                       (msgs (repair-conversation-messages compacted-msgs))
                                        (outbound-msgs
                                          (if (react-session-recitation? session)
                                            (append msgs
                                                    (list `((role . "user") (content . ,(react-recitation-text session)))))
                                            msgs))
-                                       ;; Completion seam: the base closure runs one streamed
-                                       ;; completion for this loop; a session 'completion hook
-                                       ;; (FN BASE MESSAGES TOOLS -> VALUES content reasoning
-                                       ;; tool-calls PRE-TURNS) may override decoding
-                                       ;; parameters (temperature, tool_choice), re-roll
-                                       ;; completions, or force reflection turns. PRE-TURNS are
-                                       ;; extra messages persisted before the final assistant
-                                       ;; turn. Without the hook behavior is unchanged.
                                        (completion-delta-fn
                                          (lambda (payload . type-args)
                                            (let
@@ -1357,8 +1427,8 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                                     'content)))
                                              (when (string? payload)
                                                (case type
-                                                 ((content) (set-car! stream-acc (string-append (car stream-acc) payload)))
-                                                 ((thought) (set-cdr! stream-acc (string-append (cdr stream-acc) payload))))))
+                                                 ((content) (set-car! stream-acc (cons payload (car stream-acc))))
+                                                 ((thought) (set-cdr! stream-acc (cons payload (cdr stream-acc)))))))
                                            (if (procedure? on-delta-fn)
                                              (catch #t
                                                (lambda ()
@@ -1366,20 +1436,49 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                                (lambda _
                                                  #f))
                                              #t)))
+                                       (outer-sleeper (current-http-retry-sleeper))
+                                       (interruptible-sleep
+                                         (lambda (seconds)
+                                           (if (not (steering-queue? steering-q))
+                                             (outer-sleeper seconds)
+                                             (let
+                                                 ((total-ms (max 0 (inexact->exact (round (* 1000 seconds))))))
+                                               (let sleep-loop
+                                                 ((rem-ms total-ms))
+                                                 (when
+                                                     (and (> rem-ms 0)
+                                                          (not (steering-has-interrupt? steering-q)))
+                                                   (let ((chunk (min rem-ms 100)))
+                                                     (outer-sleeper (/ chunk 1000.0))
+                                                     (sleep-loop (- rem-ms chunk)))))))))
+                                       (retry-notifier
+                                         (lambda (attempt wait-sec code kind err-msg)
+                                           (when (procedure? on-step-fn)
+                                             (catch #t
+                                               (lambda ()
+                                                 (on-step-fn (+ iter 1) (cons 'rate-limited wait-sec)))
+                                               (lambda _
+                                                 #f)))))
                                        (base-completion
                                          (lambda*
                                            (eff-msgs eff-tools #:key (temperature #f) (tool-choice #f))
-                                           (stream-model-completion client
-                                                                    eff-msgs
-                                                                    eff-tools
-                                                                    max-tokens
-                                                                    completion-delta-fn
-                                                                    #:steering-queue
-                                                                    (react-session-steering-queue session)
-                                                                    #:temperature
-                                                                    (or temperature 0.7)
-                                                                    #:tool-choice
-                                                                    tool-choice)))
+                                           (receive (valid? reason)
+                                                    (validate-conversation-messages eff-msgs)
+                                                    (unless valid? (throw 'invalid-conversation-history reason)))
+                                           (parameterize
+                                             ((current-http-retry-sleeper interruptible-sleep)
+                                              (current-on-http-retry retry-notifier))
+                                             (stream-model-completion client
+                                                                      eff-msgs
+                                                                      eff-tools
+                                                                      max-tokens
+                                                                      completion-delta-fn
+                                                                      #:steering-queue
+                                                                      steering-q
+                                                                      #:temperature
+                                                                      (or temperature 0.7)
+                                                                      #:tool-choice
+                                                                      tool-choice))))
                                        (completion-fn
                                          (or (assoc-ref hooks 'completion)
                                              (lambda (base eff-msgs eff-tools)
@@ -1438,10 +1537,6 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                                                      step-progress))
                                                (tool-msgs (map cdr results))
                                                (new-turn (cons asst-msg tool-msgs))
-                                               ;; Loop detection observes EXECUTED calls only:
-                                               ;; an intercepted duplicate (blocked with a
-                                               ;; structured ERROR before execution) never
-                                               ;; counts toward the warn/halt thresholds.
                                                (executed-tcs
                                                  (map car
                                                       (filter
@@ -1452,10 +1547,6 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                             (set! step-committed? #t)
                                             (let
                                                 ((loop-outcome (detect-step-loops! session executed-tcs #:jrn jrn)))
-                                              ;; Post-turn seam: runs after the turn is appended and
-                                              ;; after loop detection, letting a session hook (FN
-                                              ;; SESSION) rewrite the transcript (context surgery)
-                                              ;; before the next iteration. Isolated like all hooks.
                                               (for-each
                                                 (lambda (entry)
                                                   (when
@@ -1476,18 +1567,15 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                                   (values 'continue results))))))))))
                                 (lambda (key . args)
                                   (let
-                                      ((err-msg (format #f "ReAct loop error (~a): ~s" key args)))
-                                    ;; Premature-stop preservation: commit any
-                                    ;; partially streamed content/reasoning, the
-                                    ;; emitted tool calls, finished results, and
-                                    ;; synthetic error observations for calls that
-                                    ;; never ran — unless the turn already landed.
+                                      ((err-msg (format #f "ReAct loop error (~a): ~s" key args))
+                                       (acc-content (string-concatenate (reverse (car stream-acc))))
+                                       (acc-reasoning (string-concatenate (reverse (cdr stream-acc)))))
                                     (unless step-committed?
                                       (catch #t
                                         (lambda ()
                                           (commit-partial-step! session
-                                                                (or step-content (car stream-acc))
-                                                                (or step-reasoning (cdr stream-acc))
+                                                                (or step-content acc-content)
+                                                                (or step-reasoning acc-reasoning)
                                                                 step-tool-calls
                                                                 step-pre-turns
                                                                 (reverse (car step-progress))

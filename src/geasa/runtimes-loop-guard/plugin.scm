@@ -90,15 +90,74 @@
 ;;; Idempotence classification
 ;;;
 (define %mutation-name-fragments
-        '("write" "edit" "delete" "remove" "checkpoint" "rollback"
-          "commit" "exec" "eval" "bash" "shell" "start" "stop"
-          "restart" "create" "synthesize" "lock" "activate"))
+        '("write" "edit"
+          "delete"
+          "remove"
+          "checkpoint"
+          "rollback"
+          "commit"
+          "exec"
+          "eval"
+          "bash"
+          "shell"
+          "start"
+          "stop"
+          "restart"
+          "create"
+          "synthesize"
+          "lock"
+          "activate"
+          "modify"
+          "manage"
+          "apply"
+          "insert"
+          "overwrite"
+          "replace"
+          "refactor"
+          "rename"
+          "format"
+          "patch"
+          "update"
+          "reset"
+          "merge"
+          "rebase"))
 
 (define %hard-mutation-names
-        '("write_file" "edit_file" "replace_symbol_body" "run_tests"
-          "bash" "sh" "ctx_exec" "scheme_eval" "git_commit"
-          "spec_synthesize" "spec_synthesize" "spec_lock"
-          "geis_activate" "geis_deactivate"))
+        '("write_file" "edit_file"
+          "replace_symbol_body"
+          "run_tests"
+          "bash"
+          "sh"
+          "ctx_exec"
+          "scheme_eval"
+          "git_commit"
+          "spec_synthesize"
+          "spec_lock"
+          "geis_activate"
+          "geis_deactivate"
+          "ast_modify"
+          "ast_rename"
+          "ast_remove"
+          "ast_relocate"
+          "ast_replace_pattern"
+          "ast_extract_function"
+          "ast_extract_variable"
+          "commit_workspace"
+          "workspace_manage"
+          "workspace_create_file"
+          "workspace_merge"
+          "workspace_rebase"))
+
+(define %static-analysis-tool-names
+        '("ast_lint" "ast_analyze_bindings"
+          "ast_complexity_metrics"
+          "ast_find_duplicates"
+          "ast_suggest_refactorings"
+          "symbols_overview"
+          "find_symbol"))
+
+(define (static-analysis-tool? name)
+        (and (string? name) (member name %static-analysis-tool-names) #t))
 
 (define (default-idempotent? name)
         "Conservative default classifier: NAME is treated as idempotent
@@ -217,6 +276,26 @@ Returns (values #f '() msgs) when no trailing tool block exists."
         (let ((content (assoc-ref tool-msg 'content)))
           (and (string? content)
                (string-contains content %duplicate-blocked-marker))))
+
+(define (tool-msg-failed? tool-msg)
+        "Return #t when TOOL-MSG represents a failed or incomplete tool execution
+(error, conflict, aborted, permission denied), excluding duplicate-blocked
+envelopes."
+        (let
+            ((content (and (pair? tool-msg) (assoc-ref tool-msg 'content))))
+          (and (string? content)
+               (not (tool-msg-blocked? tool-msg))
+               (or (string-prefix? "Execution of tool " content)
+                   (string-prefix? "Tool execution aborted" content)
+                   (string-prefix? "Permission denied" content)
+                   (string-prefix? "Conflict:" content)
+                   (string-contains content "\"status\":\"ERROR\"")
+                   (let ((parsed (safe-json-parse content #f)))
+                     (and (pair? parsed)
+                          (or (assoc-ref parsed 'error)
+                              (assoc-ref parsed "error")
+                              (equal? (assoc-ref parsed 'status) "ERROR")
+                              (equal? (assoc-ref parsed "status") "ERROR"))))))))
 
 ;;;
 ;;; Memo table (mechanism 3: memoized DuplicateToolCallException)
@@ -359,83 +438,159 @@ each pruned signature with the harness guardrail note."
 ;;;
 ;;; Post-turn bookkeeping & escalation
 ;;;
-(define (guard-record-emission! guard sig name blocked? tool-msg turn)
-        "Update SEEN and escalation state for one observed emission of SIG
+(define
+  (guard-record-emission! guard sig name blocked? tool-msg turn)
+  "Update SEEN and escalation state for one observed emission of SIG
 in the trailing turn. Blocked emissions never refresh the memo (the
 original turn/preview stay authoritative) but do advance the ladder."
-        (let* ((config (loop-guard-config guard))
-               (preview-chars (or (assoc-ref config 'preview-chars) 400))
-               (reflect-after (or (assoc-ref config 'reflect-after) 4))
-               (mask-after (or (assoc-ref config 'mask-after) 5))
-               (mask-turns (or (assoc-ref config 'mask-turns) 3))
-               (halt-after-blocked (or (assoc-ref config 'halt-after-blocked) 8))
-               (idempotent? (or (assoc-ref config 'idempotent?) default-idempotent?)))
-          (guard-seen-update!
-            guard
-            sig
-            (lambda (entry)
-              (let ((emissions (+ 1 (or (assoc-ref entry 'emissions) 0))))
-                (if blocked?
-                  `((turn . ,(or (assoc-ref entry 'turn) turn))
-                    (preview . ,(or (assoc-ref entry 'preview) ""))
-                    (emissions . ,emissions))
-                  `((turn . ,turn)
-                    (preview . ,(truncate-string
-                                  (or (and tool-msg (assoc-ref tool-msg 'content)) "")
-                                  preview-chars))
-                    (emissions . ,emissions))))))
-          (let ((emissions (loop-guard-emissions guard sig)))
-            (when (and (>= emissions mask-after) (idempotent? name))
-              (guard-mask-extend! guard name (+ turn mask-turns)))
-            (when (and (>= emissions reflect-after) (< emissions mask-after))
-              (set-loop-guard-pending-reflect! guard sig))
-            (when (>= (- emissions 1) halt-after-blocked)
-              (set-loop-guard-halt-requested?! guard #t)))))
+  (let*
+      ((config (loop-guard-config guard))
+       (preview-chars (or (assoc-ref config 'preview-chars) 400))
+       (reflect-after (or (assoc-ref config 'reflect-after) 4))
+       (mask-after (or (assoc-ref config 'mask-after) 5))
+       (mask-turns (or (assoc-ref config 'mask-turns) 3))
+       (halt-after-blocked (or (assoc-ref config 'halt-after-blocked) 8))
+       (idempotent? (or (assoc-ref config 'idempotent?) default-idempotent?))
+       (raw-content (or (and tool-msg (assoc-ref tool-msg 'content)) "")))
+    (guard-seen-update! guard
+                        sig
+                        (lambda (entry)
+                          (let
+                              ((emissions (+ 1 (or (assoc-ref entry 'emissions) 0))))
+                            (if blocked?
+                              `((turn . ,(or (assoc-ref entry 'turn) turn))
+                                (preview . ,(or (assoc-ref entry 'preview) ""))
+                                (result . ,(assoc-ref entry 'result))
+                                (emissions . ,emissions))
+                              `((turn . ,turn)
+                                (preview . ,(truncate-string raw-content preview-chars))
+                                (result . ,raw-content)
+                                (emissions . ,emissions))))))
+    (let
+        ((emissions (loop-guard-emissions guard sig)))
+      (when
+          (and (>= emissions mask-after) (idempotent? name))
+        (guard-mask-extend! guard name (+ turn mask-turns)))
+      (when
+          (and (>= emissions reflect-after) (< emissions mask-after))
+        (set-loop-guard-pending-reflect! guard sig))
+      (when (>= (- emissions 1) halt-after-blocked)
+        (set-loop-guard-halt-requested?! guard #t)))))
 
 (define (guard-post-turn guard session)
         "Post-turn hook: observe the trailing turn's emissions, escalate
 the ladder (masking / forced reflection / halt request), and perform
-context surgery on fully-blocked duplicate turns. Halting goes through
-the session's steering queue ('interrupt) so the run stops at the
-iteration boundary instead of unwinding mid-step."
-        (receive (asst tool-msgs leading) (split-trailing-turn (react-session-messages session))
-                 (let ((turn (or (react-session-iteration session) 0)))
+context surgery on fully-blocked duplicate turns. Mutations invalidate
+memoized read/analysis entries so post-edit verification runs fresh;
+failed/incomplete invocations are never memoized so deliberate retries
+remain allowed."
+        (receive (asst tool-msgs leading)
+                 (split-trailing-turn (react-session-messages session))
+                 (let
+                     ((turn (or (react-session-iteration session) 0))
+                      (idempotent?
+                        (or (loop-guard-config-ref guard 'idempotent?) default-idempotent?)))
                    (set-loop-guard-turn! guard turn)
                    (when asst
-                     (let ((sig-pairs (assistant-turn-signatures asst)))
-                       (for-each
-                         (lambda (p)
-                           (let* ((sig (car p))
-                                  (cid (cdr p))
-                                  (tool-msg (find (lambda (m)
-                                                    (equal? (assoc-ref m 'tool_call_id) cid))
-                                                  tool-msgs)))
-                             (guard-record-emission! guard
-                                                     sig
-                                                     (or (and tool-msg (assoc-ref tool-msg 'name)) "")
-                                                     (and tool-msg (tool-msg-blocked? tool-msg))
-                                                     tool-msg
-                                                     turn)))
-                         sig-pairs)
-                       ;; context surgery: only once the ladder reaches the surgery
-                       ;; threshold, and only for a trailing block consisting
-                       ;; entirely of blocked duplicate calls (removing a block that
-                       ;; also executed real calls would orphan their tool_call_ids)
-                       (let ((surgery-after (or (loop-guard-config-ref guard 'surgery-after) 3)))
-                         (when (and (not (null? tool-msgs))
-                                    (every tool-msg-blocked? tool-msgs)
-                                    (any (lambda (p)
-                                           (>= (loop-guard-emissions guard (car p)) surgery-after))
-                                         sig-pairs))
-                           (guard-surgery! session)))
-                       (when (loop-guard-halt-requested? guard)
-                         (let ((queue (react-session-steering-queue session)))
-                           (when (steering-queue? queue)
-                             (steering-push! queue 'interrupt)))))))))
+                     (let*
+                         ((sig-pairs (assistant-turn-signatures asst))
+                          (has-mutation?
+                            (any
+                              (lambda (p)
+                                (let*
+                                    ((cid (cdr p))
+                                     (tool-msg
+                                       (find
+                                         (lambda (m)
+                                           (equal? (assoc-ref m 'tool_call_id) cid))
+                                         tool-msgs))
+                                     (tname (or (and tool-msg (assoc-ref tool-msg 'name)) "")))
+                                  (and (not (string-null? tname))
+                                       (not (idempotent? tname))
+                                       (not (and tool-msg (tool-msg-blocked? tool-msg)))
+                                       (not (and tool-msg (tool-msg-failed? tool-msg))))))
+                              sig-pairs)))
+                       (if has-mutation?
+                         (begin (set-loop-guard-seen! guard '()) (set-loop-guard-masks! guard '()))
+                         (begin
+                           (for-each
+                             (lambda (p)
+                               (let*
+                                   ((sig (car p)) (cid (cdr p))
+                                    (tool-msg
+                                      (find
+                                        (lambda (m)
+                                          (equal? (assoc-ref m 'tool_call_id) cid))
+                                        tool-msgs))
+                                    (tname (or (and tool-msg (assoc-ref tool-msg 'name)) ""))
+                                    (blocked? (and tool-msg (tool-msg-blocked? tool-msg)))
+                                    (failed? (and tool-msg (tool-msg-failed? tool-msg))))
+                                 (unless failed? (guard-record-emission! guard sig tname blocked? tool-msg turn))))
+                             sig-pairs)
+                           (let
+                               ((surgery-after (or (loop-guard-config-ref guard 'surgery-after) 3)))
+                             (when
+                                 (and (not (null? tool-msgs))
+                                      (every tool-msg-blocked? tool-msgs)
+                                      (any
+                                        (lambda (p)
+                                          (>= (loop-guard-emissions guard (car p)) surgery-after))
+                                        sig-pairs))
+                               (guard-surgery! session)))
+                           (when (loop-guard-halt-requested? guard)
+                             (let
+                                 ((queue (react-session-steering-queue session)))
+                               (when (steering-queue? queue) (steering-push! queue 'interrupt)))))))))))
 
 ;;;
 ;;; Mechanism 2 + 4: completion override (reflection, masking, re-rolls)
-;;;
+(define
+  (guard-completion guard base messages tools)
+  "Completion hook: filter masked tools out of the advertised
+schema, force exactly one tool_choice=\"none\" reflection turn when the
+ladder requests it (persisting the reflection exchange plus a trailing
+user resume prompt as pre-turns so the outbound history never ends on a
+model turn), and apply turn-level rejection sampling."
+  (let*
+      ((eff-tools (eff-tools-for-step guard tools))
+       (reflect-sig (loop-guard-pending-reflect guard))
+       (pre-turns '())
+       (run-msgs messages))
+    (when reflect-sig
+      (set-loop-guard-pending-reflect! guard #f)
+      (let*
+          ((reflect-user `((role . "user") (content . ,(guard-reflect-prompt guard))))
+           (refl-msgs (append messages (list reflect-user))))
+        (receive (r-content _r-reasoning _r-calls)
+                 (base refl-msgs '() #:tool-choice "none")
+                 (let
+                     ((reflect-assistant
+                        `((role . "assistant")
+                          (content .
+                                   ,(if (string? r-content)
+                                      r-content
+                                      ""))))
+                      (reflect-resume
+                        '((role . "user")
+                          (content .
+                           "Tool calling is restored. Now proceed with the different action you just described."))))
+                   (set! pre-turns (list reflect-user reflect-assistant reflect-resume))
+                   (set! run-msgs (append refl-msgs (list reflect-assistant reflect-resume)))))))
+    ;; Turn-level rejection / best-of-N re-roll
+    (let*
+        ((roll-temps (cons #f (loop-guard-config-ref guard 'roll-temperatures)))
+         (roll-budget (max 1 (or (loop-guard-config-ref guard 'roll-attempts) 3))))
+      (let loop
+        ((temps roll-temps) (attempt 1))
+        (receive (content reasoning tool-calls)
+                 (base run-msgs eff-tools #:temperature (car temps))
+                 (if
+                     (and (find-duplicated-signature guard tool-calls)
+                          (> roll-budget attempt)
+                          (pair? (cdr temps)))
+                   (loop (cdr temps) (+ attempt 1))
+                   (values content reasoning tool-calls pre-turns)))))))
+
 (define (find-duplicated-signature guard tool-calls)
         "Return the first signature in TOOL-CALLS that the guard already
 memoized (would block), or #f."
@@ -455,62 +610,89 @@ masking — the looping tool's definition disappears from the schema)."
                       (not (member (tool-spec-name t) masked string=)))
                     tools))))
 
-(define (guard-completion guard base messages tools)
-        "Completion hook: filter masked tools out of the advertised
-schema, force exactly one tool_choice=\"none\" reflection turn when the
-ladder requests it (persisting the reflection exchange as pre-turns),
-and apply turn-level rejection sampling: candidates whose tool calls
-repeat a memoized signature are discarded and re-requested with stepped
-temperatures (best-of-N), up to the configured budget."
-        (let* ((eff-tools (eff-tools-for-step guard tools))
-               (reflect-sig (loop-guard-pending-reflect guard))
-               (pre-turns '())
-               (run-msgs messages))
-          (when reflect-sig
-            (set-loop-guard-pending-reflect! guard #f)
-            (let* ((reflect-user `((role . "user") (content . ,(guard-reflect-prompt guard))))
-                   (refl-msgs (append messages (list reflect-user))))
-              (receive (r-content _r-reasoning _r-calls)
-                       (base refl-msgs '() #:tool-choice "none")
-                       (let ((reflect-assistant `((role . "assistant")
-                                                  (content . ,(if (string? r-content)
-                                                                r-content
-                                                                "")))))
-                         (set! pre-turns (list reflect-user reflect-assistant))
-                         (set! run-msgs (append refl-msgs (list reflect-assistant)))))))
-          ;; Turn-level rejection / best-of-N re-roll
-          (let* ((roll-temps (cons #f (loop-guard-config-ref guard 'roll-temperatures)))
-                 (roll-budget (max 1 (or (loop-guard-config-ref guard 'roll-attempts) 3))))
-            (let loop ((temps roll-temps) (attempt 1))
-                      (receive (content reasoning tool-calls)
-                               (base run-msgs eff-tools #:temperature (car temps))
-                               (if (and (find-duplicated-signature guard tool-calls)
-                                        (> roll-budget attempt)
-                                        (pair? (cdr temps)))
-                                 (loop (cdr temps) (+ attempt 1))
-                                 (values content reasoning tool-calls pre-turns)))))))
+(define
+  (guard-completion guard base messages tools)
+  "Completion hook: filter masked tools out of the advertised
+schema, force exactly one tool_choice='none' reflection turn when the
+ladder requests it (persisting the reflection exchange plus a trailing
+user resume prompt as pre-turns so the outbound history never ends on a
+model turn), and apply turn-level rejection sampling."
+  (let*
+      ((eff-tools (eff-tools-for-step guard tools))
+       (reflect-sig (loop-guard-pending-reflect guard))
+       (pre-turns '())
+       (run-msgs messages))
+    (when reflect-sig
+      (set-loop-guard-pending-reflect! guard #f)
+      (let*
+          ((reflect-user `((role . "user") (content . ,(guard-reflect-prompt guard))))
+           (refl-msgs (append messages (list reflect-user))))
+        (receive (r-content _r-reasoning _r-calls)
+                 (base refl-msgs '() #:tool-choice "none")
+                 (let
+                     ((reflect-assistant
+                        `((role . "assistant")
+                          (content .
+                                   ,(if (string? r-content)
+                                      r-content
+                                      ""))))
+                      (reflect-resume
+                        '((role . "user")
+                          (content .
+                           "Tool calling is restored. Now proceed with the different action you just described."))))
+                   (set! pre-turns (list reflect-user reflect-assistant reflect-resume))
+                   (set! run-msgs (append refl-msgs (list reflect-assistant reflect-resume)))))))
+    ;; Turn-level rejection / best-of-N re-roll
+    (let*
+        ((roll-temps (cons #f (loop-guard-config-ref guard 'roll-temperatures)))
+         (roll-budget (max 1 (or (loop-guard-config-ref guard 'roll-attempts) 3))))
+      (let loop
+        ((temps roll-temps) (attempt 1))
+        (receive (content reasoning tool-calls)
+                 (base run-msgs eff-tools #:temperature (car temps))
+                 (if
+                     (and (find-duplicated-signature guard tool-calls)
+                          (> roll-budget attempt)
+                          (pair? (cdr temps)))
+                   (loop (cdr temps) (+ attempt 1))
+                   (values content reasoning tool-calls pre-turns)))))))
 
 ;;;
 ;;; Mechanism 3: interception
 ;;;
 (define (guard-intercept guard tc session)
-        "Intercept hook ((FN TC SESSION) -> block message | #f).  A call
-is vetoed when its canonical signature was already executed earlier in
-the session, its tool name classifies as idempotent, and the attempted
-emission count has reached the block-after threshold. First emissions
-and mutation tools always pass through — blocking here would veto
-legitimate repeated mutations (run_tests between edits, checkpoints)."
-        (let* ((name (or (assoc-ref tc 'name) ""))
-               (idempotent? (or (loop-guard-config-ref guard 'idempotent?)
-                                default-idempotent?))
-               (block-after (or (loop-guard-config-ref guard 'block-after) 2))
-               (entry (and (string? name)
-                           (not (string-null? name))
-                           (idempotent? name)
-                           (loop-guard-signature-entry guard (signature-of tc)))))
-          (if (and entry
-                   (>= (+ 1 (or (assoc-ref (cdr entry) 'emissions) 0)) block-after))
-            (guard-block-message guard tc (cdr entry))
+        "Intercept hook ((FN TC SESSION) -> block message | (cached . result) | #f).
+A call is vetoed when its canonical signature was already executed earlier in
+the current epoch, its tool name classifies as idempotent, and the attempted
+emission count has reached the block-after threshold. Static analysis tools
+reuse their cached result on early repeats in the same epoch instead of
+failing with DuplicateToolCallException. First emissions and mutation tools
+always pass through."
+        (let*
+            ((name (or (assoc-ref tc 'name) ""))
+             (idempotent?
+               (or (loop-guard-config-ref guard 'idempotent?) default-idempotent?))
+             (block-after (or (loop-guard-config-ref guard 'block-after) 2))
+             (halt-after (or (loop-guard-config-ref guard 'halt-after-blocked) 8))
+             (entry
+               (and (string? name)
+                    (not (string-null? name))
+                    (idempotent? name)
+                    (loop-guard-signature-entry guard (signature-of tc)))))
+          (if entry
+            (let*
+                ((meta (cdr entry))
+                 (emissions (or (assoc-ref meta 'emissions) 0))
+                 (next-emissions (+ 1 emissions))
+                 (cached-res (assoc-ref meta 'result)))
+              (cond
+                ((and (static-analysis-tool? name)
+                      (string? cached-res)
+                      (not (string-null? cached-res))
+                      (< emissions halt-after))
+                  (cons 'cached cached-res))
+                ((>= next-emissions block-after) (guard-block-message guard tc meta))
+                (else #f)))
             #f)))
 
 ;;;

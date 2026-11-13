@@ -1548,5 +1548,120 @@ data: [DONE]
       "sig456"
       (assoc-ref (assoc-ref ec "google") "thought_signature"))))
 
+(test-group
+  "conversation-validation-and-429-recovery"
+  (call-with-values
+    (lambda ()
+      (validate-conversation-messages '(((role . "user") (content . "hi")))))
+    (lambda (ok? reason)
+      (test-assert "user-ending conversation is valid" ok?)
+      (test-equal "valid conversation has no reason" #f reason)))
+  (call-with-values
+    (lambda ()
+      (validate-conversation-messages
+        '(((role . "user") (content . "hi")) ((role . "assistant") (content . "hello")))))
+    (lambda (ok? reason)
+      (test-assert "conversation ending with assistant turn is invalid" (not ok?))
+      (test-assert
+        "reason mentions assistant/model turn"
+        (string-contains reason "assistant/model"))))
+  (call-with-values
+    (lambda ()
+      (validate-conversation-messages
+        '(((role . "user") (content . "hi"))
+          ((role . "tool") (tool_call_id . "c1") (name . "x") (content . "orphan")))))
+    (lambda (ok? _reason)
+      (test-assert "orphaned tool message is invalid" (not ok?))))
+  (let
+      ((repaired
+         (repair-conversation-messages
+           '(((role . "user") (content . "hi"))
+             ((role . "tool") (tool_call_id . "orphan") (name . "x") (content . "bad"))
+             ((role . "assistant") (content . "")
+              (tool_calls .
+               #(((id . "c1") (type . "function")
+                  (function . ((name . "read_file") (arguments . "{}")))))))))))
+    (test-equal
+      "repaired conversation has user + assistant + synthetic tool"
+      3
+      (length repaired))
+    (test-equal "last message after repair is tool"
+                "tool"
+                (assoc-ref (car (reverse repaired)) 'role)))
+  (let
+      ((gem-429
+         (scm->json-string
+           #((("error" .
+               (("code" . 429)
+                ("message" . "Quota exceeded. Please retry in 19.073524811s.")
+                ("status" . "RESOURCE_EXHAUSTED")
+                ("details" .
+                 #((("@type" . "type.googleapis.com/google.rpc.RetryInfo") ("retryDelay" . "19s")))))))))))
+    (test-equal "extracts RetryInfo retryDelay"
+                19
+                (parse-retry-delay-seconds '() gem-429))
+    (call-with-values
+      (lambda ()
+        (classify-http-error 429 '() gem-429))
+      (lambda (retryable? kind delay _msg)
+        (test-assert "Gemini 429 with RetryInfo is retryable" retryable?)
+        (test-equal "classified as transient-rate-limit" 'transient-rate-limit kind)
+        (test-equal "delay is 19s" 19 delay))))
+  (call-with-values
+    (lambda ()
+      (classify-http-error 429
+                           '((retry-after . "7"))
+                           (scm->json-string '(("error" . (("message" . "rate limit")))))))
+    (lambda (retryable? kind delay _msg)
+      (test-assert "Retry-After header parsed" retryable?)
+      (test-equal "Retry-After 7s" 7 delay)))
+  (call-with-values
+    (lambda ()
+      (classify-http-error 429
+                           '()
+                           (scm->json-string
+                             '(("error" . (("message" . "insufficient_quota: prepaid credit balance is 0")))))))
+    (lambda (retryable? kind _delay _msg)
+      (test-assert "billing exhaustion is NOT retryable" (not retryable?))
+      (test-equal "classified as billing-exhausted" 'billing-exhausted kind)))
+  (let*
+      ((client (make-model-client #:endpoint "http://test-server/v1" #:model "m"))
+       (calls 0)
+       (slept '())
+       (poster
+         (lambda* (uri #:key body headers streaming?)
+                  (set! calls (+ calls 1))
+                  (if (= calls 1)
+                    (values (build-response #:code 429)
+                            (open-input-string
+                              (scm->json-string '(("error" . (("message" . "Please retry in 2s.")))))))
+                    (values (build-response #:code 200)
+                            (open-input-string
+                              (string-append "data: "
+                                             (scm->json-string '((choices . #(((delta . ((content . "ok"))))))))
+                                             "
+
+data: [DONE]
+"))))))
+       (chunks '()))
+    (parameterize
+      ((current-http-retry-sleeper
+         (lambda (s)
+           (set! slept (cons s slept)))))
+      (model-stream client
+                    "hi"
+                    (lambda (d . _)
+                      (set! chunks (cons d chunks)))
+                    #:http-poster
+                    poster
+                    #:max-retries
+                    2
+                    #:retry-delay-sec
+                    1))
+    (test-equal "model-stream retried once on 429" 2 calls)
+    (test-equal "slept respecting provider 2s delay" 1 (length slept))
+    (test-assert "provider delay >= 2s respected" (>= (car slept) 2))
+    (test-equal "streamed content delivered after retry" '("ok") chunks)))
+
 (spec-end)
 (spec-exit)

@@ -25,6 +25,8 @@
                #:use-module
                (ice-9 rdelim)
                #:use-module
+               (ice-9 regex)
+               #:use-module
                (ice-9 optargs)
                #:use-module
                (rnrs bytevectors)
@@ -51,6 +53,11 @@
                                          list-models
                                          model-available?
                                          auto-detect-model
+                                         current-http-retry-sleeper
+                                         current-on-http-retry
+                                         parse-retry-delay-seconds
+                                         classify-http-error
+                                         http-post-with-retry
                                          model-complete
                                          model-stream
                                          model-entry-context-limit
@@ -552,6 +559,217 @@ reasoning_content)."
                  (equal? host "api.anthropic.com")
                  (equal? host "api.openai.com")))))
 
+(define current-http-retry-sleeper
+        (make-parameter
+          (lambda (seconds)
+            (let
+                ((us (max 0 (inexact->exact (round (* 1000000 seconds))))))
+              (when (> us 0) (usleep us))))))
+
+(define current-on-http-retry (make-parameter #f))
+
+(define (extract-error-object body-str)
+        "Parse an OpenAI or Gemini error JSON payload (object or single-element array)
+and return the inner error alist/string, or #f."
+        (catch #t
+          (lambda ()
+            (let*
+                ((obj (json-string->scm body-str))
+                 (root
+                   (cond
+                     ((pair? obj) obj)
+                     ((and (vector? obj) (> (vector-length obj) 0) (pair? (vector-ref obj 0)))
+                       (vector-ref obj 0))
+                     (else #f))))
+              (and (pair? root) (json-ref root "error"))))
+          (lambda _
+            #f)))
+
+(define %retry-in-rx
+        (make-regexp "retry in ([0-9]+(\\.[0-9]+)?)s" regexp/icase))
+
+(define %retry-delay-str-rx
+        (make-regexp "^([0-9]+(\\.[0-9]+)?)(ms|s)$" regexp/icase))
+
+(define (parse-duration-token str)
+        (let
+            ((m (and (string? str) (regexp-exec %retry-delay-str-rx (string-trim-both str)))))
+          (and m
+               (let
+                   ((num (string->number (match:substring m 1)))
+                    (unit (string-downcase (match:substring m 3))))
+                 (and num
+                      (if (string=? unit "ms")
+                        (/ num 1000.0)
+                        num))))))
+
+(define
+  (parse-retry-delay-seconds headers body-str)
+  "Extract provider-supplied retry delay in seconds from HTTP response HEADERS
+(Retry-After) or JSON error BODY-STR (Gemini RetryInfo.retryDelay or 'retry in Ns').
+Returns a positive number or #f."
+  (let*
+      ((ra (and (list? headers) (assoc-ref headers 'retry-after)))
+       (ra-sec
+         (cond
+           ((number? ra) ra)
+           ((string? ra) (string->number (string-trim-both ra)))
+           (else #f)))
+       (err-obj (and (string? body-str) (extract-error-object body-str)))
+       (details (and (pair? err-obj) (json-ref err-obj "details")))
+       (detail-delay
+         (and (vector? details)
+              (let loop
+                ((i 0))
+                (if (>= i (vector-length details))
+                  #f
+                  (let ((d (vector-ref details i)))
+                    (or
+                      (and (pair? d)
+                           (let ((rd (json-ref d "retryDelay")))
+                             (and (string? rd) (parse-duration-token rd))))
+                      (loop (+ i 1))))))))
+       (msg-match (and (string? body-str) (regexp-exec %retry-in-rx body-str)))
+       (msg-delay (and msg-match (string->number (match:substring msg-match 1))))
+       (chosen (or ra-sec detail-delay msg-delay)))
+    (and (number? chosen) (> chosen 0) chosen)))
+
+(define (string-contains-any? haystack needles)
+        (let ((low (string-downcase haystack)))
+          (any
+            (lambda (n)
+              (string-contains low n))
+            needles)))
+
+(define
+  (classify-http-error code headers body-str)
+  "Classify a non-2xx HTTP error response (CODE, HEADERS, BODY-STR).
+Returns (values retryable? kind provider-delay err-msg) where kind is one of
+'transient-rate-limit, 'billing-exhausted, 'server-unavailable, or 'http-error."
+  (let*
+      ((err-obj (extract-error-object body-str))
+       (err-msg
+         (cond
+           ((string? err-obj) err-obj)
+           ((and (pair? err-obj) (json-ref err-obj "message"))
+             (json-ref err-obj "message"))
+           ((and (string? body-str) (not (string-null? body-str))) body-str)
+           (else (format #f "HTTP ~a error" code))))
+       (provider-delay (parse-retry-delay-seconds headers body-str))
+       (combined (string-append (or body-str "") " " (or err-msg "")))
+       (transient-markers?
+         (or provider-delay
+             (string-contains-any? combined
+                                   '("perminute" "per minute"
+                                     "rate_limit"
+                                     "rate limit"
+                                     "too many requests"
+                                     "in_flight_budget_exhausted"
+                                     "retryinfo"
+                                     "retrydelay"
+                                     "please retry in"))))
+       (billing-markers?
+         (string-contains-any? combined
+                               '("insufficient_quota" "billing_hard_limit"
+                                 "billing_not_active"
+                                 "credit balance"
+                                 "out of credits"
+                                 "prepaid"
+                                 "balance exhausted"
+                                 "payment required"
+                                 "account_deactivated"))))
+    (cond
+      ((and (or (= code 402) (= code 429)) billing-markers? (not transient-markers?))
+        (values #f 'billing-exhausted provider-delay err-msg))
+      ((= code 402)
+        (if transient-markers?
+          (values #t 'transient-rate-limit provider-delay err-msg)
+          (values #f 'billing-exhausted provider-delay err-msg)))
+      ((= code 429) (values #t 'transient-rate-limit provider-delay err-msg))
+      ((= code 503) (values #t 'server-unavailable provider-delay err-msg))
+      (else (values #f 'http-error provider-delay err-msg)))))
+
+(define
+  (compute-retry-wait-seconds attempt base-delay max-delay provider-delay)
+  "Compute bounded exponential backoff with +/-20% jitter, floored at
+PROVIDER-DELAY when supplied and capped at MAX-DELAY."
+  (let*
+      ((exp-base (min max-delay (* base-delay (expt 2 attempt))))
+       (spread (* exp-base 0.2 (- (* 2 (random 1.0)) 1)))
+       (jittered (max 0 (+ exp-base spread)))
+       (with-provider
+         (if
+             (and (number? provider-delay) (> provider-delay 0))
+           (max jittered provider-delay)
+           jittered)))
+    (min max-delay (max 0 with-provider))))
+
+(define (read-error-body-string body)
+        (cond
+          ((port? body)
+            (let
+                ((text
+                   (catch #t
+                     (lambda ()
+                       (read-delimited "" body))
+                     (lambda _
+                       ""))))
+              (catch #t
+                (lambda ()
+                  (close-port body))
+                (lambda _
+                  #f))
+              text))
+          (else (response-body->string body ""))))
+
+(define*
+  (http-post-with-retry poster
+                        uri
+                        payload
+                        headers
+                        streaming?
+                        #:key
+                        (max-retries 3)
+                        (retry-delay-sec 2)
+                        (max-delay-sec 60)
+                        (error-label "HTTP request failed"))
+  "Execute POSTER with bounded exponential backoff, jitter, and provider
+retry-delay support on transient 429/503/402 responses. Fails fast on
+billing/balance exhaustion. Returns (values response body) on 2xx."
+  (let loop
+    ((attempt 0))
+    (call-with-values
+      (lambda ()
+        (poster uri #:body payload #:headers headers #:streaming? streaming?))
+      (lambda (response body)
+        (let ((code (response-code response)))
+          (if (<= 200 code 299)
+            (values response body)
+            (let
+                ((body-str (read-error-body-string body))
+                 (resp-headers (response-headers response)))
+              (call-with-values
+                (lambda ()
+                  (classify-http-error code resp-headers body-str))
+                (lambda (retryable? kind provider-delay err-msg)
+                  (if (and retryable? (< attempt max-retries))
+                    (let
+                        ((wait-sec
+                           (compute-retry-wait-seconds attempt
+                                                       retry-delay-sec
+                                                       max-delay-sec
+                                                       provider-delay))
+                         (on-retry (current-on-http-retry)))
+                      (when (procedure? on-retry)
+                        (catch #t
+                          (lambda ()
+                            (on-retry (+ attempt 1) wait-sec code kind err-msg))
+                          (lambda _
+                            #f)))
+                      ((current-http-retry-sleeper) wait-sec)
+                      (loop (+ attempt 1)))
+                    (error error-label code err-msg)))))))))))
+
 (define*
   (model-complete client
                   messages
@@ -596,55 +814,40 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
                                 #:cache-markers?
                                 (model-client-cache-markers? client))))
        (headers (build-headers api-key #f))
-       (poster (or http-poster (current-http-post))))
-    (let loop
-      ((retries
+       (poster (or http-poster (current-http-post)))
+       (retries
          (or max-retries
              (if http-poster
                0
-               2)))
+               3)))
        (delay-sec (or retry-delay-sec 2)))
-      (call-with-values
-        (lambda ()
-          (poster uri #:body payload #:headers headers #:streaming? #f))
-        (lambda (response body)
-          (let ((code (response-code response)))
-            (cond
-              ((and (or (= code 402) (= code 429) (= code 503)) (> retries 0))
-                (when (> delay-sec 0) (sleep delay-sec))
-                (loop (- retries 1) (* delay-sec 2)))
-              ((not (<= 200 code 299))
-                (let*
-                    ((body-str (response-body->string body ""))
-                     (parsed-err
-                       (catch #t
-                         (lambda ()
-                           (let ((obj (json-string->scm body-str)))
-                             (and (pair? obj) (json-ref obj "error"))))
-                         (lambda _
-                           #f)))
-                     (err-msg
-                       (cond
-                         ((string? parsed-err) parsed-err)
-                         ((and (pair? parsed-err) (json-ref parsed-err "message"))
-                           (json-ref parsed-err "message"))
-                         ((not (string-null? body-str)) body-str)
-                         (else (format #f "HTTP ~a error" code)))))
-                  (error "model-complete HTTP request failed" code err-msg)))
-              (else
-                (let*
-                    ((text (response-body->string body body))
-                     (parsed
-                       (if (string? text)
-                         (catch #t
-                           (lambda ()
-                             (json-string->scm text))
-                           (lambda _
-                             text))
-                         text)))
-                  (if raw?
-                    parsed
-                    (or (extract-chat-content parsed) parsed)))))))))))
+    (call-with-values
+      (lambda ()
+        (http-post-with-retry poster
+                              uri
+                              payload
+                              headers
+                              #f
+                              #:max-retries
+                              retries
+                              #:retry-delay-sec
+                              delay-sec
+                              #:error-label
+                              "model-complete HTTP request failed"))
+      (lambda (_response body)
+        (let*
+            ((text (response-body->string body body))
+             (parsed
+               (if (string? text)
+                 (catch #t
+                   (lambda ()
+                     (json-string->scm text))
+                   (lambda _
+                     text))
+                 text)))
+          (if raw?
+            parsed
+            (or (extract-chat-content parsed) parsed)))))))
 
 (define*
   (model-stream client
@@ -655,7 +858,9 @@ Returns the response content text string, or parsed JSON alist if raw? is #t."
                 (max-tokens #f)
                 (tools #f)
                 (tool-choice #f)
-                (http-poster #f))
+                (http-poster #f)
+                (max-retries #f)
+                (retry-delay-sec #f))
   "Initiate a streaming chat request, calling (CHUNK-CALLBACK payload type)
 as SSE chunks arrive. PAYLOAD is a text delta string with TYPE 'content or
 'thought, or a raw streamed tool-call fragment alist with TYPE 'tool-call
@@ -691,13 +896,27 @@ Returns 'done or 'eof."
                                 #:cache-markers?
                                 (model-client-cache-markers? client))))
        (headers (build-headers api-key #t))
-       (poster (or http-poster (current-http-post))))
+       (poster (or http-poster (current-http-post)))
+       (retries
+         (or max-retries
+             (if http-poster
+               0
+               3)))
+       (delay-sec (or retry-delay-sec 2)))
     (call-with-values
       (lambda ()
-        (poster uri #:body payload #:headers headers #:streaming? #t))
-      (lambda (response body-port)
-        ;; Some callers and mock posters deliver the body as a plain
-        ;; string; normalize to a port so SSE reading is uniform.
+        (http-post-with-retry poster
+                              uri
+                              payload
+                              headers
+                              #t
+                              #:max-retries
+                              retries
+                              #:retry-delay-sec
+                              delay-sec
+                              #:error-label
+                              "model-stream HTTP request failed"))
+      (lambda (_response body-port)
         (let
             ((port
                (if (port? body-port)
@@ -710,61 +929,49 @@ Returns 'done or 'eof."
             (lambda ()
               #t)
             (lambda ()
-              (let ((code (response-code response)))
-                (unless (<= 200 code 299)
-                  (let
-                      ((err-text
-                         (if (port? body-port)
-                           (catch #t
-                             (lambda ()
-                               (read-delimited "" body-port))
-                             (lambda _
-                               "failed to read error body"))
-                           body-port)))
-                    (error "model-stream HTTP request failed" code err-text)))
-                (let*
-                    ((result
-                       (read-sse-events port
-                                        (lambda (chunk)
-                                          (let
-                                              ((stop? #f) (fragments (extract-tool-call-deltas chunk)))
-                                            (if (pair? fragments)
-                                              (for-each
-                                                (lambda (frag)
-                                                  (unless stop?
-                                                    (let
-                                                        ((res
-                                                           (catch #t
-                                                             (lambda ()
-                                                               (chunk-callback frag 'tool-call))
-                                                             (lambda _
-                                                               #f))))
-                                                      (when (eq? res 'stop) (set! stop? #t)))))
-                                                fragments)
-                                              (let ((item (extract-chat-delta-item chunk)))
-                                                (when
-                                                    (and (pair? item) (string? (cdr item)) (not (string-null? (cdr item))))
+              (let*
+                  ((result
+                     (read-sse-events port
+                                      (lambda (chunk)
+                                        (let
+                                            ((stop? #f) (fragments (extract-tool-call-deltas chunk)))
+                                          (if (pair? fragments)
+                                            (for-each
+                                              (lambda (frag)
+                                                (unless stop?
                                                   (let
                                                       ((res
                                                          (catch #t
                                                            (lambda ()
-                                                             (chunk-callback (cdr item) (car item)))
+                                                             (chunk-callback frag 'tool-call))
                                                            (lambda _
-                                                             (chunk-callback (cdr item))))))
-                                                    (when (eq? res 'stop) (set! stop? #t))))))
-                                            (if stop?
-                                              'stop
-                                              #f)))))
-                     (complete-res (and (pair? result) (json-ref result "choices") result)))
-                  (when complete-res
-                    (catch #t
-                      (lambda ()
-                        (chunk-callback complete-res 'complete-json))
-                      (lambda _
-                        #f)))
-                  (if complete-res
-                    'done
-                    result))))
+                                                             #f))))
+                                                    (when (eq? res 'stop) (set! stop? #t)))))
+                                              fragments)
+                                            (let ((item (extract-chat-delta-item chunk)))
+                                              (when
+                                                  (and (pair? item) (string? (cdr item)) (not (string-null? (cdr item))))
+                                                (let
+                                                    ((res
+                                                       (catch #t
+                                                         (lambda ()
+                                                           (chunk-callback (cdr item) (car item)))
+                                                         (lambda _
+                                                           (chunk-callback (cdr item))))))
+                                                  (when (eq? res 'stop) (set! stop? #t))))))
+                                          (if stop?
+                                            'stop
+                                            #f)))))
+                   (complete-res (and (pair? result) (json-ref result "choices") result)))
+                (when complete-res
+                  (catch #t
+                    (lambda ()
+                      (chunk-callback complete-res 'complete-json))
+                    (lambda _
+                      #f)))
+                (if complete-res
+                  'done
+                  result)))
             (lambda ()
               (when (and (port? port) (not (port-closed? port))) (close-port port)))))))))
 

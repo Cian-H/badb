@@ -293,11 +293,53 @@ text style: curses' A_DIM renders as reduced foreground intensity."
 ;;;
 ;;; Session lifecycle
 ;;;
+(define %saved-stderr-fd #f)
+(define %tty-control-port #f)
+
+(define (redirect-stderr-for-tui!)
+        "Redirect OS file descriptor 2 (stderr) away from the terminal while
+notcurses owns the alternate screen, so C-level GC warnings or stray
+stderr writes cannot scroll or corrupt the display."
+        (unless %saved-stderr-fd
+          (catch #t
+            (lambda ()
+              (let* ((saved (dup->fdes 2))
+                     (log-path (if (file-exists? ".badb")
+                                 ".badb/tui-stderr.log"
+                                 "/dev/null"))
+                     (log-fd (catch #t
+                               (lambda ()
+                                 (open-fdes log-path (logior O_WRONLY O_CREAT O_APPEND) #o644))
+                               (lambda _
+                                 (open-fdes "/dev/null" O_WRONLY)))))
+                (dup2 log-fd 2)
+                (close-fdes log-fd)
+                (set! %saved-stderr-fd saved)
+                (set! %tty-control-port (fdes->outport saved))))
+            (lambda _ #f))))
+
+(define (restore-stderr-for-tui!)
+        "Restore OS file descriptor 2 (stderr) when leaving the TUI."
+        (when %saved-stderr-fd
+          (catch #t
+            (lambda ()
+              (when %tty-control-port
+                (force-output %tty-control-port))
+              (dup2 %saved-stderr-fd 2)
+              (when %tty-control-port
+                (close-port %tty-control-port))
+              (set! %tty-control-port #f)
+              (set! %saved-stderr-fd #f))
+            (lambda _
+              (set! %tty-control-port #f)
+              (set! %saved-stderr-fd #f)))))
+
 (define (initscr)
         ;; The TUI runs on the alternate screen: on exit the terminal
         ;; restores the pre-TUI screen, so no rendered frame leaks into the
         ;; shell's scrollback (the primary-screen layout left the last frame
         ;; stranded in history, mixing with subsequent shell output).
+        (redirect-stderr-for-tui!)
         (let* ((opts (make-bytevector 64 0))
                ;; NCOPTION_SUPPRESS_BANNERS (0x20). The alternate screen is
                ;; the default; NO_ALTERNATE_SCREEN is deliberately unset.
@@ -332,7 +374,8 @@ text style: curses' A_DIM renders as reduced foreground intensity."
           (cursor-shape 'default)
           (%stop %nc)
           (set! %nc %null-pointer)
-          (set! %plane %null-pointer)))
+          (set! %plane %null-pointer)
+          (restore-stderr-for-tui!)))
 
 ;; notcurses always runs cbreak/noecho with keypad-style decoding; these
 ;; exist only for call-surface compatibility.
@@ -424,8 +467,9 @@ so the TUI never leaves the user's cursor style clobbered."
           (when (and code (not (eq? shape %last-cursor-shape)))
             (catch #t
               (lambda ()
-                (format (current-error-port) "\x1b[~a q" code)
-                (force-output (current-error-port)))
+                (let ((p (or %tty-control-port (current-error-port))))
+                  (format p "\x1b[~a q" code)
+                  (force-output p)))
               (lambda _ #f))
             (set! %last-cursor-shape shape))))
 
@@ -822,6 +866,7 @@ blocks."
 (define (beep)
         (catch #t
           (lambda ()
-            (display "\a" (current-error-port))
-            (force-output (current-error-port)))
+            (let ((p (or %tty-control-port (current-error-port))))
+              (display "\a" p)
+              (force-output p)))
           (lambda _ #f)))

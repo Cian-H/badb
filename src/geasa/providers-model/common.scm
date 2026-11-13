@@ -26,6 +26,8 @@
                                         model-client-allow-missing-thinking?
                                         model-client-cache-markers?
                                         valid-api-message?
+                                        validate-conversation-messages
+                                        repair-conversation-messages
                                         normalize-messages
                                         parse-sse-line
                                         sse-event-generator
@@ -136,6 +138,150 @@ Rejects internal UI logs or tool responses missing required tool_call_id."
                 (else #f))))
           ((string? msg) #t)
           (else #f)))
+
+(define (extract-message-tool-call-ids msg)
+        "Return list of (id . name) pairs from MSG's tool_calls field."
+        (let
+            ((raw (or (prop-ref msg 'tool_calls) (prop-ref msg "tool_calls"))))
+          (let
+              ((items
+                 (cond
+                   ((vector? raw) (vector->list raw))
+                   ((list? raw) raw)
+                   (else '()))))
+            (filter-map
+              (lambda (tc)
+                (and (pair? tc)
+                     (let*
+                         ((id (or (prop-ref tc 'id) (prop-ref tc "id")))
+                          (fn (or (prop-ref tc 'function) (prop-ref tc "function")))
+                          (name
+                            (or
+                              (and (pair? fn) (or (prop-ref fn 'name) (prop-ref fn "name")))
+                              (prop-ref tc 'name)
+                              (prop-ref tc "name")
+                              "")))
+                       (and (string? id) (not (string-null? id)) (cons id (ensure-string name))))))
+              items))))
+
+(define (coerce-message-list msgs)
+        "Coerce MSGS (vector, list, single message alist, or string) into a list
+of message alists for validation or repair."
+        (cond
+          ((vector? msgs) (vector->list msgs))
+          ((single-message-alist? msgs) (list msgs))
+          ((list? msgs) msgs)
+          ((string? msgs) (list (list (cons "role" "user") (cons "content" msgs))))
+          (else '())))
+
+(define (validate-conversation-messages msgs)
+        "Validate that MSGS forms a structurally valid conversation sequence for
+chat completion endpoints. Checks that at least one non-system turn is present,
+every assistant tool_calls turn is immediately answered by matching tool
+responses, no orphaned tool messages appear, and the final message is not an
+assistant/model turn. Returns (values valid? reason-or-#f)."
+        (let*
+            ((raw-list (coerce-message-list msgs))
+             (msg-list
+               (filter
+                 (lambda (m)
+                   (or (valid-api-message? m)
+                       (and (message-alist? m)
+                            (equal? (and=> (prop-ref m 'role) ensure-string) "tool"))))
+                 raw-list)))
+          (let loop
+            ((rest msg-list) (pending '()) (non-sys 0) (last-role #f))
+            (if (null? rest)
+              (cond
+                ((pair? pending) (values #f "conversation has unanswered tool_calls at end"))
+                ((= non-sys 0) (values #f "conversation has no user or tool turns"))
+                ((member last-role '("assistant" "model"))
+                  (values #f "conversation ends with an assistant/model turn"))
+                (else (values #t #f)))
+              (let*
+                  ((m (car rest))
+                   (role
+                     (cond
+                       ((role-content-pair? m) (ensure-string (car m)))
+                       ((message-alist? m) (or (and=> (prop-ref m 'role) ensure-string) ""))
+                       ((string? m) "user")
+                       (else "")))
+                   (next-non-sys
+                     (if (member role '("system" "developer"))
+                       non-sys
+                       (+ non-sys 1))))
+                (cond
+                  ((string=? role "tool")
+                    (let
+                        ((tid (and (message-alist? m) (prop-ref m 'tool_call_id))))
+                      (cond
+                        ((not (non-empty-string? tid))
+                          (values #f "tool message missing required tool_call_id"))
+                        ((null? pending)
+                          (values #f (format #f "orphaned tool message for tool_call_id '~a'" tid)))
+                        ((not (assoc tid pending))
+                          (values #f
+                                  (format #f "unexpected tool_call_id '~a' not matching pending tool_calls" tid)))
+                        (else
+                          (let
+                              ((remaining (alist-delete tid pending string=?)))
+                            (loop (cdr rest) remaining next-non-sys role))))))
+                  ((pair? pending)
+                    (values #f
+                            (format #f
+                                    "unanswered tool_calls (~a) before '~a' turn"
+                                    (string-join (map car pending) ", ")
+                                    role)))
+                  ((string=? role "assistant")
+                    (let
+                        ((tc-ids
+                           (if (message-alist? m)
+                             (extract-message-tool-call-ids m)
+                             '())))
+                      (loop (cdr rest) tc-ids next-non-sys role)))
+                  (else (loop (cdr rest) '() next-non-sys role))))))))
+
+(define (repair-conversation-messages msgs)
+        "Repair assistant/tool_calls/tool sequencing in MSGS: drops orphaned tool
+messages and appends synthetic aborted tool observations for any unanswered
+tool_calls before the next non-tool turn or end of list."
+        (define (synthetic-abort-msg id-name)
+                `((role . "tool") (tool_call_id . ,(car id-name))
+                  (name . ,(cdr id-name))
+                  (content . "Tool execution aborted: missing tool observation.")))
+        (let loop
+          ((rest (coerce-message-list msgs)) (pending '()) (acc '()))
+          (if (null? rest)
+            (append (reverse acc) (map synthetic-abort-msg pending))
+            (let*
+                ((m (car rest))
+                 (role
+                   (cond
+                     ((role-content-pair? m) (ensure-string (car m)))
+                     ((message-alist? m) (or (and=> (prop-ref m 'role) ensure-string) ""))
+                     ((string? m) "user")
+                     (else ""))))
+              (cond
+                ((string=? role "tool")
+                  (let
+                      ((tid (and (message-alist? m) (prop-ref m 'tool_call_id))))
+                    (if
+                        (and (non-empty-string? tid) (pair? pending) (assoc tid pending))
+                      (loop (cdr rest) (alist-delete tid pending string=?) (cons m acc))
+                      ;; Drop orphaned or duplicate tool message
+                      (loop (cdr rest) pending acc))))
+                ((pair? pending)
+                  (let
+                      ((aborts (reverse (map synthetic-abort-msg pending))))
+                    (loop rest '() (append aborts acc))))
+                ((string=? role "assistant")
+                  (let
+                      ((tc-ids
+                         (if (message-alist? m)
+                           (extract-message-tool-call-ids m)
+                           '())))
+                    (loop (cdr rest) tc-ids (cons m acc))))
+                (else (loop (cdr rest) '() (cons m acc))))))))
 
 (define (normalize-message msg)
         (cond

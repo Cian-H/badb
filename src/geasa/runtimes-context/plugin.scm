@@ -325,64 +325,89 @@ it, so the loop never loses sight of its assignment."
                              (cons msg acc)
                              (+ cur-tokens cost))))))))))
 
-(define* (strategy-summarize-older-turns summarize-fn #:key (keep-recent-turns 3))
-         "Compaction strategy that summarizes older conversation turns using SUMMARIZE-FN.
+(define (safe-tool-boundary-split msgs idx)
+        "Adjust split index IDX backward so MSGS is never split in the middle
+of an (assistant tool_calls) + (tool ...) sequence."
+        (let ((n (length msgs)))
+          (let loop
+            ((i (max 0 (min idx n))))
+            (if
+                (or (<= i 0) (>= i n) (not (string=? (message-role (list-ref msgs i)) "tool")))
+              i
+              (loop (- i 1))))))
+
+(define*
+  (strategy-summarize-older-turns summarize-fn #:key (keep-recent-turns 3))
+  "Compaction strategy that summarizes older conversation turns using SUMMARIZE-FN.
 SUMMARIZE-FN receives a list of older messages and returns a summary string.
 Messages whose content starts with '[Context Summary of preceding turns]' are
-excluded from the older-msgs passed to summarize-fn and dropped from the output."
-         (lambda (messages _target-tokens _estimator)
-           (let*
-               ((partition (partition-system-prompt messages #t))
-                (sys-msg (car partition))
-                (pool (cdr partition))
-                (recent-count (* keep-recent-turns 2))
-                (split-point (max 0 (- (length pool) recent-count))))
-             (if (<= split-point 0)
-               messages
-               (receive (older-msgs recent-msgs)
-                        (split-at pool split-point)
-                        (let*
-                            ((summary-prefix "[Context Summary of preceding turns]")
-                             (is-summary? (lambda (msg)
-                                            (let ((content (or (assoc-ref msg 'content) (assoc-ref msg "content") "")))
-                                              (and (string? content)
-                                                   (string-prefix? summary-prefix content)))))
-                             (filtered-older (->> older-msgs
-                                                  (filter (lambda (msg) (not (is-summary? msg))))))
-                             (filtered-recent (->> recent-msgs
-                                                   (filter (lambda (msg) (not (is-summary? msg))))))
-                             (summary-text (summarize-fn filtered-older))
-                             (summary-msg `((role . "system")
-                                            (content .
-                                                     ,(format #f
-                                                              "[Context Summary of preceding turns]:
-~a"
-                                                              summary-text)))))
-                          (attach-system sys-msg (cons summary-msg filtered-recent))))))))
-
-(define* (strategy-journal-offload jrn #:key (keep-recent-turns 2))
-         "Compaction strategy that logs pruned conversation blocks to JRN and replaces
-them with audit trail checkpoint pointers."
-         (lambda (messages _target-tokens _estimator)
-           (let*
-               ((total (length messages))
-                (threshold (max 0 (- total (* keep-recent-turns 2)))))
-             (if (<= threshold 0)
-               messages
-               (receive (to-offload kept)
-                        (split-at messages threshold)
-                        (let*
-                            ((tv (gettimeofday))
-                             (chkpt-id (format #f "context-archive-~a-~a" (car tv) (cdr tv))))
-                          (journal-record-offload! jrn chkpt-id to-offload)
+excluded from the older-msgs passed to summarize-fn and dropped from the output.
+Never splits inside an (assistant tool_calls) + (tool ...) group."
+  (lambda (messages _target-tokens _estimator)
+    (let*
+        ((partition (partition-system-prompt messages #t))
+         (sys-msg (car partition))
+         (pool (cdr partition))
+         (recent-count (* keep-recent-turns 2))
+         (raw-split (max 0 (- (length pool) recent-count)))
+         (split-point (safe-tool-boundary-split pool raw-split)))
+      (if (<= split-point 0)
+        messages
+        (receive (older-msgs recent-msgs)
+                 (split-at pool split-point)
+                 (let*
+                     ((summary-prefix "[Context Summary of preceding turns]")
+                      (is-summary?
+                        (lambda (msg)
                           (let
-                              ((ref-msg `((role . "system")
-                                          (content .
-                                                   ,(format #f
-                                                            "[Prior ~a turns archived to journal checkpoint '~a']"
-                                                            (length to-offload)
-                                                            chkpt-id)))))
-                            (cons ref-msg kept))))))))
+                              ((content (or (assoc-ref msg 'content) (assoc-ref msg "content") "")))
+                            (and (string? content) (string-prefix? summary-prefix content)))))
+                      (filtered-older
+                        (->> older-msgs
+                             (filter
+                               (lambda (msg)
+                                 (not (is-summary? msg))))))
+                      (filtered-recent
+                        (drop-leading-orphaned-tools
+                          (->> recent-msgs
+                               (filter
+                                 (lambda (msg)
+                                   (not (is-summary? msg)))))))
+                      (summary-text (summarize-fn filtered-older))
+                      (summary-msg
+                        `((role . "system")
+                          (content .
+                                   ,(format #f "[Context Summary of preceding turns]:\n~a" summary-text)))))
+                   (attach-system sys-msg (cons summary-msg filtered-recent))))))))
+
+(define*
+  (strategy-journal-offload jrn #:key (keep-recent-turns 2))
+  "Compaction strategy that logs pruned conversation blocks to JRN and replaces
+them with audit trail checkpoint pointers. Never splits inside an
+(assistant tool_calls) + (tool ...) group."
+  (lambda (messages _target-tokens _estimator)
+    (let*
+        ((total (length messages))
+         (raw-threshold (max 0 (- total (* keep-recent-turns 2))))
+         (threshold (safe-tool-boundary-split messages raw-threshold)))
+      (if (<= threshold 0)
+        messages
+        (receive (to-offload kept)
+                 (split-at messages threshold)
+                 (let*
+                     ((tv (gettimeofday))
+                      (chkpt-id (format #f "context-archive-~a-~a" (car tv) (cdr tv)))
+                      (clean-kept (drop-leading-orphaned-tools kept)))
+                   (journal-record-offload! jrn chkpt-id to-offload)
+                   (let
+                       ((ref-msg
+                          `((role . "system")
+                            (content .
+                                     ,(format #f
+                                              "[Prior ~a turns archived to journal checkpoint '~a']"
+                                              (length to-offload)
+                                              chkpt-id)))))
+                     (cons ref-msg clean-kept))))))))
 
 (define (strategy-pipeline . strategies)
         "Combine multiple compaction strategies in sequence."
