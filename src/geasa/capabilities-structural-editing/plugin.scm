@@ -65,21 +65,40 @@
 ;; ---- subprocess execution -------------------------------------------------
 
 (define (%run-semcp args)
-        "Invoke `semcp' with ARGS (list of strings, no shell).
+        "Invoke `semcp' with ARGS (list of strings, no shell), capturing both stdout and stderr.
 Returns (EXIT-OK? . OUTPUT-STRING)."
         (let ((bin (%resolve-semcp-binary)))
           (if bin
             (catch #t
               (lambda ()
                 (let*
-                    ((port (apply open-pipe* OPEN_READ bin args))
-                     (out (get-string-all port))
-                     (status (close-pipe port))
-                     (code (status:exit-val status)))
-                  (cons (and code (zero? code))
-                        (if (eof-object? out)
-                          ""
-                          out))))
+                    ((p (pipe)) (r-port (car p)) (w-port (cdr p)) (pid (primitive-fork)))
+                  (if (= pid 0)
+                    (begin (close-port r-port)
+                           (dup2 (port->fdes w-port) 1)
+                           (dup2 (port->fdes w-port) 2)
+                           (close-port w-port)
+                           (catch #t
+                             (lambda ()
+                               (apply execlp bin bin args))
+                             (lambda _
+                               (primitive-exit 127))))
+                    (begin (close-port w-port)
+                           (let*
+                               ((out (get-string-all r-port))
+                                (_ (close-port r-port))
+                                (st (cdr (waitpid pid)))
+                                (code (status:exit-val st))
+                                (sig (status:term-sig st))
+                                (clean
+                                  (if (eof-object? out)
+                                    ""
+                                    (string-trim-both out))))
+                             (cons (and code (zero? code))
+                                   (if
+                                       (and (not (and code (zero? code))) (string-null? clean))
+                                     (format #f "semcp exited with status=~a signal=~a (no output)" code sig)
+                                     clean)))))))
               (lambda (key . err-args)
                 (cons #f (format #f "semcp subprocess error (~a): ~s" key err-args))))
             (cons #f "semcp unavailable: binary not found on PATH"))))
@@ -93,7 +112,13 @@ Returns (EXIT-OK? . OUTPUT-STRING)."
         (let ((parsed (%parse-json-safe raw)))
           (cond
             ((not (pair? parsed))
-              (if ok? raw (string-append "semcp error: " raw)))
+              (if ok?
+                raw
+                (string-append "semcp error: "
+                               (if
+                                   (and (string? raw) (not (string-null? (string-trim-both raw))))
+                                 raw
+                                 "subprocess failed with empty output"))))
             ((assoc-ref parsed "ok")
               (let ((res (assoc-ref parsed "result")))
                 (cond
@@ -101,11 +126,12 @@ Returns (EXIT-OK? . OUTPUT-STRING)."
                   (res (scm->json-string res))
                   (else raw))))
             (else
-              (let ((err (or (assoc-ref parsed "error")
-                             (assoc-ref parsed "result")
-                             raw)))
+              (let
+                  ((err (or (assoc-ref parsed "error") (assoc-ref parsed "result") raw)))
                 (string-append "semcp error: "
-                               (if (string? err) err (scm->json-string err))))))))
+                               (if (string? err)
+                                 err
+                                 (scm->json-string err))))))))
 
 ;; ---- session & tool API ---------------------------------------------------
 

@@ -21,6 +21,7 @@
             "uv"
             "sema"
             "prek"
+            "rtk"
             "guile-quickcheck"
             "guile-fibers"
             "guile-git"

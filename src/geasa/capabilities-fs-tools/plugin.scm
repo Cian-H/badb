@@ -108,17 +108,9 @@ guile-fslib's complex-fsing?."
                 (end-line #f)
                 (force #f)
                 (ctx-idx #f))
-  "Read a bounded slice of the file at PATH.  OFFSET and LIMIT form the
-0-based line window that matches the N:HHH→anchors shown in the output,
-so a follow-up edit_lines call can copy the displayed line numbers and
-hashes verbatim.  Alternatively pass 1-based START-LINE and END-LINE
-(inclusive) exactly as compilers and stack traces report them - they
-take precedence over OFFSET and LIMIT and map 1:1 onto the numbers you
-were given, without the -1 arithmetic that makes sed -n tempting.
-FORCE bypasses the per-session read cache to obtain fresh anchors for a
-range already read (still bounded by LIMIT / max chars).  CTX-IDX, when
-supplied, is the shared BM25 context index used to make cached ranges
-retrievable via ctx_search under source_id \"read_file:<path>\"."
+  "Read PATH directly when <= 5KB or when a bounded slice is requested.
+For unbounded reads of files > 5KB with CTX-IDX, delegates transparently to
+context-mode (ctx_execute_file / ctx_search) without dumping the whole file."
   (let
       ((sline (%coerce-int-or-false start-line))
        (eline (%coerce-int-or-false end-line)))
@@ -138,6 +130,8 @@ retrievable via ctx_search under source_id \"read_file:<path>\"."
                                                  (reverse acc)
                                                  (loop (cons l acc))))))))
                  (total (length raw-lines))
+                 (raw-text (string-join raw-lines "\n"))
+                 (file-bytes (string-length raw-text))
                  (start
                    (max 0
                         (or (and sline (- sline 1))
@@ -152,79 +146,69 @@ retrievable via ctx_search under source_id \"read_file:<path>\"."
                               limit
                               (string->number (or limit "800"))))))
                  (end (min total (+ start max-lines)))
-                 (file-hash (sha256-hex (string-join raw-lines "\n")))
-                 (covered? (read-range-covered? path start end file-hash)))
-              (if (and covered? (not force))
-                (let ((idx-hint
-                        (if ctx-idx
-                          (string-append
-                            (format #f "Indexed under source_id \"read_file:~a\" (accumulates all read slices of this file).~%" path)
-                            (format #f "To pull specific lines without re-dumping: ctx_search(query, source_id=\"read_file:~a\").~%" path))
-                          (format #f "Not indexed (no context index attached).~%"))))
+                 (bounded-slice? (or sline eline (> start 0) (< max-lines 800) force)))
+              (if
+                  (and ctx-idx (not bounded-slice?) (> file-bytes %context-mode-threshold-bytes))
+                (let
+                    ((n-chunks
+                       (ctx-index-content! ctx-idx
+                                           (string-append "read_file:" path)
+                                           raw-text
+                                           (string-suffix? ".md" path))))
                   (format #f
-                          "[file ~a - lines ~a..~a already read in this session (file unchanged since that read); cached result reused.~%~aYOU ALREADY HAVE THIS CONTENT in your context from the earlier read. Do NOT re-read it.~%• Recall specific lines cheaply: ctx_search(query, source_id=\"read_file:~a\").~%• If you need the EXACT text/anchors of these lines again (e.g. after context compaction), call read_file(path, offset=~a, limit=~a, force=true) — the file is unchanged so the result is identical, but it is returned fresh.~%• Do NOT use bash/sed to re-read.]"
+                          "[file ~a is ~a bytes (~a lines), exceeding the ~aB (5KB) direct-read threshold; delegated to context-mode (ctx_execute_file / ctx_search) and indexed into ~a chunks.]~%• Search definitions/sections: ctx_search(queries=[\"...\"], source=~s)~%• Analyze/extract with code without loading into context: ctx_execute_file(path=~s, language=\"python\"|\"shell\"|\"scheme\"|\"javascript\", code=\"...\")~%• Need exact N:HHH→anchors for edit_lines? Call read_file(path=~s, start_line=..., end_line=...) or offset/limit on the specific slice."
                           path
-                          start
-                          (- end 1)
-                          idx-hint
+                          file-bytes
+                          total
+                          %context-mode-threshold-bytes
+                          n-chunks
                           path
-                          start
-                          (max 1 (- end start))))
-                (begin
-                  (read-cache-record! path start end file-hash)
-                  (let ((result
-                          (let loop
-                            ((i start) (cur (drop raw-lines (min total start))) (acc '()))
-                            (cond
-                              ((or (>= i end) (null? cur))
-                                (let*
-                                    ((shown (reverse acc))
-                                     (last-shown
-                                       (if (null? shown)
-                                         start
-                                         (+ i -1)))
-                                     (header
-                                       (format #f
-                                               "[file ~a - ~a total lines - showing lines ~a..~a]~%"
-                                               path
-                                               total
-                                               start
-                                               last-shown))
-                                     (body (string-join shown "\n"))
-                                     (footer
-                                       (if (>= end total)
-                                         (format #f "~%[end of file at line ~a of ~a]" total total)
-                                         (format #f
-                                                 "~%[~a more lines elided - call read_file with offset=~a to continue (total ~a lines)]"
-                                                 (- total i)
-                                                 i
-                                                 total)))
-                                     (tip
-                                       (if (> total 200)
-                                         (format #f
-                                                 "~%[Tip: For large files, use symbols_overview or find_symbol to inspect specific definitions, or ctx_search for keyword search.]")
-                                         "")))
-                                  (string-append header body footer tip)))
-                              (else
-                                (let*
-                                    ((line (car cur))
-                                     (trim
-                                       (if
-                                           (> (string-length line) %read-file-max-chars-per-line)
-                                         (string-append
-                                           (substring line 0 %read-file-max-chars-per-line)
-                                           (format #f
-                                                   "... [line ~a truncated: ~a of ~a chars]"
-                                                   i
-                                                   (string-length line)
-                                                   (string-length line)))
-                                         line))
-                                     (anchored (format #f "~a:~a→~a" i (fs-line-anchor line) trim)))
-                                  (loop (+ i 1) (cdr cur) (cons anchored acc))))))))
-                    (when (and ctx-idx (not covered?))
-                      (ctx-index-content! ctx-idx (string-append "read_file:" path) result #f))
-                    result))))
-            (format #f "Error: file '~a' does not exist" path)))
+                          path
+                          path))
+                (let loop
+                  ((i start) (cur (drop raw-lines (min total start))) (acc '()))
+                  (cond
+                    ((or (>= i end) (null? cur))
+                      (let*
+                          ((shown (reverse acc))
+                           (last-shown
+                             (if (null? shown)
+                               start
+                               (+ i -1)))
+                           (header
+                             (format #f
+                                     "[file ~a - ~a total lines - showing lines ~a..~a]~%"
+                                     path
+                                     total
+                                     start
+                                     last-shown))
+                           (body (string-join shown "\n"))
+                           (footer
+                             (if (>= end total)
+                               (format #f "~%[end of file at line ~a of ~a]" total total)
+                               (format #f
+                                       "~%[~a more lines elided - call read_file with offset=~a to continue (total ~a lines)]"
+                                       (- total i)
+                                       i
+                                       total)))
+                           (tip
+                             (if (> total 200)
+                               "~%[Tip: For large files, use symbols_overview, find_symbol, ctx_search, or ctx_execute_file.]"
+                               "")))
+                        (string-append header body footer (format #f tip))))
+                    (else
+                      (let*
+                          ((line (car cur))
+                           (trim
+                             (if
+                                 (> (string-length line) %read-file-max-chars-per-line)
+                               (string-append
+                                 (substring line 0 %read-file-max-chars-per-line)
+                                 " ... [line truncated]")
+                               line))
+                           (numbered (format #f "~a:~a→~a" i (fs-line-anchor line) trim)))
+                        (loop (+ i 1) (cdr cur) (cons numbered acc))))))))
+            (format #f "Error: file '~a' does not exist." path)))
         (lambda (_k . a)
           (format #f "Error reading file '~a': ~s" path a))))))
 
@@ -271,55 +255,103 @@ retrievable via ctx_search under source_id \"read_file:<path>\"."
                     ((char=? (string-ref text i) #\newline) (loop (+ i 1) (+ line 1)))
                     (else (loop (+ i 1) line)))))
 
-(define* (fs-edit-file path target replacement #:key (replace-all? #f) (rollback-mgr #f) (verifier #f))
-         "Surgically replace TARGET with REPLACEMENT in PATH."
-         (catch #t
-           (lambda ()
-             (cond
-               ((fs-path-escapes? path)
-                 (format #f "Error: refusing to edit '~a': path traversal is not permitted" path))
-               ((not (file-exists? path))
-                 (format #f "Error: file '~a' not found." path))
-               ((or (not target) (string-null? target))
-                 (format #f "Error: target text cannot be empty."))
-               (else
-                 (let* ((old-text (file->string path))
-                        (matches (find-all-substring-indices old-text target)))
-                   (cond
-                     ((null? matches)
-                       (format #f "Error: target text not found in '~a'. Re-read the relevant lines with read_file before retrying." path))
-                     ((and (> (length matches) 1) (not replace-all?))
-                       (let* ((lines (map (lambda (idx) (char-offset->line-number old-text idx)) matches))
-                              (lines-str (string-join (map number->string lines) ", ")))
-                         (format #f "Error: target text matched ~a locations in '~a' (lines ~a). Include more surrounding lines in 'target' or set replace_all=true."
-                                 (length matches) path lines-str)))
-                     (else
-                       (let* ((replaced-count (if replace-all? (length matches) 1))
-                              (new-text
-                                (if replace-all?
-                                  (string-replace-substring old-text target replacement)
-                                  (let* ((idx (car matches))
-                                         (prefix (substring old-text 0 idx))
-                                         (suffix (substring old-text (+ idx (string-length target)))))
-                                    (string-append prefix replacement suffix)))))
-                         (let ((do-apply-edit!
-                                 (lambda ()
-                                   (when rollback-mgr
-                                     (create-checkpoint! rollback-mgr (format #f "pre-edit: ~a" path) #:files (list path)))
-                                   (call-with-output-file path (lambda (p) (display new-text p)))
-                                   (read-cache-invalidate! path)
-                                   (let ((old-lines (length (string-split old-text #\newline)))
-                                         (new-lines (length (string-split new-text #\newline))))
-                                     (format #f "Edited '~a': replaced ~a occurrence(s) (~a -> ~a lines, file total ~a lines)"
-                                             path replaced-count old-lines new-lines new-lines)))))
-                           (if verifier
-                             (let ((v-res (verify-action verifier #:code new-text #:file path)))
-                               (if (assoc-ref v-res 'passed?)
-                                 (do-apply-edit!)
-                                 (format #f "Edit aborted: verification failed: ~s" (assoc-ref v-res 'failures))))
-                             (do-apply-edit!))))))))))
-           (lambda (_k . a)
-             (format #f "Error editing file '~a': ~s" path a))))
+(define*
+  (fs-edit-file path
+                target
+                replacement
+                #:key
+                (replace-all? #f)
+                (rollback-mgr #f)
+                (verifier #f))
+  "Surgically replace TARGET with REPLACEMENT in PATH."
+  (define (lisp-file? p)
+          (any
+            (lambda (ext)
+              (string-suffix? ext p))
+            '(".scm" ".lisp" ".el" ".clj" ".rkt" ".ss")))
+  (catch #t
+    (lambda ()
+      (cond
+        ((fs-path-escapes? path)
+          (format #f "Error: refusing to edit '~a': path traversal is not permitted" path))
+        ((not (file-exists? path)) (format #f "Error: file '~a' does not exist." path))
+        ((or (not target) (string-null? target))
+          (format #f "Error: target text cannot be empty."))
+        (else
+          (let*
+              ((old-text (file->string path))
+               (matches (find-all-substring-indices old-text target)))
+            (cond
+              ((null? matches)
+                (format #f
+                        "Error: target text not found in '~a'. Re-read the relevant lines with read_file before retrying."
+                        path))
+              ((and (> (length matches) 1) (not replace-all?))
+                (let*
+                    ((lines
+                       (map
+                         (lambda (idx)
+                           (char-offset->line-number old-text idx))
+                         matches))
+                     (lines-str (string-join (map number->string lines) ", ")))
+                  (format #f
+                          "Error: target text matched ~a locations in '~a' (lines ~a). Include more surrounding lines in 'target' or set replace_all=true."
+                          (length matches)
+                          path
+                          lines-str)))
+              (else
+                (let*
+                    ((replaced-count
+                       (if replace-all?
+                         (length matches)
+                         1))
+                     (new-text
+                       (if replace-all?
+                         (string-replace-substring old-text target replacement)
+                         (let*
+                             ((idx (car matches))
+                              (prefix (substring old-text 0 idx))
+                              (suffix (substring old-text (+ idx (string-length target)))))
+                           (string-append prefix replacement suffix)))))
+                  (let
+                      ((do-apply-edit!
+                         (lambda ()
+                           (when rollback-mgr
+                             (create-checkpoint! rollback-mgr
+                                                 (format #f "pre-edit: ~a" path)
+                                                 #:files
+                                                 (list path)))
+                           (call-with-output-file path
+                                                  (lambda (p)
+                                                    (display new-text p)))
+                           (read-cache-invalidate! path)
+                           (let
+                               ((old-lines (length (string-split old-text #\newline)))
+                                (new-lines (length (string-split new-text #\newline))))
+                             (format #f
+                                     "Edited '~a': replaced ~a occurrence(s) (~a -> ~a lines, file total ~a lines)"
+                                     path
+                                     replaced-count
+                                     old-lines
+                                     new-lines
+                                     new-lines)))))
+                    (if verifier
+                      (let
+                          ((v-res (verify-action verifier #:code new-text #:file path)))
+                        (if (assoc-ref v-res 'passed?)
+                          (do-apply-edit!)
+                          (let
+                              ((hint
+                                 (if (lisp-file? path)
+                                   "\nHint: For Scheme/Lisp files, prefer structural-editing tools (read_node -> ast_modify -> commit_workspace) instead of raw text edits."
+                                   "")))
+                            (format #f
+                                    "Edit aborted: verification failed: ~s~a"
+                                    (assoc-ref v-res 'failures)
+                                    hint))))
+                      (do-apply-edit!))))))))))
+    (lambda (_k . a)
+      (format #f "Error editing file '~a': ~s" path a))))
 
 (define (fs-line-anchor line)
         "Return the 3-char lowercase hex content anchor for LINE: FNV-1a over
@@ -489,7 +521,7 @@ would silently land on the wrong lines."
         (cond
           ((fs-path-escapes? path)
             (format #f "Error: refusing to edit '~a': path traversal is not permitted" path))
-          ((not (file-exists? path)) (format #f "Error: file '~a' not found." path))
+          ((not (file-exists? path)) (format #f "Error: file '~a' does not exist." path))
           ((not entries)
             (format #f
                     "Error: 'edits' must be an array of {from, from_hash, to, to_hash, new_text} objects."))
@@ -806,38 +838,45 @@ descending... ascending-ordered list of disjoint ranges."
                       (rollback-mgr #f)
                       (verifier #f)
                       (shell-executor #f)
-                      (ctx-idx #f))
+                      (ctx-idx #f)
+                      (bash-pre-hooks '())
+                      (bash-post-hooks '()))
   "Register read_file, write_file, edit_file, edit_lines, file_search, and
-a single bash tool into REG."
+a hookable bash tool into REG."
   (registry-attach! reg
                     "read_file"
-                    (lambda (path offset limit start_line end_line force)
-                      (fs-read-file path offset limit #:start-line start_line #:end-line end_line #:force force #:ctx-idx ctx-idx))
+                    (lambda
+                        (path offset limit start_line end_line force)
+                      (fs-read-file path
+                                    offset
+                                    limit
+                                    #:start-line
+                                    start_line
+                                    #:end-line
+                                    end_line
+                                    #:force
+                                    force
+                                    #:ctx-idx
+                                    ctx-idx))
                     '((description .
-                       "Read a bounded slice of the file at PATH. Every line comes back as N:HHH→content with N the 0-based line number and HHH the line's content anchor, and offset/limit use the same 0-based numbering, so edit_lines from/from_hash/to/to_hash can copy them directly. For the 1-based line numbers compilers and stack traces give you, pass start_line/end_line (inclusive) instead of offset/limit - no offset arithmetic, no sed -n. A cached note means you ALREADY received those lines earlier in this session (file unchanged since); do NOT re-read them - recall via ctx_search(source_id) or use force=true only after editing the file.")
+                       "Read a file at PATH. Files <= 5KB (or bounded slices via offset/limit or start_line/end_line) are returned directly with N:HHH→content anchors for edit_lines. Whole-file reads > 5KB are delegated transparently to context-mode (ctx_execute_file / ctx_search) to keep context lean.")
                       (parameters .
                        ((type . "object")
                         (properties .
                          ((path . ((type . "string") (description . "Path to file to read")))
                           (offset .
-                           ((type . "integer")
-                            (description .
-                             "0-based first line to show, as printed by the header/footer (default 0)")))
+                           ((type . "integer") (description . "0-based first line to show (default 0)")))
                           (limit .
                            ((type . "integer")
                             (description . "Maximum number of lines to return (default 800)")))
                           (start_line .
                            ((type . "integer")
-                            (description .
-                             "1-based first line to show, exactly as compilers/stack traces report it (overrides offset)")))
+                            (description . "1-based first line to show (overrides offset)")))
                           (end_line .
-                           ((type . "integer")
-                            (description .
-                             "1-based last line to show, inclusive (trims limit; typically paired with start_line)")))
+                           ((type . "integer") (description . "1-based last line to show, inclusive")))
                           (force .
                            ((type . "boolean")
-                            (description .
-                             "Bypass the per-session read cache and return the file content fresh, even for a range already read. The file is unchanged so the result is identical, but it is re-emitted (useful after context compaction or when you need exact N:HHH anchors for edit_lines). Still bounded by limit/max chars. Prefer ctx_search(source_id) when you only need specific lines.")))))
+                            (description . "Force direct read even when > 5KB (still bounded by limit)")))))
                         (required . #("path"))))))
   (registry-attach! reg
                     "write_file"
@@ -874,16 +913,14 @@ a single bash tool into REG."
                            ((type . "string") (description . "Exact character sequence to be replaced")))
                           (replacement . ((type . "string") (description . "Replacement string")))
                           (replace_all .
-                           ((type . "boolean")
-                            (description .
-                             "If true, replace all occurrences; if false, fail if target matches multiple times")))))
+                           ((type . "boolean") (description . "If true, replace all occurrences")))))
                         (required . #("path" "target" "replacement"))))))
   (registry-attach! reg
                     "edit_lines"
                     (lambda (path edits)
                       (fs-edit-lines path edits #:rollback-mgr rollback-mgr #:verifier verifier))
                     '((description .
-                       "Apply a batch of hash-verified line-range edits (atomic: all-or-nothing). read_file shows every line as N:HHH→content; pass those anchors as from/from_hash/to/to_hash so edits based on stale reads are rejected instead of corrupting the file.")
+                       "Apply a batch of hash-verified line-range edits (atomic: all-or-nothing) using N:HHH→anchors from read_file.")
                       (parameters .
                        ((type . "object")
                         (properties .
@@ -894,19 +931,11 @@ a single bash tool into REG."
                             (items .
                              ((type . "object")
                               (properties .
-                               ((from .
-                                 ((type . "integer") (description . "0-based first line of the replaced range")))
-                                (from_hash .
-                                 ((type . "string") (description . "Anchor of line 'from' shown by read_file")))
-                                (to .
-                                 ((type . "integer")
-                                  (description . "0-based last line of the replaced range (inclusive)")))
-                                (to_hash .
-                                 ((type . "string") (description . "Anchor of line 'to' shown by read_file")))
-                                (new_text .
-                                 ((type . "string")
-                                  (description .
-                                   "Replacement text for the range (may span lines; empty string deletes the range)")))))
+                               ((from . ((type . "integer") (description . "0-based first line")))
+                                (from_hash . ((type . "string") (description . "Anchor of line 'from'")))
+                                (to . ((type . "integer") (description . "0-based last line (inclusive)")))
+                                (to_hash . ((type . "string") (description . "Anchor of line 'to'")))
+                                (new_text . ((type . "string") (description . "Replacement text")))))
                               (required . #("from" "from_hash" "to" "to_hash" "new_text"))))))))
                         (required . #("path" "edits"))))))
   (registry-attach! reg
@@ -924,8 +953,7 @@ a single bash tool into REG."
                                       (or output_mode "content")
                                       #:max-results
                                       (or max_results 200)))
-                    '((description .
-                       "Bounded workspace search for the POSIX regex PATTERN under PATH: the structured replacement for bash grep -r/find, respecting ignore dirs, skipping binaries, and offering CONTEXT lines, a GLOB basename filter, and OUTPUT_MODE content|files_with_matches|count so output stays small. Content lines use read_file's N:HHH→anchors (0-based), so edit_lines can consume them without a re-read.")
+                    '((description . "Bounded workspace search for POSIX regex PATTERN under PATH.")
                       (parameters .
                        ((type . "object")
                         (properties .
@@ -938,7 +966,7 @@ a single bash tool into REG."
                            ((type . "string") (description . "Glob filter for file basenames, e.g. *.scm")))
                           (context .
                            ((type . "integer")
-                            (description . "Lines of context around each content match (default 0)")))
+                            (description . "Lines of context around each match (default 0)")))
                           (output_mode .
                            ((type . "string")
                             (description . "content | files_with_matches | count (default content)")))
@@ -947,17 +975,34 @@ a single bash tool into REG."
                             (description . "Maximum content chunks to return (default 200)")))))
                         (required . #("pattern"))))))
   (when shell-executor
-    (registry-attach! reg
-                      "bash"
-                      (lambda (command)
-                        (shell-executor command))
-                      '((description .
-                         "Execute a shell command for builds, tests, git, and other process pipelines. Do not use it for reading or searching files - use read_file (0-based offset/limit or 1-based start_line/end_line), file_search, or symbols_overview/find_symbol instead. grep, sed, awk and find belong inside stdout pipes here (cmd | grep ...); running them directly against workspace files is guardrail-blocked because read_file, edit_lines/edit_file (hash-verified, indentation-safe), and file_search do the same work with verification sed and awk cannot give you.")
-                        (parameters .
-                         ((type . "object")
-                          (properties .
-                           ((command .
-                             ((type . "string")
-                              (description .
-                               "The shell command to run. Do not read files with cat/sed -n or edit them with sed -i/awk here: direct file reads/edits bypass hash verification and indentation safety and are guardrail-blocked - use read_file (start_line/end_line), edit_lines or edit_file instead, and append '# allow-unix-edit' to this command only for deliberate bulk transformations (e.g. one symbol across many files). Piped filtering of command stdout with grep/sed/awk is always fine.")))))
-                          (required . #("command"))))))))
+    (let
+        ((effective-post-hooks
+           (if ctx-idx
+             (append bash-post-hooks (list (make-ctx-bash-post-hook ctx-idx)))
+             bash-post-hooks)))
+      (registry-attach! reg
+                        "bash"
+                        (lambda (command)
+                          (let*
+                              ((cmd-after-pre
+                                 (fold
+                                   (lambda (hook c)
+                                     (or (hook c) c))
+                                   command
+                                   bash-pre-hooks))
+                               (raw-out (shell-executor cmd-after-pre)))
+                            (fold
+                              (lambda (hook out)
+                                (hook cmd-after-pre out))
+                              raw-out
+                              effective-post-hooks)))
+                        '((description .
+                           "Execute a shell command for builds, tests, git, and process pipelines. Supports pre/post hooks: outputs <= 5KB pass through directly; outputs > 5KB are automatically virtualized via context-mode (when enabled) for ctx_search. Do not use cat/sed/awk on workspace files; use read_file, edit_lines/edit_file, or structural-editing.")
+                          (parameters .
+                           ((type . "object")
+                            (properties .
+                             ((command .
+                               ((type . "string")
+                                (description .
+                                 "The shell command to run. Do not read files with cat/sed -n or edit them with sed -i/awk here: direct file reads/edits bypass hash verification and indentation safety and are guardrail-blocked - use read_file (start_line/end_line), edit_lines or edit_file instead, and append '# allow-unix-edit' to this command only for deliberate bulk transformations. Piped filtering of command stdout with grep/sed/awk is always fine.")))))
+                            (required . #("command")))))))))

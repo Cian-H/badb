@@ -35,6 +35,10 @@
                    ctx-execute-file!
                    ctx-batch-exec!
                    make-ctx-offload-hook
+                   %context-mode-threshold-bytes
+                   ctx-bash-hook-enabled?
+                   set-ctx-bash-hook-enabled!
+                   make-ctx-bash-post-hook
                    format-ctx-stats
                    register-context-index-tools!
                    %ctx-exec-schema
@@ -420,6 +424,84 @@ indexes oversized tool outputs and returns a compact virtualized pointer."
              (format #f "[Output virtualized to ~a (~a bytes). Query via ctx_search(query: \"...\", source_id: ~s)]"
                      doc-id bytes doc-id))))
 
+(define %context-mode-threshold-bytes 5120)
+
+(define %ctx-bash-hook-enabled #t)
+
+(define (ctx-bash-hook-enabled?)
+        "Return #t when the context-mode bash post-execution hook is enabled."
+        %ctx-bash-hook-enabled)
+
+(define (set-ctx-bash-hook-enabled! enabled?)
+        "Enable or disable the context-mode bash post-execution hook."
+        (set! %ctx-bash-hook-enabled (and enabled? #t)))
+
+(define*
+  (make-ctx-bash-post-hook idx
+                           #:key
+                           (threshold-bytes %context-mode-threshold-bytes))
+  "Return a toggleable bash post-execution hook (lambda (command output) ...).
+Passes outputs <= THRESHOLD-BYTES (5KB) through directly; indexes larger outputs
+into IDX and returns a compact summary with ctx_search instructions."
+  (lambda (_command output)
+    (if
+        (or (not (ctx-bash-hook-enabled?))
+            (not (string? output))
+            (<= (string-length output) threshold-bytes))
+      output
+      (let*
+          ((doc-n (index-next-doc-id idx))
+           (doc-id (format #f "bash:~a" doc-n))
+           (raw-bytes (string-length output))
+           (lines (string-split output #\newline))
+           (line-count (length lines)))
+        (set-index-next-doc-id! idx (+ doc-n 1))
+        (ctx-index-content! idx doc-id output)
+        (let*
+            ((tagged-lines
+               (let loop
+                 ((i 1) (rem lines) (acc '()))
+                 (if (null? rem)
+                   (reverse acc)
+                   (let ((l (car rem)))
+                     (if (regexp-exec %error-pattern l)
+                       (loop (+ i 1) (cdr rem) (cons (cons i l) acc))
+                       (loop (+ i 1) (cdr rem) acc))))))
+             (error-count (length tagged-lines))
+             (head-str (string-join (take-n lines 8) "\n"))
+             (tail-str (string-join (reverse (take-n (reverse lines) 5)) "\n"))
+             (summary
+               (if (> error-count 0)
+                 (format #f
+                         "Identified ~a diagnostic error/failure lines:\n~a\n\nTail summary:\n~a"
+                         error-count
+                         (string-join
+                           (map
+                             (lambda (p)
+                               (format #f "  L~a: ~a" (car p) (cdr p)))
+                             (take-n tagged-lines 15))
+                           "\n")
+                         tail-str)
+                 (format #f
+                         "~a\n... [~a lines virtualized into ~a] ...\n~a"
+                         head-str
+                         (max 0 (- line-count 13))
+                         doc-id
+                         tail-str)))
+             (resp
+               (format #f
+                       "[~a lines=~a bytes=~a (> ~aB threshold) indexed=~a]\n~a\n[Output virtualized by context-mode bash hook. Use ctx_search(queries=[\"...\"], source=~s) for details]"
+                       doc-id
+                       line-count
+                       raw-bytes
+                       threshold-bytes
+                       doc-id
+                       summary
+                       doc-id)))
+          (set-index-returned-bytes! idx
+                                     (+ (index-returned-bytes idx) (string-length resp)))
+          resp)))))
+
 ;;;
 ;;; Stats Formatting
 ;;;
@@ -467,16 +549,18 @@ indexes oversized tool outputs and returns a compact virtualized pointer."
 (define %ctx-search-schema
         `((name . "ctx_search")
           (description .
-                       "Search the FTS5/BM25 context index. Pass ALL search questions as 'queries' array in one call (or a single 'query'). Use 'source' (partial match) to scope results.")
+                       "Search the FTS5/BM25 context index. Keywords only (no regex). Pass ALL search questions as 'queries' array in one call (or a single 'query'). Use 'source' (partial match) to scope results.")
           (parameters .
                       ((type . "object")
                        (properties .
                                    ((queries .
                                              ((type . "array") (items . ((type . "string")))
-                                              (description . "Array of search queries. Batch ALL questions in one call.")))
+                                              (description .
+                                                           "Array of keyword search queries (no regex). Batch ALL questions in one call.")))
                                     (query .
                                            ((type . "string")
-                                            (description . "Single search query (use 'queries' to batch multiple)")))
+                                            (description .
+                                                         "Single keyword search query (no regex; use 'queries' to batch multiple)")))
                                     (source .
                                             ((type . "string")
                                              (description . "Filter to a specific indexed source (partial match)")))
@@ -557,7 +641,7 @@ indexes oversized tool outputs and returns a compact virtualized pointer."
                                     (intent .
                                             ((type . "string") (description . "Optional search query if output is large")))))
                        (required . #("path" "language" "code"))))
-          (_badb_defer . #t)
+          (_badb_defer . #f)
           (_badb_alist_args . #t)))
 
 (define*
