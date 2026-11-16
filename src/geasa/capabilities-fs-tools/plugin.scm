@@ -39,6 +39,7 @@
                 fs-file-lines
                 fs-file-search
                 fs-edit-lines
+                read-cache-clear!
                 register-fs-tools!))
 
 (define %read-file-max-chars-per-line 2000)
@@ -65,6 +66,10 @@
 
 (define (read-cache-invalidate! path)
         (hash-remove! %read-file-cache path))
+
+(define (read-cache-clear!)
+        "Clear all cached read ranges (e.g. after context compaction)."
+        (hash-clear! %read-file-cache))
 
 (define (fs-path-escapes? path)
         "Return #t if PATH attempts directory traversal: it carries `..'

@@ -1355,6 +1355,14 @@ observations for calls that never ran. Return #t when a turn was appended."
               (append (react-session-messages session) turn)))
           (and any-output? #t)))
 
+(define (clear-fs-read-cache!)
+        "Clear fs-tools read cache when compaction evicts earlier reads from context."
+        (false-if-exception
+          (let
+              ((mod (resolve-module '(geasa capabilities-fs-tools plugin) #f)))
+            (when mod
+              (let ((fn (module-ref mod 'read-cache-clear! #f))) (when (procedure? fn) (fn)))))))
+
 (define (react-step! session)
         "Execute a single turn of the ReAct cycle.
 Returns:
@@ -1410,6 +1418,7 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                            (let
                                                ((compacted (compact-messages compactor raw-msgs)))
                                              (set-react-session-messages! session compacted)
+                                             (clear-fs-read-cache!)
                                              compacted)
                                            raw-msgs))
                                        (msgs (repair-conversation-messages compacted-msgs))
@@ -1446,8 +1455,7 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                                (let sleep-loop
                                                  ((rem-ms total-ms))
                                                  (when
-                                                     (and (> rem-ms 0)
-                                                          (not (steering-has-interrupt? steering-q)))
+                                                     (and (> rem-ms 0) (not (steering-has-interrupt? steering-q)))
                                                    (let ((chunk (min rem-ms 100)))
                                                      (outer-sleeper (/ chunk 1000.0))
                                                      (sleep-loop (- rem-ms chunk)))))))))
