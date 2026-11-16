@@ -467,7 +467,11 @@ when nothing in the loadout applies."
                                (has-any? '("ctx_search" "find_symbol"))
                                "Workspace code search: prefer ctx_search / find_symbol over spawning grep -r in bash.")
                           (and (has-any? '("bash" "sh" "execute_command"))
-                               "bash is for builds, tests, git, and pipelines: grep/sed/awk/find belong PIPE-side, filtering command stdout (cmd | grep ...), which is always allowed. Pointed directly at files (sed -n X,Yp, sed -i, awk, grep -r) they are guardrail-blocked - the block message names the structured tool for the job. Append '# allow-unix-edit' to a command only for deliberate bulk transformations, e.g. one symbol across many files.")))))
+                               "bash is for builds, tests, git, and pipelines: grep/sed/awk/find belong PIPE-side, filtering command stdout (cmd | grep ...), which is always allowed. Pointed directly at files (sed -n X,Yp, sed -i, awk, grep -r) they are guardrail-blocked - the block message names the structured tool for the job. Append '# allow-unix-edit' to a command only for deliberate bulk transformations, e.g. one symbol across many files.")
+                          (rule '("read_node" "read_slice")
+                                "AST inspection (Scheme/Lisp and supported languages): prefer read_node (mode \"skeleton\" for structure) and read_slice over full read_file to save context tokens.")
+                          (rule '("ast_modify" "commit_workspace")
+                                "Structural edits: stage edits with ast_modify/ast_remove/ast_rename/ast_replace_pattern, run ast_lint before committing, and flush to disk with commit_workspace (which creates a rollback checkpoint).")))))
            (and (pair? rules) (string-join rules "\n"))))
 
 (define*

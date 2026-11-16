@@ -558,6 +558,8 @@ unbounded raw search on the next turn."
                                       workspace
                                       #:rollback-mgr
                                       rollback-mgr)
+  (when (and verifier (semcp-available?))
+    (add-verifier-validator! verifier (make-semcp-lint-validator)))
   ;; 3. Virtualized output & BM25 context indexing
   (register-context-index-tools! reg
                                  ctx-idx

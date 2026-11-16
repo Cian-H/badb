@@ -175,7 +175,7 @@ root GEIS-ROOT on the load path) and extract structured JSON diagnostics."
 Process:
 1. First, call 'spec_runner' to see the current contract status and counterexamples.
 2. Read the spec requirements, module export reflection requirements, and property contracts.
-3. Edit or write the Guile module implementation at '~a'.
+3. Edit or write the Guile module implementation at '~a' (when `read_node`, `ast_modify`, `ast_lint`, and `commit_workspace` are available, prefer them for surgical AST edits and lint before committing).
 4. Call 'spec_runner' to verify the implementation.
 5. If contracts fail, analyze the counterexample inputs, arity mismatches, or exception messages, and refine the code.
 6. Once 'spec_runner' returns verdict 'pass' with 0 failures, conclude your answer."

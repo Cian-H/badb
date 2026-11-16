@@ -6,21 +6,31 @@
 ;;; edits and branch workspaces persistent across turns, while hooking
 ;;; `commit_workspace` into `runtimes-rollback` checkpoints.
 
-(define-module (geasa capabilities-structural-editing plugin)
-               #:use-module (badb kernel registry)
-               #:use-module (geasa runtimes-rollback plugin)
-               #:use-module (json)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 popen)
-               #:use-module (ice-9 textual-ports)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-13)
-               #:export (semcp-binary
-                          semcp-available?
-                          semcp-init!
-                          semcp-call
-                          semcp-list-tools
-                          register-structural-editing-tools!))
+(define-module
+  (geasa capabilities-structural-editing plugin)
+  #:use-module
+  (badb kernel registry)
+  #:use-module
+  (geasa runtimes-rollback plugin)
+  #:use-module
+  (json)
+  #:use-module
+  (ice-9 format)
+  #:use-module
+  (ice-9 popen)
+  #:use-module
+  (ice-9 textual-ports)
+  #:use-module
+  (srfi srfi-1)
+  #:use-module
+  (srfi srfi-13)
+  #:export
+  (semcp-binary semcp-available?
+                semcp-init!
+                semcp-call
+                semcp-list-tools
+                register-structural-editing-tools!
+                make-semcp-lint-validator))
 
 ;; ---- binary discovery -----------------------------------------------------
 
@@ -188,3 +198,22 @@ Returns the number of registered tools, or 0 if `semcp' is unavailable."
                    #:metadata meta)))
              tools)
            (length tools)))
+(define*
+  (make-semcp-lint-validator #:key (session-dir #f))
+  "Return a `runtimes-verify' validator procedure that runs `semcp lint' on `.scm' files."
+  (lambda (ctx)
+    (let
+        ((file (assoc-ref ctx 'file)) (ws (or (assoc-ref ctx 'workspace) (getcwd))))
+      (if
+          (and (semcp-available?)
+               (string? file)
+               (string-suffix? ".scm" file)
+               (file-exists? file))
+        (let*
+            ((sdir (or session-dir (%default-session-dir ws)))
+             (res
+               (%run-semcp (list "--session" sdir "lint" file "--fail-on" "error" "--json"))))
+          (if (car res)
+            '((passed? . #t))
+            `((passed? . #f) (error . ,(%extract-semcp-output (car res) (cdr res))))))
+        '((passed? . #t))))))
