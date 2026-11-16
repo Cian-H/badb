@@ -94,7 +94,6 @@
 ;;;
 ;;; String & Geometry Helpers
 ;;;
-
 (define (clip-str s max-len)
         "Clip S to at most MAX-LEN characters."
         (let ((str (ensure-string (or s "")))
@@ -196,7 +195,6 @@ sorted by row and x coordinate."
 ;;;
 ;;; Core Composable Widget Protocol (ui-wp1.1)
 ;;;
-
 (define-record-type <widget>
                     (%make-widget kind props children measure render on-event)
                     widget?
@@ -244,7 +242,6 @@ sorted by row and x coordinate."
 ;;;
 ;;; Reusable Widget Combinators
 ;;;
-
 (define* (text-widget text
                       #:key (role 'default) (bold? #f) (dim? #f) (align 'left))
          "Leaf widget displaying wrapped or single-line TEXT with semantic ROLE."
@@ -541,7 +538,6 @@ sorted by row and x coordinate."
 ;;;
 ;;; Input Box Demarcation (ui-wp1.3)
 ;;;
-
 (define (mode->badge-label mode)
         (case mode
           ((shell) "shell")
@@ -750,7 +746,6 @@ on ultra-narrow widths (< 16 cols)."
 ;;;
 ;;; Bottom Status Bar & Animated Hooded Crow Startup Banner (ui-wp1.4)
 ;;;
-
 (define (shorten-cwd cwd max-len)
         (let ((s (ensure-string (or cwd ""))))
           (cond
@@ -925,34 +920,190 @@ middle items gracefully on narrow terminals."
 ;; capturing the dark hood/wings vs pale ash-grey hooded-crow mantle.
 (define %crow-banner-frames
         (vector
-          ;; Frame 0: Perched & alert
+          ;; Frame 0
           (list
-            (list (list "   ▄████▄    " 'header #t #f))
-            (list (list "  ██◉█████◣  " 'header #t #f))
-            (list (list "   ▀██" 'header #t #f) (list "▓▓▓" 'dim #f #t) (list "█▄  " 'header #t #f))
-            (list (list "    " 'default #f #f) (list "▓▓▓▓" 'dim #f #t) (list "███▄ " 'header #t #f))
-            (list (list "     ╱  ╲    " 'accent #f #f)))
-          ;; Frame 1: Eye blink + subtle crest settle
+            (list (list "     " 'default #f #f)
+                  (list "⣠⣴⣶⣶⣶⣦⣄" 'dim #f #t)
+                  (list "      " 'default #f #f))
+            (list (list "⠠⢴⣶⣶⣾⣿⣯" 'dim #f #t)
+                  (list "⠂" 'default #t #f)
+                  (list "⣿⣿⣿⣿⣇" 'dim #f #t)
+                  (list "     " 'default #f #f))
+            (list (list "   " 'default #f #f)
+                  (list "⣨⣿⣿" 'default #f #f)
+                  (list "⣿⣿⣿⣿⣿⣿" 'dim #f #t)
+                  (list "⣿⣷⡄" 'default #f #f)
+                  (list "   " 'default #f #f))
+            (list (list " " 'default #f #f)
+                  (list "⣼" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷" 'default #f #f)
+                  (list "⡄" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list "⢸⣿⣿" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                  (list "⣿⣿" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list " " 'default #f #f)
+                  (list "⢻⣿⣿" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                  (list "⡿⠃" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list "  " 'default #f #f)
+                  (list "⢻⣿⣿⡿⠛⢻⠛⠛⡟⠛⠋" 'dim #f #t)
+                  (list "     " 'default #f #f))
+            (list (list "⢀⣴⣿⡿⠋" 'dim #f #t)
+                  (list "⣀⣤" 'frame #f #f)
+                  (list "⣾⣄⣴⣧" 'dim #f #t)
+                  (list "⣤⣀" 'frame #f #f)
+                  (list "     " 'default #f #f))
+            (list (list "⠿⠿⠋" 'dim #f #t) (list "               " 'default #f #f)))
+          ;; Frame 1
           (list
-            (list (list "   ▄████▄    " 'header #t #f))
-            (list (list "  ██─█████◣  " 'header #t #f))
-            (list (list "   ▀██" 'header #t #f) (list "▓▓▓" 'dim #f #t) (list "█▄  " 'header #t #f))
-            (list (list "    " 'default #f #f) (list "▓▓▓▓" 'dim #f #t) (list "███▄ " 'header #t #f))
-            (list (list "     ╱  ╲    " 'accent #f #f)))
-          ;; Frame 2: Wing-mantle flick
+            (list (list "    " 'default #f #f)
+                  (list "⢀⣤⣶⣶⣶⣶⣤⡀" 'dim #f #t)
+                  (list "      " 'default #f #f))
+            (list (list "    " 'default #f #f)
+                  (list "⣾⣿⣿⣿⣿⣿⣿⣷⣶⠤" 'dim #f #t)
+                  (list "    " 'default #f #f))
+            (list (list "  " 'default #f #f)
+                  (list "⣴⣿⣿" 'default #f #f)
+                  (list "⣿⣿⣿⣿⣿⣿" 'dim #f #t)
+                  (list "⣿⣧⡀" 'default #f #f)
+                  (list "    " 'default #f #f))
+            (list (list " " 'default #f #f)
+                  (list "⣼" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷" 'default #f #f)
+                  (list "⡄" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list "⢸⣿⣿" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                  (list "⣿⣿" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list " " 'default #f #f)
+                  (list "⢻⣿⣿" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                  (list "⡿⠃" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list "  " 'default #f #f)
+                  (list "⢻⣿⣿⡿⠛⢻⠛⠛⡟⠛⠋" 'dim #f #t)
+                  (list "     " 'default #f #f))
+            (list (list "⢀⣴⣿⡿⠋" 'dim #f #t)
+                  (list "⣀⣤" 'frame #f #f)
+                  (list "⣾⣄⣴⣧" 'dim #f #t)
+                  (list "⣤⣀" 'frame #f #f)
+                  (list "     " 'default #f #f))
+            (list (list "⠿⠿⠋" 'dim #f #t) (list "               " 'default #f #f)))
+          ;; Frame 2
           (list
-            (list (list "   ▄████▄    " 'header #t #f))
-            (list (list "  ██◉█████◣  " 'header #t #f))
-            (list (list "  ▄▀██" 'header #t #f) (list "▓▓▓" 'dim #f #t) (list "██▄ " 'header #t #f))
-            (list (list "    " 'default #f #f) (list "▓▓▓▓" 'dim #f #t) (list "▀███▄" 'header #t #f))
-            (list (list "     ╱  ╲    " 'accent #f #f)))
-          ;; Frame 3: Beak open / call
+            (list (list "   " 'default #f #f)
+                  (list "⣠⣶⣶⣶⣶⣤⣠⣴⣶⣿⣿⠿⠂" 'dim #f #t)
+                  (list "  " 'default #f #f))
+            (list (list "   " 'default #f #f)
+                  (list "⣿⣿⣿" 'dim #f #t)
+                  (list "⠈" 'default #t #f)
+                  (list "⣿⣿⣿⣿⠟⠉" 'dim #f #t)
+                  (list "     " 'default #f #f))
+            (list (list " " 'default #f #f)
+                  (list "⢀⣾⣿⣿⣿" 'default #f #f)
+                  (list "⣿⣿⣿⣿" 'dim #f #t)
+                  (list "⣿⣿⣦⡀" 'default #f #f)
+                  (list "    " 'default #f #f))
+            (list (list "⢀⣾" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                  (list "⣿⣆" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list "⠸⣿⣿" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                  (list "⣿⡿" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list " " 'default #f #f)
+                  (list "⠹⣿⣿" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                  (list "⣿⠟⠁" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list "  " 'default #f #f)
+                  (list "⣹⣿⣿⠟⠉⢹⠉⠉⡏⠉⠁" 'dim #f #t)
+                  (list "     " 'default #f #f))
+            (list (list "⢠⣾⣿⠟⠁" 'dim #f #t)
+                  (list "⠤⠶" 'frame #f #f)
+                  (list "⠿⠦⠾⠷" 'dim #f #t)
+                  (list "⠶⠤" 'frame #f #f)
+                  (list "     " 'default #f #f))
+            (list (list "⠚⠛⠁" 'dim #f #t) (list "               " 'default #f #f)))
+          ;; Frame 3
           (list
-            (list (list "   ▄████▄    " 'header #t #f))
-            (list (list "  ██◉█████◤  " 'header #t #f))
-            (list (list "   ▀██" 'header #t #f) (list "▓▓▓" 'dim #f #t) (list "█◣  " 'header #t #f))
-            (list (list "    " 'default #f #f) (list "▓▓▓▓" 'dim #f #t) (list "███▄ " 'header #t #f))
-            (list (list "     ╱  ╲    " 'accent #f #f)))))
+            (list (list "    " 'default #f #f)
+                  (list "⢀⣤⣶⣶⣶⣶⣤⡀" 'dim #f #t)
+                  (list "      " 'default #f #f))
+            (list (list "   " 'default #f #f)
+                  (list "⢀⣿⣿⣿⣿⣿⣿⣿⣿⣶⣶⣶⠤" 'dim #f #t)
+                  (list "  " 'default #f #f))
+            (list (list "  " 'default #f #f)
+                  (list "⣴⣿⣿" 'default #f #f)
+                  (list "⣿⣿⣿⣿⣿⣿" 'dim #f #t)
+                  (list "⣿⣯⡀" 'default #f #f)
+                  (list "    " 'default #f #f))
+            (list (list " " 'default #f #f)
+                  (list "⣼" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷" 'default #f #f)
+                  (list "⡄" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list "⢸⣿⣿" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                  (list "⣿⣿" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list " " 'default #f #f)
+                  (list "⢻⣿⣿" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                  (list "⡿⠃" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list "  " 'default #f #f)
+                  (list "⢻⣿⣿⡿⠛⢻⠛⠛⡟⠛⠋" 'dim #f #t)
+                  (list "     " 'default #f #f))
+            (list (list "⢀⣴⣿⡿⠋" 'dim #f #t)
+                  (list "⣀⣤" 'frame #f #f)
+                  (list "⣾⣄⣴⣧" 'dim #f #t)
+                  (list "⣤⣀" 'frame #f #f)
+                  (list "     " 'default #f #f))
+            (list (list "⠿⠿⠋" 'dim #f #t) (list "               " 'default #f #f)))
+          ;; Frame 4
+          (list
+            (list (list "    " 'default #f #f)
+                  (list "⢀⣤⣶⣶⣶⣶⣤⡀" 'dim #f #t)
+                  (list "      " 'default #f #f))
+            (list (list "   " 'default #f #f)
+                  (list "⢀⣿⣿⣿⣿" 'dim #f #t)
+                  (list "⠐" 'default #t #f)
+                  (list "⣿⣿⣿⣶⣶⣶⠤" 'dim #f #t)
+                  (list "  " 'default #f #f))
+            (list (list "  " 'default #f #f)
+                  (list "⣴⣿⣿" 'default #f #f)
+                  (list "⣿⣿⣿⣿⣿⣿" 'dim #f #t)
+                  (list "⣿⣯⡀" 'default #f #f)
+                  (list "    " 'default #f #f))
+            (list (list " " 'default #f #f)
+                  (list "⣼" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷" 'default #f #f)
+                  (list "⡄" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list "⢸⣿⣿" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                  (list "⣿⣿" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list " " 'default #f #f)
+                  (list "⢻⣿⣿" 'dim #f #t)
+                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                  (list "⡿⠃" 'dim #f #t)
+                  (list "   " 'default #f #f))
+            (list (list "  " 'default #f #f)
+                  (list "⢻⣿⣿⡿⠛⢻⠛⠛⡟⠛⠋" 'dim #f #t)
+                  (list "     " 'default #f #f))
+            (list (list "⢀⣴⣿⡿⠋" 'dim #f #t)
+                  (list "⣀⣤" 'frame #f #f)
+                  (list "⣾⣄⣴⣧" 'dim #f #t)
+                  (list "⣤⣀" 'frame #f #f)
+                  (list "     " 'default #f #f))
+            (list (list "⠿⠿⠋" 'dim #f #t) (list "               " 'default #f #f)))))
 
 (define (crow-banner-frame-count)
         "Return the number of animation frames in %crow-banner-frames."
@@ -979,56 +1130,81 @@ middle items gracefully on narrow terminals."
                               (- rem len)
                               (cons (cons txt (cdr sp)) acc)))))))
 
-(define* (format-startup-banner maxx
-                                #:key (frame 0)
-                                (version "0.1.0")
-                                (model #f)
-                                (workspace #f)
-                                (tips '()))
-         "Format the animated Hooded Crow startup banner as a list of styled lines,
+(define*
+  (format-startup-banner maxx
+                         #:key
+                         (frame 0)
+                         (version "0.1.0")
+                         (model #f)
+                         (workspace #f)
+                         (tips '()))
+  "Format the animated Hooded Crow startup banner as a list of styled lines,
 where each line is a list of (text role bold? dim?) spans fitting within MAXX."
-         (let* ((w (max 12 maxx))
-                (art (crow-banner-frame frame))
-                (default-tips
-                  (if (null? tips)
-                    (list "! shell · ( scheme · / commands · /help"
-                          "ctrl+r history · @ files · esc/ctrl+c steer")
-                    tips))
-                (info-lines
-                  (filter-map
-                    identity
-                    (list
-                      (list (list "badb" 'accent #t #f)
-                            (list (format #f " v~a" (ensure-string (or version "0.1.0"))) 'dim #f #t)
-                            (list " · agentic microharness" 'default #f #f))
-                      (and (string? model) (not (string-null? model))
-                           (list (list "model: " 'dim #f #t)
-                                 (list (clip-str model (max 8 (- w 24))) 'status #f #f)))
-                      (and (string? workspace) (not (string-null? workspace))
-                           (list (list "cwd:   " 'dim #f #t)
-                                 (list (shorten-cwd workspace (max 8 (- w 24))) 'default #f #f)))
-                      (list (list (clip-str (car default-tips) (max 8 (- w 16))) 'dim #f #t))
-                      (and (pair? (cdr default-tips))
-                           (list (list (clip-str (cadr default-tips) (max 8 (- w 16))) 'dim #f #t))))))
-                (compact? (< w 44))
-                (row-count (max (length art) (length info-lines))))
-           (if compact?
-             ;; Narrow terminal: stacked header without wide side-by-side art
-             (map (lambda (line) (clip-spans line w)) info-lines)
-             (let loop ((i 0) (acc '()))
-                       (if (>= i row-count)
-                         (reverse acc)
-                         (let* ((art-spans (if (< i (length art))
-                                             (list-ref art i)
-                                             (list (list "             " 'default #f #f))))
-                                (info-spans (if (< i (length info-lines))
-                                              (list-ref info-lines i)
-                                              '()))
-                                (art-w (spans-plain-length art-spans))
-                                (gap-spans (list (list (make-string (max 1 (- 15 art-w)) #\space) 'default #f #f))))
-                           (loop (+ i 1)
-                                 (cons (clip-spans (append art-spans gap-spans info-spans) w)
-                                       acc))))))))
+  (let*
+      ((w (max 12 maxx))
+       (art (crow-banner-frame frame))
+       (art-w-max
+         (fold
+           (lambda (line acc)
+             (max acc (spans-plain-length line)))
+           0
+           art))
+       (art-col-w (+ art-w-max 2))
+       (info-w (max 12 (- w art-col-w)))
+       (default-tips
+         (if (null? tips)
+           (list "! shell · ( scheme · / commands · /help"
+                 "ctrl+r history · @ files · ctrl+x $EDITOR")
+           tips))
+       (info-lines
+         (filter-map identity
+                     (list (list (list "" 'default #f #f))
+                           (list (list "badb" 'accent #t #f)
+                                 (list (format #f " v~a" (ensure-string (or version "0.1.0"))) 'dim #f #t)
+                                 (list " · badb microharness" 'default #f #f))
+                           (list (list (make-string (min 44 info-w) #\─) 'dim #f #t))
+                           (and (string? model)
+                                (not (string-null? model))
+                                (list (list "model  " 'dim #f #t)
+                                      (list (clip-str model (max 8 (- info-w 7))) 'status #t #f)))
+                           (and (string? workspace)
+                                (not (string-null? workspace))
+                                (list (list "cwd    " 'dim #f #t)
+                                      (list (shorten-cwd workspace (max 8 (- info-w 7))) 'default #f #f)))
+                           (list (list "" 'default #f #f))
+                           (list (list (clip-str (car default-tips) info-w) 'dim #f #t))
+                           (and (pair? (cdr default-tips))
+                                (list (list (clip-str (cadr default-tips) info-w) 'dim #f #t)))
+                           (and (pair? (cdr default-tips))
+                                (pair? (cddr default-tips))
+                                (list (list (clip-str (caddr default-tips) info-w) 'accent #f #f))))))
+       (compact? (< w 52))
+       (row-count (max (length art) (length info-lines))))
+    (if compact?
+      (map
+        (lambda (line)
+          (clip-spans line w))
+        (filter
+          (lambda (ln)
+            (not (and (pair? ln) (null? (cdr ln)) (string-null? (caar ln)))))
+          info-lines))
+      (let loop
+        ((i 0) (acc '()))
+        (if (>= i row-count)
+          (reverse acc)
+          (let*
+              ((art-spans
+                 (if (< i (length art))
+                   (list-ref art i)
+                   '()))
+               (info-spans
+                 (if (< i (length info-lines))
+                   (list-ref info-lines i)
+                   '()))
+               (cur-w (spans-plain-length art-spans))
+               (gap-spans
+                 (list (list (make-string (max 1 (- art-col-w cur-w)) #\space) 'default #f #f))))
+            (loop (+ i 1) (cons (clip-spans (append art-spans gap-spans info-spans) w) acc))))))))
 
 (define* (format-startup-banner-text maxx
                                      #:key (frame 0)
@@ -1095,7 +1271,6 @@ where each line is a list of (text role bold? dim?) spans fitting within MAXX."
 ;;;
 ;;; Git Diff Viewer (ui-wp1.5)
 ;;;
-
 (define %hunk-header-rx
         (make-regexp "^@@ -([0-9]+)(,[0-9]+)? \\+([0-9]+)(,[0-9]+)? @@"))
 
@@ -1239,7 +1414,6 @@ where each line is a list of (text role bold? dim?) spans fitting within MAXX."
 ;;;
 ;;; Interactive Todo List Widget (ui-wp1.5)
 ;;;
-
 (define-record-type <todo-item>
                     (%make-todo-item id text done? source priority)
                     todo-item?
@@ -1439,7 +1613,6 @@ where each line is a list of (text role bold? dim?) spans fitting within MAXX."
 ;;;
 ;;; Safe Live Scheme Response Widgets (ui-wp1.5)
 ;;;
-
 (define (parse-kw-args args)
         "Split ARGS into (values positional keyword-alist)."
         (let loop ((rest args) (pos '()) (kws '()))

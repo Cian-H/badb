@@ -684,19 +684,24 @@ carrying LABEL and THEME-ROLE, then one block-body row per line."
                     (not (caddr s))
                     (not (cadddr s))))))
 
-(define (make-styled-block-entry label theme-role styled-rows)
-        "Turn STYLED-ROWS ((line-text . segs) ...) into block rows, attaching
+(define*
+  (make-styled-block-entry label theme-role styled-rows #:key (hide-label? #f))
+  "Turn STYLED-ROWS ((line-text . segs) ...) into block rows, attaching
 pre-computed segments as the 4th element when non-trivial."
-        (if (null? styled-rows)
-          '()
-          (cons (list "block-label" label theme-role)
-                (map (lambda (sr)
-                       (let ((txt (car sr))
-                             (segs (cdr sr)))
-                         (if (trivial-default-segments? segs)
-                           (list "block-body" theme-role txt)
-                           (list "block-body" theme-role txt segs))))
-                     styled-rows))))
+  (if (null? styled-rows)
+    '()
+    (let
+        ((body
+           (map
+             (lambda (sr)
+               (let ((txt (car sr)) (segs (cdr sr)))
+                 (if (trivial-default-segments? segs)
+                   (list "block-body" theme-role txt)
+                   (list "block-body" theme-role txt segs))))
+             styled-rows)))
+      (if hide-label?
+        body
+        (cons (list "block-label" label theme-role) body)))))
 
 (define* (format-card-header label width
                              #:key (icon #f)
@@ -761,10 +766,48 @@ pre-computed segments as the 4th element when non-trivial."
                  raw-content
                  (format #f "~a" raw-content)))
              (thoughts (extract-msg-thoughts msg))
-             (is-streaming? (prop-ref msg 'streaming)))
+             (is-streaming? (prop-ref msg 'streaming))
+             (styled-rows (prop-ref msg 'styled-rows))
+             (hide-label? (prop-ref msg 'hide-label?)))
           (cond
             ((and (message-collapsed? msg) (message-collapsible? msg))
-              (format-collapsed-message-rows msg role content thoughts content-width is-streaming?))
+              (format-collapsed-message-rows msg
+                                             role
+                                             content
+                                             thoughts
+                                             content-width
+                                             is-streaming?))
+            ((pair? styled-rows)
+              (let*
+                  ((theme-role (message-role->theme-role role))
+                   (label (message-block-label role content))
+                   (row-pairs
+                     (map
+                       (lambda (spans)
+                         (let*
+                             ((clipped
+                                (let loop
+                                  ((rest spans) (rem (max 0 content-width)) (acc '()))
+                                  (if (or (null? rest) (<= rem 0))
+                                    (reverse acc)
+                                    (let*
+                                        ((sp (car rest)) (s (car sp))
+                                         (slen (string-length s))
+                                         (take-len (min slen rem))
+                                         (txt
+                                           (if (< take-len slen)
+                                             (substring s 0 take-len)
+                                             s)))
+                                      (loop (cdr rest) (- rem take-len)
+                                            (if (zero? take-len)
+                                              acc
+                                              (cons (cons txt (cdr sp)) acc)))))))
+                              (plain (string-concatenate (map car clipped))))
+                           (cons plain clipped)))
+                       styled-rows)))
+                (append
+                  (make-styled-block-entry label theme-role row-pairs #:hide-label? hide-label?)
+                  (list (list "spacer" "")))))
             ((string=? role "assistant")
               (let*
                   ((th-block
@@ -793,19 +836,21 @@ pre-computed segments as the 4th element when non-trivial."
                     (list (list "spacer" ""))))))
             ((string=? role "shell-cmd")
               (append
-                (format-highlighted-role-block (message-block-label role content)
-                                               'shell
-                                               content
-                                               content-width
-                                               highlight-shell-line)
+                (format-highlighted-role-block
+                  (message-block-label role content)
+                  'shell
+                  content
+                  content-width
+                  highlight-shell-line)
                 (list (list "spacer" ""))))
             ((or (string=? role "scheme-in") (string=? role "scheme-out"))
               (append
-                (format-highlighted-role-block (message-block-label role content)
-                                               'scheme
-                                               content
-                                               content-width
-                                               highlight-scheme-line)
+                (format-highlighted-role-block
+                  (message-block-label role content)
+                  'scheme
+                  content
+                  content-width
+                  highlight-scheme-line)
                 (list (list "spacer" ""))))
             (else
               (let*
