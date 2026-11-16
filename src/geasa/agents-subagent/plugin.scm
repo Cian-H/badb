@@ -14,6 +14,10 @@
                #:use-module
                (badb kernel registry)
                #:use-module
+               (geasa agents-lifecycle plugin)
+               #:use-module
+               (geasa agents-coordination plugin)
+               #:use-module
                (geasa surfaces-acp client)
                #:use-module
                (geasa runtimes-react plugin)
@@ -45,6 +49,14 @@
                (uuid generate)
                #:use-module
                (uuid utils)
+               #:re-export
+               (current-harness-id
+                 parent-harness-id
+                 subagent-harness?
+                 register-subagent-link!
+                 subagent-hierarchy-tree
+                 format-subagent-hierarchy
+                 format-subagent-overview)
                #:export
                (<subagent-worktree> make-subagent-worktree
                                     subagent-worktree?
@@ -71,6 +83,9 @@
                                     local-subagent?
                                     local-subagent-id
                                     local-subagent-workspace
+                                    local-subagent-parent-id
+                                    local-subagent-event-bus
+                                    local-subagent-label
                                     local-subagent-client
                                     local-subagent-server
                                     local-subagent-status
@@ -89,6 +104,9 @@
                                     remote-subagent-id
                                     remote-subagent-transport
                                     remote-subagent-workspace
+                                    remote-subagent-parent-id
+                                    remote-subagent-event-bus
+                                    remote-subagent-label
                                     remote-subagent-client
                                     remote-subagent-status
                                     remote-subagent-session-id
@@ -123,6 +141,9 @@
                                     run-subagent-worktree
                                     run-subagent
                                     run-subagents-parallel
+                                    subagent-emit-step!
+                                    make-subagent-update-forwarder
+                                    make-subagent-react-hooks
                                     register-subagent-tools!
                                     load-wt-premerge-command
                                     %default-investigate-tools
@@ -579,6 +600,185 @@ Returns '((merged? . #t/#f) (reason . reason) ...)."
 (define (%gen-subagent-id)
         (substring (uuid->string (generate-uuid 'uuidv4)) 0 8))
 
+(define (%truncate-label s max-len)
+        "Trim S to a single line of at most MAX-LEN characters."
+        (if (not (string? s))
+          #f
+          (let* ((single-line (string-map (lambda (c) (if (memv c '(#\newline #\return #\tab)) #\space c))
+                                          (string-trim-both s)))
+                 (len (string-length single-line)))
+            (if (> len max-len)
+              (string-append (substring single-line 0 (max 0 (- max-len 3))) "...")
+              single-line))))
+
+(define (%extract-update-text content)
+        "Extract plain text from an ACP update content block or list/vector of blocks."
+        (cond
+          ((string? content) content)
+          ((vector? content)
+            (string-join (filter-map %extract-update-text (vector->list content)) "\n"))
+          ((pair? content)
+            (cond
+              ((string? (assoc-ref content "text")) (assoc-ref content "text"))
+              ((string? (assoc-ref content 'text)) (assoc-ref content 'text))
+              ((assoc-ref content "content") (%extract-update-text (assoc-ref content "content")))
+              ((assoc-ref content 'content) (%extract-update-text (assoc-ref content 'content)))
+              (else
+                (string-join (filter-map %extract-update-text content) "\n"))))
+          (else #f)))
+
+(define* (subagent-emit-step! sub-id kind payload
+                              #:key
+                              (parent-id #f)
+                              (bus (default-harness-event-bus)))
+         "Emit a structured ReAct loop step event from SUB-ID to its parent harness bus."
+         (harness-event-publish! sub-id kind payload
+                                 #:target-id (or parent-id (harness-parent-id sub-id))
+                                 #:bus (or bus (default-harness-event-bus))))
+
+(define* (make-subagent-update-forwarder sub-id
+                                         #:key
+                                         (parent-id #f)
+                                         (bus (default-harness-event-bus))
+                                         (user-on-update #f))
+         "Return an ACP on-update callback (sid upd) that translates subagent
+ReAct loop ACP session/update notifications into structured harness events on BUS,
+while forwarding to USER-ON-UPDATE if provided."
+         (let ((eff-bus (or bus (default-harness-event-bus)))
+               (iter 0)
+               (in-iter? #f)
+               (thought-buf '())
+               (tool-names '())
+               (lock (make-mutex)))
+           (define (ensure-iteration! phase)
+                   (unless in-iter?
+                     (set! iter (+ iter 1))
+                     (set! in-iter? #t)
+                     (set! thought-buf '())
+                     (subagent-emit-step! sub-id 'iteration
+                                          `((iteration . ,iter) (phase . ,phase))
+                                          #:parent-id parent-id
+                                          #:bus eff-bus)))
+           (lambda (sid upd)
+             (when (pair? upd)
+               (let ((kind (or (prop-ref upd "sessionUpdate") "")))
+                 (with-mutex lock
+                             (cond
+                               ((string=? kind "agent_thought_chunk")
+                                 (let ((txt (%extract-update-text (prop-ref upd "content"))))
+                                   (when (string? txt)
+                                     (ensure-iteration! 'thought)
+                                     (set! thought-buf (cons txt thought-buf))
+                                     (subagent-emit-step! sub-id 'thought
+                                                          `((iteration . ,iter)
+                                                            (text . ,txt)
+                                                            (thought . ,(string-concatenate (reverse thought-buf)))
+                                                            (session-id . ,sid))
+                                                          #:parent-id parent-id
+                                                          #:bus eff-bus))))
+                               ((string=? kind "tool_call")
+                                 (let ((tc-id (prop-ref upd "toolCallId"))
+                                       (title (or (prop-ref upd "title") "tool"))
+                                       (tkind (or (prop-ref upd "kind") "other"))
+                                       (raw-in (prop-ref upd "rawInput")))
+                                   (ensure-iteration! 'tool-call)
+                                   (when (string? tc-id)
+                                     (set! tool-names (acons tc-id title tool-names)))
+                                   (subagent-emit-step! sub-id 'tool-call
+                                                        `((iteration . ,iter)
+                                                          (tool-call-id . ,tc-id)
+                                                          (tool . ,title)
+                                                          (kind . ,tkind)
+                                                          (args . ,raw-in)
+                                                          (session-id . ,sid))
+                                                        #:parent-id parent-id
+                                                        #:bus eff-bus)))
+                               ((string=? kind "tool_call_update")
+                                 (let* ((tc-id (prop-ref upd "toolCallId"))
+                                        (status (or (prop-ref upd "status") "completed"))
+                                        (err? (equal? status "failed"))
+                                        (tool-name (or (and (string? tc-id) (assoc-ref tool-names tc-id))
+                                                       "tool"))
+                                        (out-text (or (%extract-update-text (prop-ref upd "content")) "")))
+                                   (ensure-iteration! 'observation)
+                                   (subagent-emit-step! sub-id 'observation
+                                                        `((iteration . ,iter)
+                                                          (tool-call-id . ,tc-id)
+                                                          (tool . ,tool-name)
+                                                          (status . ,status)
+                                                          (error? . ,err?)
+                                                          (output . ,out-text)
+                                                          (summary . ,(%truncate-label out-text 120))
+                                                          (session-id . ,sid))
+                                                        #:parent-id parent-id
+                                                        #:bus eff-bus)
+                                   (set! in-iter? #f)))
+                               ((string=? kind "agent_message_chunk")
+                                 (let ((txt (%extract-update-text (prop-ref upd "content"))))
+                                   (when (string? txt)
+                                     (ensure-iteration! 'message)
+                                     (subagent-emit-step! sub-id 'message
+                                                          `((iteration . ,iter)
+                                                            (text . ,txt)
+                                                            (session-id . ,sid))
+                                                          #:parent-id parent-id
+                                                          #:bus eff-bus))))))))
+             (when (procedure? user-on-update)
+               (user-on-update sid upd)))))
+
+(define* (make-subagent-react-hooks sub-id
+                                    #:key
+                                    (parent-id #f)
+                                    (bus (default-harness-event-bus)))
+         "Build an alist of runtimes-react hooks (on-delta, on-tool-call,
+on-tool-result, on-step) that bubble SUB-ID's ReAct steps to BUS."
+         (let ((eff-bus (or bus (default-harness-event-bus))))
+           (list
+             (cons 'on-step
+                   (lambda (iteration phase)
+                     (subagent-emit-step! sub-id 'iteration
+                                          `((iteration . ,iteration) (phase . ,phase))
+                                          #:parent-id parent-id
+                                          #:bus eff-bus)))
+             (cons 'on-delta
+                   (lambda (payload type)
+                     (when (string? payload)
+                       (cond
+                         ((eq? type 'thought)
+                           (subagent-emit-step! sub-id 'thought
+                                                `((text . ,payload))
+                                                #:parent-id parent-id
+                                                #:bus eff-bus))
+                         ((eq? type 'content)
+                           (subagent-emit-step! sub-id 'message
+                                                `((text . ,payload))
+                                                #:parent-id parent-id
+                                                #:bus eff-bus))))))
+             (cons 'on-tool-call
+                   (lambda (tc)
+                     (let ((name (or (prop-ref tc 'name) "tool"))
+                           (id (prop-ref tc 'id))
+                           (args (prop-ref tc 'arguments)))
+                       (subagent-emit-step! sub-id 'tool-call
+                                            `((tool . ,name)
+                                              (tool-call-id . ,id)
+                                              (args . ,args))
+                                            #:parent-id parent-id
+                                            #:bus eff-bus))))
+             (cons 'on-tool-result
+                   (lambda (tc res err?)
+                     (let* ((name (or (prop-ref tc 'name) "tool"))
+                            (id (prop-ref tc 'id))
+                            (out (if (string? res) res (format #f "~s" res))))
+                       (subagent-emit-step! sub-id 'observation
+                                            `((tool . ,name)
+                                              (tool-call-id . ,id)
+                                              (error? . ,err?)
+                                              (output . ,out)
+                                              (summary . ,(%truncate-label out 120)))
+                                            #:parent-id parent-id
+                                            #:bus eff-bus)))))))
+
 (define (create-agent-pipe-pair)
         "Create a bidirectional pair of OS pipes for in-process ACP communication.
 Returns (values server-in server-out client-in client-out)."
@@ -668,9 +868,65 @@ return the created sessionId."
                          #:client-info
                          client-info))
 
+(define (%subagent-register-start! sub-id parent-id kind label workspace bus)
+        (register-subagent-link! sub-id parent-id
+                                 #:kind kind
+                                 #:status 'running
+                                 #:label label
+                                 #:metadata `((workspace . ,workspace)))
+        (subagent-emit-step! sub-id 'status
+                             `((status . running) (kind . ,kind) (workspace . ,workspace))
+                             #:parent-id parent-id
+                             #:bus bus))
+
+(define (%subagent-mark-failed! sub-id parent-id bus key args)
+        (update-subagent-link! sub-id #:status 'failed #:active-tool #f)
+        (subagent-emit-step! sub-id 'status
+                             `((status . failed) (error . ,(format #f "~a: ~s" key args)))
+                             #:parent-id parent-id
+                             #:bus bus))
+
+(define (%subagent-mark-stopped! sub-id parent-id bus)
+        (let ((link (subagent-link-ref sub-id)))
+          (when (and link (memq (subagent-link-status link) '(created running)))
+            (update-subagent-link! sub-id #:status 'stopped #:active-tool #f)
+            (subagent-emit-step! sub-id 'status
+                                 '((status . stopped))
+                                 #:parent-id parent-id
+                                 #:bus bus))))
+
+(define (%subagent-prompt-instrumented! cli sub-id parent-id bus base-on-update prompt per-call-on-update)
+        (let ((link (subagent-link-ref sub-id)))
+          (when (and link (not (subagent-link-label link)) (string? prompt))
+            (update-subagent-link! sub-id #:label (%truncate-label prompt 60))))
+        (update-subagent-link! sub-id #:status 'running)
+        (let ((fwd (if per-call-on-update
+                     (make-subagent-update-forwarder sub-id
+                                                     #:parent-id parent-id
+                                                     #:bus bus
+                                                     #:user-on-update per-call-on-update)
+                     #f)))
+          (catch #t
+            (lambda ()
+              (let* ((res (acp-client-prompt! cli prompt #:on-update fwd))
+                     (stop-reason (or (assoc-ref res 'stop-reason) "end_turn"))
+                     (final-status (if (equal? stop-reason "cancelled") 'cancelled 'completed)))
+                (update-subagent-link! sub-id #:status final-status #:active-tool #f)
+                (subagent-emit-step! sub-id 'status
+                                     `((status . ,final-status) (stop-reason . ,stop-reason))
+                                     #:parent-id parent-id
+                                     #:bus bus)
+                res))
+            (lambda (key . args)
+              (%subagent-mark-failed! sub-id parent-id bus key args)
+              (apply throw key args)))))
+
 (define-record-type <local-subagent>
                     (%make-local-subagent id
                                           workspace
+                                          parent-id
+                                          event-bus
+                                          label
                                           model-client
                                           permission-policy
                                           permission-handler
@@ -688,6 +944,9 @@ return the created sessionId."
                     local-subagent?
                     (id local-subagent-id)
                     (workspace local-subagent-workspace)
+                    (parent-id local-subagent-parent-id)
+                    (event-bus local-subagent-event-bus)
+                    (label local-subagent-label)
                     (model-client local-subagent-model-client)
                     (permission-policy local-subagent-permission-policy)
                     (permission-handler local-subagent-permission-handler)
@@ -707,6 +966,9 @@ return the created sessionId."
   (make-local-subagent #:key
                        (id #f)
                        (workspace (getcwd))
+                       (parent-id #f)
+                       (event-bus #f)
+                       (label #f)
                        (model-client #f)
                        (permission-policy 'allow)
                        (permission-handler #f)
@@ -720,6 +982,9 @@ server (a full badb instance) to the current badb instance."
   (%make-local-subagent
     (or id (string-append "lsub_" (%gen-subagent-id)))
     workspace
+    (or parent-id (current-harness-id))
+    (or event-bus (default-harness-event-bus))
+    label
     model-client
     permission-policy
     permission-handler
@@ -746,7 +1011,17 @@ perform the ACP handshake."
         (call-with-values create-agent-pipe-pair
                           (lambda (srv-in srv-out cli-in cli-out)
                             (let*
-                                ((srv
+                                ((sub-id (local-subagent-id agent))
+                                 (parent-id (local-subagent-parent-id agent))
+                                 (bus (local-subagent-event-bus agent))
+                                 (ws (local-subagent-workspace agent))
+                                 (fwd-on-update
+                                   (make-subagent-update-forwarder
+                                     sub-id
+                                     #:parent-id parent-id
+                                     #:bus bus
+                                     #:user-on-update (local-subagent-on-update agent)))
+                                 (srv
                                    (create-agent-server #:in-port
                                                         srv-in
                                                         #:out-port
@@ -754,7 +1029,7 @@ perform the ACP handshake."
                                                         #:client
                                                         (local-subagent-model-client agent)
                                                         #:workspace
-                                                        (local-subagent-workspace agent)
+                                                        ws
                                                         #:permission-policy
                                                         (local-subagent-permission-policy agent)))
                                  (acp-serve (%acp-server-proc 'acp-serve-stdio))
@@ -763,7 +1038,9 @@ perform the ACP handshake."
                                      (lambda ()
                                        (catch #t
                                          (lambda ()
-                                           (acp-serve srv))
+                                           (parameterize ((current-harness-id sub-id)
+                                                          (parent-harness-id parent-id))
+                                                         (acp-serve srv)))
                                          (lambda _
                                            #f)))))
                                  (cli
@@ -774,17 +1051,19 @@ perform the ACP handshake."
                                                         #:permission-handler
                                                         (local-subagent-permission-handler agent)
                                                         #:on-update
-                                                        (local-subagent-on-update agent))))
+                                                        fwd-on-update)))
                               (set-local-subagent-server-in! agent srv-in)
                               (set-local-subagent-server-out! agent srv-out)
                               (set-local-subagent-server! agent srv)
                               (set-local-subagent-server-thread! agent thr)
                               (set-local-subagent-client! agent cli)
+                              (%subagent-register-start! sub-id parent-id 'local
+                                                         (local-subagent-label agent) ws bus)
                               (catch #t
                                 (lambda ()
                                   (agent-handshake! cli
                                                     #:cwd
-                                                    (local-subagent-workspace agent)
+                                                    ws
                                                     #:allowed-tools
                                                     (local-subagent-allowed-tools agent)
                                                     #:max-iterations
@@ -797,6 +1076,7 @@ perform the ACP handshake."
                                   agent)
                                 (lambda (key . args)
                                   (set-local-subagent-status! agent 'failed)
+                                  (%subagent-mark-failed! sub-id parent-id bus key args)
                                   (catch #t
                                     (lambda ()
                                       (local-subagent-stop! agent))
@@ -809,11 +1089,23 @@ perform the ACP handshake."
   "Execute PROMPT on AGENT's local badb ACP server via its ACP client."
   (let ((cli (local-subagent-client agent)))
     (unless cli (error "local-subagent-prompt!: agent is not started" agent))
-    (acp-client-prompt! cli prompt #:on-update on-update)))
+    (%subagent-prompt-instrumented! cli
+                                    (local-subagent-id agent)
+                                    (local-subagent-parent-id agent)
+                                    (local-subagent-event-bus agent)
+                                    (local-subagent-on-update agent)
+                                    prompt
+                                    on-update)))
 
 (define (local-subagent-cancel! agent)
         "Send session/cancel to AGENT's local ACP server."
-        (let ((cli (local-subagent-client agent))) (when cli (acp-client-cancel! cli))))
+        (let ((cli (local-subagent-client agent)))
+          (when cli (acp-client-cancel! cli))
+          (update-subagent-link! (local-subagent-id agent) #:status 'cancelled #:active-tool #f)
+          (subagent-emit-step! (local-subagent-id agent) 'status
+                               '((status . cancelled))
+                               #:parent-id (local-subagent-parent-id agent)
+                               #:bus (local-subagent-event-bus agent))))
 
 (define (local-subagent-stop! agent)
         "Close AGENT's local ACP client, stop its in-process ACP server, and join
@@ -849,6 +1141,9 @@ the server thread. Idempotent."
                   (close-port s-out))
                 (lambda _
                   #f)))
+            (%subagent-mark-stopped! (local-subagent-id agent)
+                                     (local-subagent-parent-id agent)
+                                     (local-subagent-event-bus agent))
             (set-local-subagent-status! agent 'stopped)))
         #t)
 
@@ -862,6 +1157,9 @@ the server thread. Idempotent."
                                            in-port
                                            out-port
                                            workspace
+                                           parent-id
+                                           event-bus
+                                           label
                                            permission-handler
                                            on-update
                                            allowed-tools
@@ -880,6 +1178,9 @@ the server thread. Idempotent."
                     (in-port remote-subagent-in-port)
                     (out-port remote-subagent-out-port)
                     (workspace remote-subagent-workspace)
+                    (parent-id remote-subagent-parent-id)
+                    (event-bus remote-subagent-event-bus)
+                    (label remote-subagent-label)
                     (permission-handler remote-subagent-permission-handler)
                     (on-update remote-subagent-on-update)
                     (allowed-tools remote-subagent-allowed-tools)
@@ -900,6 +1201,9 @@ the server thread. Idempotent."
                         (in-port #f)
                         (out-port #f)
                         (workspace (getcwd))
+                        (parent-id #f)
+                        (event-bus #f)
+                        (label #f)
                         (permission-handler #f)
                         (on-update #f)
                         (allowed-tools #f)
@@ -918,6 +1222,9 @@ badb instance to a remote ACP server."
     in-port
     out-port
     workspace
+    (or parent-id (current-harness-id))
+    (or event-bus (default-harness-event-bus))
+    label
     permission-handler
     on-update
     allowed-tools
@@ -957,8 +1264,15 @@ badb instance to a remote ACP server."
 (define (remote-subagent-start! agent)
         "Connect AGENT's client to the remote ACP server and perform the handshake."
         (let*
-            ((tr (remote-subagent-transport agent))
-             (on-upd (remote-subagent-on-update agent))
+            ((sub-id (remote-subagent-id agent))
+             (parent-id (remote-subagent-parent-id agent))
+             (bus (remote-subagent-event-bus agent))
+             (tr (remote-subagent-transport agent))
+             (on-upd (make-subagent-update-forwarder
+                       sub-id
+                       #:parent-id parent-id
+                       #:bus bus
+                       #:user-on-update (remote-subagent-on-update agent)))
              (perm-h (remote-subagent-permission-handler agent))
              (cwd (remote-subagent-workspace agent))
              (cli
@@ -998,6 +1312,8 @@ badb instance to a remote ACP server."
                                         perm-h))
                  (else (error "remote-subagent-start!: unsupported transport" tr)))))
           (set-remote-subagent-client! agent cli)
+          (%subagent-register-start! sub-id parent-id tr
+                                     (remote-subagent-label agent) cwd bus)
           (catch #t
             (lambda ()
               (agent-handshake! cli
@@ -1015,6 +1331,7 @@ badb instance to a remote ACP server."
               agent)
             (lambda (key . args)
               (set-remote-subagent-status! agent 'failed)
+              (%subagent-mark-failed! sub-id parent-id bus key args)
               (catch #t
                 (lambda ()
                   (acp-client-close! cli))
@@ -1027,11 +1344,23 @@ badb instance to a remote ACP server."
   "Execute PROMPT on the remote badb ACP server attached to AGENT."
   (let ((cli (remote-subagent-client agent)))
     (unless cli (error "remote-subagent-prompt!: agent is not started" agent))
-    (acp-client-prompt! cli prompt #:on-update on-update)))
+    (%subagent-prompt-instrumented! cli
+                                    (remote-subagent-id agent)
+                                    (remote-subagent-parent-id agent)
+                                    (remote-subagent-event-bus agent)
+                                    (remote-subagent-on-update agent)
+                                    prompt
+                                    on-update)))
 
 (define (remote-subagent-cancel! agent)
         "Send session/cancel to AGENT's remote ACP server."
-        (let ((cli (remote-subagent-client agent))) (when cli (acp-client-cancel! cli))))
+        (let ((cli (remote-subagent-client agent)))
+          (when cli (acp-client-cancel! cli))
+          (update-subagent-link! (remote-subagent-id agent) #:status 'cancelled #:active-tool #f)
+          (subagent-emit-step! (remote-subagent-id agent) 'status
+                               '((status . cancelled))
+                               #:parent-id (remote-subagent-parent-id agent)
+                               #:bus (remote-subagent-event-bus agent))))
 
 (define (remote-subagent-stop! agent)
         "Close the remote ACP client attached to AGENT. Idempotent."
@@ -1044,6 +1373,9 @@ badb instance to a remote ACP server."
                   (acp-client-close! cli))
                 (lambda _
                   #f)))
+            (%subagent-mark-stopped! (remote-subagent-id agent)
+                                     (remote-subagent-parent-id agent)
+                                     (remote-subagent-event-bus agent))
             (set-remote-subagent-status! agent 'stopped)))
         #t)
 
@@ -1483,6 +1815,8 @@ stop AGENT on exit (normal or exceptional)."
                          (on-update #f)
                          (remote #f)
                          (system-prompt #f)
+                         (parent-id #f)
+                         (event-bus #f)
                          (journal-dir ".badb/journal/subagents"))
   "Execute an isolated subagent transaction in an ephemeral Git worktree
 using a literal badb instance over ACP (separated client & server + handshake).
@@ -1492,6 +1826,7 @@ and merge results."
       ((sw (create-subagent-worktree #:repo repo #:base base))
        (sub-id (subagent-worktree-id sw))
        (wt-path (subagent-worktree-path sw))
+       (label (%truncate-label prompt 60))
        (sys-prompt
          (or system-prompt
              "You are an autonomous sub-agent working in an isolated Git worktree sandbox. Inspect, modify, or test files inside your sandbox to fulfill the task. Changes are committed and verified before merging."))
@@ -1513,6 +1848,12 @@ and merge results."
                                    (assoc-ref remote 'command)
                                    #:workspace
                                    wt-path
+                                   #:parent-id
+                                   parent-id
+                                   #:event-bus
+                                   event-bus
+                                   #:label
+                                   label
                                    #:permission-handler
                                    permission-handler
                                    #:on-update
@@ -1528,6 +1869,12 @@ and merge results."
                                   sub-id
                                   #:workspace
                                   wt-path
+                                  #:parent-id
+                                  parent-id
+                                  #:event-bus
+                                  event-bus
+                                  #:label
+                                  label
                                   #:model-client
                                   client
                                   #:permission-policy
@@ -1611,6 +1958,8 @@ and merge results."
                 (on-update #f)
                 (remote #f)
                 (system-prompt #f)
+                (parent-id #f)
+                (event-bus #f)
                 (journal-dir ".badb/journal/subagents"))
   "Execute a full badb sub-agent over ACP. When WORKTREE-ISOLATED? is true,
 runs inside an ephemeral Git worktree sandbox. When REMOTE is provided (a
@@ -1645,11 +1994,16 @@ runs inside an ephemeral Git worktree sandbox. When REMOTE is provided (a
                                   on-update
                                   #:remote
                                   remote
+                                  #:parent-id
+                                  parent-id
+                                  #:event-bus
+                                  event-bus
                                   #:journal-dir
                                   journal-dir)))
       (assoc-ref res 'content))
     (let*
         ((sub-id (%gen-subagent-id))
+         (label (%truncate-label prompt 60))
          (sys
            (or system-prompt
                "You are a focused research sub-agent. Analyze files and query search tools to answer the user request directly, concisely, and factually. Do not provide fluff."))
@@ -1676,6 +2030,12 @@ runs inside an ephemeral Git worktree sandbox. When REMOTE is provided (a
                                      (assoc-ref remote 'out-port)
                                      #:workspace
                                      workspace
+                                     #:parent-id
+                                     parent-id
+                                     #:event-bus
+                                     event-bus
+                                     #:label
+                                     label
                                      #:permission-handler
                                      permission-handler
                                      #:on-update
@@ -1691,6 +2051,12 @@ runs inside an ephemeral Git worktree sandbox. When REMOTE is provided (a
                                     sub-id
                                     #:workspace
                                     workspace
+                                    #:parent-id
+                                    parent-id
+                                    #:event-bus
+                                    event-bus
+                                    #:label
+                                    label
                                     #:model-client
                                     client
                                     #:permission-policy

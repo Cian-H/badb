@@ -235,5 +235,79 @@
                           '(stop start) log)
               (test-equal "agent stopped after body error" 'stopped (agent-state agent))))
 
+;;;
+;;; 7. Harness awareness & parent/child links
+;;;
+
+(test-group "harness-awareness-and-links"
+            (clear-subagent-links!)
+            (test-assert "default current-harness-id is non-empty string"
+                         (and (string? (current-harness-id))
+                              (not (string-null? (current-harness-id)))))
+            (test-assert "root harness is not a subagent by default"
+                         (not (subagent-harness?)))
+            (test-equal "default parent-harness-id is #f" #f (parent-harness-id))
+
+            (let ((link (register-subagent-link! "sub-1" "root"
+                                                 #:kind 'local
+                                                 #:status 'running
+                                                 #:label "Inspect core")))
+              (test-assert "subagent-link? recognizes link" (subagent-link? link))
+              (test-equal "child-id stored" "sub-1" (subagent-link-child-id link))
+              (test-equal "parent-id stored" "root" (subagent-link-parent-id link))
+              (test-equal "kind stored" 'local (subagent-link-kind link))
+              (test-equal "status stored" 'running (subagent-link-status link))
+              (test-equal "label stored" "Inspect core" (subagent-link-label link))
+              (test-assert "subagent-harness? true for registered child id"
+                           (subagent-harness? "sub-1"))
+              (test-equal "harness-parent-id resolves parent"
+                          "root" (harness-parent-id "sub-1"))
+
+              (parameterize ((current-harness-id "sub-1")
+                             (parent-harness-id "root"))
+                            (test-equal "parameterized current-harness-id"
+                                        "sub-1" (current-harness-id))
+                            (test-equal "parameterized parent-harness-id"
+                                        "root" (parent-harness-id))
+                            (test-assert "subagent-harness? true inside child context"
+                                         (subagent-harness?)))
+
+              (update-subagent-link! "sub-1"
+                                     #:active-tool "read_file"
+                                     #:increment-turn? #t
+                                     #:last-thought "checking exports")
+              (test-equal "active tool updated" "read_file" (subagent-link-active-tool link))
+              (test-equal "turn count incremented" 1 (subagent-link-turn-count link))
+              (test-equal "last thought recorded" "checking exports" (subagent-link-last-thought link))
+
+              (update-subagent-link! "sub-1" #:active-tool #f #:last-observation "ok")
+              (test-equal "active tool cleared with #f" #f (subagent-link-active-tool link))
+              (test-equal "last observation recorded" "ok" (subagent-link-last-observation link))
+
+              (let ((children (subagent-children "root")))
+                (test-equal "one child under root" 1 (length children))
+                (test-equal "child matches link" "sub-1" (subagent-link-child-id (car children)))))
+
+            (let ((seen-inside #f))
+              (test-equal "call-with-harness-context returns body value"
+                          'done
+                          (call-with-harness-context
+                            "sub-ctx"
+                            (lambda ()
+                              (set! seen-inside
+                                    (list (current-harness-id)
+                                          (parent-harness-id)
+                                          (subagent-harness?)))
+                              'done)
+                            #:parent-id "root"
+                            #:kind 'worktree
+                            #:label "Scoped run"))
+              (test-equal "context inside call-with-harness-context"
+                          '("sub-ctx" "root" #t) seen-inside)
+              (test-equal "status updated to completed on exit"
+                          'completed (subagent-link-status (subagent-link-ref "sub-ctx"))))
+
+            (clear-subagent-links!))
+
 (spec-end)
 (spec-exit)

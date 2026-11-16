@@ -10,6 +10,7 @@
                #:use-module (srfi srfi-64)
                #:use-module (badb spec)
                #:use-module (srfi srfi-1)
+               #:use-module (geasa agents-lifecycle plugin)
                #:use-module (geasa agents-coordination plugin))
 
 (spec-begin "agents-coordination")
@@ -187,6 +188,145 @@
                             (lambda ()
                               (coordinator-pipeline coord '("bad" "ok1") "seed"))
                             (lambda (key stage-id original-key . rest) original-key)))))
+
+;;;
+;;; 6. Harness-to-harness event bus
+;;;
+
+(test-group "harness-event-bus"
+            (clear-subagent-links!)
+            (let ((bus (make-harness-event-bus #:capacity 3))
+                  (received-root '())
+                  (received-mid '()))
+              (test-assert "harness-event-bus? recognizes bus" (harness-event-bus? bus))
+              (register-subagent-link! "mid-1" "root-1" #:kind 'local #:status 'running)
+              (register-subagent-link! "leaf-1" "mid-1" #:kind 'local #:status 'running)
+
+              (let ((sub-root (harness-event-subscribe!
+                                (lambda (ev)
+                                  (set! received-root (cons (harness-event-kind ev) received-root)))
+                                #:bus bus
+                                #:target-id "root-1"
+                                #:include-descendants? #t))
+                    (sub-mid (harness-event-subscribe!
+                               (lambda (ev)
+                                 (set! received-mid (cons (harness-event-source-id ev) received-mid)))
+                               #:bus bus
+                               #:target-id "mid-1"
+                               #:include-descendants? #f)))
+                (parameterize ((current-harness-id "leaf-1")
+                               (parent-harness-id "mid-1"))
+                              (let ((ev1 (harness-event-bubble! 'thought '((text . "thinking") (iteration . 1)) #:bus bus)))
+                                (test-assert "harness-event? recognizes event" (harness-event? ev1))
+                                (test-equal "bubbled target resolves to mid-1"
+                                            "mid-1" (harness-event-target-id ev1))
+                                (test-equal "thought updated leaf link"
+                                            "thinking" (subagent-link-last-thought (subagent-link-ref "leaf-1"))))
+                              (harness-event-bubble! 'tool-call '((tool . "read_file")) #:bus bus)
+                              (test-equal "active tool updated via event bus"
+                                          "read_file" (subagent-link-active-tool (subagent-link-ref "leaf-1")))
+                              (harness-event-bubble! 'observation '((tool . "read_file") (output . "ok")) #:bus bus)
+                              (test-equal "active tool cleared on observation"
+                                          #f (subagent-link-active-tool (subagent-link-ref "leaf-1")))
+                              (harness-event-bubble! 'status '((status . completed)) #:bus bus))
+
+                ;; Capacity=3 ring buffer retained the last 3 events (seqs 2, 3, 4)
+                (let ((polled (harness-event-poll #:bus bus #:target-id "root-1")))
+                  (test-equal "ring buffer keeps last 3 events" 3 (length polled))
+                  (test-equal "polled seqs monotonic" '(2 3 4) (map harness-event-seq polled)))
+
+                ;; Both root (descendants=#t) and mid (direct target) saw all 4 events
+                (test-equal "root subscriber received all 4 descendant events"
+                            '(status observation tool-call thought) received-root)
+                (test-equal "mid subscriber received all 4 child events"
+                            '("leaf-1" "leaf-1" "leaf-1" "leaf-1") received-mid)
+
+                (test-assert "unsubscribe returns true"
+                             (harness-event-unsubscribe! sub-root #:bus bus))
+                (test-assert "unsubscribe second time returns false"
+                             (not (harness-event-unsubscribe! sub-root #:bus bus)))
+                (harness-event-unsubscribe! sub-mid #:bus bus)
+                (harness-event-bus-clear! #:bus bus #:clear-subscribers? #t)
+                (test-equal "bus cleared" '() (harness-event-poll #:bus bus))))
+            (clear-subagent-links!))
+
+;;;
+;;; 7. Subagent hierarchy tree & overview formatters
+;;;
+
+(test-group "subagent-hierarchy-and-overview"
+            (clear-subagent-links!)
+            (let ((bus (make-harness-event-bus #:capacity 32)))
+              ;; Empty root overview
+              (let ((empty-ov (format-subagent-overview "root-ov" #:bus bus)))
+                (test-assert "empty overview mentions root and none active"
+                             (and (string-contains empty-ov "root-ov")
+                                  (string-contains empty-ov "none active"))))
+
+              ;; Build 2-level hierarchy: root-ov -> (sub-a -> sub-a1, sub-b)
+              (register-subagent-link! "sub-a" "root-ov"
+                                       #:kind 'local
+                                       #:status 'running
+                                       #:active-tool "read_file"
+                                       #:turn-count 2
+                                       #:label "Inspect core")
+              (register-subagent-link! "sub-a1" "sub-a"
+                                       #:kind 'worktree
+                                       #:status 'completed
+                                       #:turn-count 1
+                                       #:label "Verify exports")
+              (register-subagent-link! "sub-b" "root-ov"
+                                       #:kind 'remote
+                                       #:status 'failed
+                                       #:turn-count 3
+                                       #:label "Check tests")
+              (harness-event-publish! "sub-a" 'tool-call '((tool . "read_file"))
+                                      #:target-id "root-ov" #:bus bus)
+
+              (let* ((tree (subagent-hierarchy-tree "root-ov"))
+                     (children (assoc-ref tree 'children))
+                     (first-child (car children))
+                     (grandchildren (assoc-ref first-child 'children)))
+                (test-equal "tree root id" "root-ov" (assoc-ref tree 'id))
+                (test-equal "two direct children" 2 (length children))
+                (test-equal "one grandchild under sub-a" 1 (length grandchildren))
+                (test-equal "grandchild id" "sub-a1" (assoc-ref (car grandchildren) 'id))
+
+                ;; Filtering stopped/completed/failed children
+                (let* ((active-only (subagent-hierarchy-tree #:root-id "root-ov" #:include-stopped? #f))
+                       (active-children (assoc-ref active-only 'children)))
+                  (test-equal "only running child kept when include-stopped? #f"
+                              1 (length active-children))
+                  (test-equal "running child is sub-a"
+                              "sub-a" (assoc-ref (car active-children) 'id))
+                  (test-equal "completed grandchild filtered"
+                              '() (assoc-ref (car active-children) 'children)))
+
+                ;; Unicode connectors, status, active tool, turn count
+                (let ((rendered (format-subagent-hierarchy tree)))
+                  (test-assert "renders branch connector" (string-contains rendered "├── sub-a"))
+                  (test-assert "renders nested connector" (string-contains rendered "│   └── sub-a1"))
+                  (test-assert "renders last child connector" (string-contains rendered "└── sub-b"))
+                  (test-assert "renders running status" (string-contains rendered "[running]"))
+                  (test-assert "renders active tool" (string-contains rendered "tool:read_file"))
+                  (test-assert "renders turn count" (string-contains rendered "turns:2"))
+                  (test-assert "renders label" (string-contains rendered "Inspect core")))
+
+                ;; ASCII connectors
+                (let ((ascii (format-subagent-hierarchy tree #:ascii? #t)))
+                  (test-assert "renders ascii branch connector" (string-contains ascii "|-- sub-a"))
+                  (test-assert "renders ascii nested connector" (string-contains ascii "|   `-- sub-a1")))
+
+                ;; Overview
+                (let ((ov (format-subagent-overview "root-ov" #:bus bus #:recent-events 3)))
+                  (test-assert "overview shows total:3" (string-contains ov "total:3"))
+                  (test-assert "overview shows running:1" (string-contains ov "running:1"))
+                  (test-assert "overview shows completed:1" (string-contains ov "completed:1"))
+                  (test-assert "overview shows failed:1" (string-contains ov "failed:1"))
+                  (test-assert "overview includes tree" (string-contains ov "├── sub-a"))
+                  (test-assert "overview includes recent events" (string-contains ov "Recent events:"))
+                  (test-assert "overview includes tool-call event" (string-contains ov "read_file")))))
+            (clear-subagent-links!))
 
 (spec-end)
 (spec-exit)

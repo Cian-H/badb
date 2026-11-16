@@ -16,6 +16,7 @@
 (define-module (geasa agents-lifecycle plugin)
                #:use-module (ice-9 format)
                #:use-module (ice-9 optargs)
+               #:use-module (ice-9 threads)
                #:use-module (srfi srfi-1)
                #:use-module (srfi srfi-9)
                #:export (<agent>
@@ -42,7 +43,34 @@
                           agent-manager-ids
                           agent-manager-running-ids
                           agent-manager-stop-all!
-                          with-agent))
+                          with-agent
+                          current-harness-id
+                          parent-harness-id
+                          subagent-harness?
+                          <subagent-link>
+                          subagent-link?
+                          subagent-link-child-id
+                          subagent-link-parent-id
+                          subagent-link-kind
+                          subagent-link-status
+                          subagent-link-label
+                          subagent-link-active-tool
+                          subagent-link-turn-count
+                          subagent-link-last-thought
+                          subagent-link-last-observation
+                          subagent-link-started-at
+                          subagent-link-updated-at
+                          subagent-link-metadata
+                          subagent-link->alist
+                          register-subagent-link!
+                          unregister-subagent-link!
+                          update-subagent-link!
+                          subagent-link-ref
+                          harness-parent-id
+                          subagent-children
+                          all-subagent-links
+                          clear-subagent-links!
+                          call-with-harness-context))
 
 ;;;
 ;;; Agent record
@@ -214,3 +242,231 @@ Returns THUNK's value."
            (lambda ()
              (when (agent-running? manager (agent-id agent))
                (agent-stop! manager (agent-id agent))))))
+
+;;;
+;;; Parent / Child Harness Awareness & Link Registry
+;;;
+
+(define (%non-empty-env name)
+        (let ((val (getenv name)))
+          (and (string? val) (not (string-null? val)) val)))
+
+(define (%normalize-harness-id id)
+        (cond
+          ((string? id) id)
+          ((symbol? id) (symbol->string id))
+          (else (format #f "~a" id))))
+
+(define current-harness-id
+        (make-parameter (or (%non-empty-env "BADB_HARNESS_ID") "root")))
+
+(define parent-harness-id
+        (make-parameter (%non-empty-env "BADB_PARENT_HARNESS_ID")))
+
+(define-record-type <subagent-link>
+                    (%make-subagent-link child-id parent-id kind status label
+                                         active-tool turn-count last-thought
+                                         last-observation started-at updated-at
+                                         metadata)
+                    subagent-link?
+                    (child-id subagent-link-child-id)
+                    (parent-id subagent-link-parent-id set-subagent-link-parent-id!)
+                    (kind subagent-link-kind set-subagent-link-kind!)
+                    (status subagent-link-status set-subagent-link-status!)
+                    (label subagent-link-label set-subagent-link-label!)
+                    (active-tool subagent-link-active-tool set-subagent-link-active-tool!)
+                    (turn-count subagent-link-turn-count set-subagent-link-turn-count!)
+                    (last-thought subagent-link-last-thought set-subagent-link-last-thought!)
+                    (last-observation subagent-link-last-observation set-subagent-link-last-observation!)
+                    (started-at subagent-link-started-at set-subagent-link-started-at!)
+                    (updated-at subagent-link-updated-at set-subagent-link-updated-at!)
+                    (metadata subagent-link-metadata set-subagent-link-metadata!))
+
+(define (subagent-link->alist link)
+        "Convert LINK into a serializable alist."
+        `((child-id . ,(subagent-link-child-id link))
+          (parent-id . ,(subagent-link-parent-id link))
+          (kind . ,(subagent-link-kind link))
+          (status . ,(subagent-link-status link))
+          (label . ,(subagent-link-label link))
+          (active-tool . ,(subagent-link-active-tool link))
+          (turn-count . ,(subagent-link-turn-count link))
+          (last-thought . ,(subagent-link-last-thought link))
+          (last-observation . ,(subagent-link-last-observation link))
+          (started-at . ,(subagent-link-started-at link))
+          (updated-at . ,(subagent-link-updated-at link))
+          (metadata . ,(subagent-link-metadata link))))
+
+(define %harness-links-lock (make-mutex))
+(define %harness-links '())
+
+(define %unchanged (list 'unchanged))
+
+(define* (%register-subagent-link* child-id parent-id
+                                   #:key
+                                   (kind 'subagent)
+                                   (status 'created)
+                                   (label #f)
+                                   (active-tool #f)
+                                   (turn-count 0)
+                                   (last-thought #f)
+                                   (last-observation #f)
+                                   (metadata '()))
+         (let ((cid (%normalize-harness-id child-id))
+               (pid (if parent-id
+                      (%normalize-harness-id parent-id)
+                      (current-harness-id)))
+               (now (%now-seconds)))
+           (unless (and (string? cid) (not (string-null? cid)))
+             (error "register-subagent-link!: child-id must be a non-empty string"))
+           (when (string=? cid pid)
+             (error "register-subagent-link!: child-id cannot equal parent-id" cid))
+           (with-mutex %harness-links-lock
+                       (let ((existing (and=> (assoc cid %harness-links) cdr)))
+                         (if existing
+                           (begin
+                             (set-subagent-link-parent-id! existing pid)
+                             (set-subagent-link-kind! existing kind)
+                             (set-subagent-link-status! existing status)
+                             (when label (set-subagent-link-label! existing label))
+                             (set-subagent-link-active-tool! existing active-tool)
+                             (set-subagent-link-turn-count! existing turn-count)
+                             (when last-thought (set-subagent-link-last-thought! existing last-thought))
+                             (when last-observation
+                               (set-subagent-link-last-observation! existing last-observation))
+                             (unless (null? metadata) (set-subagent-link-metadata! existing metadata))
+                             (set-subagent-link-updated-at! existing now)
+                             existing)
+                           (let ((link (%make-subagent-link cid pid kind status label
+                                                            active-tool turn-count last-thought
+                                                            last-observation now now metadata)))
+                             (set! %harness-links (append %harness-links (list (cons cid link))))
+                             link))))))
+
+(define (register-subagent-link! child-id . rest)
+        "Register a parent/child harness link for CHILD-ID under PARENT-ID.
+Optional positional PARENT-ID defaults to (current-harness-id); keyword options
+#:kind, #:status, #:label, #:active-tool, #:turn-count, #:last-thought,
+#:last-observation, and #:metadata initialize the <subagent-link>."
+        (if (and (pair? rest) (not (keyword? (car rest))))
+          (apply %register-subagent-link* child-id (car rest) (cdr rest))
+          (apply %register-subagent-link* child-id #f rest)))
+
+(define (unregister-subagent-link! child-id)
+        "Remove the link record for CHILD-ID.  Returns #t if removed, #f otherwise."
+        (let ((cid (%normalize-harness-id child-id)))
+          (with-mutex %harness-links-lock
+                      (let ((found? (and (assoc cid %harness-links) #t)))
+                        (when found?
+                          (set! %harness-links
+                                (filter (lambda (pair) (not (string=? (car pair) cid)))
+                                        %harness-links)))
+                        found?))))
+
+(define* (update-subagent-link! child-id
+                                #:key
+                                (status %unchanged)
+                                (active-tool %unchanged)
+                                (turn-count %unchanged)
+                                (increment-turn? #f)
+                                (last-thought %unchanged)
+                                (last-observation %unchanged)
+                                (label %unchanged)
+                                (metadata %unchanged))
+         "Update fields on an existing <subagent-link> for CHILD-ID.  Returns the
+updated <subagent-link>, or #f when CHILD-ID is not registered."
+         (let ((cid (%normalize-harness-id child-id)))
+           (with-mutex %harness-links-lock
+                       (let ((link (and=> (assoc cid %harness-links) cdr)))
+                         (when link
+                           (unless (eq? status %unchanged)
+                             (set-subagent-link-status! link status))
+                           (unless (eq? active-tool %unchanged)
+                             (set-subagent-link-active-tool! link active-tool))
+                           (cond
+                             ((not (eq? turn-count %unchanged))
+                               (set-subagent-link-turn-count! link turn-count))
+                             (increment-turn?
+                               (set-subagent-link-turn-count!
+                                 link (+ 1 (subagent-link-turn-count link)))))
+                           (unless (eq? last-thought %unchanged)
+                             (set-subagent-link-last-thought! link last-thought))
+                           (unless (eq? last-observation %unchanged)
+                             (set-subagent-link-last-observation! link last-observation))
+                           (unless (eq? label %unchanged)
+                             (set-subagent-link-label! link label))
+                           (unless (eq? metadata %unchanged)
+                             (set-subagent-link-metadata! link metadata))
+                           (set-subagent-link-updated-at! link (%now-seconds)))
+                         link))))
+
+(define (subagent-link-ref child-id)
+        "Return the <subagent-link> for CHILD-ID, or #f."
+        (let ((cid (%normalize-harness-id child-id)))
+          (with-mutex %harness-links-lock
+                      (and=> (assoc cid %harness-links) cdr))))
+
+(define* (harness-parent-id #:optional (id (current-harness-id)))
+         "Return the parent harness id for ID, or #f when ID is a root harness."
+         (let* ((hid (%normalize-harness-id id))
+                (link (subagent-link-ref hid)))
+           (cond
+             (link (subagent-link-parent-id link))
+             ((string=? hid (current-harness-id)) (parent-harness-id))
+             (else #f))))
+
+(define* (subagent-harness? #:optional (id #f))
+         "True when ID (or the current harness) is running as a child subagent."
+         (if id
+           (let ((hid (%normalize-harness-id id)))
+             (or (and (subagent-link-ref hid) #t)
+                 (and (string=? hid (current-harness-id))
+                      (and (parent-harness-id) #t))))
+           (or (and (parent-harness-id) #t)
+               (and (subagent-link-ref (current-harness-id)) #t))))
+
+(define* (subagent-children #:optional (parent-id (current-harness-id)))
+         "Return a list of <subagent-link> records whose parent-id matches PARENT-ID."
+         (let ((pid (%normalize-harness-id parent-id)))
+           (with-mutex %harness-links-lock
+                       (filter-map (lambda (pair)
+                                     (let ((link (cdr pair)))
+                                       (and (equal? (subagent-link-parent-id link) pid)
+                                            link)))
+                                   %harness-links))))
+
+(define (all-subagent-links)
+        "Return a list of all registered <subagent-link> records in registration order."
+        (with-mutex %harness-links-lock
+                    (map cdr %harness-links)))
+
+(define (clear-subagent-links!)
+        "Remove all registered subagent links.  Primarily for isolated tests."
+        (with-mutex %harness-links-lock
+                    (set! %harness-links '()))
+        #t)
+
+(define* (call-with-harness-context child-id proc
+                                    #:key
+                                    (parent-id (current-harness-id))
+                                    (kind 'subagent)
+                                    (label #f)
+                                    (metadata '()))
+         "Register CHILD-ID under PARENT-ID, parameterize current/parent harness ids,
+and run PROC while keeping link status updated."
+         (let ((pid (or parent-id (current-harness-id))))
+           (register-subagent-link! child-id pid
+                                    #:kind kind
+                                    #:status 'running
+                                    #:label label
+                                    #:metadata metadata)
+           (catch #t
+             (lambda ()
+               (let ((res (parameterize ((current-harness-id child-id)
+                                         (parent-harness-id pid))
+                                        (proc))))
+                 (update-subagent-link! child-id #:status 'completed #:active-tool #f)
+                 res))
+             (lambda (key . args)
+               (update-subagent-link! child-id #:status 'failed #:active-tool #f)
+               (apply throw key args)))))

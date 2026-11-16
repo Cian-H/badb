@@ -14,6 +14,10 @@
                #:use-module
                (geasa surfaces-acp client)
                #:use-module
+               (geasa agents-lifecycle plugin)
+               #:use-module
+               (geasa agents-coordination plugin)
+               #:use-module
                (geasa agents-subagent plugin)
                #:use-module
                (web response)
@@ -484,6 +488,124 @@
                 (test-equal "spawned prompt stopReason" "end_turn" (assoc-ref res 'stop-reason))
                 (test-equal "spawned prompt content" "spawn-ok" (assoc-ref res 'content)))
               (test-equal "spawned subagent stopped" 'stopped (subagent-status agent))
+              (system* "rm" "-rf" tmp-dir)))
+
+(test-group "subagent-react-loop-event-bubbling"
+            (clear-subagent-links!)
+            (let* ((tmp-dir (mkdtemp "/tmp/badb-bubble-XXXXXX"))
+                   (bus (make-harness-event-bus #:capacity 64))
+                   (observed-events '())
+                   (sub-id #f)
+                   (client (make-model-client #:endpoint "http://127.0.0.1:10100" #:model "mock-llm"))
+                   (turn 0)
+                   (tool-args-json
+                     (scm->json-string '((path . "bubbled.txt") (content . "hello-bus"))))
+                   (mock-poster
+                     (lambda* (uri #:key body headers streaming?)
+                              (set! turn (+ turn 1))
+                              (let ((resp
+                                      (if (= turn 1)
+                                        `((choices .
+                                                   #(((message .
+                                                               ((role . "assistant")
+                                                                (reasoning_content . "Need to write bubbled.txt first")
+                                                                (content . "")
+                                                                (tool_calls .
+                                                                            #(((id . "tc_b1")
+                                                                               (type . "function")
+                                                                               (function .
+                                                                                         ((name . "write_file")
+                                                                                          (arguments . ,tool-args-json))))))))))))
+                                        '((choices .
+                                           #(((message .
+                                               ((role . "assistant")
+                                                (content . "Wrote bubbled.txt successfully."))))))))))
+                                (values (build-response #:code 200) (scm->json-string resp))))))
+              (parameterize ((current-harness-id "parent-harness-wp5")
+                             (current-http-post mock-poster))
+                            (let ((sub-handle
+                                    (harness-event-subscribe!
+                                      (lambda (ev)
+                                        (set! observed-events (cons ev observed-events)))
+                                      #:bus bus
+                                      #:target-id "parent-harness-wp5"))
+                                  (agent
+                                    (make-local-subagent #:id "lsub-bubble-1"
+                                                         #:workspace tmp-dir
+                                                         #:event-bus bus
+                                                         #:label "Write bubbled.txt"
+                                                         #:model-client client
+                                                         #:permission-policy 'allow)))
+                              (set! sub-id (local-subagent-id agent))
+                              (call-with-subagent agent
+                                                  (lambda (ag)
+                                                    (subagent-prompt! ag "Write bubbled.txt")))
+                              (harness-event-unsubscribe! sub-handle #:bus bus)
+                              (let* ((events (reverse observed-events))
+                                     (kinds (map harness-event-kind events))
+                                     (link (subagent-link-ref sub-id)))
+                                (test-assert "parent received status running"
+                                             (memq 'status kinds))
+                                (test-assert "parent received iteration events"
+                                             (memq 'iteration kinds))
+                                (test-assert "parent received tool-call event"
+                                             (memq 'tool-call kinds))
+                                (test-assert "parent received observation event"
+                                             (memq 'observation kinds))
+                                (test-assert "parent received message event"
+                                             (memq 'message kinds))
+                                (test-assert "link exists in lifecycle registry"
+                                             (subagent-link? link))
+                                (test-equal "link parent matches parent-harness-wp5"
+                                            "parent-harness-wp5" (subagent-link-parent-id link))
+                                (test-equal "link completed status preserved"
+                                            'completed (subagent-link-status link))
+                                (test-assert "link recorded >= 2 ReAct turns"
+                                             (>= (subagent-link-turn-count link) 2))
+                                (test-equal "active tool cleared after completion"
+                                            #f (subagent-link-active-tool link)))))
+
+              ;; Also test direct make-subagent-react-hooks
+              (let* ((hook-bus (make-harness-event-bus #:capacity 32))
+                     (_ (register-subagent-link! "hook-sub-1" "parent-harness-wp5" #:status 'running))
+                     (hooks (make-subagent-react-hooks "hook-sub-1"
+                                                       #:parent-id "parent-harness-wp5"
+                                                       #:bus hook-bus)))
+                ((assoc-ref hooks 'on-step) 1 'thinking)
+                ((assoc-ref hooks 'on-delta) "Inspecting files" 'thought)
+                ((assoc-ref hooks 'on-tool-call) '((id . "t1") (name . "read_file") (arguments . ((path . "a.scm")))))
+                (test-equal "active tool set during tool call"
+                            "read_file" (subagent-link-active-tool (subagent-link-ref "hook-sub-1")))
+                ((assoc-ref hooks 'on-tool-result) '((id . "t1") (name . "read_file")) "file contents" #f)
+                (let ((polled (harness-event-poll #:bus hook-bus #:target-id "parent-harness-wp5")))
+                  (test-equal "four hook events bubbled"
+                              '(iteration thought tool-call observation)
+                              (map harness-event-kind polled))
+                  (test-equal "active tool cleared on hook tool result"
+                              #f (subagent-link-active-tool (subagent-link-ref "hook-sub-1")))))
+
+              ;; Verify re-exported hierarchy tree & formatters via agents-subagent
+              (parameterize ((current-harness-id "subagent-root-tree"))
+                            (register-subagent-link! "child-1" "subagent-root-tree"
+                                                     #:kind 'local
+                                                     #:status 'running
+                                                     #:active-tool "ctx_search"
+                                                     #:turn-count 4
+                                                     #:label "Search symbols")
+                            (let ((tree (subagent-hierarchy-tree))
+                                  (hier (format-subagent-hierarchy))
+                                  (ov (format-subagent-overview)))
+                              (test-equal "re-exported tree root matches current-harness-id"
+                                          "subagent-root-tree" (assoc-ref tree 'id))
+                              (test-assert "re-exported hierarchy formats connector and tool"
+                                           (and (string-contains hier "└── child-1")
+                                                (string-contains hier "tool:ctx_search")
+                                                (string-contains hier "turns:4")))
+                              (test-assert "re-exported overview shows counts"
+                                           (and (string-contains ov "total:1")
+                                                (string-contains ov "running:1")))))
+
+              (clear-subagent-links!)
               (system* "rm" "-rf" tmp-dir)))
 
 (spec-end)
