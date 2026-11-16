@@ -89,7 +89,10 @@
                           todo-widget
                           safe-eval-widget-datum
                           extract-response-widgets
-                          render-scheme-response-widget))
+                          render-scheme-response-widget
+                          span-rows->text
+                          handle-todo-command!
+                          format-response-widgets-notice))
 
 ;;;
 ;;; String & Geometry Helpers
@@ -1815,3 +1818,65 @@ and render it for width MAXX (capped at MAX-HEIGHT). Returns an alist:
                    (lines . ,lines)
                    (height . ,h)
                    (error . ,err-msg)))))))
+
+(define (span-rows->text rows)
+        "Convert a list of WP1 styled span rows ((text role bold? dim?) ...) into plain text."
+        (string-join
+          (map (lambda (row)
+                 (string-concatenate
+                   (map (lambda (sp) (if (pair? sp) (car sp) "")) row)))
+               (or rows '()))
+          "\n"))
+
+(define* (handle-todo-command! todo-list arg #:optional (width 76))
+         "Apply /todo ARG ('add <text>', 'toggle <id>', 'rm <id>', 'clear', or 'list')
+to TODO-LIST. Returns (values updated-todo-list formatted-text)."
+         (let* ((trimmed (string-trim-both (if (string? arg) arg "")))
+                (space-pos (string-index trimmed #\space))
+                (sub (if space-pos (string-downcase (substring trimmed 0 space-pos)) (string-downcase trimmed)))
+                (rest (if space-pos (string-trim-both (substring trimmed (+ space-pos 1))) "")))
+           (cond
+             ((or (string-null? trimmed) (string=? sub "list") (string=? sub "show"))
+               (values todo-list (span-rows->text (format-todo-widget todo-list width))))
+             ((string=? sub "add")
+               (if (string-null? rest)
+                 (values todo-list "Usage: /todo add <task description>")
+                 (let ((updated (todo-add todo-list rest #:source 'user)))
+                   (values updated (span-rows->text (format-todo-widget updated width))))))
+             ((or (string=? sub "toggle") (string=? sub "done"))
+               (let ((id (string->number rest)))
+                 (if (integer? id)
+                   (let ((updated (todo-toggle todo-list id)))
+                     (values updated (span-rows->text (format-todo-widget updated width))))
+                   (values todo-list "Usage: /todo toggle <id>"))))
+             ((or (string=? sub "rm") (string=? sub "remove"))
+               (let ((id (string->number rest)))
+                 (if (integer? id)
+                   (let ((updated (todo-remove todo-list id)))
+                     (values updated (span-rows->text (format-todo-widget updated width))))
+                   (values todo-list "Usage: /todo rm <id>"))))
+             ((string=? sub "clear")
+               (let ((updated (todo-clear-done todo-list)))
+                 (values updated (span-rows->text (format-todo-widget updated width)))))
+             (else
+               (let ((updated (todo-add todo-list trimmed #:source 'user)))
+                 (values updated (span-rows->text (format-todo-widget updated width))))))))
+
+(define* (format-response-widgets-notice text #:optional (maxx 76))
+         "Extract fenced scheme-widget / widget blocks from TEXT, render them safely
+via render-scheme-response-widget, and return a formatted string or #f."
+         (let ((blocks (if (string? text) (extract-response-widgets text) '())))
+           (if (null? blocks)
+             #f
+             (let ((rendered
+                     (filter-map
+                       (lambda (expr)
+                         (let ((res (render-scheme-response-widget expr (max 20 maxx))))
+                           (if (assoc-ref res 'ok?)
+                             (string-join (or (assoc-ref res 'lines) '()) "\n")
+                             (let ((err (assoc-ref res 'error)))
+                               (and err (format #f "[widget error: ~a]" err))))))
+                       blocks)))
+               (if (null? rendered)
+                 #f
+                 (string-join rendered "\n\n"))))))
