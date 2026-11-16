@@ -57,6 +57,8 @@
                (srfi srfi-1)
                #:use-module
                (pfds hamts)
+               #:use-module
+               (geasa capabilities-rtk plugin)
                #:export
                (spec-tool-format-failure spec-tool-lock
                                          spec-tool-verify
@@ -548,7 +550,10 @@ unbounded raw search on the next turn."
                       #:shell-executor
                       exec-shell-tool-impl
                       #:ctx-idx
-                      ctx-idx)
+                      ctx-idx
+                      #:bash-pre-hooks
+                      (list (make-rtk-bash-pre-hook)))
+  (register-rtk-tools! reg)
   ;; 1b. Input macro expansion (@@, @file:PATH, @SHORTCUT directives)
   (register-macro-tools! reg)
   ;; 2. Code navigation & persistent memories
