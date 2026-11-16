@@ -41,5 +41,6 @@
             "guile-file-names"
             "guile-fslib"
             "guile-lsp-server"
-            "tree-sitter-scheme"))
+            "tree-sitter-scheme"
+            "guile-sqlite3"))
     (packages->manifest (list cl-indentify))))

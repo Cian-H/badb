@@ -4,51 +4,62 @@
 ;;; document chunking (markdown and sliding-window text), exact substring boost,
 ;;; and S-expression index serialization.
 
-(define-module (geasa capabilities-context-index bm25)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-9)
-               #:use-module (srfi srfi-13)
-               #:use-module (srfi srfi-14)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 regex)
-               #:use-module (pfds hamts)
-               #:export (<chunk>
-                          make-chunk
-                          chunk?
-                          chunk-id
-                          chunk-source-id
-                          chunk-section
-                          chunk-start-line
-                          chunk-end-line
-                          chunk-text
-                          chunk-token-count
-                          chunk-token-freqs
-
-                          <bm25-index>
-                          make-bm25-index
-                          bm25-index?
-                          index-chunks-table
-                          index-doc-freqs
-                          index-total-tokens
-                          index-doc-count
-                          index-raw-bytes
-                          index-returned-bytes
-                          index-next-chunk-id
-                          index-next-doc-id
-                          set-index-raw-bytes!
-                          set-index-returned-bytes!
-                          set-index-next-doc-id!
-
-                          tokenize-text
-                          stem-token
-                          take-n
-                          drop-n
-                          chunk-markdown
-                          chunk-plain-lines
-                          bm25-add-chunk!
-                          bm25-search
-                          save-bm25-index!
-                          load-bm25-index))
+(define-module
+  (geasa capabilities-context-index bm25)
+  #:use-module
+  (srfi srfi-1)
+  #:use-module
+  (srfi srfi-9)
+  #:use-module
+  (srfi srfi-13)
+  #:use-module
+  (srfi srfi-14)
+  #:use-module
+  (ice-9 format)
+  #:use-module
+  (ice-9 regex)
+  #:use-module
+  (pfds hamts)
+  #:use-module
+  (sqlite3)
+  #:export
+  (<chunk> make-chunk
+           chunk?
+           chunk-id
+           chunk-source-id
+           chunk-section
+           chunk-start-line
+           chunk-end-line
+           chunk-text
+           chunk-token-count
+           chunk-token-freqs
+           <bm25-index>
+           make-bm25-index
+           bm25-index?
+           index-chunks-table
+           index-doc-freqs
+           index-total-tokens
+           index-doc-count
+           index-raw-bytes
+           index-returned-bytes
+           index-next-chunk-id
+           index-next-doc-id
+           index-fts-db
+           set-index-raw-bytes!
+           set-index-returned-bytes!
+           set-index-next-doc-id!
+           tokenize-text
+           stem-token
+           take-n
+           drop-n
+           chunk-markdown
+           chunk-plain-lines
+           chunk-code-lines
+           bm25-add-chunk!
+           bm25-purge-source!
+           bm25-search
+           save-bm25-index!
+           load-bm25-index))
 
 ;;;
 ;;; Records
@@ -66,7 +77,15 @@
                     (token-freqs chunk-token-freqs))
 
 (define-record-type <bm25-index>
-                    (%make-bm25-index chunks-table doc-freqs total-tokens doc-count raw-bytes returned-bytes next-chunk-id next-doc-id)
+                    (%make-bm25-index chunks-table
+                                      doc-freqs
+                                      total-tokens
+                                      doc-count
+                                      raw-bytes
+                                      returned-bytes
+                                      next-chunk-id
+                                      next-doc-id
+                                      fts-db)
                     bm25-index?
                     (chunks-table index-chunks-table set-index-chunks-table!)
                     (doc-freqs index-doc-freqs set-index-doc-freqs!)
@@ -75,12 +94,27 @@
                     (raw-bytes index-raw-bytes set-index-raw-bytes!)
                     (returned-bytes index-returned-bytes set-index-returned-bytes!)
                     (next-chunk-id index-next-chunk-id set-index-next-chunk-id!)
-                    (next-doc-id index-next-doc-id set-index-next-doc-id!))
+                    (next-doc-id index-next-doc-id set-index-next-doc-id!)
+                    (fts-db index-fts-db set-index-fts-db!))
+
+(define (open-fts5-db)
+        "Open an in-memory SQLite FTS5 database with Porter + Unicode61 tokenization."
+        (let ((db (sqlite-open ":memory:")))
+          (sqlite-exec db
+                       "CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(chunk_id UNINDEXED, source_id, section, start_line UNINDEXED, end_line UNINDEXED, content_type UNINDEXED, text, tokenize='porter unicode61')")
+          db))
 
 (define (make-bm25-index)
-        (%make-bm25-index (make-hamt string-hash string=?)
-                          (make-hamt string-hash string=?)
-                          0 0 0 0 1 1))
+        (%make-bm25-index
+          (make-hamt string-hash string=?)
+          (make-hamt string-hash string=?)
+          0
+          0
+          0
+          0
+          1
+          1
+          (open-fts5-db)))
 
 ;;;
 ;;; Tokenization & Stemming
@@ -224,95 +258,239 @@ Returns list of ((section start-line end-line text) ...)."
                                       (cons line accum-lines)
                                       results))))))))))
 
+(define (strip-line-anchor line)
+        "Strip leading NNN:HHH→ read_file anchor prefix if present."
+        (let
+            ((m (string-match "^[0-9]+:[0-9a-fA-F]+→(.*)$" line)))
+          (if m
+            (match:substring m 1)
+            line)))
+
+(define (detect-code-section raw-line)
+        "Extract a symbol/section name from a top-level code declaration line, or #f."
+        (let
+            ((line (string-trim (strip-line-anchor raw-line))))
+          (cond
+            ((string-match "^\\(define\\*?\\s+\\(([^ \t\n)]+)" line)
+              =>
+              (lambda (m)
+                (match:substring m 1)))
+            ((string-match "^\\(define\\*?\\s+([^ \t\n()]+)" line)
+              =>
+              (lambda (m)
+                (match:substring m 1)))
+            ((string-match "^\\(define-(record-type|syntax|module)\\s+\\(?([^ \t\n)]+)" line)
+              =>
+              (lambda (m)
+                (match:substring m 2)))
+            ((string-match
+               "^(def|class|fn|pub fn|function|export function|export const)\\s+([A-Za-z0-9_$-]+)"
+               line)
+              =>
+              (lambda (m)
+                (match:substring m 2)))
+            (else #f))))
+
+(define*
+  (chunk-code-lines text #:key (max-lines 60))
+  "Chunk code TEXT by top-level declaration boundaries, preserving symbol section names.
+Falls back to chunk-plain-lines if no declarations are detected."
+  (let*
+      ((lines (string-split text #\newline)) (total (length lines)))
+    (if (zero? total)
+      '()
+      (let loop
+        ((ln 1) (rem lines)
+         (cur-sec #f)
+         (sec-start 1)
+         (accum '())
+         (results '())
+         (found-sec? #f))
+        (cond
+          ((null? rem)
+            (if (not found-sec?)
+              (chunk-plain-lines text)
+              (let
+                  ((final-results
+                     (if (null? accum)
+                       results
+                       (cons
+                         (list cur-sec sec-start (- ln 1) (string-join (reverse accum) "\n"))
+                         results))))
+                (reverse final-results))))
+          (else
+            (let*
+                ((line (car rem))
+                 (new-sec (detect-code-section line))
+                 (split-here? (or (and new-sec (pair? accum)) (>= (length accum) max-lines))))
+              (if split-here?
+                (let
+                    ((completed (list cur-sec sec-start (- ln 1) (string-join (reverse accum) "\n"))))
+                  (loop (+ ln 1) (cdr rem) (or new-sec cur-sec) ln (list line)
+                        (cons completed results) (or found-sec? (and new-sec #t))))
+                (loop (+ ln 1) (cdr rem) (or new-sec cur-sec) sec-start (cons line accum)
+                      results (or found-sec? (and new-sec #t)))))))))))
+
 ;;;
 ;;; Indexing & Scoring
 ;;;
-(define (bm25-add-chunk! idx source-id section start-line end-line text)
-        "Add a text chunk to the BM25 index."
-        (let* ((cid (index-next-chunk-id idx))
-               (tokens (tokenize-text text))
-               (token-count (length tokens))
-               (token-freqs (count-tokens tokens))
-               (chunk (make-chunk cid source-id section start-line end-line text token-count token-freqs)))
-          (set-index-next-chunk-id! idx (+ cid 1))
-          (set-index-chunks-table! idx
-                                   (hamt-set (index-chunks-table idx)
-                                             (number->string cid) chunk))
-          (set-index-doc-count! idx (+ (index-doc-count idx) 1))
-          (set-index-total-tokens! idx (+ (index-total-tokens idx) token-count))
-          (set-index-doc-freqs!
-            idx
-            (hash-fold
-              (lambda (tok _ df-hamt)
-                (hamt-set df-hamt tok (+ (hamt-ref df-hamt tok 0) 1)))
-              (index-doc-freqs idx)
-              token-freqs))
-          chunk))
+(define*
+  (bm25-add-chunk! idx
+                   source-id
+                   section
+                   start-line
+                   end-line
+                   text
+                   #:optional
+                   (content-type "code"))
+  "Add a text chunk to the BM25 / FTS5 index."
+  (let*
+      ((cid (index-next-chunk-id idx))
+       (tokens (tokenize-text text))
+       (token-count (length tokens))
+       (token-freqs (count-tokens tokens))
+       (chunk
+         (make-chunk cid
+                     source-id
+                     section
+                     start-line
+                     end-line
+                     text
+                     token-count
+                     token-freqs))
+       (db (index-fts-db idx)))
+    (set-index-next-chunk-id! idx (+ cid 1))
+    (set-index-chunks-table! idx
+                             (hamt-set (index-chunks-table idx) (number->string cid) chunk))
+    (set-index-doc-count! idx (+ (index-doc-count idx) 1))
+    (set-index-total-tokens! idx (+ (index-total-tokens idx) token-count))
+    (set-index-doc-freqs! idx
+                          (hash-fold
+                            (lambda (tok _ df-hamt)
+                              (hamt-set df-hamt tok (+ (hamt-ref df-hamt tok 0) 1)))
+                            (index-doc-freqs idx)
+                            token-freqs))
+    (when db
+      (let
+          ((stmt
+             (sqlite-prepare db
+                             "INSERT INTO chunks(chunk_id, source_id, section, start_line, end_line, content_type, text) VALUES (?, ?, ?, ?, ?, ?, ?)")))
+        (sqlite-bind stmt 1 cid)
+        (sqlite-bind stmt 2 (or source-id ""))
+        (sqlite-bind stmt 3 (or section ""))
+        (sqlite-bind stmt 4 start-line)
+        (sqlite-bind stmt 5 end-line)
+        (sqlite-bind stmt 6 (or content-type "code"))
+        (sqlite-bind stmt 7 text)
+        (sqlite-fold cons '() stmt)
+        (sqlite-finalize stmt)))
+    chunk))
+
+(define (bm25-purge-source! idx source-id)
+        "Remove all chunks matching SOURCE-ID from IDX's FTS5 table and chunk table."
+        (let ((db (index-fts-db idx)))
+          (when
+              (and db source-id (not (string-null? source-id)))
+            (let
+                ((stmt (sqlite-prepare db "DELETE FROM chunks WHERE source_id = ?")))
+              (sqlite-bind stmt 1 source-id)
+              (sqlite-fold cons '() stmt)
+              (sqlite-finalize stmt)))))
 
 (define*
-  (bm25-search idx query #:key (source-id #f) (top-k 5))
-  "Search IDX for QUERY using Okapi BM25 (k1=1.2, b=0.75) with substring match bonus.
-Returns a list of ((score . <chunk>) ...) sorted in descending order of score."
+  (bm25-search idx
+               query
+               #:key
+               (source-id #f)
+               (top-k 5)
+               (content-type #f)
+               (sort 'relevance))
+  "Search IDX for QUERY using SQLite FTS5 BM25 (with section/source weighting and AND->OR fallback).
+Returns a list of ((score . <chunk>) ...) sorted by relevance or timeline."
   (let*
-      ((q-tokens (tokenize-text query))
-       (q-lower (string-downcase (string-trim-both query)))
-       (N (index-doc-count idx))
-       (avgdl (/ (max 1 (index-total-tokens idx)) (max 1.0 N)))
-       (k1 1.2)
-       (b 0.75)
-       (candidates '()))
-    (when (and (> N 0) (pair? q-tokens))
-      (set! candidates
-            (hamt-fold
-              (lambda (_ chunk acc)
-                (if
-                    (or (not source-id) (string=? (chunk-source-id chunk) source-id))
-                  (let*
-                      ((c-freqs (chunk-token-freqs chunk))
-                       (dl (chunk-token-count chunk))
-                       (score
-                         (fold
-                           (lambda (q-tok score-acc)
-                             (let ((tf (hash-ref c-freqs q-tok 0)))
-                               (if (> tf 0)
-                                 (let*
-                                     ((df (hamt-ref (index-doc-freqs idx) q-tok 0))
-                                      ;; Non-negative Okapi IDF
-                                      (idf (log (+ 1.0 (/ (+ (- N df) 0.5) (+ df 0.5)))))
-                                      (denom (+ tf (* k1 (+ (- 1.0 b) (* b (/ dl (max 1.0 avgdl)))))))
-                                      (tf-part (/ (* tf (+ k1 1.0)) (max 0.0001 denom))))
-                                   (+ score-acc (* idf tf-part)))
-                                 score-acc)))
-                           0.0
-                           q-tokens))
-                       ;; Exact substring boost: +2.0 if whole query is in chunk text
-                       (txt-lower (string-downcase (chunk-text chunk)))
-                       (sub-boost
-                         (if
-                             (and (not (string-null? q-lower)) (string-contains txt-lower q-lower))
-                           2.0
-                           0.0))
-                       ;; Section name boost
-                       (sec-boost
-                         (if
-                             (and (chunk-section chunk)
-                                  (not (string-null? q-lower))
-                                  (string-contains (string-downcase (chunk-section chunk)) q-lower))
-                           1.0
-                           0.0))
-                       (final-score (+ score sub-boost sec-boost)))
-                    (if (> final-score 0.01)
-                      (cons (cons final-score chunk) acc)
-                      acc))
-                  acc))
+      ((db (index-fts-db idx))
+       (raw-terms
+         (filter
+           (lambda (s)
+             (not (string-null? s)))
+           (string-tokenize
+             (string-downcase (string-trim-both (or query "")))
+             (char-set-union char-set:letter+digit (char-set #\- #\_ #\. #\* #\/)))))
+       (quoted-terms
+         (map
+           (lambda (t)
+             (string-append "\""
+                            (string-map
+                              (lambda (c)
+                                (if (char=? c #\")
+                                  #\space
+                                  c))
+                              t)
+                            "\""))
+           raw-terms)))
+    (define (run-fts-query fts-expr)
+            (if (or (not db) (string-null? fts-expr))
               '()
-              (index-chunks-table idx))))
-    (let
-        ((sorted
-           (sort candidates
-                 (lambda (cand-a cand-b)
-                   (> (car cand-a) (car cand-b))))))
-      (take-n sorted top-k))))
+              (let*
+                  ((clauses '("chunks MATCH ?"))
+                   (params (list fts-expr))
+                   (_
+                     (when
+                         (and source-id (not (string-null? source-id)))
+                       (set! clauses (append clauses '("source_id LIKE ?")))
+                       (set! params (append params (list (string-append "%" source-id "%"))))))
+                   (_
+                     (when
+                         (and content-type (not (string-null? content-type)))
+                       (set! clauses (append clauses '("content_type = ?")))
+                       (set! params (append params (list content-type)))))
+                   (order-sql
+                     (if (eq? sort 'timeline)
+                       "chunk_id ASC"
+                       "score DESC"))
+                   (sql
+                     (string-append
+                       "SELECT chunk_id, source_id, section, start_line, end_line, text, "
+                       "-bm25(chunks, 0.0, 2.0, 4.0, 0.0, 0.0, 0.0, 1.0) AS score "
+                       "FROM chunks WHERE "
+                       (string-join clauses " AND ")
+                       " ORDER BY "
+                       order-sql
+                       " LIMIT ?"))
+                   (stmt (sqlite-prepare db sql)))
+                (let bind-loop
+                  ((i 1) (ps params))
+                  (if (null? ps)
+                    (sqlite-bind stmt i top-k)
+                    (begin (sqlite-bind stmt i (car ps)) (bind-loop (+ i 1) (cdr ps)))))
+                (let
+                    ((rows (reverse (sqlite-fold cons '() stmt))))
+                  (sqlite-finalize stmt)
+                  (map
+                    (lambda (row)
+                      (let*
+                          ((cid (vector-ref row 0))
+                           (sid (vector-ref row 1))
+                           (sec-raw (vector-ref row 2))
+                           (sec
+                             (if
+                                 (and (string? sec-raw) (not (string-null? sec-raw)))
+                               sec-raw
+                               #f))
+                           (sl (vector-ref row 3))
+                           (el (vector-ref row 4))
+                           (txt (vector-ref row 5))
+                           (sc (max 0.01 (vector-ref row 6))))
+                        (cons sc (make-chunk cid sid sec sl el txt 0 #f))))
+                    rows)))))
+    (if (null? quoted-terms)
+      '()
+      (let
+          ((and-res (run-fts-query (string-join quoted-terms " AND "))))
+        (if
+            (or (pair? and-res) (<= (length quoted-terms) 1))
+          and-res
+          (run-fts-query (string-join quoted-terms " OR ")))))))
 
 ;;;
 ;;; Persistence
