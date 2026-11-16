@@ -1191,6 +1191,65 @@ data: [DONE]
                           #f
                           (fetch-model-context-limit client #:http-getter malformed-getter))))
 
+(test-group "context-limit-server-variants"
+            ;; vLLM max_model_len & llama.cpp meta.n_ctx_train
+            (test-equal "vLLM max_model_len -> 262144"
+                        262144
+                        (model-entry-context-limit
+                          (json-string->scm "{\"id\":\"qwen3.6-35b-a3b\",\"max_model_len\":262144}")))
+            (test-equal
+              "llama.cpp meta.n_ctx_train -> 262144"
+              262144
+              (model-entry-context-limit
+                (json-string->scm
+                  "{\"id\":\"qwen3.6-35b-a3b\",\"meta\":{\"n_ctx_train\":262144}}")))
+            (test-equal
+              "max_completion_tokens is not treated as context window"
+              #f
+              (model-entry-context-limit
+                (json-string->scm
+                  "{\"id\":\"qwen3.6-35b-a3b\",\"max_completion_tokens\":16384}")))
+            ;; LM Studio /api/v1/models with publisher-prefixed key and loaded_instances id
+            (let*
+                ((lms-client
+                   (make-model-client #:endpoint
+                                      "http://127.0.0.1:10100/inference/v1"
+                                      #:model
+                                      "qwen3.6-35b-a3b"))
+                 (lms-getter
+                   (lambda* (uri #:key (headers '()))
+                            (let ((path (uri-path uri)))
+                              (cond
+                                ((string=? path "/inference/v1/models")
+                                  (values (build-response #:code 200) "{\"data\":[{\"id\":\"qwen3.6-35b-a3b\"}]}"))
+                                ((string=? path "/inference/api/v1/models")
+                                  (values (build-response #:code 200)
+                                          "{\"models\":[{\"key\":\"qwen/qwen3.6-35b-a3b\",\"max_context_length\":262144,\"loaded_instances\":[{\"id\":\"qwen3.6-35b-a3b\",\"config\":{\"context_length\":262144}}]}]}"))
+                                (else (values (build-response #:code 404) "not found")))))))
+              (test-equal
+                "LM Studio /inference/api/v1/models resolves 262144 for qwen3.6-35b-a3b"
+                262144
+                (fetch-model-context-limit lms-client #:http-getter lms-getter)))
+            ;; llama.cpp /props fallback
+            (let*
+                ((llama-client
+                   (make-model-client #:endpoint
+                                      "http://127.0.0.1:8080/v1"
+                                      #:model
+                                      "qwen3.6-35b-a3b"))
+                 (llama-getter
+                   (lambda* (uri #:key (headers '()))
+                            (let ((path (uri-path uri)))
+                              (cond
+                                ((string=? path "/props")
+                                  (values (build-response #:code 200)
+                                          "{\"default_generation_settings\":{\"n_ctx\":262144}}"))
+                                (else (values (build-response #:code 404) "not found")))))))
+              (test-equal
+                "llama.cpp /props default_generation_settings.n_ctx -> 262144"
+                262144
+                (fetch-model-context-limit llama-client #:http-getter llama-getter))))
+
 (test-group "cache-control-markers"
             ;; client flag
             (test-assert

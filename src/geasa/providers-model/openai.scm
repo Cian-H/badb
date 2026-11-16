@@ -1148,20 +1148,26 @@ of available model id strings, or #f on failure."
                        (else #f))))
                  (meta-limit
                    (let ((m (json-ref entry "meta")))
-                     (and (pair? m) (model-entry-context-limit m)))))
+                     (and (pair? m) (model-entry-context-limit m))))
+                 (default-gen-limit
+                   (let
+                       ((dgs (json-ref entry "default_generation_settings")))
+                     (and (pair? dgs) (model-entry-context-limit dgs)))))
               (or direct-loaded
                   config-limit
                   loaded-instances-limit
                   meta-limit
+                  default-gen-limit
                   (let loop
                     ((keys
                        '("max_model_context_length" "max_context_length"
+                         "max_model_len"
                          "context_length"
                          "context_window"
                          "inputTokenLimit"
                          "input_token_limit"
-                         "max_completion_tokens"
-                         "n_ctx")))
+                         "n_ctx"
+                         "n_ctx_train")))
                     (cond
                       ((null? keys) #f)
                       (else
@@ -1176,39 +1182,80 @@ of available model id strings, or #f on failure."
                (if (string? response)
                  (safe-json-parse response #f)
                  response))
-             (data (models-data-of obj)))
+             (data (models-data-of obj))
+             (collect-entry
+               (lambda (entry)
+                 (let*
+                     ((id (model-entry-id entry))
+                      (limit (model-entry-context-limit entry))
+                      (li (and (pair? entry) (json-ref entry "loaded_instances")))
+                      (insts
+                        (cond
+                          ((vector? li) (vector->list li))
+                          ((list? li) li)
+                          (else '())))
+                      (inst-pairs
+                        (filter-map
+                          (lambda (inst)
+                            (let
+                                ((inst-id (model-entry-id inst))
+                                 (inst-limit (or (model-entry-context-limit inst) limit)))
+                              (and inst-id (cons inst-id inst-limit))))
+                          insts)))
+                   (append
+                     (if id
+                       (list (cons id limit))
+                       '())
+                     inst-pairs)))))
           (cond
-            ((vector? data)
-              (filter-map
-                (lambda (entry)
-                  (let ((id (model-entry-id entry)))
-                    (and id (cons id (model-entry-context-limit entry)))))
-                (vector->list data)))
-            ((list? data)
-              (filter-map
-                (lambda (entry)
-                  (let ((id (model-entry-id entry)))
-                    (and id (cons id (model-entry-context-limit entry)))))
-                data))
+            ((vector? data) (append-map collect-entry (vector->list data)))
+            ((list? data) (append-map collect-entry data))
             ((and (pair? obj) (model-entry-id obj)) =>
                                                     (lambda (id)
                                                       (list (cons id (model-entry-context-limit obj)))))
+            ((and (pair? obj) (pair? (json-ref obj "default_generation_settings")))
+              (let
+                  ((limit (model-entry-context-limit obj)) (alias (json-ref obj "model_alias")))
+                (if limit
+                  (list
+                    (cons
+                      (if (non-empty-string? alias)
+                        alias
+                        '*)
+                      limit))
+                  '())))
             (else '()))))
 
 (define (candidate-model-uris endpoint)
-        (let* ((standard (resolve-models-uri endpoint))
-               (u (if (string? endpoint) (string->uri endpoint) endpoint))
-               (origin (build-uri (uri-scheme u)
-                                  #:userinfo (uri-userinfo u)
-                                  #:host (uri-host u)
-                                  #:port (uri-port u))))
-          (list standard
-                (build-uri (uri-scheme origin) #:userinfo (uri-userinfo origin)
-                           #:host (uri-host origin) #:port (uri-port origin)
-                           #:path "/api/v0/models")
-                (build-uri (uri-scheme origin) #:userinfo (uri-userinfo origin)
-                           #:host (uri-host origin) #:port (uri-port origin)
-                           #:path "/api/v1/models"))))
+        (let*
+            ((u (coerce-endpoint-uri endpoint))
+             (standard (resolve-models-uri u))
+             (scheme (uri-scheme u))
+             (userinfo (uri-userinfo u))
+             (host (uri-host u))
+             (port (uri-port u))
+             (std-path (or (uri-path standard) "/models"))
+             (v1-idx (string-contains std-path "/v1/models"))
+             (prefix
+               (if v1-idx
+                 (substring std-path 0 v1-idx)
+                 ""))
+             (make-path-uri
+               (lambda (p)
+                 (build-uri scheme #:userinfo userinfo #:host host #:port port #:path p)))
+             (candidates
+               (append (list standard)
+                       (if (string-null? prefix)
+                         '()
+                         (list
+                           (make-path-uri (string-append prefix "/api/v0/models"))
+                           (make-path-uri (string-append prefix "/api/v1/models"))))
+                       (list (make-path-uri "/api/v0/models") (make-path-uri "/api/v1/models"))
+                       (if (string-null? prefix)
+                         '()
+                         (list (make-path-uri (string-append prefix "/props"))))
+                       (list (make-path-uri "/props")))))
+          (delete-duplicates candidates equal?)))
 
 (define (strip-models-prefix id)
         (if
@@ -1219,14 +1266,28 @@ of available model id strings, or #f on failure."
 (define
   (lookup-model-context-limit target-model limits)
   (and target-model
-       (let
+       (let*
            ((alt
               (if (string-prefix? "models/" target-model)
                 (strip-models-prefix target-model)
-                (string-append "models/" target-model))))
+                (string-append "models/" target-model)))
+            (suffix (string-append "/" target-model))
+            (suffix-match
+              (let loop
+                ((rest limits))
+                (cond
+                  ((null? rest) #f)
+                  ((and (string? (caar rest))
+                        (number? (cdar rest))
+                        (or (string-suffix? suffix (caar rest))
+                            (string-suffix? (string-append "/" (caar rest)) target-model)))
+                    (cdar rest))
+                  (else (loop (cdr rest)))))))
          (or
            (let ((e (assoc target-model limits))) (and e (cdr e)))
-           (let ((e (assoc alt limits))) (and e (cdr e)))))))
+           (let ((e (assoc alt limits))) (and e (cdr e)))
+           suffix-match
+           (let ((e (assq '* limits))) (and e (cdr e)))))))
 
 (define (gemini-endpoint? uri)
         (let
@@ -1298,49 +1359,53 @@ standard OpenAI-compatible endpoint first, then Gemini's native model
 metadata endpoint when applicable, then LMStudio's native endpoints.
 #f when the entry is missing, metadata absent, or every request/parse
 fails. MUST catch all errors, return #f instead of throwing."
-  (let*
-      ((target-model
-         (or (and model (not (generic-model? model)) model) (model-client-model client)))
-       (api-key (model-client-api-key client))
-       (openai-headers (build-headers api-key #f))
-       (getter (or http-getter (current-http-get)))
-       (endpoint (model-client-endpoint client))
-       (uris (candidate-model-uris endpoint))
-       (gem-uri (and target-model (gemini-model-uri endpoint target-model)))
-       (requests
-         (append (list (cons (car uris) openai-headers))
-                 (if gem-uri
-                   (list (cons gem-uri (build-gemini-headers api-key)))
-                   '())
-                 (map
-                   (lambda (u)
-                     (cons u openai-headers))
-                   (cdr uris)))))
-    (let loop
-      ((reqs requests))
-      (cond
-        ((null? reqs) #f)
-        (else
-          (let
-              ((limit
-                 (catch #t
-                   (lambda ()
-                     (call-with-values
+  (catch #t
+    (lambda ()
+      (let*
+          ((target-model
+             (or (and model (not (generic-model? model)) model) (model-client-model client)))
+           (api-key (model-client-api-key client))
+           (openai-headers (build-headers api-key #f))
+           (getter (or http-getter (current-http-get)))
+           (endpoint (model-client-endpoint client))
+           (uris (candidate-model-uris endpoint))
+           (gem-uri (and target-model (gemini-model-uri endpoint target-model)))
+           (requests
+             (append (list (cons (car uris) openai-headers))
+                     (if gem-uri
+                       (list (cons gem-uri (build-gemini-headers api-key)))
+                       '())
+                     (map
+                       (lambda (u)
+                         (cons u openai-headers))
+                       (cdr uris)))))
+        (let loop
+          ((reqs requests))
+          (cond
+            ((null? reqs) #f)
+            (else
+              (let
+                  ((limit
+                     (catch #t
                        (lambda ()
-                         (getter (caar reqs) #:headers (cdar reqs)))
-                       (lambda (response body)
-                         (let*
-                             ((code (response-code response)) (body-str (response-body->string body "")))
-                           (if (<= 200 code 299)
-                             (let
-                                 ((limits (parse-models-context-limits body-str)))
-                               (lookup-model-context-limit target-model limits))
-                             #f)))))
-                   (lambda (key . args)
-                     #f))))
-            (if (and (integer? limit) (> limit 0))
-              limit
-              (loop (cdr reqs)))))))))
+                         (call-with-values
+                           (lambda ()
+                             (getter (caar reqs) #:headers (cdar reqs)))
+                           (lambda (response body)
+                             (let*
+                                 ((code (response-code response)) (body-str (response-body->string body "")))
+                               (if (<= 200 code 299)
+                                 (let
+                                     ((limits (parse-models-context-limits body-str)))
+                                   (lookup-model-context-limit target-model limits))
+                                 #f)))))
+                       (lambda (key . args)
+                         #f))))
+                (if (and (integer? limit) (> limit 0))
+                  limit
+                  (loop (cdr reqs)))))))))
+    (lambda _
+      #f)))
 
 (define* (model-available? client id #:key (http-getter #f))
          "Return #t when model ID is listed by CLIENT's /models endpoint.

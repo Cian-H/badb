@@ -255,23 +255,25 @@ which would break badb-config-get-provider on them."
   (badb-config-switch-provider! config name)
   "Switch active model configuration in CONFIG to match named provider preset.
 Returns #t on success, or #f if provider NAME was not found."
-  (let ((prov (badb-config-get-provider config name))
-        (endpoint-lens (prop-lens 'endpoint))
-        (api-key-lens (prop-lens 'api-key))
-        (models-lens (prop-lens 'models)))
+  (let
+      ((prov (badb-config-get-provider config name))
+       (endpoint-lens (prop-lens 'endpoint))
+       (api-key-lens (prop-lens 'api-key))
+       (models-lens (prop-lens 'models)))
     (if prov
-      (let* ((ep (focus endpoint-lens prov))
-             (key (focus api-key-lens prov))
-             (models (focus models-lens prov))
-             (m
-               (cond
-                 ((string? models) models)
-                 ((and (pair? models) (string? (car models))) (car models))
-                 ((and (pair? models) (pair? (car models)) (string? (caar models)))
-                   (caar models))
-                 (else #f))))
+      (let*
+          ((ep (focus endpoint-lens prov))
+           (key (focus api-key-lens prov))
+           (models (focus models-lens prov))
+           (m
+             (cond
+               ((string? models) models)
+               ((and (pair? models) (string? (car models))) (car models))
+               ((and (pair? models) (pair? (car models)) (string? (caar models)))
+                 (caar models))
+               (else #f))))
         (when ep (set-badb-config-model-endpoint! config ep))
-        (when key (set-badb-config-model-api-key! config key))
+        (set-badb-config-model-api-key! config key)
         (when m (set-badb-config-model-name! config m))
         #t)
       #f)))
@@ -290,17 +292,32 @@ matches ENDPOINT, or #f.  The first matching preset wins."
                        (cdar provs))
                      (else (loop (cdr provs))))))))
 
-(define (badb-config-model-context-limit config endpoint model)
-        "Return the configured context limit for MODEL at ENDPOINT, or #f.
-Provider presets may specify (context-limits (MODEL . TOKENS) ...)."
-        (let* ((provider (badb-config-provider-for-endpoint config endpoint))
-               (limits (and provider (get-prop provider 'context-limits '())))
-               (entry (and (list? limits)
-                           (or (assoc model limits)
-                               (assoc (if (symbol? model) (symbol->string model) model)
-                                      limits))))
-               (value (and entry (cdr entry))))
-          (and (integer? value) (positive? value) value)))
+(define
+  (badb-config-model-context-limit config endpoint model)
+  "Return the configured context limit for MODEL at ENDPOINT, or #f.
+Provider presets may specify (context-limits (MODEL . TOKENS) ...) or
+(context-limits (MODEL TOKENS) ...)."
+  (let*
+      ((provider (badb-config-provider-for-endpoint config endpoint))
+       (limits
+         (and provider
+              (or (assq-ref provider 'context-limits)
+                  (assoc-ref provider "context-limits")
+                  '())))
+       (model-key
+         (if (symbol? model)
+           (symbol->string model)
+           model))
+       (entry
+         (and (list? limits)
+              model-key
+              (or (assoc model-key limits) (assoc (string->symbol model-key) limits))))
+       (value
+         (and entry
+              (if (pair? (cdr entry))
+                (cadr entry)
+                (cdr entry)))))
+    (and (integer? value) (positive? value) value)))
 
 (define
   (badb-config-allow-missing-thinking? config endpoint)
@@ -514,39 +531,36 @@ a positive integer, or #f (the default) for an unlimited loop."
 (define (config->sexp config)
         "Convert CONFIG to an idiomatic Guile s-expression suitable for serialization."
         `(badb-config
-           (model
-             (name ,(badb-config-model-name config))
-             (endpoint ,(badb-config-model-endpoint config))
-             (api-key ,(badb-config-model-api-key config))
-             (temperature ,(badb-config-model-temperature config))
-             ,@(if (badb-config-model-max-tokens config)
-                 (list `(max-tokens ,(badb-config-model-max-tokens config)))
-                 '()))
-
-           (journal
-             (path ,(badb-config-journal-path config)))
-
+           (model (name ,(badb-config-model-name config))
+                  (endpoint ,(badb-config-model-endpoint config))
+                  ,@(if (badb-config-model-api-key config)
+                      (list `(api-key ,(badb-config-model-api-key config)))
+                      '())
+                  (temperature ,(badb-config-model-temperature config))
+                  ,@(if (badb-config-model-max-tokens config)
+                      (list `(max-tokens ,(badb-config-model-max-tokens config)))
+                      '()))
+           (journal (path ,(badb-config-journal-path config)))
            ,@(if (badb-config-ui-theme config)
                `((ui (theme ,(badb-config-ui-theme config))))
                '())
-
            (mcp
-             ,@(map (lambda (entry)
-                      (let* ((name (car entry))
-                             (spec (cdr entry))
-                             (cmd (or (assoc-ref spec 'command) ""))
-                             (args (or (assoc-ref spec 'args) '()))
-                             (env (or (assoc-ref spec 'env) '()))
-                             (auto? (or (assoc-ref spec 'auto-start) #f)))
-                        `(server ,name
-                                 (command ,cmd)
-                                 (args ,@args)
-                                 ,@(if (and (list? env) (not (null? env)))
-                                     `((env ,@env))
-                                     '())
-                                 (auto-start ,auto?))))
-                    (badb-config-mcp-servers config)))
-
+             ,@(map
+                 (lambda (entry)
+                   (let*
+                       ((name (car entry)) (spec (cdr entry))
+                        (cmd (or (assoc-ref spec 'command) ""))
+                        (args (or (assoc-ref spec 'args) '()))
+                        (env (or (assoc-ref spec 'env) '()))
+                        (auto? (or (assoc-ref spec 'auto-start) #f)))
+                     `(server ,name
+                              (command ,cmd)
+                              (args ,@args)
+                              ,@(if (and (list? env) (not (null? env)))
+                                  `((env ,@env))
+                                  '())
+                              (auto-start ,auto?))))
+                 (badb-config-mcp-servers config)))
            ,@(if (null? (badb-config-options config))
                '()
                `((options ,@(badb-config-options config))))))
@@ -602,15 +616,20 @@ a positive integer, or #f (the default) for an unlimited loop."
 (define (merge-configs base overlay)
         "Merge OVERLAY into BASE. Overlay scalar values override base values.
 MCP servers from overlay override base servers with the same name, while
-unique base servers are retained."
+unique base servers are retained. When OVERLAY changes the model endpoint,
+BASE's api-key is not inherited."
         (let*
-            ((merged
+            ((overlay-ep (badb-config-model-endpoint overlay))
+             (base-ep (badb-config-model-endpoint base))
+             (endpoint-changed? (and overlay-ep base-ep (not (equal? overlay-ep base-ep))))
+             (merged
                (make-badb-config #:model-name
                                  (or (badb-config-model-name overlay) (badb-config-model-name base))
                                  #:model-endpoint
-                                 (or (badb-config-model-endpoint overlay) (badb-config-model-endpoint base))
+                                 (or overlay-ep base-ep)
                                  #:model-api-key
-                                 (or (badb-config-model-api-key overlay) (badb-config-model-api-key base))
+                                 (or (badb-config-model-api-key overlay)
+                                     (and (not endpoint-changed?) (badb-config-model-api-key base)))
                                  #:model-temperature
                                  (or (badb-config-model-temperature overlay)
                                      (badb-config-model-temperature base))
@@ -625,8 +644,8 @@ unique base servers are retained."
                                  #:source-path
                                  (or (badb-config-source-path overlay) (badb-config-source-path base))))
              ;; Merge MCP servers: overlay servers take precedence over base servers with same name
-             (combined-mcp (alist-merge (badb-config-mcp-servers base)
-                                        (badb-config-mcp-servers overlay))))
+             (combined-mcp
+               (alist-merge (badb-config-mcp-servers base) (badb-config-mcp-servers overlay))))
           (set-badb-config-mcp-servers! merged combined-mcp)
           merged))
 

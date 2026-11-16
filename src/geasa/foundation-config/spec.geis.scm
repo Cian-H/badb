@@ -430,5 +430,57 @@
               (when (file-exists? gpath) (delete-file gpath))
               (when (file-exists? lpath) (delete-file lpath))))
 
+(test-group "api-key-leakage-and-context-limits"
+            ;; Switching from a provider with an api-key to one without must clear api-key
+            (let*
+                ((sexp
+                   '(badb-config
+                     (model (name "gpt-4")
+                      (endpoint "https://api.openai.com/v1")
+                      (api-key "sk-secret"))
+                     (options
+                      (providers
+                       (openai (endpoint "https://api.openai.com/v1")
+                        (api-key "sk-secret")
+                        (models ("gpt-4")))
+                       (local (endpoint "http://127.0.0.1:11434/v1")
+                        (models ("qwen3.6-35b-a3b"))
+                        (context-limits ("qwen3.6-35b-a3b" 262144)))))))
+                 (cfg (parse-config-sexp sexp)))
+              (test-equal "initial api-key is set"
+                          "sk-secret"
+                          (badb-config-model-api-key cfg))
+              (test-assert "switch to local provider succeeds"
+                           (badb-config-switch-provider! cfg 'local))
+              (test-equal
+                "api-key cleared when new provider has none"
+                #f
+                (badb-config-model-api-key cfg))
+              (test-equal "context-limit supports list form"
+                          262144
+                          (badb-config-model-context-limit cfg
+                                                           "http://127.0.0.1:11434/v1"
+                                                           "qwen3.6-35b-a3b"))
+              (let ((serialized (config->sexp cfg)))
+                (test-assert "config->sexp omits unset api-key"
+                             (not (assq 'api-key (cdr (assq 'model (cdr serialized))))))))
+            ;; Merging configs with different endpoints must not leak base api-key
+            (let*
+                ((base
+                   (make-badb-config #:model-endpoint
+                                     "https://api.openai.com/v1"
+                                     #:model-api-key
+                                     "sk-secret"))
+                 (overlay
+                   (make-badb-config #:model-endpoint
+                                     "http://127.0.0.1:11434/v1"
+                                     #:model-api-key
+                                     #f))
+                 (merged (merge-configs base overlay)))
+              (test-equal
+                "endpoint change does not inherit base api-key"
+                #f
+                (badb-config-model-api-key merged))))
+
 (spec-end)
 (spec-exit)

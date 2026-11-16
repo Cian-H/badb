@@ -472,19 +472,25 @@ verbatim, and fails open to a verbatim truncation."
                                                            #t
                                                            #:summarize-fn
                                                            semantic-summarize-fn))
-      (define configured-context-limit
-              (badb-config-model-context-limit cfg cur-endpoint cur-model))
-      (define discovered-context-limit
-              (or configured-context-limit
-                  (catch #t
-                    (lambda ()
-                      (let ((lim (fetch-model-context-limit client)))
-                        (and (integer? lim) (min lim 131072))))
-                    (lambda _
-                      #f))))
-      (when
-          (and (integer? discovered-context-limit) (> discovered-context-limit 4096))
-        (set-context-compactor-max-tokens! compactor discovered-context-limit))
+      (define context-limit-discovered? #f)
+      (define (sync-context-limit!)
+              "Update compactor max-tokens from explicit user config or live server metadata.
+Only skips server probing when the user explicitly configured context-limits."
+              (let*
+                  ((configured (badb-config-model-context-limit cfg cur-endpoint cur-model))
+                   (limit
+                     (or configured
+                         (catch #t
+                           (lambda ()
+                             (fetch-model-context-limit client))
+                           (lambda _
+                             #f)))))
+                (set! context-limit-discovered? (and (integer? limit) (> limit 4096)))
+                (set-context-compactor-max-tokens! compactor
+                                                   (if context-limit-discovered?
+                                                     limit
+                                                     16384))))
+      (sync-context-limit!)
       (define repl-mod
               (make-repl-mod reg
                              jrn
@@ -677,20 +683,7 @@ and append it to the persistent history journal file."
                                        #:allow-missing-thinking?
                                        (badb-config-allow-missing-thinking? cfg cur-endpoint)))
               (module-define! repl-mod 'client client)
-              (let
-                  ((context-limit
-                     (or
-                       (badb-config-model-context-limit cfg cur-endpoint cur-model)
-                       (catch #t
-                         (lambda ()
-                           (fetch-model-context-limit client))
-                         (lambda _
-                           #f)))))
-                (set-context-compactor-max-tokens! compactor
-                                                   (if
-                                                       (and (integer? context-limit) (> context-limit 4096))
-                                                     context-limit
-                                                     16384))))
+              (sync-context-limit!))
       ;; Startup model auto-detection: when the active model is a generic
       ;; placeholder (#f, empty or "default"), ask the endpoint's /models
       ;; listing to pick one and adopt it. The request is wrapped in catch so
@@ -1419,8 +1412,14 @@ grown journal), which the per-frame header render must not pay."
                 (lambda ()
                   (set! llm-history
                         (append llm-history (list `((role . "user") (content . ,user-prompt)))))
-                  (when (compaction-needed? compactor llm-history)
-                    (set! llm-history (compact-messages compactor llm-history)))
+                  (begin
+                    (when
+                        (and
+                          (not (badb-config-model-context-limit cfg cur-endpoint cur-model))
+                          (or (not context-limit-discovered?) (compaction-needed? compactor llm-history)))
+                      (sync-context-limit!))
+                    (when (compaction-needed? compactor llm-history)
+                      (set! llm-history (compact-messages compactor llm-history))))
                   (let
                       ((tools (collect-available-tools reg mcp-mgr)))
                     (if (pair? tools)
@@ -1770,6 +1769,11 @@ grown journal), which the per-frame header render must not pay."
                        (set! cfg (load-config))
                        (set! cur-model (badb-config-model-name cfg))
                        (set! cur-endpoint (badb-config-model-endpoint cfg))
+                       (set! cur-api-key
+                             (or api-key
+                                 (getenv "BADB_API_KEY")
+                                 (getenv "OPENAI_API_KEY")
+                                 (badb-config-model-api-key cfg)))
                        (refresh-client!)
                        (set! mcp-mgr (make-mcp-manager cfg))
                        (module-define! repl-mod 'cfg cfg)
@@ -1842,11 +1846,19 @@ refresh client, save config, and log SUCCESS-FMT. Rejects non-URI values
 and hints /provider <name> when RAW-URL matches a configured preset."
               (let ((trimmed (string-trim-both raw-url)))
                 (if (valid-endpoint-uri? trimmed)
-                  (begin (set! cur-endpoint trimmed)
-                         (badb-config-set-model-endpoint! cfg trimmed)
-                         (refresh-client!)
-                         (try-save-config!)
-                         (add-sys-msg! (format #f success-fmt cur-endpoint)))
+                  (let
+                      ((endpoint-changed? (not (equal? trimmed cur-endpoint)))
+                       (matched-prov (badb-config-provider-for-endpoint cfg trimmed)))
+                    (set! cur-endpoint trimmed)
+                    (badb-config-set-model-endpoint! cfg trimmed)
+                    (when endpoint-changed?
+                      (let
+                          ((new-key (and matched-prov (get-prop matched-prov 'api-key #f))))
+                        (set! cur-api-key new-key)
+                        (badb-config-set-model-api-key! cfg new-key)))
+                    (refresh-client!)
+                    (try-save-config!)
+                    (add-sys-msg! (format #f success-fmt cur-endpoint)))
                   (if
                       (find
                         (lambda (p)
@@ -1894,17 +1906,18 @@ message, or a clear error notice when the listing fails."
                   (fetch-live-models client))
                 (lambda (ids err)
                   (if ids
-                    (add-sys-msg!
-                      (string-append "Models available on endpoint:\n"
-                                     (string-join
-                                       (map
-                                         (lambda (id)
-                                           (if
-                                               (and (string? cur-model) (string=? id cur-model))
-                                             (format #f "• ~a (active)" id)
-                                             (format #f "• ~a" id)))
-                                         ids)
-                                       "\n")))
+                    (begin (sync-context-limit!)
+                           (add-sys-msg!
+                             (string-append "Models available on endpoint:\n"
+                                            (string-join
+                                              (map
+                                                (lambda (id)
+                                                  (if
+                                                      (and (string? cur-model) (string=? id cur-model))
+                                                    (format #f "• ~a (active)" id)
+                                                    (format #f "• ~a" id)))
+                                                ids)
+                                              "\n"))))
                     (add-err-msg! (format #f "Failed to list models: ~a" err))))))
       (define (apply-menu-selection! item)
               "Apply the action data carried by the selected menu ITEM, closing
@@ -2161,9 +2174,10 @@ any open menu first; submenu actions open the next menu in its place."
               (add-sys-msg! (format-rules-and-tree (getcwd))))
       ;; Handle conversation context metrics
       (define (handle-context-cmd! _arg)
+              (sync-context-limit!)
               (add-sys-msg! (format-context-metrics compactor llm-history messages)))
       ;; Handle per-session token usage report
-      (define (handle-usage-cmd!)
+      (define (handle-usage-cmd!) (sync-context-limit!)
               (add-sys-msg!
                 (format-usage-report compactor
                                      llm-history
