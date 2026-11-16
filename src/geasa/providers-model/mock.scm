@@ -4,27 +4,35 @@
 ;;; and mock test injection hooks.
 
 (define-module (geasa providers-model mock)
-               #:use-module (web client)
-               #:use-module (web uri)
-               #:use-module (web response)
-               #:use-module (web http)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 popen)
-               #:use-module (ice-9 rdelim)
-               #:use-module (ice-9 optargs)
-               #:use-module (rnrs bytevectors)
-               #:use-module (srfi srfi-1)
-               #:export (%request-timeout-seconds
-                          curl-header-args
-                          curl-collect-output!
-                          curl-output->response
-                          curl-http-post
-                          gnutls-unavailable?
-                          default-http-post
-                          current-http-post
-                          curl-http-get
-                          default-http-get
-                          current-http-get))
+               #:use-module
+               (web client)
+               #:use-module
+               (web uri)
+               #:use-module
+               (web response)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 popen)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 optargs)
+               #:use-module
+               (rnrs bytevectors)
+               #:use-module
+               (srfi srfi-1)
+               #:export
+               (%request-timeout-seconds curl-header-args
+                                         curl-collect-output!
+                                         curl-output->response
+                                         curl-http-post
+                                         gnutls-unavailable?
+                                         default-http-post
+                                         current-http-post
+                                         curl-http-get
+                                         default-http-get
+                                         current-http-get))
 
 ;;;
 ;;; HTTP Request Execution & Timeout Management

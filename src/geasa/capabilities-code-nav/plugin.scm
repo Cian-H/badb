@@ -3,35 +3,46 @@
 ;;; Serena-style symbol inspection, surgical symbol reading and body replacement,
 ;;; top-level AST outline generation across languages, and project memory management.
 
-(define-module (geasa capabilities-code-nav plugin)
-               #:use-module (badb kernel registry)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (json)
-               #:use-module (ice-9 ftw)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 regex)
-               #:use-module (ice-9 rdelim)
-               #:use-module (ice-9 textual-ports)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-9)
-               #:use-module (system foreign-library)
-               #:use-module (ts language)
-               #:use-module (ts parser)
-               #:use-module (ts tree)
-               #:export (register-code-nav-tools!
-                          extract-symbols-from-file
-                          symbols-overview
-                          find-symbol-in-workspace
-                          read-symbol-from-file
-                          replace-symbol-in-file
-                          memory-read
-                          memory-write
-                          %symbols-overview-schema
-                          %find-symbol-schema
-                          %read-symbol-schema
-                          %replace-symbol-schema
-                          %memory-read-schema
-                          %memory-write-schema))
+(define-module
+  (geasa capabilities-code-nav plugin) #:use-module
+  (badb kernel registry)
+  #:use-module
+  (geasa foundation-util plugin)
+  #:use-module
+  (ice-9 ftw)
+  #:use-module
+  (ice-9 format)
+  #:use-module
+  (ice-9 regex)
+  #:use-module
+  (ice-9 rdelim)
+  #:use-module
+  (ice-9 textual-ports)
+  #:use-module
+  (srfi srfi-1)
+  #:use-module
+  (system foreign-library)
+  #:use-module
+  (ts language)
+  #:use-module
+  (ts parser)
+  #:use-module
+  (ts tree)
+  #:export
+  (register-code-nav-tools!
+    extract-symbols-from-file
+    symbols-overview
+    find-symbol-in-workspace
+    read-symbol-from-file
+    replace-symbol-in-file
+    memory-read
+    memory-write
+    %symbols-overview-schema
+    %find-symbol-schema
+    %read-symbol-schema
+    %replace-symbol-schema
+    %memory-read-schema
+    %memory-write-schema))
 
 ;;;
 ;;; Tree-sitter integration

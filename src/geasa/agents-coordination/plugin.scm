@@ -67,7 +67,6 @@
 ;;;
 ;;; Result records
 ;;;
-
 (define-record-type <coordination-result>
                     (%make-coordination-result agent-id status value)
                     coordination-result?
@@ -82,7 +81,6 @@
 ;;;
 ;;; Coordinator
 ;;;
-
 (define-record-type <coordinator>
                     (%make-coordinator participants)
                     coordinator?
@@ -129,7 +127,6 @@ handler.  Returns the participant id."
 ;;;
 ;;; Primitives
 ;;;
-
 (define (coordinator-send coord id message)
         "Send MESSAGE to participant ID; returns its handler's response.
 A missing participant or a handler failure throws."
@@ -205,7 +202,6 @@ id, the original key, and the original irritants."
 ;;;
 ;;; Harness-to-Harness Event Bus (Ring Buffer + Subscribers)
 ;;;
-
 (define-record-type <harness-event>
                     (%make-harness-event seq timestamp source-id target-id kind payload)
                     harness-event?
@@ -266,15 +262,15 @@ id, the original key, and the original irritants."
                         ((string=? p candidate-ancestor) #t)
                         (else (loop p (cons cur visited))))))))
 
-(define (%event-matches-target? ev target-id include-descendants?)
-        (if (not target-id)
-          #t
-          (let ((ev-target (harness-event-target-id ev))
-                (ev-source (harness-event-source-id ev)))
-            (or (equal? ev-target target-id)
-                (and include-descendants?
-                     (or (equal? ev-source target-id)
-                         (%harness-ancestor? target-id ev-source)))))))
+(define
+  (%event-matches-target? ev target-id include-descendants?)
+  (or (not target-id)
+      (let
+          ((ev-target (harness-event-target-id ev))
+           (ev-source (harness-event-source-id ev)))
+        (or (equal? ev-target target-id)
+            (and include-descendants?
+                 (or (equal? ev-source target-id) (%harness-ancestor? target-id ev-source)))))))
 
 (define* (harness-event-subscribe! handler
                                    #:key
@@ -439,7 +435,6 @@ ordered oldest-first."
 ;;;
 ;;; Subagent Hierarchy Tree & Overview Formatters
 ;;;
-
 (define (%tree-node-alist? x)
         (and (list? x)
              (pair? (assq 'id x))
@@ -513,24 +508,31 @@ keyword options #:root-id, #:include-stopped?, and #:max-depth."
           (string-append (substring line 0 (- max-width 3)) "...")
           line))
 
-(define (%format-node-summary node show-details? ascii?)
-        (let* ((id (or (assoc-ref node 'id) "?"))
-               (status (or (assoc-ref node 'status) 'unknown))
-               (tool (assoc-ref node 'active-tool))
-               (turns (or (assoc-ref node 'turn-count) 0))
-               (label (assoc-ref node 'label)))
-          (if (not show-details?)
-            (format #f "~a [~a]" id status)
-            (let ((parts
-                    (filter identity
-                            (list
-                              (format #f "~a [~a]" id status)
-                              (and (string? tool) (not (string-null? tool))
-                                   (format #f "tool:~a" tool))
-                              (format #f "turns:~a" turns)
-                              (and (string? label) (not (string-null? label))
-                                   (format #f "~a ~a" (if ascii? "--" "—") label))))))
-              (string-join parts " ")))))
+(define
+  (%format-node-summary node show-details? ascii?)
+  (let*
+      ((id (or (assoc-ref node 'id) "?"))
+       (status (or (assoc-ref node 'status) 'unknown))
+       (tool (assoc-ref node 'active-tool))
+       (turns (or (assoc-ref node 'turn-count) 0))
+       (label (assoc-ref node 'label)))
+    (if show-details?
+      (let
+          ((parts
+             (filter identity
+                     (list (format #f "~a [~a]" id status)
+                           (and (string? tool) (not (string-null? tool)) (format #f "tool:~a" tool))
+                           (format #f "turns:~a" turns)
+                           (and (string? label)
+                                (not (string-null? label))
+                                (format #f
+                                        "~a ~a"
+                                        (if ascii?
+                                          "--"
+                                          "—")
+                                        label))))))
+        (string-join parts " "))
+      (format #f "~a [~a]" id status))))
 
 (define (%render-hierarchy-lines node prefix is-root? is-last? show-details? ascii? max-width)
         (let* ((conn-branch (if ascii? "|-- " "├── "))

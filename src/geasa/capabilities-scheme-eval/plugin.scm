@@ -4,18 +4,23 @@
 ;;; via (call-tool name . args), timeout enforcement, guardrail inspection,
 ;;; and output size bounding.
 
-(define-module (geasa capabilities-scheme-eval plugin)
-               #:use-module (badb kernel registry)
-               #:use-module (geasa policies-guardrail plugin)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (json)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 textual-ports)
-               #:use-module (srfi srfi-1)
-               #:export (register-scheme-eval-tools!
-                          eval-scheme-sandboxed
-                          call-with-timeout
-                          %scheme-eval-tool-schema))
+(define-module
+  (geasa capabilities-scheme-eval plugin)
+  #:use-module
+  (badb kernel registry)
+  #:use-module
+  (geasa policies-guardrail plugin)
+  #:use-module
+  (geasa foundation-util plugin)
+  #:use-module
+  (ice-9 format)
+  #:use-module
+  (srfi srfi-1)
+  #:export
+  (register-scheme-eval-tools!
+    eval-scheme-sandboxed
+    call-with-timeout
+    %scheme-eval-tool-schema))
 
 (define %restricted-sandbox-symbols
         '(system system* execl execlp execle primitive-fork

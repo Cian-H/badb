@@ -5,62 +5,76 @@
 ;;; (/resume), and conversation transcript formatting.
 
 (define-module (geasa surfaces-tui session)
-               #:use-module (geasa capabilities-history-tools plugin)
-               #:use-module (geasa capabilities-mcp plugin)
-               #:use-module (geasa foundation-config plugin)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (geasa policies-guardrail plugin)
-               #:use-module (geasa runtimes-context plugin)
-               #:use-module (badb kernel journal)
-               #:use-module (badb kernel registry)
-               #:use-module (json)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 ftw)
-               #:use-module (ice-9 popen)
-               #:use-module (ice-9 rdelim)
-               #:use-module (ice-9 regex)
-               #:use-module (ice-9 threads)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-19)
-               #:export (classify-input
-                          normalize-scheme-expr
-                          make-repl-mod
-                          eval-scheme-code
-                          repl-help
-                          repl-inspect
-                          repl-geasa
-                          repl-state
-                          %exec-log-path
-                          %append-exec-log!
-                          resolve-user-shell
-                          shell-kind
-                          build-shell-command-argv
-                          command-invokes-sudo?
-                          sudo-password-prompt?
-                          redact-shell-secrets
-                          inject-sudo-stdin-flag
-                          execute-shell-command
-                          resolve-external-editor
-                          build-editor-command
-                          open-in-external-editor
-                          read-via-external-editor
-                          %session-filename-max-length
-                          default-sessions-dir
-                          session-file-path
-                          turn->jsonl-line
-                          persist-session-file!
-                          load-session-file
-                          recent-session-files
-                          session-mtime-string
-                          session-turns->transcript-messages
-                          session-file-metadata
-                          recent-session-summaries
-                          format-conversation-transcript))
+               #:use-module
+               (geasa capabilities-history-tools plugin)
+               #:use-module
+               (geasa capabilities-mcp plugin)
+               #:use-module
+               (geasa foundation-config plugin)
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (geasa policies-guardrail plugin)
+               #:use-module
+               (geasa runtimes-context plugin)
+               #:use-module
+               (badb kernel journal)
+               #:use-module
+               (badb kernel registry)
+               #:use-module
+               (json)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 popen)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 regex)
+               #:use-module
+               (ice-9 threads)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-19)
+               #:export
+               (classify-input normalize-scheme-expr
+                               make-repl-mod
+                               eval-scheme-code
+                               repl-help
+                               repl-inspect
+                               repl-geasa
+                               repl-state
+                               %exec-log-path
+                               %append-exec-log!
+                               resolve-user-shell
+                               shell-kind
+                               build-shell-command-argv
+                               command-invokes-sudo?
+                               sudo-password-prompt?
+                               redact-shell-secrets
+                               inject-sudo-stdin-flag
+                               execute-shell-command
+                               resolve-external-editor
+                               build-editor-command
+                               open-in-external-editor
+                               read-via-external-editor
+                               %session-filename-max-length
+                               default-sessions-dir
+                               session-file-path
+                               turn->jsonl-line
+                               persist-session-file!
+                               load-session-file
+                               recent-session-files
+                               session-mtime-string
+                               session-turns->transcript-messages
+                               session-file-metadata
+                               recent-session-summaries
+                               format-conversation-transcript))
 
 ;;;
 ;;; Shell & REPL Execution Helpers
 ;;;
-
 (define (classify-input input)
         "Classify trimmed user INPUT into an action tag and payload:
    '(slash cmd . arg)
@@ -224,55 +238,115 @@ With FEATURE-ID, return an alist describing that feature or #f if unknown."
              (guardrail-level . ,(and (guardrail-policy? policy) (guardrail-policy-level policy)))
              (bound-handles . ,bound))))
 
-(define* (make-repl-mod reg jrn mgr client #:optional (cfg #f) (mcp-mgr #f)
-                        (policy #f) (compactor #f) (rollback-mgr #f) (verifier #f) (composer #f))
-         "Create an isolated user module pre-populated with kernel state bindings,
+(define*
+  (make-repl-mod reg
+                 jrn
+                 mgr
+                 client
+                 #:optional
+                 (cfg #f)
+                 (mcp-mgr #f)
+                 (policy #f)
+                 (compactor #f)
+                 (rollback-mgr #f)
+                 (verifier #f)
+                 (composer #f))
+  "Create an isolated user module pre-populated with kernel state bindings,
 core badb modules, and REPL introspection helpers (repl-help, repl-inspect,
 repl-geasa, repl-state)."
-         (let ((mod (make-fresh-user-module)))
-           (module-use! mod (resolve-interface '(guile)))
-           (module-use! mod (resolve-interface '(geasa providers-model plugin)))
-           (module-use! mod (resolve-interface '(badb registry)))
-           (module-use! mod (resolve-interface '(badb transaction)))
-           (module-use! mod (resolve-interface '(badb journal)))
-           (module-use! mod (resolve-interface '(geasa foundation-config plugin)))
-           (catch #t (lambda () (module-use! mod (resolve-interface '(geasa capabilities-mcp plugin)))) (lambda _ #f))
-           (catch #t (lambda () (module-use! mod (resolve-interface '(geasa policies-guardrail plugin)))) (lambda _ #f))
-           (catch #t (lambda () (module-use! mod (resolve-interface '(geasa runtimes-context plugin)))) (lambda _ #f))
-           (catch #t (lambda () (module-use! mod (resolve-interface '(geasa runtimes-prompt plugin)))) (lambda _ #f))
-           (catch #t (lambda () (module-use! mod (resolve-interface '(geasa runtimes-rollback plugin)))) (lambda _ #f))
-           (catch #t (lambda () (module-use! mod (resolve-interface '(geasa runtimes-verify plugin)))) (lambda _ #f))
-           (catch #t (lambda () (module-use! mod (resolve-interface '(geasa runtimes-react plugin)))) (lambda _ #f))
-           (module-use! mod (resolve-interface '(ice-9 format)))
-           (module-use! mod (resolve-interface '(ice-9 rdelim)))
-           (module-use! mod (resolve-interface '(ice-9 pretty-print)))
-           (catch #t
-             (lambda () (module-use! mod (resolve-interface '(ice-9 session))))
-             (lambda _ #f))
-           (module-use! mod (resolve-interface '(srfi srfi-1)))
-           (module-define! mod 'reg reg)
-           (module-define! mod 'jrn jrn)
-           (module-define! mod 'mgr mgr)
-           (module-define! mod 'client client)
-           (when cfg (module-define! mod 'cfg cfg))
-           (when mcp-mgr (module-define! mod 'mcp-mgr mcp-mgr))
-           (when policy (module-define! mod 'policy policy))
-           (when compactor (module-define! mod 'compactor compactor))
-           (when rollback-mgr (module-define! mod 'rollback-mgr rollback-mgr))
-           (when verifier (module-define! mod 'verifier verifier))
-           (when composer (module-define! mod 'composer composer))
-           (module-define! mod 'repl-help repl-help)
-           (module-define! mod 'repl-inspect repl-inspect)
-           (module-define! mod 'repl-geasa
-                           (lambda* (#:optional (fid #f))
-                                    (repl-geasa fid reg)))
-           (module-define! mod 'repl-state
-                           (lambda ()
-                             (repl-state #:reg reg #:jrn jrn #:mgr mgr #:client client
-                                         #:cfg cfg #:mcp-mgr mcp-mgr #:policy policy
-                                         #:compactor compactor #:rollback-mgr rollback-mgr
-                                         #:verifier verifier #:composer composer)))
-           mod))
+  (let ((mod (make-fresh-user-module)))
+    (module-use! mod (resolve-interface '(guile)))
+    (module-use! mod (resolve-interface '(geasa providers-model plugin)))
+    (module-use! mod (resolve-interface '(badb kernel registry)))
+    (module-use! mod (resolve-interface '(badb kernel transaction)))
+    (module-use! mod (resolve-interface '(badb kernel journal)))
+    (module-use! mod (resolve-interface '(geasa foundation-config plugin)))
+    (catch #t
+      (lambda ()
+        (module-use! mod (resolve-interface '(geasa capabilities-mcp plugin))))
+      (lambda _
+        #f))
+    (catch #t
+      (lambda ()
+        (module-use! mod (resolve-interface '(geasa policies-guardrail plugin))))
+      (lambda _
+        #f))
+    (catch #t
+      (lambda ()
+        (module-use! mod (resolve-interface '(geasa runtimes-context plugin))))
+      (lambda _
+        #f))
+    (catch #t
+      (lambda ()
+        (module-use! mod (resolve-interface '(geasa runtimes-prompt plugin))))
+      (lambda _
+        #f))
+    (catch #t
+      (lambda ()
+        (module-use! mod (resolve-interface '(geasa runtimes-rollback plugin))))
+      (lambda _
+        #f))
+    (catch #t
+      (lambda ()
+        (module-use! mod (resolve-interface '(geasa runtimes-verify plugin))))
+      (lambda _
+        #f))
+    (catch #t
+      (lambda ()
+        (module-use! mod (resolve-interface '(geasa runtimes-react plugin))))
+      (lambda _
+        #f))
+    (module-use! mod (resolve-interface '(ice-9 format)))
+    (module-use! mod (resolve-interface '(ice-9 rdelim)))
+    (module-use! mod (resolve-interface '(ice-9 pretty-print)))
+    (catch #t
+      (lambda ()
+        (module-use! mod (resolve-interface '(ice-9 session))))
+      (lambda _
+        #f))
+    (module-use! mod (resolve-interface '(srfi srfi-1)))
+    (module-define! mod 'reg reg)
+    (module-define! mod 'jrn jrn)
+    (module-define! mod 'mgr mgr)
+    (module-define! mod 'client client)
+    (when cfg (module-define! mod 'cfg cfg))
+    (when mcp-mgr (module-define! mod 'mcp-mgr mcp-mgr))
+    (when policy (module-define! mod 'policy policy))
+    (when compactor (module-define! mod 'compactor compactor))
+    (when rollback-mgr (module-define! mod 'rollback-mgr rollback-mgr))
+    (when verifier (module-define! mod 'verifier verifier))
+    (when composer (module-define! mod 'composer composer))
+    (module-define! mod 'repl-help repl-help)
+    (module-define! mod 'repl-inspect repl-inspect)
+    (module-define! mod
+                    'repl-geasa
+                    (lambda* (#:optional (fid #f)) (repl-geasa fid reg)))
+    (module-define! mod
+                    'repl-state
+                    (lambda ()
+                      (repl-state #:reg
+                                  reg
+                                  #:jrn
+                                  jrn
+                                  #:mgr
+                                  mgr
+                                  #:client
+                                  client
+                                  #:cfg
+                                  cfg
+                                  #:mcp-mgr
+                                  mcp-mgr
+                                  #:policy
+                                  policy
+                                  #:compactor
+                                  compactor
+                                  #:rollback-mgr
+                                  rollback-mgr
+                                  #:verifier
+                                  verifier
+                                  #:composer
+                                  composer)))
+    mod))
 
 (define (eval-scheme-code code-str repl-mod)
         "Evaluate CODE-STR in REPL-MOD and return (values result-string error-or-#f)."
@@ -370,11 +444,31 @@ the configured binary cannot be found."
               "-c"
               (if (string? cmd) cmd (format #f "~a" (or cmd "")))))
 
+(define %sudo-cmd-rx (make-regexp "(^|[;|&(\t ]+)sudo([ \t]|$)"))
+
+(define %sudo-pw-prompt-rx
+        (make-regexp "(^|\n)[^\n]*password:[ \t]*$" regexp/icase))
+
+(define %redact-piped-sudo-rx
+        (make-regexp
+          "(echo|printf)[ \t]+([^|;&\n]+?)[ \t]*\\|[ \t]*sudo(([ \t]+-[A-Za-z]+)*)[ \t]*-S"))
+
+(define %redact-env-secret-rx
+        (make-regexp
+          "((SUDO_)?PASS(WORD|WD)?|API_?KEY|TOKEN|SECRET)=('[^']*'|\"[^\"]*\"|[^ \t;|&]+)"))
+
+(define %redact-flag-secret-rx
+        (make-regexp
+          "--(password|passwd|token|api-key|secret)(=|[ \t]+)('[^']*'|\"[^\"]*\"|[^ \t;|&]+)"))
+
+(define %sudo-inject-rx (make-regexp "(^|[;|&(\t ]+)sudo([ \t]+)"))
+
+(define %sudo-dedup-s-rx
+        (make-regexp "(^|[;|&(\t ]+)sudo([ \t]+)(-[A-Za-z]*S|--stdin)"))
+
 (define (command-invokes-sudo? cmd)
         "Return #t if shell command CMD appears to invoke sudo."
-        (and (string? cmd)
-             (regexp-exec (make-regexp "(^|[;|&(\t ]+)sudo([ \t]|$)") cmd)
-             #t))
+        (and (string? cmd) (regexp-exec %sudo-cmd-rx cmd) #t))
 
 (define (sudo-password-prompt? text)
         "Return #t when command output TEXT indicates sudo requires a password
@@ -385,55 +479,72 @@ or an interactive terminal / askpass helper."
                    (string-contains low "a terminal is required to read the password")
                    (string-contains low "no askpass program specified")
                    (string-contains low "sudo: a password is required")
-                   (and (regexp-exec (make-regexp "(^|\n)[^\n]*password:[ \t]*$" regexp/icase) text)
-                        #t)))))
+                   (and (regexp-exec %sudo-pw-prompt-rx text) #t)))))
 
 (define (redact-shell-secrets str)
         "Redact inline passwords, tokens, and piped sudo secrets from STR before
 logging or displaying diagnostics."
-        (if (not (string? str))
-          ""
-          (let* ((s1 (regexp-substitute/global
-                       #f
-                       "(echo|printf)[ \t]+([^|;&\n]+?)[ \t]*\\|[ \t]*sudo(([ \t]+-[A-Za-z]+)*)[ \t]*-S"
-                       str 'pre 1 " [REDACTED] | sudo" 3 " -S" 'post))
-                 (s2 (regexp-substitute/global
-                       #f
-                       "((SUDO_)?PASS(WORD|WD)?|API_?KEY|TOKEN|SECRET)=('[^']*'|\"[^\"]*\"|[^ \t;|&]+)"
-                       s1 'pre 1 "=[REDACTED]" 'post))
-                 (s3 (regexp-substitute/global
-                       #f
-                       "--(password|passwd|token|api-key|secret)(=|[ \t]+)('[^']*'|\"[^\"]*\"|[^ \t;|&]+)"
-                       s2 'pre "--" 1 2 "[REDACTED]" 'post)))
-            s3)))
+        (if (string? str)
+          (let*
+              ((s1
+                 (regexp-substitute/global #f
+                                           %redact-piped-sudo-rx
+                                           str
+                                           'pre
+                                           1
+                                           " [REDACTED] | sudo"
+                                           3
+                                           " -S"
+                                           'post))
+               (s2
+                 (regexp-substitute/global #f
+                                           %redact-env-secret-rx
+                                           s1
+                                           'pre
+                                           1
+                                           "=[REDACTED]"
+                                           'post))
+               (s3
+                 (regexp-substitute/global #f
+                                           %redact-flag-secret-rx
+                                           s2
+                                           'pre
+                                           "--"
+                                           1
+                                           2
+                                           "[REDACTED]"
+                                           'post)))
+            s3)
+          ""))
 
 (define (inject-sudo-stdin-flag cmd)
         "Ensure sudo invocations in CMD use '-S -p \"\"' so passwords can be fed
 safely on stdin without touching /dev/tty."
-        (if (not (string? cmd))
-          ""
-          (regexp-substitute/global
-            #f
-            "(^|[;|&(\t ]+)sudo([ \t]+)(-[A-Za-z]*S|--stdin)"
-            (regexp-substitute/global
-              #f
-              "(^|[;|&(\t ]+)sudo([ \t]+)"
-              cmd
-              'pre 1 "sudo -S -p '' " 'post)
-            'pre 1 "sudo" 2 3 'post)))
+        (if (string? cmd)
+          (regexp-substitute/global #f
+                                    %sudo-dedup-s-rx
+                                    (regexp-substitute/global #f %sudo-inject-rx cmd 'pre 1 "sudo -S -p '' " 'post)
+                                    'pre
+                                    1
+                                    "sudo"
+                                    2
+                                    3
+                                    'post)
+          ""))
 
 (define (%scrub-secret text secret)
         "Remove any accidental occurrence of SECRET from diagnostic TEXT."
-        (if (or (not (string? text)) (not (string? secret)) (string-null? secret))
+        (if
+            (or (not (string? text)) (not (string? secret)) (string-null? secret))
           text
           (let ((idx (string-contains text secret)))
-            (if (not idx)
-              text
+            (if idx
               (%scrub-secret
                 (string-append (substring text 0 idx)
                                "[REDACTED]"
                                (substring text (+ idx (string-length secret))))
-                secret)))))
+                secret)
+              text))))
 
 (define (%spawn-argv-capture argv stdin-data)
         "Run ARGV via open-pipe* with optional STDIN-DATA string, capturing
@@ -496,49 +607,58 @@ Return (values output-string exit-code error-or-#f)."
           (lambda (key . args)
             (values #f 1 (format #f "Shell error (~a): ~s" key args)))))
 
-(define* (execute-shell-command cmd #:key (shell #f) (password-provider #f)
-                                (stdin-data #f) (exec-fn #f))
-         "Execute shell CMD through the user's $SHELL (nu, fish, zsh, bash, sh),
+(define*
+  (execute-shell-command cmd
+                         #:key
+                         (shell #f)
+                         (password-provider #f)
+                         (stdin-data #f)
+                         (exec-fn #f))
+  "Execute shell CMD through the user's $SHELL (nu, fish, zsh, bash, sh),
 returning (values output-string exit-code error-or-#f). Records the secret-
 redacted command to the exec log (.badb/exec-log.jsonl, BADB_EXEC_LOG override)
 before spawn. When sudo requires a password and PASSWORD-PROVIDER is supplied,
 prompts securely in memory without logging secrets and pipes via sudo -S."
-         (%append-exec-log! (redact-shell-secrets cmd))
-         (let* ((sh (resolve-user-shell shell))
-                (base-argv (build-shell-command-argv sh cmd))
-                (setsid-bin (and (not exec-fn)
-                                 (not stdin-data)
-                                 (command-invokes-sudo? cmd)
-                                 (%find-executable-in-path "setsid")))
-                (first-argv (if setsid-bin
-                              (cons* setsid-bin "-w" base-argv)
-                              base-argv))
-                (runner (or exec-fn %spawn-argv-capture)))
-           (call-with-values
-             (lambda () (runner first-argv stdin-data))
-             (lambda (out exit-val err)
-               (if (and (not err)
-                        (not (= exit-val 0))
-                        (sudo-password-prompt? out)
-                        (procedure? password-provider))
-                 (let ((pw (password-provider "sudo password: ")))
-                   (if (not (and (string? pw) (not (string-null? pw))))
-                     (values out exit-val "sudo authentication cancelled")
-                     (let* ((sudo-cmd (inject-sudo-stdin-flag cmd))
-                            (sudo-argv (build-shell-command-argv sh sudo-cmd))
-                            (payload (string-append pw "\n")))
-                       (call-with-values
-                         (lambda () (runner sudo-argv payload))
-                         (lambda (s-out s-exit s-err)
-                           (values (%scrub-secret s-out pw)
-                                   s-exit
-                                   (%scrub-secret s-err pw)))))))
-                 (values out exit-val err))))))
+  (%append-exec-log! (redact-shell-secrets cmd))
+  (let*
+      ((sh (resolve-user-shell shell))
+       (base-argv (build-shell-command-argv sh cmd))
+       (setsid-bin
+         (and (not exec-fn)
+              (not stdin-data)
+              (command-invokes-sudo? cmd)
+              (%find-executable-in-path "setsid")))
+       (first-argv
+         (if setsid-bin
+           (cons* setsid-bin "-w" base-argv)
+           base-argv))
+       (runner (or exec-fn %spawn-argv-capture)))
+    (call-with-values
+      (lambda ()
+        (runner first-argv stdin-data))
+      (lambda (out exit-val err)
+        (if
+            (and (not err)
+                 (not (= exit-val 0))
+                 (sudo-password-prompt? out)
+                 (procedure? password-provider))
+          (let ((pw (password-provider "sudo password: ")))
+            (if (and (string? pw) (not (string-null? pw)))
+              (let*
+                  ((sudo-cmd (inject-sudo-stdin-flag cmd))
+                   (sudo-argv (build-shell-command-argv sh sudo-cmd))
+                   (payload (string-append pw "\n")))
+                (call-with-values
+                  (lambda ()
+                    (runner sudo-argv payload))
+                  (lambda (s-out s-exit s-err)
+                    (values (%scrub-secret s-out pw) s-exit (%scrub-secret s-err pw)))))
+              (values out exit-val "sudo authentication cancelled")))
+          (values out exit-val err))))))
 
 ;;;
 ;;; External $EDITOR Integration
 ;;;
-
 (define* (resolve-external-editor #:optional (override #f))
          "Resolve the external editor command from OVERRIDE, $VISUAL, $EDITOR,
 or fallback \"vi\"."
@@ -630,7 +750,6 @@ Return (values ok? exit-code-or-error)."
 ;;;
 ;;; Chat Session Persistence (/resume)
 ;;;
-
 (define %session-filename-max-length 40)
 
 (define (default-sessions-dir)
@@ -773,37 +892,63 @@ resume menu."
 
 (define (%extract-think-blocks text)
         "Lightweight <think>/<thought> tag splitter for resumed assistant turns."
-        (let loop ((rem (or text "")) (th '()) (ct '()))
-                  (let* ((p1 (string-contains rem "<think>"))
-                         (p2 (string-contains rem "<thought>"))
-                         (hit (cond
-                                ((and p1 p2) (if (< p1 p2) (cons p1 "<think>") (cons p2 "<thought>")))
-                                (p1 (cons p1 "<think>"))
-                                (p2 (cons p2 "<thought>"))
-                                (else #f))))
-                    (if (not hit)
-                      (let ((final-ct (string-trim-both
-                                        (string-join (reverse (if (string-null? (string-trim-both rem))
-                                                                ct
-                                                                (cons (string-trim-both rem) ct)))
-                                                     "\n")))
-                            (final-th (string-trim-both (string-join (reverse th) "\n\n"))))
-                        (values (if (string-null? final-th) #f final-th) final-ct))
-                      (let* ((pos (car hit))
-                             (tag (cdr hit))
-                             (end-tag (if (string=? tag "<think>") "</think>" "</thought>"))
-                             (before (string-trim-both (substring rem 0 pos)))
-                             (after (substring rem (+ pos (string-length tag))))
-                             (end-pos (string-contains after end-tag))
-                             (next-ct (if (string-null? before) ct (cons before ct))))
-                        (if end-pos
-                          (loop (substring after (+ end-pos (string-length end-tag)))
-                                (cons (string-trim-both (substring after 0 end-pos)) th)
-                                next-ct)
-                          (let ((final-th (string-trim-both
-                                            (string-join (reverse (cons (string-trim-both after) th)) "\n\n")))
-                                (final-ct (string-trim-both (string-join (reverse next-ct) "\n"))))
-                            (values (if (string-null? final-th) #f final-th) final-ct))))))))
+        (let loop
+          ((rem (or text "")) (th '()) (ct '()))
+          (let*
+              ((p1 (string-contains rem "<think>"))
+               (p2 (string-contains rem "<thought>"))
+               (hit
+                 (cond
+                   ((and p1 p2)
+                     (if (< p1 p2)
+                       (cons p1 "<think>")
+                       (cons p2 "<thought>")))
+                   (p1 (cons p1 "<think>"))
+                   (p2 (cons p2 "<thought>"))
+                   (else #f))))
+            (if hit
+              (let*
+                  ((pos (car hit)) (tag (cdr hit))
+                   (end-tag
+                     (if (string=? tag "<think>")
+                       "</think>"
+                       "</thought>"))
+                   (before (string-trim-both (substring rem 0 pos)))
+                   (after (substring rem (+ pos (string-length tag))))
+                   (end-pos (string-contains after end-tag))
+                   (next-ct
+                     (if (string-null? before)
+                       ct
+                       (cons before ct))))
+                (if end-pos
+                  (loop
+                    (substring after (+ end-pos (string-length end-tag)))
+                    (cons (string-trim-both (substring after 0 end-pos)) th) next-ct)
+                  (let
+                      ((final-th
+                         (string-trim-both
+                           (string-join (reverse (cons (string-trim-both after) th)) "\n\n")))
+                       (final-ct (string-trim-both (string-join (reverse next-ct) "\n"))))
+                    (values
+                      (if (string-null? final-th)
+                        #f
+                        final-th)
+                      final-ct))))
+              (let
+                  ((final-ct
+                     (string-trim-both
+                       (string-join
+                         (reverse
+                           (if (string-null? (string-trim-both rem))
+                             ct
+                             (cons (string-trim-both rem) ct)))
+                         "\n")))
+                   (final-th (string-trim-both (string-join (reverse th) "\n\n"))))
+                (values
+                  (if (string-null? final-th)
+                    #f
+                    final-th)
+                  final-ct))))))
 
 (define (%assistant-turn->cards turn)
         "Convert a single assistant TURN from llm-history into TUI transcript card(s)."

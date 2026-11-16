@@ -220,12 +220,27 @@
               (test-equal "with-directory restores original directory" cwd (getcwd))))
 
 (test-group "util-file-io"
-            (let* ((tmp (string-append "/tmp/badb-file-io-test-" (number->string (current-time)) ".txt"))
-                   (content "hello world UTF-8 string\nline 2\n"))
+            (let*
+                ((tmp
+                   (string-append "/tmp/badb-file-io-test-" (number->string (current-time)) ".txt"))
+                 (content "hello world UTF-8 string\nline 2\n"))
               (string->file tmp content)
               (test-assert "string->file creates file" (file-exists? tmp))
               (test-equal "file->string reads back content exact" content (file->string tmp))
-              (test-equal "file->string nonexistent returns #f" #f (file->string "/nonexistent-path-fileio-999"))))
+              (test-equal "file->string nonexistent returns #f"
+                          #f
+                          (file->string "/nonexistent-path-fileio-999"))
+              (test-assert
+                "executable-file? false on plain text file"
+                (not (executable-file? tmp)))
+              (test-assert
+                "executable-file? false on directory and #f"
+                (and (not (executable-file? "/tmp")) (not (executable-file? #f))))
+              (test-assert "find-in-path resolves sh" (string? (find-in-path "sh")))
+              (test-equal
+                "find-in-path returns #f for nonexistent binary"
+                #f
+                (find-in-path "badb-nonexistent-binary-xyz-999"))))
 
 (spec-end)
 (spec-exit)

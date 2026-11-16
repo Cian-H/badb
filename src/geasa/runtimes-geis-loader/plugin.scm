@@ -5,25 +5,33 @@
 ;;; plugin modules into the runtime registry, and synthesizes fallback specs
 ;;; when unmanaged user plugins are discovered.
 
-(define-module (geasa runtimes-geis-loader plugin)
-               #:use-module (badb geis bundle)
-               #:use-module (badb geis capabilities)
-               #:use-module (badb kernel registry)
-               #:use-module (badb kernel digest)
-               #:use-module (geasa capabilities-bubblewrap plugin)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (ice-9 ftw)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 popen)
-               #:use-module (ice-9 rdelim)
-               #:use-module (ice-9 textual-ports)
-               #:use-module (json)
-               #:use-module (srfi srfi-1)
-               #:export (discover-and-mount-project-geasa!
-                          mount-all-project-geasa!
-                          synthesize-fallback-spec!
-                          geis-catalog-index
-                          geis-index-query))
+(define-module
+  (geasa runtimes-geis-loader plugin) #:use-module
+  (badb geis bundle)
+  #:use-module
+  (badb kernel registry)
+  #:use-module
+  (badb kernel digest)
+  #:use-module
+  (geasa capabilities-bubblewrap plugin)
+  #:use-module
+  (geasa foundation-util plugin)
+  #:use-module
+  (ice-9 format)
+  #:use-module
+  (ice-9 popen)
+  #:use-module
+  (ice-9 rdelim)
+  #:use-module
+  (json)
+  #:use-module
+  (srfi srfi-1)
+  #:export
+  (discover-and-mount-project-geasa!
+    mount-all-project-geasa!
+    synthesize-fallback-spec!
+    geis-catalog-index
+    geis-index-query))
 
 (define (synthesize-fallback-spec! bundle-dir fid plugin-file module-name)
         "Synthesize a minimal spec.geis.scm and manifest.scm for a raw plugin."

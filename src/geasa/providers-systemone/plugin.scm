@@ -25,8 +25,6 @@
                #:use-module
                (web http)
                #:use-module
-               (ice-9 format)
-               #:use-module
                (ice-9 optargs)
                #:use-module
                (rnrs bytevectors)

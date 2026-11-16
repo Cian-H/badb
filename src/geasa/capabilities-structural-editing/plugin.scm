@@ -17,7 +17,7 @@
   #:use-module
   (ice-9 format)
   #:use-module
-  (ice-9 popen)
+  (geasa foundation-util plugin)
   #:use-module
   (ice-9 textual-ports)
   #:use-module
@@ -34,29 +34,14 @@
 
 ;; ---- binary discovery -----------------------------------------------------
 
-(define (%executable-file? path)
-        (and (string? path)
-             (not (string-null? path))
-             (file-exists? path)
-             (not (file-is-directory? path))
-             (access? path X_OK)))
-
-(define (%find-in-path name)
-        (let ((path-env (or (getenv "PATH") "")))
-          (any (lambda (dir)
-                 (and (not (string-null? dir))
-                      (let ((cand (string-append dir "/" name)))
-                        (and (%executable-file? cand) cand))))
-               (string-split path-env #\:))))
-
 (define semcp-binary (make-parameter #f))
 
 (define (%resolve-semcp-binary)
-        (or (let ((override (semcp-binary)))
-              (and (%executable-file? override) override))
-            (let ((env-bin (getenv "BADB_SEMCP_BIN")))
-              (and (%executable-file? env-bin) env-bin))
-            (%find-in-path "semcp")))
+        (or
+          (let ((override (semcp-binary))) (and (executable-file? override) override))
+          (let ((env-bin (getenv "BADB_SEMCP_BIN")))
+            (and (executable-file? env-bin) env-bin))
+          (find-in-path "semcp")))
 
 (define (semcp-available?)
         "Return #t when the `semcp' binary is resolved and executable."

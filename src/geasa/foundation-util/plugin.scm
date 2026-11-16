@@ -5,7 +5,8 @@
 ;;; safe JSON serialization, and environment variable formatting to keep
 ;;; subsystems DRY and maintainable.
 
-(define-module (geasa foundation-util plugin) #:use-module
+(define-module (geasa foundation-util plugin)
+               #:use-module
                (ice-9 format)
                #:use-module
                (ice-9 rdelim)
@@ -25,6 +26,8 @@
                         string->file
                         valid-dir-entry?
                         scandir-valid-entries
+                        executable-file?
+                        find-in-path
                         exec-shell-command
                         active-subprocess-pid
                         set-active-subprocess-pid!
@@ -139,6 +142,23 @@ Returns '() if DIR does not exist or cannot be read."
                                 (lambda (p)
                                   (set-port-encoding! p "UTF-8")
                                   (display (or content "") p))))
+
+(define (executable-file? path)
+        "Return #t when PATH is a non-empty string naming a non-directory executable file."
+        (and (string? path)
+             (not (string-null? path))
+             (file-exists? path)
+             (not (file-is-directory? path))
+             (access? path X_OK)))
+
+(define (find-in-path name)
+        "Search PATH for an executable file named NAME, returning its full path or #f."
+        (let ((path-env (or (getenv "PATH") "")))
+          (any
+            (lambda (dir)
+              (and (not (string-null? dir))
+                   (let ((cand (string-append dir "/" name))) (and (executable-file? cand) cand))))
+            (string-split path-env #\:))))
 
 ;;;
 ;;; Coercion & Identifier Normalization

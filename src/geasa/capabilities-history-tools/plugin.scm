@@ -10,27 +10,33 @@
 ;;; {\"role\":...,\"content\":...} object per line, the tui session log shape)
 ;;; directly with (json), skipping malformed lines, and summarizes it.
 
-(define-module (geasa capabilities-history-tools plugin)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (geasa runtimes-context plugin)
-               #:use-module (json)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 rdelim)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-13)
-               #:export (jsonl-line->turn
-                          summarize-turns
-                          summarize-history-file
-                          turn-field
-                          user-turn?
-                          extract-words
-                          meaningful-word?
-                          word-frequencies
-                          top-topic-words
-                          %stopwords
-                          %summary-recent-user-count
-                          %summary-recent-user-chars
-                          %summary-topic-count))
+(define-module
+  (geasa capabilities-history-tools plugin)
+  #:use-module
+  (geasa foundation-util plugin)
+  #:use-module
+  (geasa runtimes-context plugin)
+  #:use-module
+  (ice-9 format)
+  #:use-module
+  (ice-9 rdelim)
+  #:use-module
+  (srfi srfi-1)
+  #:use-module
+  (srfi srfi-13)
+  #:export
+  (jsonl-line->turn summarize-turns
+                    summarize-history-file
+                    turn-field
+                    user-turn?
+                    extract-words
+                    meaningful-word?
+                    word-frequencies
+                    top-topic-words
+                    %stopwords
+                    %summary-recent-user-count
+                    %summary-recent-user-chars
+                    %summary-topic-count))
 
 ;;;
 ;;; Turn Accessors & Word Extraction

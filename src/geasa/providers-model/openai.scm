@@ -34,8 +34,6 @@
                (json)
                #:use-module
                (srfi srfi-1)
-               #:use-module
-               (srfi srfi-9)
                #:export
                (strip-internal-tool-keys format-chat-request
                                          extract-chat-delta

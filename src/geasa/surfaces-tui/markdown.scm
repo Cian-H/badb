@@ -6,63 +6,101 @@
 ;;; Kitty/notcurses ncvisual image capability detection and rendering helpers.
 
 (define-module (geasa surfaces-tui markdown)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 popen)
-               #:use-module (ice-9 rdelim)
-               #:use-module (ice-9 regex)
-               #:use-module (rnrs bytevectors)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-9)
-               #:use-module (srfi srfi-11)
-               #:autoload (system foreign) (%null-pointer)
-               #:autoload (syntax-highlight) (highlight)
-               #:autoload (syntax-highlight scheme) (lex-scheme)
-               #:autoload (syntax-highlight c) (lex-c)
-               #:autoload (syntax-highlight lisp) (lex-lisp)
-               #:autoload (notcurses core) (notcurses_check_pixel_support notcurses_canopen_images)
-               #:autoload (notcurses visual) (ncvisual_from_file ncvisual_blit ncvisual_geom ncvisual_destroy)
-               #:autoload (notcurses structs) (make-ncvisual-options make-ncvgeom ncvgeom-pixy ncvgeom-pixx ncvgeom-rcelly ncvgeom-rcellx ->pointer)
-               #:autoload (notcurses constants) (NCPIXEL_NONE NCPIXEL_SIXEL NCPIXEL_LINUXFB NCPIXEL_ITERM2 NCPIXEL_KITTY_STATIC NCPIXEL_KITTY_ANIMATED NCPIXEL_KITTY_SELFREF NCBLIT_PIXEL NCBLIT_2x2 NCSCALE_SCALE)
-               #:autoload (gcrypt base64) (base64-encode)
-               #:export (;; Syntax highlighting
-                         syntax-tag->theme-role
-                          highlight-scheme-line
-                          highlight-scheme-text
-                          highlight-shell-line
-                          highlight-shell-text
-                          highlight-code-line
-                          highlight-code-text
-                          process-fenced-code-blocks
-                          ;; mdflow & Markdown rendering
-                          mdflow-binary-path
-                          mdflow-available?
-                          render-markdown-with-mdflow
-                          parse-markdown-blocks
-                          segment-markdown-inline
-                          segment-input-line
-                          render-markdown
-                          render-markdown-lines
-                          ;; OSC 8 clickable links
-                          sanitize-osc-text
-                          format-osc8-link
-                          file-path->file-uri
-                          extract-clickable-links
-                          find-link-at-column
-                          ;; Nerd Fonts
-                          %nerd-fonts-mode
-                          set-nerd-fonts-mode!
-                          detect-nerd-fonts
-                          nerd-fonts-enabled?
-                          nerd-icon
-                          ;; Kitty / ncvisual image protocol
-                          detect-image-protocol
-                          kitty-graphics-supported?
-                          image-file-path?
-                          extract-markdown-image-paths
-                          format-kitty-image-escape
-                          render-image-ncvisual
-                          format-image-placeholder))
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 popen)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 regex)
+               #:use-module
+               (rnrs bytevectors)
+               #:use-module
+               (srfi srfi-1)
+               #:autoload
+               (system foreign)
+               (%null-pointer)
+               #:autoload
+               (syntax-highlight)
+               (highlight)
+               #:autoload
+               (syntax-highlight scheme)
+               (lex-scheme)
+               #:autoload
+               (syntax-highlight c)
+               (lex-c)
+               #:autoload
+               (syntax-highlight lisp)
+               (lex-lisp)
+               #:autoload
+               (notcurses core)
+               (notcurses_check_pixel_support notcurses_canopen_images)
+               #:autoload
+               (notcurses visual)
+               (ncvisual_from_file ncvisual_blit ncvisual_geom ncvisual_destroy)
+               #:autoload
+               (notcurses structs)
+               (make-ncvisual-options make-ncvgeom
+                                      ncvgeom-pixy
+                                      ncvgeom-pixx
+                                      ncvgeom-rcelly
+                                      ncvgeom-rcellx
+                                      ->pointer)
+               #:autoload
+               (notcurses constants)
+               (NCPIXEL_NONE NCPIXEL_SIXEL
+                             NCPIXEL_LINUXFB
+                             NCPIXEL_ITERM2
+                             NCPIXEL_KITTY_STATIC
+                             NCPIXEL_KITTY_ANIMATED
+                             NCPIXEL_KITTY_SELFREF
+                             NCBLIT_PIXEL
+                             NCBLIT_2x2
+                             NCSCALE_SCALE)
+               #:autoload
+               (gcrypt base64)
+               (base64-encode)
+               #:export
+               (;; Syntax highlighting syntax-tag->theme-role
+                highlight-scheme-line
+                 highlight-scheme-text
+                 highlight-shell-line
+                 highlight-shell-text
+                 highlight-code-line
+                 highlight-code-text
+                 process-fenced-code-blocks
+                 ;; mdflow & Markdown rendering
+                 mdflow-binary-path
+                 mdflow-available?
+                 render-markdown-with-mdflow
+                 parse-markdown-blocks
+                 segment-markdown-inline
+                 segment-input-line
+                 render-markdown
+                 render-markdown-lines
+                 ;; OSC 8 clickable links
+                 sanitize-osc-text
+                 format-osc8-link
+                 file-path->file-uri
+                 extract-clickable-links
+                 find-link-at-column
+                 ;; Nerd Fonts
+                 %nerd-fonts-mode
+                 set-nerd-fonts-mode!
+                 detect-nerd-fonts
+                 nerd-fonts-enabled?
+                 nerd-icon
+                 ;; Kitty / ncvisual image protocol
+                 detect-image-protocol
+                 kitty-graphics-supported?
+                 image-file-path?
+                 extract-markdown-image-paths
+                 format-kitty-image-escape
+                 render-image-ncvisual
+                 format-image-placeholder))
 
 ;;;
 ;;; Small String & Segment Helpers
@@ -452,32 +490,16 @@ segment-line rendering; degrade gracefully to raw TEXT on error."
 ;;;
 ;;; mdflow External Wrapper + Pure-Scheme Fallback (ui-wp2.1)
 ;;;
-(define (executable-file? path)
-        (and (string? path)
-             (file-exists? path)
-             (not (file-is-directory? path))
-             (catch #t (lambda () (access? path X_OK)) (lambda _ #f))))
-
-(define* (mdflow-binary-path #:optional (override #f))
-         "Locate the mdflow binary via OVERRIDE, BADB_MDFLOW_BIN, or PATH; return #f if absent."
-         (cond
-           ((and (string? override) (not (string-null? override)))
-             (and (executable-file? override) override))
-           ((and (getenv "BADB_MDFLOW_BIN")
-                 (not (string-null? (getenv "BADB_MDFLOW_BIN"))))
-             (let ((env-bin (getenv "BADB_MDFLOW_BIN")))
-               (and (executable-file? env-bin) env-bin)))
-           (else
-             (let* ((path-env (or (getenv "PATH") ""))
-                    (dirs (filter (lambda (d) (not (string-null? d)))
-                                  (string-split path-env #\:))))
-               (let loop ((rest dirs))
-                         (if (null? rest)
-                           #f
-                           (let ((cand (string-append (car rest) "/mdflow")))
-                             (if (executable-file? cand)
-                               cand
-                               (loop (cdr rest))))))))))
+(define*
+  (mdflow-binary-path #:optional (override #f))
+  "Locate the mdflow binary via OVERRIDE, BADB_MDFLOW_BIN, or PATH; return #f if absent."
+  (cond
+    ((and (string? override) (not (string-null? override)))
+      (and (executable-file? override) override))
+    ((and (getenv "BADB_MDFLOW_BIN") (not (string-null? (getenv "BADB_MDFLOW_BIN"))))
+      (let ((env-bin (getenv "BADB_MDFLOW_BIN")))
+        (and (executable-file? env-bin) env-bin)))
+    (else (find-in-path "mdflow"))))
 
 (define* (mdflow-available? #:optional (override #f))
          "Return #t when an executable mdflow binary can be resolved."
@@ -545,94 +567,97 @@ Returns a list of plain lines on success, or #f if mdflow is unavailable or fail
   (hr)
   (paragraph lines)
   (blank)"
-        (let ((raw-lines (string-split (or text "") #\newline)))
-          (let loop ((lines raw-lines)
-                     (blocks '())
-                     (para-acc '())
-                     (quote-acc '())
-                     (in-fence #f)
-                     (fence-lang "")
-                     (fence-lines '()))
-                    (define (flush-para b)
-                            (if (null? para-acc)
-                              b
-                              (cons (list 'paragraph (reverse para-acc)) b)))
-                    (define (flush-quote b)
-                            (if (null? quote-acc)
-                              b
-                              (cons (list 'blockquote (reverse quote-acc)) b)))
-                    (define (flush-all b)
-                            (set! b (flush-para b))
-                            (set! para-acc '())
-                            (set! b (flush-quote b))
-                            (set! quote-acc '())
-                            b)
-                    (if (null? lines)
-                      (let ((b (if in-fence
-                                 (cons (list 'code-block fence-lang (reverse fence-lines)) blocks)
-                                 (flush-all blocks))))
-                        (reverse b))
-                      (let* ((line (car lines))
-                             (trimmed (string-trim-both line)))
-                        (if in-fence
-                          (if (string-prefix? in-fence trimmed)
-                            (loop (cdr lines)
-                                  (cons (list 'code-block fence-lang (reverse fence-lines)) blocks)
-                                  '() '() #f "" '())
-                            (loop (cdr lines) blocks '() '() in-fence fence-lang (cons line fence-lines)))
-                          (let ((fence (fence-delimiter trimmed)))
-                            (cond
-                              (fence
-                                (let ((b (flush-all blocks))
-                                      (lang-str (cdr fence)))
-                                  (let ((sp (string-index lang-str #\space)))
-                                    (loop (cdr lines) b '() '() (car fence)
-                                          (if sp (substring lang-str 0 sp) lang-str)
-                                          '()))))
-                              ((string-null? trimmed)
-                                (let ((b (flush-all blocks)))
-                                  (loop (cdr lines)
-                                        (if (and (pair? b) (eq? (caar b) 'blank))
-                                          b
-                                          (cons (list 'blank) b))
-                                        '() '() #f "" '())))
-                              ((regexp-exec %hr-rx line)
-                                (let ((b (flush-all blocks)))
-                                  (loop (cdr lines) (cons (list 'hr) b) '() '() #f "" '())))
-                              ((regexp-exec %heading-rx trimmed) =>
-                                                                 (lambda (m)
-                                                                   (let ((b (flush-all blocks))
-                                                                         (lvl (string-length (match:substring m 1)))
-                                                                         (title (string-trim-both (match:substring m 2))))
-                                                                     (loop (cdr lines) (cons (list 'heading lvl title) b)
-                                                                           '() '() #f "" '()))))
-                              ((regexp-exec %blockquote-rx line) =>
-                                                                 (lambda (m)
-                                                                   (let ((b (flush-para blocks)))
-                                                                     (set! para-acc '())
-                                                                     (set! quote-acc (cons (match:substring m 1) quote-acc))
-                                                                     (loop (cdr lines) b '() quote-acc #f "" '()))))
-                              ((regexp-exec %unordered-list-rx line) =>
-                                                                     (lambda (m)
-                                                                       (let ((b (flush-all blocks))
-                                                                             (indent (string-length (match:substring m 1)))
-                                                                             (body (match:substring m 3)))
-                                                                         (loop (cdr lines)
-                                                                               (cons (list 'list-item indent 'bullet body) b)
-                                                                               '() '() #f "" '()))))
-                              ((regexp-exec %ordered-list-rx line) =>
-                                                                   (lambda (m)
-                                                                     (let ((b (flush-all blocks))
-                                                                           (indent (string-length (match:substring m 1)))
-                                                                           (marker (match:substring m 2))
-                                                                           (body (match:substring m 3)))
-                                                                       (loop (cdr lines)
-                                                                             (cons (list 'list-item indent marker body) b)
-                                                                             '() '() #f "" '()))))
-                              (else
-                                (let ((b (flush-quote blocks)))
-                                  (set! quote-acc '())
-                                  (loop (cdr lines) b (cons line para-acc) '() #f "" '())))))))))))
+        (let
+            ((raw-lines (string-split (or text "") #\newline)))
+          (let loop
+            ((lines raw-lines) (blocks '())
+             (para-acc '())
+             (quote-acc '())
+             (in-fence #f)
+             (fence-lang "")
+             (fence-lines '()))
+            (define (flush-para b)
+                    (if (null? para-acc)
+                      b
+                      (cons (list 'paragraph (reverse para-acc)) b)))
+            (define (flush-quote b)
+                    (if (null? quote-acc)
+                      b
+                      (cons (list 'blockquote (reverse quote-acc)) b)))
+            (define (flush-all b) (set! b (flush-para b))
+                    (set! para-acc '())
+                    (set! b (flush-quote b))
+                    (set! quote-acc '())
+                    b)
+            (if (null? lines)
+              (let
+                  ((b
+                     (if in-fence
+                       (cons (list 'code-block fence-lang (reverse fence-lines)) blocks)
+                       (flush-all blocks))))
+                (reverse b))
+              (let*
+                  ((line (car lines)) (trimmed (string-trim-both line)))
+                (if in-fence
+                  (if (string-prefix? in-fence trimmed)
+                    (loop (cdr lines)
+                          (cons (list 'code-block fence-lang (reverse fence-lines)) blocks) '() '() #f ""
+                          '())
+                    (loop (cdr lines) blocks '() '() in-fence fence-lang (cons line fence-lines)))
+                  (let ((fence (fence-delimiter trimmed)))
+                    (cond
+                      (fence
+                        (let*
+                            ((b (flush-all blocks)) (lang-str (cdr fence))
+                             (sp (string-index lang-str #\space)))
+                          (loop (cdr lines) b '() '() (car fence)
+                                (if sp
+                                  (substring lang-str 0 sp)
+                                  lang-str) '())))
+                      ((string-null? trimmed)
+                        (let ((b (flush-all blocks)))
+                          (loop (cdr lines)
+                                (if (and (pair? b) (eq? (caar b) 'blank))
+                                  b
+                                  (cons (list 'blank) b)) '() '() #f
+                                "" '())))
+                      ((regexp-exec %hr-rx line)
+                        (let ((b (flush-all blocks)))
+                          (loop (cdr lines) (cons (list 'hr) b) '() '() #f "" '())))
+                      ((regexp-exec %heading-rx trimmed) =>
+                                                         (lambda (m)
+                                                           (let
+                                                               ((b (flush-all blocks))
+                                                                (lvl (string-length (match:substring m 1)))
+                                                                (title (string-trim-both (match:substring m 2))))
+                                                             (loop (cdr lines) (cons (list 'heading lvl title) b) '() '() #f "" '()))))
+                      ((regexp-exec %blockquote-rx line) =>
+                                                         (lambda (m)
+                                                           (let ((b (flush-para blocks)))
+                                                             (set! para-acc '())
+                                                             (set! quote-acc (cons (match:substring m 1) quote-acc))
+                                                             (loop (cdr lines) b '() quote-acc #f "" '()))))
+                      ((regexp-exec %unordered-list-rx line) =>
+                                                             (lambda (m)
+                                                               (let
+                                                                   ((b (flush-all blocks))
+                                                                    (indent (string-length (match:substring m 1)))
+                                                                    (body (match:substring m 3)))
+                                                                 (loop (cdr lines) (cons (list 'list-item indent 'bullet body) b) '() '() #f ""
+                                                                       '()))))
+                      ((regexp-exec %ordered-list-rx line) =>
+                                                           (lambda (m)
+                                                             (let
+                                                                 ((b (flush-all blocks))
+                                                                  (indent (string-length (match:substring m 1)))
+                                                                  (marker (match:substring m 2))
+                                                                  (body (match:substring m 3)))
+                                                               (loop (cdr lines) (cons (list 'list-item indent marker body) b) '() '() #f ""
+                                                                     '()))))
+                      (else
+                        (let ((b (flush-quote blocks)))
+                          (set! quote-acc '())
+                          (loop (cdr lines) b (cons line para-acc) '() #f "" '())))))))))))
 
 (define (count-run str pos ch)
         (let ((len (string-length str)))
@@ -943,14 +968,14 @@ pure-Scheme Markdown renderer."
 (define (sanitize-osc-text str)
         "Strip terminal escape sequences (CSI/OSC) and control characters (ESC, BEL,
 C0/DEL) from STR so untrusted strings cannot break out of OSC 0/2/8 sequences."
-        (if (not (string? str))
-          ""
+        (if (string? str)
           (let ((no-csi (strip-ansi-escapes str)))
             (list->string
-              (filter (lambda (c)
-                        (let ((code (char->integer c)))
-                          (and (>= code 32) (not (= code 127)))))
-                      (string->list no-csi))))))
+              (filter
+                (lambda (c)
+                  (let ((code (char->integer c))) (and (>= code 32) (not (= code 127)))))
+                (string->list no-csi))))
+          ""))
 
 (define* (format-osc8-link url #:optional (label url) (id #f))
          "Wrap LABEL in an OSC 8 terminal hyperlink targeting URL."
@@ -1233,62 +1258,93 @@ is provided, otherwise inspects BADB_IMAGE_PROTOCOL and terminal environment var
                    dims
                    b64)))
 
-(define* (render-image-ncvisual nc plane path #:key (y 0) (x 0) (max-rows 20) (max-cols 60))
-         "Decode and blit image PATH onto notcurses PLANE using ncvisual.
+(define*
+  (render-image-ncvisual nc
+                         plane
+                         path
+                         #:key
+                         (y 0)
+                         (x 0)
+                         (max-rows 20)
+                         (max-cols 60))
+  "Decode and blit image PATH onto notcurses PLANE using ncvisual.
 Returns an alist ((ok . #t) (blitter . sym) (rows . N) (cols . N)) on success,
 or #f when images are unsupported, PATH does not exist, or blitting fails."
-         (and nc plane (string? path) (file-exists? path)
-              (catch #t
-                (lambda ()
-                  (if (not (notcurses_canopen_images nc))
+  (and nc
+       plane
+       (string? path)
+       (file-exists? path)
+       (catch #t
+         (lambda ()
+           (and (notcurses_canopen_images nc)
+                (let ((vis (ncvisual_from_file path)))
+                  (if (or (not vis) (equal? vis %null-pointer))
                     #f
-                    (let ((vis (ncvisual_from_file path)))
-                      (if (or (not vis) (equal? vis %null-pointer))
-                        #f
-                        (dynamic-wind
-                          (lambda () #t)
-                          (lambda ()
-                            (let* ((proto (detect-image-protocol nc))
-                                   (blitter (if (eq? proto 'none) NCBLIT_2x2 NCBLIT_PIXEL))
-                                   (opts (make-ncvisual-options
-                                           #:n plane
-                                           #:scaling NCSCALE_SCALE
-                                           #:y y
-                                           #:x x
-                                           #:leny max-rows
-                                           #:lenx max-cols
-                                           #:blitter blitter))
-                                   (geom (make-ncvgeom)))
-                              (ncvisual_geom nc vis (->pointer opts) (->pointer geom))
-                              (let ((out-plane (ncvisual_blit nc vis (->pointer opts))))
-                                (if (or (not out-plane) (equal? out-plane %null-pointer))
-                                  #f
-                                  `((ok . #t)
-                                    (blitter . ,(if (= blitter NCBLIT_PIXEL) 'pixel '2x2))
-                                    (rows . ,(ncvgeom-rcelly geom))
-                                    (cols . ,(ncvgeom-rcellx geom))
-                                    (pixy . ,(ncvgeom-pixy geom))
-                                    (pixx . ,(ncvgeom-pixx geom)))))))
-                          (lambda ()
-                            (ncvisual_destroy vis)))))))
-                (lambda _ #f))))
+                    (dynamic-wind
+                      (lambda ()
+                        #t)
+                      (lambda ()
+                        (let*
+                            ((proto (detect-image-protocol nc))
+                             (blitter
+                               (if (eq? proto 'none)
+                                 NCBLIT_2x2
+                                 NCBLIT_PIXEL))
+                             (opts
+                               (make-ncvisual-options #:n
+                                                      plane
+                                                      #:scaling
+                                                      NCSCALE_SCALE
+                                                      #:y
+                                                      y
+                                                      #:x
+                                                      x
+                                                      #:leny
+                                                      max-rows
+                                                      #:lenx
+                                                      max-cols
+                                                      #:blitter
+                                                      blitter))
+                             (geom (make-ncvgeom)))
+                          (ncvisual_geom nc vis (->pointer opts) (->pointer geom))
+                          (let
+                              ((out-plane (ncvisual_blit nc vis (->pointer opts))))
+                            (if
+                                (or (not out-plane) (equal? out-plane %null-pointer))
+                              #f
+                              `((ok . #t)
+                                (blitter .
+                                         ,(if (= blitter NCBLIT_PIXEL)
+                                            'pixel
+                                            '2x2))
+                                (rows . ,(ncvgeom-rcelly geom))
+                                (cols . ,(ncvgeom-rcellx geom))
+                                (pixy . ,(ncvgeom-pixy geom))
+                                (pixx . ,(ncvgeom-pixx geom)))))))
+                      (lambda ()
+                        (ncvisual_destroy vis)))))))
+         (lambda _
+           #f))))
 
 (define %md-image-rx
         (make-regexp "!\\[[^]]*\\]\\(([^)]+)\\)"))
 
 (define (extract-markdown-image-paths text)
         "Extract image file paths from Markdown ![alt](path) references in TEXT."
-        (if (not (string? text))
-          '()
-          (let loop ((start 0) (acc '()))
-                    (let ((m (regexp-exec %md-image-rx text start)))
-                      (if (not m)
-                        (reverse acc)
-                        (let ((path (string-trim-both (match:substring m 1))))
-                          (loop (match:end m)
-                                (if (and (not (string-null? path)) (image-file-path? path))
-                                  (cons path acc)
-                                  acc))))))))
+        (if (string? text)
+          (let loop
+            ((start 0) (acc '()))
+            (let ((m (regexp-exec %md-image-rx text start)))
+              (if m
+                (let
+                    ((path (string-trim-both (match:substring m 1))))
+                  (loop (match:end m)
+                        (if
+                            (and (not (string-null? path)) (image-file-path? path))
+                          (cons path acc)
+                          acc)))
+                (reverse acc))))
+          '()))
 
 (define* (format-image-placeholder path
                                    #:key (width 40)

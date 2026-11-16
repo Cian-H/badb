@@ -15,13 +15,9 @@
   #:use-module
   (geasa capabilities-context-index plugin)
   #:use-module
-  (badb kernel digest)
-  #:use-module
   (ice-9 format)
   #:use-module
   (ice-9 rdelim)
-  #:use-module
-  (ice-9 regex)
   #:use-module
   (ice-9 string-fun)
   #:use-module

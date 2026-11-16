@@ -68,7 +68,6 @@
 ;;;
 ;;; Protocol Constants & Message Envelope
 ;;;
-
 (define %ui-protocol-version 1)
 
 (define %ui-client-message-types
@@ -227,7 +226,6 @@ eof-object on EOF, or #f on malformed frame."
 ;;;
 ;;; UI Server State Machine
 ;;;
-
 (define-record-type <ui-server>
                     (%make-ui-server mutex seq state clients handlers pending-frames)
                     ui-server?
@@ -316,37 +314,43 @@ and outbound serializable frames."
 (define (ui-server-handle-event! srv msg-or-json)
         "Process an incoming client <ui-message> (or JSON string) on SRV.
 Handles built-in lifecycle/resize/ping events and invokes registered handlers."
-        (let ((msg (cond
-                     ((ui-message? msg-or-json) msg-or-json)
-                     ((string? msg-or-json) (decode-ui-message msg-or-json))
-                     (else #f))))
-          (if (not msg)
-            (ui-server-emit! srv 'error '((reason . "invalid ui message")))
-            (let ((etype (ui-message-type msg))
-                  (payload (ui-message-payload msg))
-                  (src (ui-message-source msg)))
+        (let
+            ((msg
+               (cond
+                 ((ui-message? msg-or-json) msg-or-json)
+                 ((string? msg-or-json) (decode-ui-message msg-or-json))
+                 (else #f))))
+          (if msg
+            (let
+                ((etype (ui-message-type msg))
+                 (payload (ui-message-payload msg))
+                 (src (ui-message-source msg)))
               (case etype
                 ((ping)
-                  (ui-server-emit! srv 'pong `((client-seq . ,(ui-message-seq msg))
-                                               (source . ,src))))
+                  (ui-server-emit! srv
+                                   'pong
+                                   `((client-seq . ,(ui-message-seq msg)) (source . ,src))))
                 ((attach)
-                  (ui-server-connect! srv src
-                                      #:cols (or (prop-ref payload 'cols) 80)
-                                      #:rows (or (prop-ref payload 'rows) 24)))
-                ((detach)
-                  (ui-server-disconnect! srv src))
+                  (ui-server-connect! srv
+                                      src
+                                      #:cols
+                                      (or (prop-ref payload 'cols) 80)
+                                      #:rows
+                                      (or (prop-ref payload 'rows) 24)))
+                ((detach) (ui-server-disconnect! srv src))
                 ((resize)
                   (with-mutex (ui-server-mutex srv)
-                              (let ((cols (max 1 (or (prop-ref payload 'cols) 80)))
-                                    (rows (max 1 (or (prop-ref payload 'rows) 24))))
-                                (set-ui-server-state!
-                                  srv
-                                  (prop-set (prop-set (ui-server-state srv) 'cols cols) 'rows rows)))))
+                              (let
+                                  ((cols (max 1 (or (prop-ref payload 'cols) 80)))
+                                   (rows (max 1 (or (prop-ref payload 'rows) 24))))
+                                (set-ui-server-state! srv
+                                                      (prop-set (prop-set (ui-server-state srv) 'cols cols) 'rows rows)))))
                 (else #f))
-              (let ((handler (hashq-ref (ui-server-handlers srv) etype)))
-                (when handler
-                  (handler srv msg)))
-              msg))))
+              (let
+                  ((handler (hashq-ref (ui-server-handlers srv) etype)))
+                (when handler (handler srv msg)))
+              msg)
+            (ui-server-emit! srv 'error '((reason . "invalid ui message"))))))
 
 (define (ui-server-drain-frames! srv)
         "Atomically return and clear all queued outbound frames on SRV."
@@ -372,7 +376,6 @@ structured 'subagent-event frame."
 ;;;
 ;;; UI Client State Machine
 ;;;
-
 (define-record-type <ui-client>
                     (%make-ui-client id cols rows seq connected? out-port
                                      last-frame status subagent-events notifications)

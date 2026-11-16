@@ -14,8 +14,6 @@
                #:use-module
                (git repository)
                #:use-module
-               (git reference)
-               #:use-module
                (git branch)
                #:use-module
                (git status)

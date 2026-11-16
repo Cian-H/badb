@@ -13,8 +13,6 @@
                #:use-module
                (badb kernel journal)
                #:use-module
-               (json)
-               #:use-module
                (ice-9 format)
                #:use-module
                (ice-9 regex)

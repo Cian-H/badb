@@ -15,8 +15,6 @@
   #:use-module
   (srfi srfi-14)
   #:use-module
-  (ice-9 format)
-  #:use-module
   (ice-9 regex)
   #:use-module
   (pfds hamts)
@@ -308,8 +306,7 @@ Falls back to chunk-plain-lines if no declarations are detected."
          (found-sec? #f))
         (cond
           ((null? rem)
-            (if (not found-sec?)
-              (chunk-plain-lines text)
+            (if found-sec?
               (let
                   ((final-results
                      (if (null? accum)
@@ -317,7 +314,8 @@ Falls back to chunk-plain-lines if no declarations are detected."
                        (cons
                          (list cur-sec sec-start (- ln 1) (string-join (reverse accum) "\n"))
                          results))))
-                (reverse final-results))))
+                (reverse final-results))
+              (chunk-plain-lines text)))
           (else
             (let*
                 ((line (car rem))
@@ -432,18 +430,24 @@ Returns a list of ((score . <chunk>) ...) sorted by relevance or timeline."
             (if (or (not db) (string-null? fts-expr))
               '()
               (let*
-                  ((clauses '("chunks MATCH ?"))
-                   (params (list fts-expr))
-                   (_
-                     (when
-                         (and source-id (not (string-null? source-id)))
-                       (set! clauses (append clauses '("source_id LIKE ?")))
-                       (set! params (append params (list (string-append "%" source-id "%"))))))
-                   (_
-                     (when
-                         (and content-type (not (string-null? content-type)))
-                       (set! clauses (append clauses '("content_type = ?")))
-                       (set! params (append params (list content-type)))))
+                  ((has-source? (and source-id (not (string-null? source-id))))
+                   (has-type? (and content-type (not (string-null? content-type))))
+                   (clauses
+                     (append '("chunks MATCH ?")
+                             (if has-source?
+                               '("source_id LIKE ?")
+                               '())
+                             (if has-type?
+                               '("content_type = ?")
+                               '())))
+                   (params
+                     (append (list fts-expr)
+                             (if has-source?
+                               (list (string-append "%" source-id "%"))
+                               '())
+                             (if has-type?
+                               (list content-type)
+                               '())))
                    (order-sql
                      (if (eq? sort 'timeline)
                        "chunk_id ASC"
@@ -472,11 +476,7 @@ Returns a list of ((score . <chunk>) ...) sorted by relevance or timeline."
                           ((cid (vector-ref row 0))
                            (sid (vector-ref row 1))
                            (sec-raw (vector-ref row 2))
-                           (sec
-                             (if
-                                 (and (string? sec-raw) (not (string-null? sec-raw)))
-                               sec-raw
-                               #f))
+                           (sec (and (string? sec-raw) (not (string-null? sec-raw)) sec-raw))
                            (sl (vector-ref row 3))
                            (el (vector-ref row 4))
                            (txt (vector-ref row 5))

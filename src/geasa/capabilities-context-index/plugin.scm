@@ -12,17 +12,7 @@
   #:use-module
   (geasa foundation-util plugin)
   #:use-module
-  (json)
-  #:use-module
   (ice-9 format)
-  #:use-module
-  (ice-9 popen)
-  #:use-module
-  (ice-9 regex)
-  #:use-module
-  (ice-9 rdelim)
-  #:use-module
-  (ice-9 textual-ports)
   #:use-module
   (srfi srfi-1)
   #:use-module
@@ -328,8 +318,7 @@ oversized outputs and indexes them into BM25."
                      (intent-query #f)
                      (max-return-chars 1600))
   "Execute CODE in LANGUAGE with FILE_CONTENT set to the contents of PATH."
-  (if (not (file-exists? path))
-    (format #f "Error: file not found: ~a" path)
+  (if (file-exists? path)
     (let*
         ((cmd
            (string-append "FILE_CONTENT=$(cat "
@@ -343,7 +332,8 @@ oversized outputs and indexes them into BM25."
                  #:intent-query
                  intent-query
                  #:max-return-chars
-                 max-return-chars))))
+                 max-return-chars))
+    (format #f "Error: file not found: ~a" path)))
 
 (define
   (build-language-exec-command language code)

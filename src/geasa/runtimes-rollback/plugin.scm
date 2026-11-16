@@ -4,46 +4,55 @@
 ;;; atomic rollbacks, undo history, and time-travel state restoration.
 
 (define-module (geasa runtimes-rollback plugin)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (badb kernel registry)
-               #:use-module (badb kernel journal)
-               #:use-module (geasa foundation-log plugin)
-               #:use-module (ice-9 rdelim)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 optargs)
-               #:use-module (json)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-9)
-               #:use-module (uuid generate)
-               #:use-module (uuid utils)
-               #:use-module (pfds hamts)
-               #:export (<rollback-manager>
-                          make-rollback-manager
-                          rollback-manager?
-                          rollback-manager-workspace-dir
-                          rollback-manager-registry
-                          rollback-manager-journal
-                          rollback-manager-storage-dir
-                          rollback-manager-checkpoints
-
-                          <checkpoint>
-                          make-checkpoint
-                          checkpoint?
-                          checkpoint-id
-                          checkpoint-description
-                          checkpoint-timestamp
-                          checkpoint-files
-                          checkpoint-registry-state
-
-                          ;; Operations
-                          scan-text-files
-                          create-checkpoint!
-                          list-checkpoints
-                          get-checkpoint
-                          rollback-to-checkpoint!
-                          rollback-latest!
-                          delete-checkpoint!
-                          with-checkpoint))
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (badb kernel registry)
+               #:use-module
+               (badb kernel journal)
+               #:use-module
+               (geasa foundation-log plugin)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 optargs)
+               #:use-module
+               (json)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:use-module
+               (uuid generate)
+               #:use-module
+               (uuid utils)
+               #:use-module
+               (pfds hamts)
+               #:export
+               (<rollback-manager> make-rollback-manager
+                                   rollback-manager?
+                                   rollback-manager-workspace-dir
+                                   rollback-manager-registry
+                                   rollback-manager-journal
+                                   rollback-manager-storage-dir
+                                   rollback-manager-checkpoints
+                                   <checkpoint>
+                                   make-checkpoint
+                                   checkpoint?
+                                   checkpoint-id
+                                   checkpoint-description
+                                   checkpoint-timestamp
+                                   checkpoint-files
+                                   checkpoint-registry-state
+                                   ;; Operations
+                                   scan-text-files
+                                   create-checkpoint!
+                                   list-checkpoints
+                                   get-checkpoint
+                                   rollback-to-checkpoint!
+                                   rollback-latest!
+                                   delete-checkpoint!
+                                   with-checkpoint))
 
 ;;;
 ;;; Filesystem Helpers

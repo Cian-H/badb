@@ -10,25 +10,30 @@
 ;;; notifications get none. Unknown methods get a JSON-RPC error. The
 ;;; server exits cleanly at EOF on stdin.
 
-(define-module (geasa capabilities-mcp-server plugin)
-               #:use-module (badb kernel ipc)
-               #:use-module (json)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 match)
-               #:use-module (ice-9 rdelim)
-               #:use-module (srfi srfi-9)
-               #:export (<mcp-server>
-                          make-mcp-server
-                          mcp-server?
-                          mcp-server-name
-                          mcp-server-version
-                          mcp-server-tools
-                          mcp-server-handlers
-                          mcp-serve-stdio
-                          write-response!
-                          result-response
-                          error-response
-                          handle-message))
+(define-module
+  (geasa capabilities-mcp-server plugin)
+  #:use-module
+  (badb kernel ipc)
+  #:use-module
+  (json)
+  #:use-module
+  (ice-9 format)
+  #:use-module
+  (ice-9 rdelim)
+  #:use-module
+  (srfi srfi-9)
+  #:export
+  (<mcp-server> make-mcp-server
+                mcp-server?
+                mcp-server-name
+                mcp-server-version
+                mcp-server-tools
+                mcp-server-handlers
+                mcp-serve-stdio
+                write-response!
+                result-response
+                error-response
+                handle-message))
 
 ;; An MCP server record descriptor and constructor
 (define-record-type <mcp-server>

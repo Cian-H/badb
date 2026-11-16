@@ -25,10 +25,6 @@
                (semver)
                #:use-module
                (semver ranges)
-               ;; DEV-DEBT [accepted-layering]: bundle tooling imports the synthesis plugin for
-               ;; replay; the reverse direction is broken via synthesis-assemble-hook in the plugin.
-               #:use-module
-               (geasa runtimes-synthesis plugin)
                #:use-module
                (json)
                #:use-module
@@ -200,99 +196,133 @@ missing file, unreadable content, or a non-list result.  Never evaluates."
                     (lambda _ #f))))))
           pins))
 
-;; DEV-DEBT [complexity]: cyclomatic ~41 — each manifest field is a hand-rolled
-;; check; a declarative field schema would shrink this.
+(define
+  (%validate-relative-member! add! bundle-dir path path-label member-label)
+  (unless (%safe-relative-path? path)
+    (add! (format #f "~a '~a' is not a safe relative path" path-label path)))
+  (unless (%bundle-member-exists? bundle-dir path)
+    (add! (format #f "~a '~a' does not exist in bundle" member-label path))))
+
+(define
+  (%validate-feature-id-field! add! bundle-dir manifest)
+  (let
+      ((fid (manifest-field manifest 'feature-id)))
+    (unless (%valid-feature-id? fid)
+      (add! (format #f "feature-id '~a' is missing or not sanitized" fid)))
+    (when
+        (and (string? fid) (not (string= fid (basename bundle-dir))))
+      (add!
+        (format #f
+                "feature-id '~a' does not match directory name '~a'"
+                fid
+                (basename bundle-dir))))))
+
+(define
+  (%validate-plugin-field! add! bundle-dir plugin)
+  (when plugin
+    (let
+        ((module (and (list? plugin) (manifest-field plugin 'module)))
+         (file (and (list? plugin) (manifest-field plugin 'file))))
+      (unless
+          (and (list? module) (every symbol? module))
+        (add! "plugin field must carry (module . list-of-symbols)"))
+      (if (string? file)
+        (%validate-relative-member! add!
+                                    bundle-dir
+                                    file
+                                    "plugin file path"
+                                    "plugin file")
+        (add! "plugin field must carry (file . string)")))))
+
+(define
+  (%validate-prompts-field! add! bundle-dir prompts)
+  (when prompts
+    (unless
+        (and (list? prompts) (every string? prompts))
+      (add! "prompts field must be a list of file paths"))
+    (for-each
+      (lambda (p)
+        (%validate-relative-member! add! bundle-dir p "prompt path" "prompt file"))
+      (if (list? prompts)
+        prompts
+        '()))))
+
+(define (%validate-tools-field! add! tools)
+        (when
+            (and tools
+                 (not
+                   (and (list? tools)
+                        (every
+                          (lambda (t)
+                            (or (string? t)
+                                (symbol? t)
+                                (and (pair? t) (or (symbol? (car t)) (string? (car t))))))
+                          tools))))
+          (add! "tools field must be a list of tool names or specifications")))
+
 (define (geis-manifest-valid? bundle-dir)
         "Validate the bundle at BUNDLE-DIR.  Return '() when the manifest is valid,
 otherwise a non-empty list of human-readable reason strings."
-        (let ((errors-cell (list '()))
-              (manifest (read-geis-manifest (string-append bundle-dir "/manifest.scm"))))
-          (define (add! reason)
-                  (set-car! errors-cell (cons reason (car errors-cell))))
-          (cond
-            ((not manifest)
-              (add! "manifest.scm is missing or unreadable"))
-            (else
-              (unless (equal? 1 (manifest-field manifest 'bundle-version))
+        (let
+            ((errors-cell (list '()))
+             (manifest (read-geis-manifest (string-append bundle-dir "/manifest.scm"))))
+          (define (add! reason) (set-car! errors-cell (cons reason (car errors-cell))))
+          (if manifest
+            (begin
+              (unless
+                  (equal? 1 (manifest-field manifest 'bundle-version))
                 (add! "bundle-version must be exactly 1"))
-              (let ((fid (manifest-field manifest 'feature-id)))
-                (unless (%valid-feature-id? fid)
-                  (add! (format #f "feature-id '~a' is missing or not sanitized" fid)))
-                (when (and (string? fid) (not (string= fid (basename bundle-dir))))
-                  (add! (format #f "feature-id '~a' does not match directory name '~a'"
-                                fid (basename bundle-dir)))))
+              (%validate-feature-id-field! add! bundle-dir manifest)
               (let ((ver (manifest-field manifest 'version)))
-                (unless (and (string? ver) (not (string-null? ver)))
+                (unless
+                    (and (string? ver) (not (string-null? ver)))
                   (add! "version must be a non-empty string")))
               (let ((spec (manifest-field manifest 'spec)))
-                (unless spec (add! "spec field is missing"))
-                (when (and (string? spec) (not (%safe-relative-path? spec)))
-                  (add! (format #f "spec path '~a' is not a safe relative path" spec)))
-                (when (and (string? spec) (not (%bundle-member-exists? bundle-dir spec)))
-                  (add! (format #f "spec file '~a' does not exist in bundle" spec))))
-              (let ((plugin (manifest-field manifest 'plugin)))
-                (when plugin
-                  (let ((module (and (list? plugin) (manifest-field plugin 'module)))
-                        (file (and (list? plugin) (manifest-field plugin 'file))))
-                    (unless (and (list? module) (every symbol? module))
-                      (add! "plugin field must carry (module . list-of-symbols)"))
-                    (unless (string? file)
-                      (add! "plugin field must carry (file . string)"))
-                    (when (string? file)
-                      (unless (%safe-relative-path? file)
-                        (add! (format #f "plugin file path '~a' is not a safe relative path" file)))
-                      (unless (%bundle-member-exists? bundle-dir file)
-                        (add! (format #f "plugin file '~a' does not exist in bundle" file)))))))
-              (let ((workflow (manifest-field manifest 'workflow)))
+                (if spec
+                  (when (string? spec)
+                    (%validate-relative-member! add! bundle-dir spec "spec path" "spec file"))
+                  (add! "spec field is missing")))
+              (%validate-plugin-field! add! bundle-dir (manifest-field manifest 'plugin))
+              (let
+                  ((workflow (manifest-field manifest 'workflow)))
                 (when workflow
-                  (unless (%safe-relative-path? workflow)
-                    (add! (format #f "workflow path '~a' is not a safe relative path" workflow)))
-                  (unless (%bundle-member-exists? bundle-dir workflow)
-                    (add! (format #f "workflow file '~a' does not exist in bundle" workflow)))))
-              (let ((prompts (manifest-field manifest 'prompts)))
-                (when prompts
-                  (unless (and (list? prompts) (every string? prompts))
-                    (add! "prompts field must be a list of file paths"))
-                  (for-each
-                    (lambda (p)
-                      (unless (%safe-relative-path? p)
-                        (add! (format #f "prompt path '~a' is not a safe relative path" p)))
-                      (unless (%bundle-member-exists? bundle-dir p)
-                        (add! (format #f "prompt file '~a' does not exist in bundle" p))))
-                    (if (list? prompts) prompts '()))))
-              (let ((fixtures (manifest-field manifest 'fixtures)))
+                  (%validate-relative-member! add!
+                                              bundle-dir
+                                              workflow
+                                              "workflow path"
+                                              "workflow file")))
+              (%validate-prompts-field! add! bundle-dir (manifest-field manifest 'prompts))
+              (let
+                  ((fixtures (manifest-field manifest 'fixtures)))
                 (when fixtures
-                  (unless (%safe-relative-path? fixtures)
-                    (add! (format #f "fixtures path '~a' is not a safe relative path" fixtures)))
-                  (unless (%bundle-member-exists? bundle-dir fixtures)
-                    (add! (format #f "fixtures directory '~a' does not exist in bundle" fixtures)))))
-              (let ((cassettes (manifest-field manifest 'cassettes)))
+                  (%validate-relative-member! add!
+                                              bundle-dir
+                                              fixtures
+                                              "fixtures path"
+                                              "fixtures directory")))
+              (let
+                  ((cassettes (manifest-field manifest 'cassettes)))
                 (when cassettes
-                  (unless (%safe-relative-path? cassettes)
-                    (add! (format #f "cassettes path '~a' is not a safe relative path" cassettes)))
-                  (unless (%bundle-member-exists? bundle-dir cassettes)
-                    (add! (format #f "cassettes directory '~a' does not exist in bundle" cassettes)))))
-              (let ((tools (manifest-field manifest 'tools)))
-                (when tools
-                  (unless (and (list? tools)
-                               (every (lambda (t)
-                                        (or (string? t)
-                                            (symbol? t)
-                                            (and (pair? t) (or (symbol? (car t)) (string? (car t))))))
-                                      tools))
-                    (add! "tools field must be a list of tool names or specifications"))))
-              (unless (geis-manifest-capabilities-valid? manifest)
+                  (%validate-relative-member! add!
+                                              bundle-dir
+                                              cassettes
+                                              "cassettes path"
+                                              "cassettes directory")))
+              (%validate-tools-field! add! (manifest-field manifest 'tools))
+              (unless
+                  (geis-manifest-capabilities-valid? manifest)
                 (add! "capabilities must be unique (fs-read|fs-write|net-http target) requests"))
-              (let ((wf-exports (manifest-field manifest 'workflow-exports)))
-                (when wf-exports
-                  (unless (and (list? wf-exports) (every string? wf-exports))
-                    (add! "workflow-exports field must be a list of workflow name strings"))))
+              (let
+                  ((wf-exports (manifest-field manifest 'workflow-exports)))
+                (when
+                    (and wf-exports (not (and (list? wf-exports) (every string? wf-exports))))
+                  (add! "workflow-exports field must be a list of workflow name strings")))
               (let ((pins (manifest-field manifest 'sha256)))
                 (when pins
-                  (unless (list? pins)
-                    (add! "sha256 field must be a list of (file . hash) pins"))
-                  (when (list? pins)
-                    (%validate-sha256-pins! errors-cell bundle-dir pins))))))
+                  (if (list? pins)
+                    (%validate-sha256-pins! errors-cell bundle-dir pins)
+                    (add! "sha256 field must be a list of (file . hash) pins")))))
+            (add! "manifest.scm is missing or unreadable"))
           (reverse (car errors-cell))))
 
 ;;;
@@ -805,7 +835,12 @@ throws 'geis-bundle-error on validation failure."
         m5))))
 
 (define*
-  (geis-bundle-replay feature-id #:key (timeout 120) (target-path #f))
+  (geis-bundle-replay feature-id
+                      #:key
+                      (timeout 120)
+                      (target-path #f)
+                      (workflow-runner #f)
+                      (persona-resolver #f))
   "Replay the synthesis workflow for FEATURE-ID in cassette mode against
 its locked contract, with the replay target taken from provenance's
 target-path or the bundle's plugin.scm, and compare the re-synthesized
@@ -829,62 +864,71 @@ modified by the replay (cassette mode re-runs the edits)."
                  (and (pair? cass-files) (string-append dir "/" cass-dir "/" (car cass-files))))
                (spec-path (string-append dir "/spec.geis.scm"))
                (plugin-path (string-append dir "/plugin.scm"))
-               (has-plugin? (file-exists? plugin-path))
-               (target
-                 (or target-path
-                     recorded-target
-                     (and has-plugin?
-                          (let*
-                              ((tmp (mkdtemp "/tmp/badb-replay-XXXXXX"))
-                               (dst (string-append tmp "/plugin.scm")))
-                            (%copy-into! plugin-path dst)
-                            dst))))
-               (run-dir (mkdtemp "/tmp/badb-replay-run-XXXXXX")))
-            (if (and cassette target)
+               (has-plugin? (file-exists? plugin-path)))
+            (if
+                (and cassette (or target-path recorded-target has-plugin?))
               (let*
-                  ((res
-                     (run-synthesis-workflow fid
-                                             #:spec-path
-                                             spec-path
-                                             #:target-path
-                                             target
-                                             #:workflow-path
-                                             (string-append dir "/" wf)
-                                             ;; Replay reproduces the pinned
-                                             ;; synthesis with the DEFAULT
-                                             ;; synthesis persona (identity +
-                                             ;; directives from the
-                                             ;; persona-synthesizer geasa),
-                                             ;; independent of local config.
-                                             #:persona
-                                             (persona-prompt-text
-                                               "persona-synthesizer")
-                                             #:cassette
-                                             cassette
-                                             #:cassette-mode
-                                             "replay"
-                                             #:run-dir
-                                             run-dir))
-                   (wf-result (assoc-ref res 'result))
-                   (verdict
-                     (or
-                       (and (list? wf-result) (assoc-ref wf-result "verdict"))
-                       (assoc-ref res 'status)))
-                   (replayed-hash (sha256-hex (%read-file-string target)))
-                   (pinned-hash
-                     (if has-plugin?
-                       (sha256-hex (%read-file-string plugin-path))
-                       #f))
-                   (match
-                     (cond
-                       ((not has-plugin?) "n/a (kernel-referenced bundle)")
-                       ((string= replayed-hash pinned-hash) #t)
-                       (else #f))))
-                (list (cons 'feature-id fid)
-                      (cons 'workflow-verdict verdict)
-                      (cons 'plugin-match match)
-                      (cons 'pinned-hash pinned-hash)
-                      (cons 'replayed-hash replayed-hash)))
+                  ((tmp-dir
+                     (and (not target-path)
+                          (not recorded-target)
+                          has-plugin?
+                          (mkdtemp "/tmp/badb-replay-XXXXXX")))
+                   (target (or target-path recorded-target (string-append tmp-dir "/plugin.scm")))
+                   (run-dir (mkdtemp "/tmp/badb-replay-run-XXXXXX"))
+                   (run-wf
+                     (or workflow-runner
+                         (module-ref
+                           (resolve-interface '(geasa runtimes-synthesis plugin))
+                           'run-synthesis-workflow)))
+                   (resolve-persona
+                     (or persona-resolver
+                         (module-ref
+                           (resolve-interface '(geasa runtimes-synthesis plugin))
+                           'persona-prompt-text))))
+                (dynamic-wind
+                  (lambda ()
+                    (when tmp-dir (%copy-into! plugin-path target)))
+                  (lambda ()
+                    (let*
+                        ((res
+                           (run-wf fid
+                                   #:spec-path
+                                   spec-path
+                                   #:target-path
+                                   target
+                                   #:workflow-path
+                                   (string-append dir "/" wf)
+                                   #:persona
+                                   (resolve-persona "persona-synthesizer")
+                                   #:cassette
+                                   cassette
+                                   #:cassette-mode
+                                   "replay"
+                                   #:run-dir
+                                   run-dir))
+                         (wf-result (assoc-ref res 'result))
+                         (verdict
+                           (or
+                             (and (list? wf-result) (assoc-ref wf-result "verdict"))
+                             (assoc-ref res 'status)))
+                         (replayed-hash (sha256-hex (%read-file-string target)))
+                         (pinned-hash
+                           (if has-plugin?
+                             (sha256-hex (%read-file-string plugin-path))
+                             #f))
+                         (match
+                           (cond
+                             ((not has-plugin?) "n/a (kernel-referenced bundle)")
+                             ((string= replayed-hash pinned-hash) #t)
+                             (else #f))))
+                      (list (cons 'feature-id fid)
+                            (cons 'workflow-verdict verdict)
+                            (cons 'plugin-match match)
+                            (cons 'pinned-hash pinned-hash)
+                            (cons 'replayed-hash replayed-hash))))
+                  (lambda ()
+                    (%delete-tree! run-dir)
+                    (when tmp-dir (%delete-tree! tmp-dir)))))
               (list (cons 'feature-id fid)
                     (cons 'workflow-verdict "fail")
                     (cons 'plugin-match "n/a")

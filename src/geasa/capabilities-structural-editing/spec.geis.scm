@@ -113,7 +113,7 @@
                   (lambda ()
                     (let
                         ((sample (string-append ws "/clean.scm")) (v (make-semcp-lint-validator)))
-                      (string->file "(define (id x) x)\n" sample)
+                      (string->file sample "(define (id x) x)\n")
                       (test-assert
                         "clean scheme file passes lint validator"
                         (assoc-ref (v `((file . ,sample) (workspace . ,ws))) 'passed?))))

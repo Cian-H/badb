@@ -4,68 +4,75 @@
 ;;; item normalization, navigation, live model menus, and configuration flows.
 
 (define-module (geasa surfaces-tui menus)
-               #:use-module (geasa foundation-config plugin)
-               #:use-module (geasa surfaces-theme plugin)
-               #:use-module (geasa surfaces-tui session)
-               #:use-module (geasa providers-model common)
-               #:use-module (geasa providers-model openai)
-               #:use-module (geasa policies-guardrail plugin)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (ice-9 format)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-9)
-               #:export (%menu-max-visible
-                          <menu>
-                          menu?
-                          menu-title
-                          menu-items
-                          menu-selected-index
-                          menu-on-highlight
-                          menu-on-cancel
-                          menu-parent
-                          normalize-menu-item
-                          make-menu
-                          menu-count
-                          menu-move
-                          menu-trigger-highlight!
-                          menu-push
-                          menu-pop
-                          menu-depth
-                          menu-breadcrumbs
-                          menu-breadcrumb-title
-                          menu-selected-item
-                          menu-visible-slice
-                          menu-item-label
-                          menu-item-description
-                          menu-item-action
-                          %theme-descriptions
-                          %guardrail-levels
-                          detect-model-decision
-                          build-model-menu-items
-                          config-recorded-models
-                          fetch-live-models
-                          build-live-or-recorded-model-menu-items
-                          endpoint-menu-items-for-config
-                          provider-menu-items
-                          synthesizer-config-menu-items
-                          synthesizer-provider-menu-items
-                          synthesizer-model-menu-items
-                          apply-synthesis-provider-config!
-                          session-resurrection-menu-items
-                          theme-menu-items
-                          make-theme-preview-menu
-                          guardrail-menu-items
-                          config-menu-items-for-state
-                          %command-categories
-                          command-category-menu-items
-                          command-items-for-category
-                          make-commands-root-menu
-                          open-command-category-menu))
+               #:use-module
+               (geasa foundation-config plugin)
+               #:use-module
+               (geasa surfaces-theme plugin)
+               #:use-module
+               (geasa surfaces-tui session)
+               #:use-module
+               (geasa providers-model openai)
+               #:use-module
+               (geasa policies-guardrail plugin)
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:export
+               (%menu-max-visible <menu>
+                                  menu?
+                                  menu-title
+                                  menu-items
+                                  menu-selected-index
+                                  menu-on-highlight
+                                  menu-on-cancel
+                                  menu-parent
+                                  normalize-menu-item
+                                  make-menu
+                                  menu-count
+                                  menu-move
+                                  menu-trigger-highlight!
+                                  menu-push
+                                  menu-pop
+                                  menu-depth
+                                  menu-breadcrumbs
+                                  menu-breadcrumb-title
+                                  menu-selected-item
+                                  menu-visible-slice
+                                  menu-item-label
+                                  menu-item-description
+                                  menu-item-action
+                                  %theme-descriptions
+                                  %guardrail-levels
+                                  detect-model-decision
+                                  build-model-menu-items
+                                  config-recorded-models
+                                  fetch-live-models
+                                  build-live-or-recorded-model-menu-items
+                                  endpoint-menu-items-for-config
+                                  provider-menu-items
+                                  synthesizer-config-menu-items
+                                  synthesizer-provider-menu-items
+                                  synthesizer-model-menu-items
+                                  apply-synthesis-provider-config!
+                                  session-resurrection-menu-items
+                                  theme-menu-items
+                                  make-theme-preview-menu
+                                  guardrail-menu-items
+                                  config-menu-items-for-state
+                                  %command-categories
+                                  command-category-menu-items
+                                  command-items-for-category
+                                  make-commands-root-menu
+                                  open-command-category-menu))
 
 ;;;
 ;;; Interactive Menu Model
 ;;;
-
 (define %menu-max-visible 12)
 
 (define-record-type <menu>
@@ -159,18 +166,18 @@ be an existing <menu> record or a title string paired with ITEMS."
 (define (menu-pop menu)
         "Cancel/close MENU by invoking its optional on-cancel callback and
 returning its parent <menu> (or #f when already at root)."
-        (if (not (menu? menu))
-          #f
-          (let ((cb (menu-on-cancel menu)))
-            (when (procedure? cb)
-              (catch #t
-                (lambda ()
-                  (let ((arity (procedure-minimum-arity cb)))
-                    (if (and (pair? arity) (= (car arity) 0))
-                      (cb)
-                      (cb menu))))
-                (lambda _ #f)))
-            (menu-parent menu))))
+        (and (menu? menu)
+             (let ((cb (menu-on-cancel menu)))
+               (when (procedure? cb)
+                 (catch #t
+                   (lambda ()
+                     (let ((arity (procedure-minimum-arity cb)))
+                       (if (and (pair? arity) (= (car arity) 0))
+                         (cb)
+                         (cb menu))))
+                   (lambda _
+                     #f)))
+               (menu-parent menu))))
 
 (define (menu-depth menu)
         "Return the nesting depth of MENU (0 for a root menu)."
@@ -180,12 +187,13 @@ returning its parent <menu> (or #f when already at root)."
 
 (define (menu-breadcrumbs menu)
         "Return the list of menu titles from root down to MENU."
-        (if (not (menu? menu))
-          '()
-          (let loop ((cur menu) (acc '()))
-                    (if (not cur)
-                      acc
-                      (loop (menu-parent cur) (cons (menu-title cur) acc))))))
+        (if (menu? menu)
+          (let loop
+            ((cur menu) (acc '()))
+            (if cur
+              (loop (menu-parent cur) (cons (menu-title cur) acc))
+              acc))
+          '()))
 
 (define* (menu-breadcrumb-title menu #:optional (sep " › "))
          "Format MENU's breadcrumb path joined by SEP (e.g. \"Configuration › Theme\")."
@@ -254,7 +262,6 @@ items of MENU positioned so the selected item stays on screen."
 ;;;
 ;;; Model Auto-Detection & Live Model Menu Helpers
 ;;;
-
 (define (detect-model-decision cur-model detected-model error)
         "Pure adopt/detect decision policy for startup model detection."
         (cond
@@ -581,7 +588,6 @@ menu-pop restores CURRENT-THEME-NAME and invokes ON-CANCEL if provided."
 ;;;
 ;;; Categorized & Nested Slash Command Menus
 ;;;
-
 (define %command-categories
         '(("Session & History"
            "Resume, compact, checkpoint, rollback, fork, export"
@@ -640,13 +646,14 @@ menu-pop restores CURRENT-THEME-NAME and invokes ON-CANCEL if provided."
 
 (define (command-items-for-category cat-name)
         "Return normalized menu items for the command category CAT-NAME, or '()."
-        (let ((entry (assoc cat-name %command-categories)))
-          (if (not entry)
-            '()
-            (map (lambda (spec)
-                   (cons (cons (string-append "/" (car spec)) (cadr spec))
-                         (caddr spec)))
-                 (caddr entry)))))
+        (let
+            ((entry (assoc cat-name %command-categories)))
+          (if entry
+            (map
+              (lambda (spec)
+                (cons (cons (string-append "/" (car spec)) (cadr spec)) (caddr spec)))
+              (caddr entry))
+            '())))
 
 (define* (make-commands-root-menu #:key (parent #f))
          "Create the root categorized commands menu."

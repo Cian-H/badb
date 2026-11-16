@@ -26,8 +26,6 @@
 
 (define-module (geasa runtimes-synthesis plugin)
                #:use-module
-               (badb kernel digest)
-               #:use-module
                (badb kernel journal)
                #:use-module
                (badb kernel registry)
@@ -45,8 +43,6 @@
                (ice-9 ftw)
                #:use-module
                (ice-9 popen)
-               #:use-module
-               (ice-9 rdelim)
                #:use-module
                (ice-9 textual-ports)
                #:use-module
@@ -535,132 +531,124 @@ Options:
 
 (define synthesis-assemble-hook (make-parameter #f))
 
-;; DEV-DEBT [complexity]: cyclomatic ~43 / nesting 14 (ast_complexity_metrics);
-;; the CLI arg loop wants splitting into per-option handlers.
+(define (%parse-synthesis-cli-args args)
+        (let loop
+          ((rest args) (opts '()))
+          (if (null? rest)
+            opts
+            (let ((arg (car rest)) (more (cdr rest)))
+              (cond
+                ((equal? arg "--commit-only") (loop more (acons 'commit-only? #t opts)))
+                ((and (equal? arg "--spec") (pair? more))
+                  (loop (cdr more) (acons 'spec-path (car more) opts)))
+                ((and (equal? arg "--target") (pair? more))
+                  (loop (cdr more) (acons 'target-path (car more) opts)))
+                ((and (equal? arg "--model") (pair? more))
+                  (loop (cdr more) (acons 'model (car more) opts)))
+                ((and (equal? arg "--budget-tokens") (pair? more))
+                  (loop (cdr more) (acons 'budget-tokens (string->number (car more)) opts)))
+                ((and (equal? arg "--budget-usd") (pair? more))
+                  (loop (cdr more) (acons 'budget-usd (string->number (car more)) opts)))
+                ((and (equal? arg "--cassette") (pair? more))
+                  (loop (cdr more)
+                        (acons 'cassette
+                               (car more)
+                               (if (assoc-ref opts 'cassette-mode)
+                                 opts
+                                 (acons 'cassette-mode "replay" opts)))))
+                ((and (equal? arg "--cassette-mode") (pair? more))
+                  (loop (cdr more) (acons 'cassette-mode (car more) opts)))
+                ((and (equal? arg "--max-turns") (pair? more))
+                  (loop (cdr more) (acons 'max-turns (string->number (car more)) opts)))
+                ((not (assoc-ref opts 'feature-id)) (loop more (acons 'feature-id arg opts)))
+                (else
+                  (format (current-error-port) "Error: unrecognized argument '~a'~%" arg)
+                  (exit 1)))))))
+
+(define (%execute-synthesis-cli opts)
+        (let
+            ((feature-id (assoc-ref opts 'feature-id))
+             (spec-path (assoc-ref opts 'spec-path))
+             (target-path (assoc-ref opts 'target-path))
+             (model (assoc-ref opts 'model))
+             (budget-tokens (assoc-ref opts 'budget-tokens))
+             (budget-usd (assoc-ref opts 'budget-usd))
+             (cassette (assoc-ref opts 'cassette))
+             (cassette-mode (assoc-ref opts 'cassette-mode))
+             (max-turns (assoc-ref opts 'max-turns))
+             (commit-only? (assoc-ref opts 'commit-only?)))
+          (if feature-id
+            (if commit-only?
+              (commit-synthesized-module-cli feature-id
+                                             (or target-path (default-synthesis-target feature-id)))
+              (let*
+                  ((role
+                     (catch #t
+                       (lambda ()
+                         (resolve-synthesis-role (load-config)))
+                       (lambda _
+                         #f)))
+                   (llm-args (and role (synthesis-llm-args role)))
+                   (budget
+                     (and (or budget-tokens budget-usd)
+                          `((max-tokens . ,budget-tokens) (max-cost-usd . ,budget-usd))))
+                   (res
+                     (run-synthesis-workflow feature-id
+                                             #:spec-path
+                                             spec-path
+                                             #:target-path
+                                             target-path
+                                             #:model
+                                             (or model (and role (assoc-ref role 'model)))
+                                             #:persona
+                                             (and role (assoc-ref role 'persona-text))
+                                             #:env
+                                             (if role
+                                               (synthesis-env-alist role)
+                                               '())
+                                             #:llm-endpoint
+                                             (and llm-args (assoc-ref llm-args 'llm-endpoint))
+                                             #:llm-api-key
+                                             (and llm-args (assoc-ref llm-args 'llm-api-key))
+                                             #:budget
+                                             budget
+                                             #:cassette
+                                             cassette
+                                             #:cassette-mode
+                                             cassette-mode
+                                             #:max-turns
+                                             max-turns))
+                   (status (assoc-ref res 'status))
+                   (ok? (string=? (or status "") "success")))
+                (format #t "Sema synthesis ~a for feature '~a'.~%" status feature-id)
+                (when (assoc-ref res 'result)
+                  (format #t "Result: ~a~%" (scm->json-string (assoc-ref res 'result))))
+                (catch #t
+                  (lambda ()
+                    (let ((hook (synthesis-assemble-hook)))
+                      (when hook (hook feature-id cassette target-path))))
+                  (lambda _
+                    #f))
+                (when ok?
+                  (let
+                      ((report
+                         (install-synthesized-bundle! feature-id
+                                                      (or target-path (default-synthesis-target feature-id)))))
+                    (format #t
+                            "Installed geis for project: ~a verdict: ~a~%"
+                            (assoc-ref report 'feature-id)
+                            (or (assoc-ref report 'verify-verdict) (assoc-ref report 'install-status) "?"))))
+                (exit
+                  (if ok?
+                    0
+                    1))))
+            (begin
+              (format (current-error-port) "Error: missing required feature-id argument.~%")
+              (exit 1)))))
+
 (define (run-synthesis-cli args)
         "CLI dispatcher for `badb synthesize`."
         (if
             (or (null? args) (member (car args) '("-h" "--help")))
           (begin (print-synthesis-usage (current-output-port)) (exit 0))
-          (let loop
-            ((rest args) (feature-id #f)
-             (spec-path #f)
-             (target-path #f)
-             (model #f)
-             (budget-tokens #f)
-             (budget-usd #f)
-             (cassette #f)
-             (cassette-mode #f)
-             (max-turns #f)
-             (commit-only? #f))
-            (cond
-              ((null? rest)
-                (if feature-id
-                  (if commit-only?
-                    (commit-synthesized-module-cli feature-id
-                                                   (or target-path (default-synthesis-target feature-id)))
-                    (let*
-                        ((role
-                           ;; Best-effort role resolution: the synthesis
-                           ;; agent role (model + persona) from the local
-                           ;; config, when one exists.
-                           (catch #t
-                             (lambda () (resolve-synthesis-role (load-config)))
-                             (lambda _ #f)))
-                         (budget
-                           (if (or budget-tokens budget-usd)
-                             `((max-tokens . ,budget-tokens) (max-cost-usd . ,budget-usd))
-                             #f))
-                         (res
-                           (run-synthesis-workflow feature-id
-                                                   #:spec-path
-                                                   spec-path
-                                                   #:target-path
-                                                   target-path
-                                                   #:model
-                                                   (or model
-                                                       (and role
-                                                            (assoc-ref role 'model)))
-                                                   #:persona
-                                                   (and role
-                                                        (assoc-ref role 'persona-text))
-                                                   #:env
-                                                   (if role
-                                                     (synthesis-env-alist role)
-                                                     '())
-                                                   #:llm-endpoint
-                                                   (if role
-                                                     (assoc-ref (synthesis-llm-args role) 'llm-endpoint)
-                                                     #f)
-                                                   #:llm-api-key
-                                                   (if role
-                                                     (assoc-ref (synthesis-llm-args role) 'llm-api-key)
-                                                     #f)
-                                                   #:budget
-                                                   budget
-                                                   #:cassette
-                                                   cassette
-                                                   #:cassette-mode
-                                                   cassette-mode
-                                                   #:max-turns
-                                                   max-turns))
-                         (status (assoc-ref res 'status)))
-                      (format #t "Sema synthesis ~a for feature '~a'.~%" status feature-id)
-                      (when (assoc-ref res 'result)
-                        (format #t "Result: ~a~%" (scm->json-string (assoc-ref res 'result))))
-                      (catch #t
-                        (lambda ()
-                          (let ((hook (synthesis-assemble-hook)))
-                            (when hook (hook feature-id cassette target-path))))
-                        (lambda _
-                          #f))
-                      (when (string=? (or status "") "success")
-                        (let ((report (install-synthesized-bundle!
-                                        feature-id
-                                        (or target-path (default-synthesis-target feature-id)))))
-                          (format #t "Installed geis for project: ~a verdict: ~a~%"
-                                  (assoc-ref report 'feature-id)
-                                  (or (assoc-ref report 'verify-verdict)
-                                      (assoc-ref report 'install-status)
-                                      "?"))))
-                      (exit
-                        (if (string=? (or status "") "success")
-                          0
-                          1))))
-                  (begin
-                    (format (current-error-port) "Error: missing required feature-id argument.~%")
-                    (exit 1))))
-              ((equal? (car rest) "--commit-only")
-                (loop (cdr rest) feature-id spec-path target-path model budget-tokens
-                      budget-usd cassette cassette-mode max-turns #t))
-              ((and (equal? (car rest) "--spec") (pair? (cdr rest)))
-                (loop (cddr rest) feature-id (cadr rest) target-path model budget-tokens
-                      budget-usd cassette cassette-mode max-turns commit-only?))
-              ((and (equal? (car rest) "--target") (pair? (cdr rest)))
-                (loop (cddr rest) feature-id spec-path (cadr rest) model budget-tokens
-                      budget-usd cassette cassette-mode max-turns commit-only?))
-              ((and (equal? (car rest) "--model") (pair? (cdr rest)))
-                (loop (cddr rest) feature-id spec-path target-path (cadr rest) budget-tokens
-                      budget-usd cassette cassette-mode max-turns commit-only?))
-              ((and (equal? (car rest) "--budget-tokens") (pair? (cdr rest)))
-                (loop (cddr rest) feature-id spec-path target-path model
-                      (string->number (cadr rest)) budget-usd cassette cassette-mode max-turns
-                      commit-only?))
-              ((and (equal? (car rest) "--budget-usd") (pair? (cdr rest)))
-                (loop (cddr rest) feature-id spec-path target-path model budget-tokens
-                      (string->number (cadr rest)) cassette cassette-mode max-turns commit-only?))
-              ((and (equal? (car rest) "--cassette") (pair? (cdr rest)))
-                (loop (cddr rest) feature-id spec-path target-path model budget-tokens
-                      budget-usd (cadr rest) (or cassette-mode "replay") max-turns commit-only?))
-              ((and (equal? (car rest) "--cassette-mode") (pair? (cdr rest)))
-                (loop (cddr rest) feature-id spec-path target-path model budget-tokens
-                      budget-usd cassette (cadr rest) max-turns commit-only?))
-              ((and (equal? (car rest) "--max-turns") (pair? (cdr rest)))
-                (loop (cddr rest) feature-id spec-path target-path model budget-tokens
-                      budget-usd cassette cassette-mode (string->number (cadr rest)) commit-only?))
-              ((not feature-id)
-                (loop (cdr rest) (car rest) spec-path target-path model budget-tokens
-                      budget-usd cassette cassette-mode max-turns commit-only?))
-              (else
-                (format (current-error-port) "Error: unrecognized argument '~a'~%" (car rest))
-                (exit 1))))))
+          (%execute-synthesis-cli (%parse-synthesis-cli-args args))))

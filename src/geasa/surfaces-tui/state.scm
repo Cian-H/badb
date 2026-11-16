@@ -25,23 +25,15 @@
                #:use-module
                (geasa capabilities-skills plugin)
                #:use-module
-               (geasa surfaces-theme plugin)
-               #:use-module
                (geasa surfaces-tui editor)
-               #:use-module
-               (geasa surfaces-tui session)
                #:use-module
                (geasa surfaces-tui transcript)
                #:use-module
                (geasa surfaces-tui widgets)
                #:use-module
-               (geasa surfaces-tui menus)
-               #:use-module
                (geasa surfaces-tui overlay)
                #:use-module
                (geasa surfaces-tui commands)
-               #:use-module
-               (geasa surfaces-tui tools)
                #:use-module
                (ice-9 format)
                #:use-module

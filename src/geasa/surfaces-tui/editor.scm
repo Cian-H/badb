@@ -4,16 +4,22 @@
 ;;; command registry/parsing, cursor editing operations, and input history.
 
 (define-module (geasa surfaces-tui editor)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (json)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 ftw)
-               #:use-module (ice-9 rdelim)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-9)
-               #:use-module (srfi srfi-19)
-               #:export (wrap-line
-                          wrap-text
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (json)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 ftw)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:use-module
+               (srfi srfi-19)
+               #:export
+               (wrap-line wrap-text
                           %slash-commands
                           selector-active?
                           matching-slash-commands
@@ -834,59 +840,93 @@ CURSOR-POS in INPUT-BUFFER under PROMPT-MODE."
           ((string? item) (cons item "file"))
           (else (cons (ensure-string item) "item"))))
 
-(define* (matching-at-candidates input-buffer #:key (cursor-pos #f) (candidates #f)
-                                 (root ".") (shortcuts '()) (limit 50))
-         "Return up to LIMIT matching (label . kind) pairs for the active @ token
+(define*
+  (matching-at-candidates input-buffer
+                          #:key
+                          (cursor-pos #f)
+                          (candidates #f)
+                          (root ".")
+                          (shortcuts '())
+                          (limit 50))
+  "Return up to LIMIT matching (label . kind) pairs for the active @ token
 at CURSOR-POS in INPUT-BUFFER. Uses CANDIDATES when provided, else scans ROOT
 workspace files plus SHORTCUTS."
-         (let ((tok (extract-at-token input-buffer cursor-pos)))
-           (if (not tok)
-             '()
-             (let* ((query (assoc-ref tok 'query))
-                    (type (assoc-ref tok 'type))
-                    (pool (append
-                            (if (and (eq? type 'any) (list? shortcuts))
-                              (map (lambda (s)
-                                     (cons (ensure-string (if (pair? s) (car s) s)) "shortcut"))
-                                   shortcuts)
-                              '())
-                            (map %normalize-at-candidate
-                                 (or candidates (collect-workspace-files root)))))
-                    (scored (if (string-null? query)
-                              (map (lambda (item) (cons item 0)) pool)
-                              (stable-sort
-                                (filter-map (lambda (item)
-                                              (let ((s (fuzzy-score query (car item))))
-                                                (and s (cons item s))))
-                                            pool)
-                                (lambda (a b) (> (cdr a) (cdr b))))))
-                    (items (map car scored)))
-               (if (and (integer? limit) (>= limit 0) (> (length items) limit))
-                 (take items limit)
-                 items)))))
+  (let
+      ((tok (extract-at-token input-buffer cursor-pos)))
+    (if tok
+      (let*
+          ((query (assoc-ref tok 'query))
+           (type (assoc-ref tok 'type))
+           (pool
+             (append
+               (if (and (eq? type 'any) (list? shortcuts))
+                 (map
+                   (lambda (s)
+                     (cons
+                       (ensure-string
+                         (if (pair? s)
+                           (car s)
+                           s))
+                       "shortcut"))
+                   shortcuts)
+                 '())
+               (map %normalize-at-candidate (or candidates (collect-workspace-files root)))))
+           (scored
+             (if (string-null? query)
+               (map
+                 (lambda (item)
+                   (cons item 0))
+                 pool)
+               (stable-sort
+                 (filter-map
+                   (lambda (item)
+                     (let ((s (fuzzy-score query (car item)))) (and s (cons item s))))
+                   pool)
+                 (lambda (a b)
+                   (> (cdr a) (cdr b))))))
+           (items (map car scored)))
+        (if
+            (and (integer? limit) (>= limit 0) (> (length items) limit))
+          (take items limit)
+          items))
+      '())))
 
-(define* (apply-at-completion buffer cursor-pos chosen #:key (add-space? #t))
-         "Replace the @ token ending at CURSOR-POS in BUFFER with CHOSEN
+(define*
+  (apply-at-completion buffer cursor-pos chosen #:key (add-space? #t))
+  "Replace the @ token ending at CURSOR-POS in BUFFER with CHOSEN
 (string or (label . kind) pair). Files expand as @file:PATH; shortcuts/symbols
 expand as @NAME. Return (values new-buffer new-pos)."
-         (let* ((buf (if (string? buffer) buffer ""))
-                (pos (clamp-cursor cursor-pos buf))
-                (tok (extract-at-token buf pos)))
-           (if (not tok)
-             (values buf pos)
-             (let* ((start (assoc-ref tok 'start))
-                    (end (assoc-ref tok 'end))
-                    (label (if (pair? chosen) (ensure-string (car chosen)) (ensure-string chosen)))
-                    (kind (and (pair? chosen) (ensure-string (cdr chosen))))
-                    (prefix (if (or (eq? (assoc-ref tok 'type) 'file)
-                                    (equal? kind "file"))
-                              "@file:"
-                              "@"))
-                    (replacement (string-append prefix label (if add-space? " " "")))
-                    (new-buf (string-append (substring buf 0 start)
-                                            replacement
-                                            (substring buf end))))
-               (values new-buf (+ start (string-length replacement)))))))
+  (let*
+      ((buf
+         (if (string? buffer)
+           buffer
+           ""))
+       (pos (clamp-cursor cursor-pos buf))
+       (tok (extract-at-token buf pos)))
+    (if tok
+      (let*
+          ((start (assoc-ref tok 'start))
+           (end (assoc-ref tok 'end))
+           (label
+             (if (pair? chosen)
+               (ensure-string (car chosen))
+               (ensure-string chosen)))
+           (kind (and (pair? chosen) (ensure-string (cdr chosen))))
+           (prefix
+             (if
+                 (or (eq? (assoc-ref tok 'type) 'file) (equal? kind "file"))
+               "@file:"
+               "@"))
+           (replacement
+             (string-append prefix
+                            label
+                            (if add-space?
+                              " "
+                              "")))
+           (new-buf
+             (string-append (substring buf 0 start) replacement (substring buf end))))
+        (values new-buf (+ start (string-length replacement))))
+      (values buf pos))))
 
 ;;;
 ;;; Configurable Keymaps (<keymap>) & Ctrl+I / Tab Resolution

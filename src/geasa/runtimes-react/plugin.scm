@@ -20,15 +20,9 @@
                #:use-module
                (badb kernel journal)
                #:use-module
-               (badb kernel transaction)
-               #:use-module
                (geasa capabilities-mcp plugin)
                #:use-module
-               (json)
-               #:use-module
                (ice-9 format)
-               #:use-module
-               (ice-9 rdelim)
                #:use-module
                (srfi srfi-1)
                #:use-module
@@ -1488,8 +1482,7 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                        (outer-sleeper (current-http-retry-sleeper))
                                        (interruptible-sleep
                                          (lambda (seconds)
-                                           (if (not (steering-queue? steering-q))
-                                             (outer-sleeper seconds)
+                                           (if (steering-queue? steering-q)
                                              (let
                                                  ((total-ms (max 0 (inexact->exact (round (* 1000 seconds))))))
                                                (let sleep-loop
@@ -1498,7 +1491,8 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                                      (and (> rem-ms 0) (not (steering-has-interrupt? steering-q)))
                                                    (let ((chunk (min rem-ms 100)))
                                                      (outer-sleeper (/ chunk 1000.0))
-                                                     (sleep-loop (- rem-ms chunk)))))))))
+                                                     (sleep-loop (- rem-ms chunk))))))
+                                             (outer-sleeper seconds))))
                                        (retry-notifier
                                          (lambda (attempt wait-sec code kind err-msg)
                                            (when (procedure? on-step-fn)

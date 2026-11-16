@@ -1,8 +1,10 @@
 ;;; Bubblewrap command construction for isolated project geis workers.
-(define-module (geasa capabilities-bubblewrap plugin)
-               #:use-module (ice-9 ftw)
-               #:use-module (srfi srfi-13)
-               #:export (bubblewrap-worker-command))
+(define-module
+  (geasa capabilities-bubblewrap plugin)
+  #:use-module
+  (srfi srfi-13)
+  #:export
+  (bubblewrap-worker-command))
 
 (define (store-paths paths)
         (filter (lambda (path) (string-prefix? "/gnu/store/" path)) paths))

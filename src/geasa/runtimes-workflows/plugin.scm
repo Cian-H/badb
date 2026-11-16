@@ -4,25 +4,32 @@
 ;;; and distills successful agent session trajectories into reproducible Geis bundles.
 
 (define-module (geasa runtimes-workflows plugin)
-               #:use-module (badb geis bundle)
-               #:use-module (badb kernel registry)
-               #:use-module (badb kernel digest)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (json)
-               #:use-module (ice-9 ftw)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 textual-ports)
-               #:use-module (ice-9 popen)
-               #:use-module (ice-9 rdelim)
-               #:use-module (srfi srfi-1)
-               #:export (execute-sema-workflow
-                          bootstrap-project-geasa!
-                          profile-workspace-environment
-                          onboard-project-geasa!
-                          distill-trajectory-to-geis
-                          find-sema-executable
-                          mount-bundle-workflows!
-                          distill-exec-patterns!))
+               #:use-module
+               (badb geis bundle)
+               #:use-module
+               (badb kernel registry)
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (json)
+               #:use-module
+               (ice-9 ftw)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 popen)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (srfi srfi-1)
+               #:export
+               (execute-sema-workflow bootstrap-project-geasa!
+                                      profile-workspace-environment
+                                      onboard-project-geasa!
+                                      distill-trajectory-to-geis
+                                      find-sema-executable
+                                      mount-bundle-workflows!
+                                      distill-exec-patterns!))
 
 (define write-file! string->file)
 
@@ -158,7 +165,6 @@ runs via the external sema CLI."
 ;;;
 ;;; Project Onboarding & Workspace Profiling
 ;;;
-
 (define* (profile-workspace-environment #:optional (workspace (getcwd)))
          "Inspect WORKSPACE and return an alist describing detected language, test command, and lint command."
          (let ((has? (lambda (f) (file-exists? (string-append workspace "/" f)))))

@@ -1,12 +1,16 @@
 ;;; A minimal JSON-RPC worker for untrusted project geis tools.
-(define-module (badb geis worker)
-               #:use-module (badb geis capabilities)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 rdelim)
-               #:use-module (ice-9 textual-ports)
-               #:use-module (json)
-               #:use-module (srfi srfi-1)
-               #:export (run-geis-worker))
+(define-module (badb geis worker) #:use-module
+               (badb geis capabilities)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (json)
+               #:use-module
+               (srfi srfi-1)
+               #:export
+               (run-geis-worker))
 
 (define (read-json-line port)
         (let ((line (read-line port)))

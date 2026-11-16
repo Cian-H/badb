@@ -12,8 +12,6 @@
                #:use-module
                (ice-9 match)
                #:use-module
-               (ice-9 ftw)
-               #:use-module
                (srfi srfi-1)
                #:export
                (%default-version %default-output-dir

@@ -73,37 +73,40 @@
 
 (define (%python-blocks lines)
         "Nest Python LINES by indentation into a (module ...) S-expression CST."
-        (define (parse-level lines indent)
-                (let loop ((rest lines) (nodes '()))
-                          (if (null? rest)
-                            (values (reverse nodes) '())
-                            (let* ((raw (car rest))
-                                   (stripped (string-trim-right (%strip-comment raw 'python)))
-                                   (cur (string-trim stripped)))
-                              (cond
-                                ((string=? cur "")
-                                  (loop (cdr rest) nodes))
-                                ((< (%indent-width stripped) indent)
-                                  (values (reverse nodes) rest))
-                                (else
-                                  (let* ((head (string-take cur
-                                                            (or (string-index cur #\space)
-                                                                (string-length cur))))
-                                         (kind (match head
-                                                      ("def" 'function-def)
-                                                      ("class" 'class-def)
-                                                      (_ 'statement)))
-                                         (name (match (string-split cur #\space)
-                                                      ((_ nm . _) nm)
-                                                      (_ "?"))))
-                                    (call-with-values
-                                      (lambda () (parse-level (cdr rest) (+ indent 1)))
-                                      (lambda (children remaining)
-                                        (loop remaining
-                                              (cons (list kind name children) nodes)))))))))))
+        (define (parse-level level-lines indent)
+                (let loop
+                  ((rest level-lines) (nodes '()))
+                  (if (null? rest)
+                    (values (reverse nodes) '())
+                    (let*
+                        ((raw (car rest))
+                         (stripped (string-trim-right (%strip-comment raw 'python)))
+                         (cur (string-trim stripped)))
+                      (cond
+                        ((string=? cur "") (loop (cdr rest) nodes))
+                        ((< (%indent-width stripped) indent) (values (reverse nodes) rest))
+                        (else
+                          (let*
+                              ((head (string-take cur (or (string-index cur #\space) (string-length cur))))
+                               (kind
+                                 (match head
+                                        ("def" 'function-def)
+                                        ("class" 'class-def)
+                                        (_ 'statement)))
+                               (name
+                                 (match (string-split cur #\space)
+                                        ((_ nm . _) nm)
+                                        (_ "?"))))
+                            (call-with-values
+                              (lambda ()
+                                (parse-level (cdr rest) (+ indent 1)))
+                              (lambda (children remaining)
+                                (loop remaining (cons (list kind name children) nodes)))))))))))
         (call-with-values
-          (lambda () (parse-level lines 0))
-          (lambda (nodes _) (cons 'module nodes))))
+          (lambda ()
+            (parse-level lines 0))
+          (lambda (nodes _)
+            (cons 'module nodes))))
 
 (define (%brace-blocks text lang)
         "Produce a structural outline for brace-language TEXT (C / Rust /

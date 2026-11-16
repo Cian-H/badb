@@ -168,7 +168,6 @@
 ;;;
 ;;; Command Aliasing & Palette Deduplication
 ;;;
-
 (define %command-aliases
         '(("ctx" . "context")
           ("exit" . "quit")
@@ -216,7 +215,6 @@ canonical entry's description with any folded aliases."
 ;;;
 ;;; Formatting Helpers (Config, Providers, Guardrails, Features)
 ;;;
-
 (define (%pad-col text width)
         "Pad TEXT on the right with spaces to at least WIDTH characters."
         (let* ((s (ensure-string (or text "")))
@@ -388,7 +386,6 @@ and status badges for /provider."
 ;;;
 ;;; Context Status Graph & Geis Bindings Plot
 ;;;
-
 (define %plot-bar-glyphs #("▁" "▂" "▃" "▄" "▅" "▆" "▇" "█"))
 
 (define (sparkline-plot values)
@@ -722,18 +719,18 @@ from journal JRN (and optional active registry REG)."
 
 (define (%feature-summary meta)
         "Extract a readable one-line description for a registry entry's METADATA."
-        (if (not (list? meta))
-          "registered"
-          (let ((desc (or (get-prop meta 'description #f)
-                          (get-prop meta 'summary #f)))
-                (bundle (get-prop meta 'bundle #f))
-                (ver (get-prop meta 'version #f)))
+        (if (list? meta)
+          (let
+              ((desc (or (get-prop meta 'description #f) (get-prop meta 'summary #f)))
+               (bundle (get-prop meta 'bundle #f))
+               (ver (get-prop meta 'version #f)))
             (cond
               ((string? desc) (%single-line-summary desc 54))
               ((and bundle ver) (format #f "bundle ~a (v~a)" bundle ver))
               (bundle (format #f "bundle ~a" bundle))
               (ver (format #f "v~a" ver))
-              (else "registered")))))
+              (else "registered")))
+          "registered"))
 
 (define (format-features-list reg)
         "Format active registry features for /features with aligned columns and

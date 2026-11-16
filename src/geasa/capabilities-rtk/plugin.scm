@@ -7,46 +7,40 @@
 ;;; post-hook.
 
 (define-module (geasa capabilities-rtk plugin)
-               #:use-module (badb kernel registry)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 textual-ports)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-13)
-               #:export (rtk-binary
-                          rtk-available?
-                          rtk-enabled?
-                          set-rtk-enabled!
-                          rtk-rewrite
-                          rtk-run
-                          make-rtk-bash-pre-hook
-                          register-rtk-tools!
-                          %rtk-gain-schema))
+               #:use-module
+               (badb kernel registry)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 textual-ports)
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (srfi srfi-13)
+               #:export
+               (rtk-binary rtk-available?
+                           rtk-enabled?
+                           set-rtk-enabled!
+                           rtk-rewrite
+                           rtk-run
+                           make-rtk-bash-pre-hook
+                           register-rtk-tools!
+                           %rtk-gain-schema))
 
 ;; ---- binary discovery -----------------------------------------------------
-
-(define (%executable-file? path)
-        (and (string? path)
-             (not (string-null? path))
-             (file-exists? path)
-             (not (file-is-directory? path))
-             (access? path X_OK)))
-
-(define (%find-in-path name)
-        (let ((path-env (or (getenv "PATH") "")))
-          (any (lambda (dir)
-                 (and (not (string-null? dir))
-                      (let ((cand (string-append dir "/" name)))
-                        (and (%executable-file? cand) cand))))
-               (string-split path-env #\:))))
 
 (define rtk-binary (make-parameter #f))
 
 (define (%resolve-rtk-binary)
-        (or (let ((override (rtk-binary)))
-              (and override (if (%executable-file? override) override 'missing)))
-            (let ((env-bin (getenv "BADB_RTK_BIN")))
-              (and (%executable-file? env-bin) env-bin))
-            (%find-in-path "rtk")))
+        (or
+          (let ((override (rtk-binary)))
+            (and override
+                 (if (executable-file? override)
+                   override
+                   'missing)))
+          (let ((env-bin (getenv "BADB_RTK_BIN")))
+            (and (executable-file? env-bin) env-bin))
+          (find-in-path "rtk")))
 
 (define (rtk-available?)
         "Return #t when the `rtk' binary is resolved and executable."
@@ -125,12 +119,12 @@ Returns one of:
         "Return a toggleable bash pre-hook (lambda (command) ...) that rewrites
 supported commands through `rtk rewrite'."
         (lambda (command)
-          (if (not (rtk-enabled?))
-            command
+          (if (rtk-enabled?)
             (let ((res (rtk-rewrite command)))
               (case (car res)
                 ((rewrite) (cdr res))
-                (else command))))))
+                (else command)))
+            command)))
 
 (define (rtk-run args)
         "Run `rtk' with ARGS and return its output string."

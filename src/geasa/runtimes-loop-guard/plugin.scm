@@ -383,41 +383,47 @@ message would boost its token activation."
 ;;;
 ;;; Mechanism 1: context surgery via the post-turn hook
 ;;;
-(define (annotate-original-output! leading-msgs sig)
-        "Append the harness guardrail note to the content of the FIRST
+(define
+  (annotate-original-output! leading-msgs sig)
+  "Append the harness guardrail note to the content of the FIRST
 tool message in LEADING-MSGS that answers SIG's original call, so the
 model re-reads the original observation with the deposit note instead of
 seeking a repeat. Returns #t when an annotation was applied."
-        (let loop ((rest leading-msgs))
-                  (cond
-                    ((null? rest) #f)
-                    ((not (equal? (assoc-ref (car rest) 'role) "assistant"))
-                      (loop (cdr rest)))
-                    (else
-                      (let* ((sig-pairs (assistant-turn-signatures (car rest)))
-                             (match (find (lambda (p) (string= (car p) sig)) sig-pairs)))
-                        (if (not match)
-                          (loop (cdr rest))
-                          (let ((cid (cdr match)))
-                            (let scan ((rest2 (cdr rest)))
-                                      (cond
-                                        ((null? rest2) #f)
-                                        ((and (equal? (assoc-ref (car rest2) 'role) "tool")
-                                              (equal? (assoc-ref (car rest2) 'tool_call_id) cid))
-                                          (let* ((m (car rest2))
-                                                 (content-pair (assq 'content m)))
-                                            (if (and (pair? content-pair)
-                                                     (string? (cdr content-pair))
-                                                     (not (string-contains (cdr content-pair)
-                                                                           "[badb loop-guard")))
-                                              (begin
-                                                (set-cdr! content-pair
-                                                          (string-append (cdr content-pair) %guard-note-text))
-                                                #t)
-                                              #f)))
-                                        ((equal? (assoc-ref (car rest2) 'role) "assistant")
-                                          #f)
-                                        (else (scan (cdr rest2))))))))))))
+  (let loop
+    ((rest leading-msgs))
+    (cond
+      ((null? rest) #f)
+      ((not (equal? (assoc-ref (car rest) 'role) "assistant")) (loop (cdr rest)))
+      (else
+        (let*
+            ((sig-pairs (assistant-turn-signatures (car rest)))
+             (match
+               (find
+                 (lambda (p)
+                   (string= (car p) sig))
+                 sig-pairs)))
+          (if match
+            (let ((cid (cdr match)))
+              (let scan
+                ((rest2 (cdr rest)))
+                (cond
+                  ((null? rest2) #f)
+                  ((and
+                     (equal? (assoc-ref (car rest2) 'role) "tool")
+                     (equal? (assoc-ref (car rest2) 'tool_call_id) cid))
+                    (let*
+                        ((m (car rest2)) (content-pair (assq 'content m)))
+                      (if
+                          (and (pair? content-pair)
+                               (string? (cdr content-pair))
+                               (not (string-contains (cdr content-pair) "[badb loop-guard")))
+                        (begin
+                          (set-cdr! content-pair (string-append (cdr content-pair) %guard-note-text))
+                          #t)
+                        #f)))
+                  ((equal? (assoc-ref (car rest2) 'role) "assistant") #f)
+                  (else (scan (cdr rest2))))))
+            (loop (cdr rest))))))))
 
 (define (guard-surgery! session)
         "Rewrite SESSION's transcript: when the trailing (assistant tool

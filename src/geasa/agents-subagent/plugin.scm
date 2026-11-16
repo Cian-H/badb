@@ -20,15 +20,11 @@
                #:use-module
                (geasa surfaces-acp client)
                #:use-module
-               (geasa runtimes-react plugin)
-               #:use-module
                (geasa foundation-util plugin)
                #:use-module
                (geasa capabilities-fs-tools plugin)
                #:use-module
                (geasa runtimes-verify plugin)
-               #:use-module
-               (json)
                #:use-module
                (ice-9 threads)
                #:use-module
@@ -37,8 +33,6 @@
                (ice-9 popen)
                #:use-module
                (ice-9 rdelim)
-               #:use-module
-               (ice-9 ftw)
                #:use-module
                (srfi srfi-1)
                #:use-module
@@ -50,13 +44,12 @@
                #:use-module
                (uuid utils)
                #:re-export
-               (current-harness-id
-                 parent-harness-id
-                 subagent-harness?
-                 register-subagent-link!
-                 subagent-hierarchy-tree
-                 format-subagent-hierarchy
-                 format-subagent-overview)
+               (current-harness-id parent-harness-id
+                                   subagent-harness?
+                                   register-subagent-link!
+                                   subagent-hierarchy-tree
+                                   format-subagent-hierarchy
+                                   format-subagent-overview)
                #:export
                (<subagent-worktree> make-subagent-worktree
                                     subagent-worktree?
@@ -602,14 +595,19 @@ Returns '((merged? . #t/#f) (reason . reason) ...)."
 
 (define (%truncate-label s max-len)
         "Trim S to a single line of at most MAX-LEN characters."
-        (if (not (string? s))
-          #f
-          (let* ((single-line (string-map (lambda (c) (if (memv c '(#\newline #\return #\tab)) #\space c))
-                                          (string-trim-both s)))
-                 (len (string-length single-line)))
-            (if (> len max-len)
-              (string-append (substring single-line 0 (max 0 (- max-len 3))) "...")
-              single-line))))
+        (and (string? s)
+             (let*
+                 ((single-line
+                    (string-map
+                      (lambda (c)
+                        (if (memv c '(#\newline #\return #\tab))
+                          #\space
+                          c))
+                      (string-trim-both s)))
+                  (len (string-length single-line)))
+               (if (> len max-len)
+                 (string-append (substring single-line 0 (max 0 (- max-len 3))) "...")
+                 single-line))))
 
 (define (%extract-update-text content)
         "Extract plain text from an ACP update content block or list/vector of blocks."

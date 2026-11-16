@@ -1,27 +1,37 @@
 (define-module (geasa runtimes-freshness plugin)
-               #:use-module (srfi srfi-1)
-               #:use-module (ice-9 textual-ports)
-               #:use-module (badb kernel digest)
-               #:use-module (rnrs bytevectors)
-               #:use-module (ice-9 ftw)
-               #:use-module (ice-9 match)
-               #:export (freshness-pin-check
-                          freshness-result? freshness-result-status freshness-result-pass?
-                          freshness-result-entries freshness-result-reason freshness-result-bundle
-                          freshness-result-checked-at
-                          freshness-entry? freshness-entry-file freshness-entry-expected
-                          freshness-entry-actual freshness-entry-ok? freshness-entry-reason
-                          freshness-bundle-pins
-                          make-freshness-cache freshness-cache?
-                          freshness-verify freshness-cache-size freshness-cache-entry
-                          freshness-cache-invalidate!))
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (ice-9 textual-ports)
+               #:use-module
+               (badb kernel digest)
+               #:export
+               (freshness-pin-check freshness-result?
+                                    freshness-result-status
+                                    freshness-result-pass?
+                                    freshness-result-entries
+                                    freshness-result-reason
+                                    freshness-result-bundle
+                                    freshness-result-checked-at
+                                    freshness-entry?
+                                    freshness-entry-file
+                                    freshness-entry-expected
+                                    freshness-entry-actual
+                                    freshness-entry-ok?
+                                    freshness-entry-reason
+                                    freshness-bundle-pins
+                                    make-freshness-cache
+                                    freshness-cache?
+                                    freshness-verify
+                                    freshness-cache-size
+                                    freshness-cache-entry
+                                    freshness-cache-invalidate!))
 
 ;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;
 ;;;  TIER 1 — PIN CHECK
 ;;;
 ;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 ;; Result is an alist: ((status . "pass"|"fail") (bundle . BUNDLE-DIR)
 ;;                      (checked-at . UNIX-SECONDS) (entries . ENTRY...) (reason . STR|#f))
 (define (freshness-result? obj)
@@ -171,7 +181,6 @@ Returns a freshness-result alist."
 ;;;  TIER 2 — LAZY VERDICT CACHE
 ;;;
 ;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 ;; Cache representation: (freshness-cache . ALIST)
 ;; where ALIST is a list of cached verdict entries, each entry is:
 ;;   ((pins . PIN-ALIST) (timestamp . UNIX-SECONDS) (verdict . THUNK-RESULT))

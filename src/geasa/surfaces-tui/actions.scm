@@ -14,8 +14,6 @@
                #:use-module
                (badb geis bundle)
                #:use-module
-               (geasa providers-model common)
-               #:use-module
                (geasa providers-model openai)
                #:use-module
                (geasa capabilities-mcp plugin)
@@ -438,9 +436,7 @@
              (history
                (and (not (string-null? checkpoint-id))
                     (restore-checkpoint-conversation! st checkpoint-id))))
-          (if (not history)
-            (tui-add-err-msg! st
-                              "Replay needs a saved checkpoint ID. Use /checkpoint first; /journal lists checkpoint IDs.")
+          (if history
             (let
                 ((result (rollback-to-checkpoint! (tui-rollback-mgr st) checkpoint-id)))
               (if
@@ -454,7 +450,9 @@
                                                  "Replayed checkpoint ~a (~a)."
                                                  checkpoint-id
                                                  (assoc-ref result 'description))))
-                (tui-add-err-msg! st (format #f "Replay failed: ~a" (assoc-ref result 'error))))))))
+                (tui-add-err-msg! st (format #f "Replay failed: ~a" (assoc-ref result 'error)))))
+            (tui-add-err-msg! st
+                              "Replay needs a saved checkpoint ID. Use /checkpoint first; /journal lists checkpoint IDs."))))
 
 (define (handle-fork-cmd! st arg)
         (let
@@ -469,14 +467,11 @@
                                   "Fork point created, but its conversation snapshot could not be saved.")))
             (let
                 ((restored (restore-checkpoint-conversation! st requested)))
-              (if (not restored)
-                (tui-add-err-msg! st
-                                  "Fork checkpoint has no saved conversation. Use /checkpoint to create replayable checkpoints.")
+              (if restored
                 (let
                     ((result (rollback-to-checkpoint! rb requested)))
                   (if
-                      (not (equal? (assoc-ref result 'status) "rolled_back"))
-                    (tui-add-err-msg! st (format #f "Fork failed: ~a" (assoc-ref result 'error)))
+                      (equal? (assoc-ref result 'status) "rolled_back")
                     (begin (set-tui-llm-history! st restored)
                            (set-tui-ctx-cache-key! st #f)
                            (set-tui-messages! st '())
@@ -488,7 +483,10 @@
                                  (tui-add-sys-msg! st
                                                    (format #f "Forked checkpoint ~a as ~a." requested (checkpoint-id fork))))
                                (tui-add-err-msg! st
-                                                 "Fork checkpoint created, but its conversation snapshot could not be saved.")))))))))))
+                                                 "Fork checkpoint created, but its conversation snapshot could not be saved."))))
+                    (tui-add-err-msg! st (format #f "Fork failed: ~a" (assoc-ref result 'error)))))
+                (tui-add-err-msg! st
+                                  "Fork checkpoint has no saved conversation. Use /checkpoint to create replayable checkpoints."))))))
 
 (define (handle-checkpoint-cmd! st arg)
         (let*
@@ -864,8 +862,7 @@
                   ((parts (split-words arg))
                    (path (and (pair? parts) (car parts)))
                    (line-num (and (pair? parts) (pair? (cdr parts)) (string->number (cadr parts)))))
-                (if (not path)
-                  (tui-add-sys-msg! st "Usage: /edit <file> [line]")
+                (if path
                   (call-with-values
                     (lambda ()
                       (open-in-external-editor path
@@ -876,7 +873,8 @@
                                                #:resume-tty!
                                                refresh))
                     (lambda (ok? res)
-                      (unless ok? (tui-add-err-msg! st (format #f "Editor error: ~a" res))))))))
+                      (unless ok? (tui-add-err-msg! st (format #f "Editor error: ~a" res)))))
+                  (tui-add-sys-msg! st "Usage: /edit <file> [line]"))))
             ((string=? cmd "guardrail") (handle-guardrail-cmd! st arg))
             ((string=? cmd "compact") (handle-compact-cmd! st arg))
             ((string=? cmd "resume") (handle-resume-cmd! st arg))

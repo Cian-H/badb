@@ -22,8 +22,6 @@
                #:use-module
                (geasa agents-lifecycle plugin)
                #:use-module
-               (geasa agents-subagent plugin)
-               #:use-module
                (geasa surfaces-theme plugin)
                #:use-module
                (geasa surfaces-tui editor)

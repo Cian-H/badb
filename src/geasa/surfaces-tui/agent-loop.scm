@@ -12,8 +12,6 @@
                #:use-module
                (badb kernel registry)
                #:use-module
-               (geasa providers-model common)
-               #:use-module
                (geasa providers-model openai)
                #:use-module
                (geasa providers-systemone plugin)
@@ -38,11 +36,7 @@
                #:use-module
                (geasa surfaces-tui widgets)
                #:use-module
-               (geasa surfaces-tui commands)
-               #:use-module
                (geasa surfaces-tui steering)
-               #:use-module
-               (geasa surfaces-tui tools)
                #:use-module
                (geasa surfaces-tui state)
                #:use-module

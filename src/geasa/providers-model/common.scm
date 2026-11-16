@@ -141,28 +141,27 @@ Rejects internal UI logs or tool responses missing required tool_call_id."
 
 (define (extract-message-tool-call-ids msg)
         "Return list of (id . name) pairs from MSG's tool_calls field."
-        (let
-            ((raw (or (prop-ref msg 'tool_calls) (prop-ref msg "tool_calls"))))
-          (let
-              ((items
-                 (cond
-                   ((vector? raw) (vector->list raw))
-                   ((list? raw) raw)
-                   (else '()))))
-            (filter-map
-              (lambda (tc)
-                (and (pair? tc)
-                     (let*
-                         ((id (or (prop-ref tc 'id) (prop-ref tc "id")))
-                          (fn (or (prop-ref tc 'function) (prop-ref tc "function")))
-                          (name
-                            (or
-                              (and (pair? fn) (or (prop-ref fn 'name) (prop-ref fn "name")))
-                              (prop-ref tc 'name)
-                              (prop-ref tc "name")
-                              "")))
-                       (and (string? id) (not (string-null? id)) (cons id (ensure-string name))))))
-              items))))
+        (let*
+            ((raw (or (prop-ref msg 'tool_calls) (prop-ref msg "tool_calls")))
+             (items
+               (cond
+                 ((vector? raw) (vector->list raw))
+                 ((list? raw) raw)
+                 (else '()))))
+          (filter-map
+            (lambda (tc)
+              (and (pair? tc)
+                   (let*
+                       ((id (or (prop-ref tc 'id) (prop-ref tc "id")))
+                        (fn (or (prop-ref tc 'function) (prop-ref tc "function")))
+                        (name
+                          (or
+                            (and (pair? fn) (or (prop-ref fn 'name) (prop-ref fn "name")))
+                            (prop-ref tc 'name)
+                            (prop-ref tc "name")
+                            "")))
+                     (and (string? id) (not (string-null? id)) (cons id (ensure-string name))))))
+            items)))
 
 (define (coerce-message-list msgs)
         "Coerce MSGS (vector, list, single message alist, or string) into a list

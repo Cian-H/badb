@@ -28,27 +28,11 @@
                #:use-module
                (badb kernel journal)
                #:use-module
-               (badb kernel geis-gate)
-               #:use-module
-               (badb geis bundle)
-               #:use-module
-               (badb kernel digest)
-               #:use-module
                (geasa foundation-config plugin)
                #:use-module
                (geasa capabilities-mcp plugin)
                #:use-module
-               (geasa capabilities-macro plugin)
-               #:use-module
                (geasa capabilities-history-tools plugin)
-               #:use-module
-               (geasa runtimes-react plugin)
-               #:use-module
-               (geasa runtimes-loop-guard plugin)
-               #:use-module
-               (geasa providers-systemone plugin)
-               #:use-module
-               (geasa policies-systemone-gate plugin)
                #:use-module
                (geasa policies-guardrail plugin)
                #:use-module
@@ -62,8 +46,6 @@
                #:use-module
                (geasa capabilities-skills plugin)
                #:use-module
-               (geasa capabilities-code-nav plugin)
-               #:use-module
                (geasa runtimes-geis-loader plugin)
                #:use-module
                (geasa runtimes-workflows plugin)
@@ -71,8 +53,6 @@
                (geasa runtimes-verify plugin)
                #:use-module
                (geasa surfaces-theme plugin)
-               #:use-module
-               (geasa foundation-log plugin)
                #:use-module
                (geasa foundation-util plugin)
                #:use-module
@@ -96,15 +76,9 @@
                #:use-module
                (geasa surfaces-tui steering)
                #:use-module
-               (geasa surfaces-tui overlay)
-               #:use-module
                (geasa surfaces-tui state)
                #:use-module
                (geasa surfaces-tui renderer)
-               #:use-module
-               (geasa surfaces-tui agent-loop)
-               #:use-module
-               (geasa surfaces-tui actions)
                #:use-module
                (geasa surfaces-tui events)
                #:use-module
@@ -114,8 +88,6 @@
                #:use-module
                (geasa agents-subagent plugin)
                #:use-module
-               (json)
-               #:use-module
                (ice-9 format)
                #:use-module
                (ice-9 popen)
@@ -124,15 +96,7 @@
                #:use-module
                (ice-9 optargs)
                #:use-module
-               (ice-9 regex)
-               #:use-module
                (srfi srfi-1)
-               #:use-module
-               (srfi srfi-9)
-               #:use-module
-               (srfi srfi-11)
-               #:use-module
-               (srfi srfi-19)
                #:use-module
                (ice-9 threads)
                #:export
@@ -160,7 +124,8 @@
                  span-rows->text
                  handle-todo-command!
                  format-response-widgets-notice
-                 format-conversation-transcript wrap-line
+                 format-conversation-transcript
+                 wrap-line
                  wrap-text
                  parse-command
                  classify-input
@@ -388,9 +353,6 @@
 ;;;
 ;;; Main TUI Controller (run-tui)
 ;;;
-;; DEV-DEBT [complexity]: run-tui is the largest form in the repo (9209 AST nodes,
-;; cyclomatic ~447 per ast_complexity_metrics). Covered by the 582-assertion bundle
-;; spec, but the prime candidate for decomposition into smaller units.
 (define
   (collect-enter-burst ch input-pending? drain-input-burst!)
   "Return (cons ch burst) when Enter is part of a multiline paste
@@ -422,7 +384,6 @@ payload codepoint), or #f when Enter should submit."
 ;;;
 ;;; Git Diff, OSC Title & Theme Helpers
 ;;;
-
 (define* (format-git-diff-output #:optional (arg "") (width 78))
          "Run git diff (optionally with safe path/ref tokens from ARG) and format
 the output with WP1 format-git-diff-view."
@@ -529,445 +490,478 @@ and return a notice string with placeholders and /image preview hints, or #f."
                     paths)
                "\n"))))
 
-(define* (render-ncvisual-overlay! stdscr path getch-fn
-                                   #:key (max-rows 20) (max-cols 60))
-         "Display image PATH in a centered notcurses child plane using ncvisual,
+(define*
+  (render-ncvisual-overlay! stdscr
+                            path
+                            getch-fn
+                            #:key
+                            (max-rows 20)
+                            (max-cols 60))
+  "Display image PATH in a centered notcurses child plane using ncvisual,
 wait for a key via GETCH-FN, and clean up. Returns info alist on success or #f."
-         (and stdscr (string? path) (file-exists? path)
-              (catch #t
-                (lambda ()
-                  (let* ((plane-mod (false-if-exception (resolve-module '(notcurses plane) #f)))
-                         (core-mod (false-if-exception (resolve-module '(notcurses core) #f)))
-                         (structs-mod (false-if-exception (resolve-module '(notcurses structs) #f))))
-                    (if (not (and plane-mod core-mod structs-mod))
-                      #f
-                      (let* ((nc ((module-ref plane-mod 'ncplane_notcurses) stdscr))
-                             (make-opts (module-ref structs-mod 'make-ncplane-options))
-                             (->ptr (module-ref structs-mod '->pointer))
-                             (ncplane-create (module-ref plane-mod 'ncplane_create))
-                             (ncplane-destroy (module-ref plane-mod 'ncplane_destroy))
-                             (nc-render (module-ref core-mod 'notcurses_render))
-                             (opts (make-opts #:y 2 #:x 4 #:rows max-rows #:cols max-cols))
-                             (child (ncplane-create stdscr (->ptr opts))))
-                        (if (not child)
-                          #f
-                          (dynamic-wind
-                            (lambda () #t)
-                            (lambda ()
-                              (let ((info (render-image-ncvisual nc child path
-                                                                 #:y 0 #:x 0
-                                                                 #:max-rows max-rows
-                                                                 #:max-cols max-cols)))
-                                (when info
-                                  (nc-render nc)
-                                  (when (procedure? getch-fn) (getch-fn)))
-                                info))
-                            (lambda ()
-                              (false-if-exception (ncplane-destroy child)))))))))
-                (lambda _ #f))))
+  (and stdscr
+       (string? path)
+       (file-exists? path)
+       (catch #t
+         (lambda ()
+           (let*
+               ((plane-mod (false-if-exception (resolve-module '(notcurses plane) #f)))
+                (core-mod (false-if-exception (resolve-module '(notcurses core) #f)))
+                (structs-mod (false-if-exception (resolve-module '(notcurses structs) #f))))
+             (and plane-mod
+                  core-mod
+                  structs-mod
+                  (let*
+                      ((nc ((module-ref plane-mod 'ncplane_notcurses) stdscr))
+                       (make-opts (module-ref structs-mod 'make-ncplane-options))
+                       (->ptr (module-ref structs-mod '->pointer))
+                       (ncplane-create (module-ref plane-mod 'ncplane_create))
+                       (ncplane-destroy (module-ref plane-mod 'ncplane_destroy))
+                       (nc-render (module-ref core-mod 'notcurses_render))
+                       (opts (make-opts #:y 2 #:x 4 #:rows max-rows #:cols max-cols))
+                       (child (ncplane-create stdscr (->ptr opts))))
+                    (and child
+                         (dynamic-wind
+                           (lambda ()
+                             #t)
+                           (lambda ()
+                             (let
+                                 ((info
+                                    (render-image-ncvisual nc
+                                                           child
+                                                           path
+                                                           #:y
+                                                           0
+                                                           #:x
+                                                           0
+                                                           #:max-rows
+                                                           max-rows
+                                                           #:max-cols
+                                                           max-cols)))
+                               (when info
+                                 (nc-render nc)
+                                 (when (procedure? getch-fn) (getch-fn)))
+                               info))
+                           (lambda ()
+                             (false-if-exception (ncplane-destroy child)))))))))
+         (lambda _
+           #f))))
 
-(define* (show-geis-bindings-uplot! stdscr jrn getch-fn
-                                    #:key (rows 12) (cols 56))
-         "Render a native notcurses ncuplot overlay of journal geis-binding activity
+(define*
+  (show-geis-bindings-uplot! stdscr jrn getch-fn #:key (rows 12) (cols 56))
+  "Render a native notcurses ncuplot overlay of journal geis-binding activity
 when running in a live notcurses session. Returns #t if displayed, #f otherwise."
-         (and stdscr jrn
-              (catch #t
-                (lambda ()
-                  (let* ((entries (journal-entries jrn))
-                         (plane-mod (false-if-exception (resolve-module '(notcurses plane) #f)))
-                         (core-mod (false-if-exception (resolve-module '(notcurses core) #f)))
-                         (structs-mod (false-if-exception (resolve-module '(notcurses structs) #f)))
-                         (widgets-mod (false-if-exception (resolve-module '(notcurses widgets) #f))))
-                    (if (not (and (pair? entries) plane-mod core-mod structs-mod widgets-mod))
-                      #f
-                      (let* ((nc ((module-ref plane-mod 'ncplane_notcurses) stdscr))
-                             (make-popts (module-ref structs-mod 'make-ncplane-options))
-                             (make-uopts (module-ref structs-mod 'make-ncplot-options))
-                             (->ptr (module-ref structs-mod '->pointer))
-                             (ncplane-create (module-ref plane-mod 'ncplane_create))
-                             (ncplane-destroy (module-ref plane-mod 'ncplane_destroy))
-                             (ncuplot-create (module-ref widgets-mod 'ncuplot_create))
-                             (ncuplot-set (module-ref widgets-mod 'ncuplot_set_sample))
-                             (ncuplot-destroy (module-ref widgets-mod 'ncuplot_destroy))
-                             (nc-render (module-ref core-mod 'notcurses_render))
-                             (n (min 16 (length entries)))
-                             (recent (take (reverse entries) n))
-                             (max-y (max 1 (length recent)))
-                             (child (ncplane-create stdscr (->ptr (make-popts #:y 3 #:x 4 #:rows rows #:cols cols)))))
-                        (if (not child)
-                          #f
-                          (let ((plot #f))
-                            (dynamic-wind
-                              (lambda () #t)
-                              (lambda ()
-                                (set! plot (ncuplot-create child (->ptr (make-uopts)) 0 max-y))
-                                (let loop ((i 0) (rest recent))
-                                          (unless (null? rest)
-                                            (let* ((e (car rest))
-                                                   (kind (or (assoc-ref e 'kind) 'event))
-                                                   (w (cond ((eq? kind 'commit) 4)
-                                                            ((eq? kind 'checkpoint) 3)
-                                                            ((eq? kind 'rollback) 5)
-                                                            (else 2))))
-                                              (ncuplot-set plot i (+ w (modulo i 3)))
-                                              (loop (+ i 1) (cdr rest)))))
-                                (nc-render nc)
-                                (when (procedure? getch-fn) (getch-fn))
-                                #t)
-                              (lambda ()
-                                (when plot (false-if-exception (ncuplot-destroy plot)))
-                                (false-if-exception (ncplane-destroy child))))))))))
-                (lambda _ #f))))
+  (and stdscr
+       jrn
+       (catch #t
+         (lambda ()
+           (let*
+               ((entries (journal-entries jrn))
+                (plane-mod (false-if-exception (resolve-module '(notcurses plane) #f)))
+                (core-mod (false-if-exception (resolve-module '(notcurses core) #f)))
+                (structs-mod (false-if-exception (resolve-module '(notcurses structs) #f)))
+                (widgets-mod (false-if-exception (resolve-module '(notcurses widgets) #f))))
+             (and (pair? entries)
+                  plane-mod
+                  core-mod
+                  structs-mod
+                  widgets-mod
+                  (let*
+                      ((nc ((module-ref plane-mod 'ncplane_notcurses) stdscr))
+                       (make-popts (module-ref structs-mod 'make-ncplane-options))
+                       (make-uopts (module-ref structs-mod 'make-ncplot-options))
+                       (->ptr (module-ref structs-mod '->pointer))
+                       (ncplane-create (module-ref plane-mod 'ncplane_create))
+                       (ncplane-destroy (module-ref plane-mod 'ncplane_destroy))
+                       (ncuplot-create (module-ref widgets-mod 'ncuplot_create))
+                       (ncuplot-set (module-ref widgets-mod 'ncuplot_set_sample))
+                       (ncuplot-destroy (module-ref widgets-mod 'ncuplot_destroy))
+                       (nc-render (module-ref core-mod 'notcurses_render))
+                       (n (min 16 (length entries)))
+                       (recent (take (reverse entries) n))
+                       (max-y (max 1 (length recent)))
+                       (child
+                         (ncplane-create stdscr (->ptr (make-popts #:y 3 #:x 4 #:rows rows #:cols cols)))))
+                    (and child
+                         (let ((plot #f))
+                           (dynamic-wind
+                             (lambda ()
+                               #t)
+                             (lambda ()
+                               (set! plot (ncuplot-create child (->ptr (make-uopts)) 0 max-y))
+                               (let loop
+                                 ((i 0) (rest recent))
+                                 (unless (null? rest)
+                                   (let*
+                                       ((e (car rest))
+                                        (kind (or (assoc-ref e 'kind) 'event))
+                                        (w
+                                          (cond
+                                            ((eq? kind 'commit) 4)
+                                            ((eq? kind 'checkpoint) 3)
+                                            ((eq? kind 'rollback) 5)
+                                            (else 2))))
+                                     (ncuplot-set plot i (+ w (modulo i 3)))
+                                     (loop (+ i 1) (cdr rest)))))
+                               (nc-render nc)
+                               (when (procedure? getch-fn) (getch-fn))
+                               #t)
+                             (lambda ()
+                               (when plot (false-if-exception (ncuplot-destroy plot)))
+                               (false-if-exception (ncplane-destroy child))))))))))
+         (lambda _
+           #f))))
 
-(begin
-  (define (startup-auto-detect-model! st)
-          (let*
-              ((cfg (tui-cfg st))
-               (cur-model (tui-cur-model st))
-               (config-model-was-generic? (generic-model-name? (badb-config-model-name cfg))))
-            (call-with-values
-              (lambda ()
-                (if (generic-model-name? cur-model)
-                  (catch #t
-                    (lambda ()
-                      (auto-detect-model (tui-client st)))
-                    (lambda (key . args)
-                      (values #f (format #f "Detection error (~a): ~s" key args))))
-                  (values #f #f)))
-              (lambda (detected-model detection-error)
-                (call-with-values
+(define (startup-auto-detect-model! st)
+        (let*
+            ((cfg (tui-cfg st))
+             (cur-model (tui-cur-model st))
+             (config-model-was-generic? (generic-model-name? (badb-config-model-name cfg))))
+          (call-with-values
+            (lambda ()
+              (if (generic-model-name? cur-model)
+                (catch #t
                   (lambda ()
-                    (detect-model-decision cur-model detected-model detection-error))
-                  (lambda (new-model kind)
-                    (case kind
-                      ((adopted) (set-tui-cur-model! st new-model)
-                                 (badb-config-set-model-name! cfg new-model)
-                                 (tui-refresh-client! st)
-                                 (when config-model-was-generic? (tui-try-save-config! st))
-                                 (tui-add-msg! st "notice" (format #f "model auto-detected: ~a" new-model)))
-                      ((failed)
-                        (tui-add-msg! st
-                                      "notice"
-                                      (format #f "model detection failed: ~a" detection-error)))
-                      ((unavailable)
-                        (tui-add-msg! st "notice" "model detection found no models on the endpoint"))
-                      (else #f))))))))
-  (define (shutdown-tui! st)
-          (let*
-              ((nref (tui-nref st)) (endwin (nref 'endwin)) (t (tui-agent-thread st)))
-            (kill-active-subprocess!)
-            (catch #t
-              (lambda ()
-                (harness-event-unsubscribe! (tui-subagent-bus-sub-id st)))
-              (lambda _
-                #f))
-            (tui-safe-write-osc-title! (reset-osc-tab-title))
-            (when (and t (not (thread-exited? t)))
-              (catch #t
+                    (auto-detect-model (tui-client st)))
+                  (lambda (key . args)
+                    (values #f (format #f "Detection error (~a): ~s" key args))))
+                (values #f #f)))
+            (lambda (detected-model detection-error)
+              (call-with-values
                 (lambda ()
-                  (cancel-thread t))
-                (lambda _
-                  #f)))
+                  (detect-model-decision cur-model detected-model detection-error))
+                (lambda (new-model kind)
+                  (case kind
+                    ((adopted) (set-tui-cur-model! st new-model)
+                               (badb-config-set-model-name! cfg new-model)
+                               (tui-refresh-client! st)
+                               (when config-model-was-generic? (tui-try-save-config! st))
+                               (tui-add-msg! st "notice" (format #f "model auto-detected: ~a" new-model)))
+                    ((failed)
+                      (tui-add-msg! st
+                                    "notice"
+                                    (format #f "model detection failed: ~a" detection-error)))
+                    ((unavailable)
+                      (tui-add-msg! st "notice" "model detection found no models on the endpoint"))
+                    (else #f))))))))
+
+(define (shutdown-tui! st)
+        (let*
+            ((nref (tui-nref st)) (endwin (nref 'endwin)) (t (tui-agent-thread st)))
+          (kill-active-subprocess!)
+          (catch #t
+            (lambda ()
+              (harness-event-unsubscribe! (tui-subagent-bus-sub-id st)))
+            (lambda _
+              #f))
+          (tui-safe-write-osc-title! (reset-osc-tab-title))
+          (when (and t (not (thread-exited? t)))
             (catch #t
               (lambda ()
-                (mcp-manager-stop-all! (tui-mcp-mgr st)))
+                (cancel-thread t))
               (lambda _
-                #f))
-            (tui-safe-curs-set! st 1)
-            (catch #t
-              (lambda ()
-                (endwin))
-              (lambda _
-                #f))))
-  (define*
-    (run-tui #:key
-             (endpoint #f)
-             (model #f)
-             (api-key #f)
-             (journal-path #f)
-             (config #f))
-    "Launch the interactive badb curses TUI."
-    (unless
-        (catch #t
-          (lambda ()
-            (false-if-exception (resolve-interface '(notcurses compat curses)))
-            #t)
-          (lambda _
-            #f))
-      (format (current-error-port)
-              "Error: (notcurses compat curses) notcurses backend is not available.~%~
+                #f)))
+          (catch #t
+            (lambda ()
+              (mcp-manager-stop-all! (tui-mcp-mgr st)))
+            (lambda _
+              #f))
+          (tui-safe-curs-set! st 1)
+          (catch #t
+            (lambda ()
+              (endwin))
+            (lambda _
+              #f))))
+
+(define*
+  (run-tui #:key
+           (endpoint #f)
+           (model #f)
+           (api-key #f)
+           (journal-path #f)
+           (config #f))
+  "Launch the interactive badb curses TUI."
+  (unless
+      (catch #t
+        (lambda ()
+          (false-if-exception (resolve-interface '(notcurses compat curses)))
+          #t)
+        (lambda _
+          #f))
+    (format (current-error-port)
+            "Error: (notcurses compat curses) notcurses backend is not available.~%~
                Please run badb within the Guix dev environment:~%~
                  ./scripts/devenv -- ./scripts/badb~%")
-      (exit 1))
-    (parameterize
-      ((current-warning-port (%make-void-port "w")))
-      (let*
-          ((ncurses-mod (resolve-module '(notcurses compat curses)))
-           (nref
-             (lambda (s)
-               (module-ref ncurses-mod s)))
-           (initscr (nref 'initscr))
-           (cbreak! (nref 'cbreak!))
-           (noecho! (nref 'noecho!))
-           (keypad! (nref 'keypad!))
-           (has-colors? (nref 'has-colors?))
-           (start-color! (nref 'start-color!))
-           (key-defined (nref 'key-defined))
-           (define-key (nref 'define-key))
-           (drain-mouse-events (nref 'drain-mouse-events))
-           (input-pending?
-             (or
-               (catch #t
-                 (lambda ()
-                   (nref 'input-pending?))
-                 (lambda _
-                   #f))
-               (lambda _
-                 #f)))
-           (drain-input-burst!
-             (or
-               (catch #t
-                 (lambda ()
-                   (nref 'drain-input-burst!))
-                 (lambda _
-                   #f))
-               (lambda ()
-                 '())))
-           (KEY_FIND (nref 'KEY_FIND))
-           (KEY_OPEN (nref 'KEY_OPEN))
-           (nodelay-proc
-             (or
-               (catch #t
-                 (lambda ()
-                   (nref 'nodelay!))
-                 (lambda _
-                   #f))
-               (catch #t
-                 (lambda ()
-                   (nref 'nodelay))
-                 (lambda _
-                   #f))))
-           (steering-err-val
+    (exit 1))
+  (parameterize
+    ((current-warning-port (%make-void-port "w")))
+    (let*
+        ((ncurses-mod (resolve-module '(notcurses compat curses)))
+         (nref
+           (lambda (s)
+             (module-ref ncurses-mod s)))
+         (initscr (nref 'initscr))
+         (cbreak! (nref 'cbreak!))
+         (noecho! (nref 'noecho!))
+         (keypad! (nref 'keypad!))
+         (has-colors? (nref 'has-colors?))
+         (start-color! (nref 'start-color!))
+         (key-defined (nref 'key-defined))
+         (define-key (nref 'define-key))
+         (drain-mouse-events (nref 'drain-mouse-events))
+         (input-pending?
+           (or
              (catch #t
                (lambda ()
-                 (nref 'ERR))
+                 (nref 'input-pending?))
                (lambda _
-                 -1)))
-           (cfg (or config (load-config)))
-           (ui-theme
-             (let ((configured (badb-config-ui-theme cfg)))
-               (or (and (string? configured) (lookup-theme configured)) (default-theme))))
-           (cur-endpoint
-             (or endpoint (getenv "BADB_MODEL_ENDPOINT") (badb-config-model-endpoint cfg)))
-           (cur-model (or model (getenv "BADB_MODEL_NAME") (badb-config-model-name cfg)))
-           (cur-api-key
-             (or api-key
-                 (getenv "BADB_API_KEY")
-                 (getenv "OPENAI_API_KEY")
-                 (badb-config-model-api-key cfg)))
-           (cur-journal-path
-             (or journal-path (getenv "BADB_JOURNAL_PATH") (badb-config-journal-path cfg)))
-           (reg (make-registry))
-           (jrn (make-journal cur-journal-path))
-           (mgr (make-transaction-manager reg #:journal jrn))
-           (mcp-mgr (make-mcp-manager cfg))
-           (policy (make-guardrail-policy #:level 'cautious))
-           (compactor
-             (make-context-compactor #:max-tokens
-                                     16384
-                                     #:reserve-tokens
-                                     2048
-                                     #:strategy
-                                     (strategy-cascading #:keep-recent-turns
-                                                         6
-                                                         #:max-tool-chars
-                                                         1200
-                                                         #:pin-first-user
-                                                         #t)
-                                     #:watermark
-                                     0.75))
-           (rollback-mgr
-             (make-rollback-manager #:workspace-dir (getcwd) #:registry reg #:journal jrn))
-           (verifier (make-verifier #:check-syntax? #t #:run-tests? #f))
-           (composer (make-prompt-composer))
-           (client
-             (make-model-client #:endpoint
-                                cur-endpoint
-                                #:api-key
-                                cur-api-key
-                                #:model
-                                cur-model
-                                #:allow-missing-thinking?
-                                (badb-config-allow-missing-thinking? cfg cur-endpoint)))
-           (ctx-idx (make-bm25-index))
-           (skill-reg (make-skill-registry))
-           (banner-tips
-             (list "! shell · ( scheme · / commands · /help"
-                   "ctrl+r history · @ files · ctrl+x $EDITOR · /todo · /diff"
-                   (if (file-exists? ".badb/geasa")
-                     "geasa active · /geis list · /geis bindings"
-                     "Tip: run /geis onboard to detect toolchain & synthesize geasa")))
-           (ui-server
-             (make-ui-server #:initial-state
-                             (list (cons 'model cur-model) (cons 'status "READY"))))
-           (ui-client (make-ui-client #:id 'local-tui))
-           (repl-mod
-             (make-repl-mod reg
-                            jrn
-                            mgr
-                            client
-                            cfg
-                            mcp-mgr
-                            policy
-                            compactor
-                            rollback-mgr
-                            verifier
-                            composer))
-           (st
-             (make-tui-state #:nref
-                             nref
-                             #:nodelay-proc
-                             nodelay-proc
-                             #:steering-err-val
-                             steering-err-val
-                             #:cfg
-                             cfg
-                             #:initial-api-key
-                             api-key
-                             #:ui-theme
-                             ui-theme
-                             #:cur-endpoint
-                             cur-endpoint
-                             #:cur-model
-                             cur-model
-                             #:cur-api-key
-                             cur-api-key
-                             #:cur-journal-path
-                             cur-journal-path
-                             #:reg
-                             reg
-                             #:jrn
-                             jrn
-                             #:mgr
-                             mgr
-                             #:mcp-mgr
-                             mcp-mgr
-                             #:policy
-                             policy
-                             #:compactor
-                             compactor
-                             #:rollback-mgr
-                             rollback-mgr
-                             #:verifier
-                             verifier
-                             #:composer
-                             composer
-                             #:client
-                             client
-                             #:ctx-idx
-                             ctx-idx
-                             #:skill-reg
-                             skill-reg
-                             #:repl-mod
-                             repl-mod
-                             #:banner-tips
-                             banner-tips
-                             #:session-file
-                             (session-file-path)
-                             #:input-history
-                             (make-history (load-history-file (default-history-file-path)))
-                             #:ui-server
-                             ui-server
-                             #:ui-client
-                             ui-client))
-           (hooks
-             `((format-geis-help-text . ,format-geis-help-text)
-               (format-git-diff-output . ,format-git-diff-output)
-               (render-ncvisual-overlay! . ,render-ncvisual-overlay!)
-               (show-geis-bindings-uplot! . ,show-geis-bindings-uplot!)
-               (spec-tool-status . ,spec-tool-status)
-               (spec-tool-verify . ,spec-tool-verify))))
-        (catch #t
-          (lambda ()
-            (discover-skills! skill-reg)
-            (discover-and-mount-project-geasa! reg #:workspace (getcwd))
-            (mount-bundle-workflows! reg #:workspace (getcwd)))
-          (lambda _
-            #f))
-        (register-builtin-tui-tools! reg
-                                     rollback-mgr
-                                     verifier
-                                     mcp-mgr
-                                     (lambda ()
-                                       (tui-llm-history st))
-                                     #:ctx-idx
-                                     ctx-idx
-                                     #:skill-reg
-                                     skill-reg
-                                     #:client
-                                     (tui-client st)
-                                     #:config
-                                     cfg
-                                     #:policy
-                                     policy)
-        (auto-start-mcp-servers! cfg mcp-mgr)
-        (set-context-compactor-strategy! compactor
-                                         (strategy-cascading #:keep-recent-turns
-                                                             6
-                                                             #:max-tool-chars
-                                                             1200
-                                                             #:pin-first-user
-                                                             #t
-                                                             #:summarize-fn
-                                                             (make-tui-semantic-summarizer (tui-client st))))
-        (tui-sync-context-limit! st)
-        (set-tui-messages! st (list (tui-make-startup-notice-msg st 0)))
-        (set-tui-llm-history! st (list (tui-make-system-turn st)))
-        (set-tui-subagent-bus-sub-id! st
-                                      (harness-event-subscribe!
-                                        (lambda (ev)
-                                          (let
-                                              ((src (harness-event-source-id ev))
-                                               (tgt (or (harness-event-target-id ev) (current-harness-id)))
-                                               (kind (harness-event-kind ev))
-                                               (payload (harness-event-payload ev)))
-                                            (catch #t
-                                              (lambda ()
-                                                (ui-server-route-subagent-event! ui-server src tgt kind payload))
-                                              (lambda _
-                                                #f))
-                                            (set-tui-render-dirty?! st #t)))
-                                        #:target-id
-                                        (current-harness-id)))
-        (startup-auto-detect-model! st)
-        (let ((stdscr (initscr)))
-          (set-tui-stdscr! st stdscr)
-          (cbreak!)
-          (noecho!)
-          (keypad! stdscr #t)
-          (set-tui-ctrl-up-key! st
+                 #f))
+             (lambda _
+               #f)))
+         (drain-input-burst!
+           (or
+             (catch #t
+               (lambda ()
+                 (nref 'drain-input-burst!))
+               (lambda _
+                 #f))
+             (lambda ()
+               '())))
+         (KEY_FIND (nref 'KEY_FIND))
+         (KEY_OPEN (nref 'KEY_OPEN))
+         (nodelay-proc
+           (or
+             (catch #t
+               (lambda ()
+                 (nref 'nodelay!))
+               (lambda _
+                 #f))
+             (catch #t
+               (lambda ()
+                 (nref 'nodelay))
+               (lambda _
+                 #f))))
+         (steering-err-val
+           (catch #t
+             (lambda ()
+               (nref 'ERR))
+             (lambda _
+               -1)))
+         (cfg (or config (load-config)))
+         (ui-theme
+           (let ((configured (badb-config-ui-theme cfg)))
+             (or (and (string? configured) (lookup-theme configured)) (default-theme))))
+         (cur-endpoint
+           (or endpoint (getenv "BADB_MODEL_ENDPOINT") (badb-config-model-endpoint cfg)))
+         (cur-model (or model (getenv "BADB_MODEL_NAME") (badb-config-model-name cfg)))
+         (cur-api-key
+           (or api-key
+               (getenv "BADB_API_KEY")
+               (getenv "OPENAI_API_KEY")
+               (badb-config-model-api-key cfg)))
+         (cur-journal-path
+           (or journal-path (getenv "BADB_JOURNAL_PATH") (badb-config-journal-path cfg)))
+         (reg (make-registry))
+         (jrn (make-journal cur-journal-path))
+         (mgr (make-transaction-manager reg #:journal jrn))
+         (mcp-mgr (make-mcp-manager cfg))
+         (policy (make-guardrail-policy #:level 'cautious))
+         (compactor
+           (make-context-compactor #:max-tokens
+                                   16384
+                                   #:reserve-tokens
+                                   2048
+                                   #:strategy
+                                   (strategy-cascading #:keep-recent-turns
+                                                       6
+                                                       #:max-tool-chars
+                                                       1200
+                                                       #:pin-first-user
+                                                       #t)
+                                   #:watermark
+                                   0.75))
+         (rollback-mgr
+           (make-rollback-manager #:workspace-dir (getcwd) #:registry reg #:journal jrn))
+         (verifier (make-verifier #:check-syntax? #t #:run-tests? #f))
+         (composer (make-prompt-composer))
+         (client
+           (make-model-client #:endpoint
+                              cur-endpoint
+                              #:api-key
+                              cur-api-key
+                              #:model
+                              cur-model
+                              #:allow-missing-thinking?
+                              (badb-config-allow-missing-thinking? cfg cur-endpoint)))
+         (ctx-idx (make-bm25-index))
+         (skill-reg (make-skill-registry))
+         (banner-tips
+           (list "! shell · ( scheme · / commands · /help"
+                 "ctrl+r history · @ files · ctrl+x $EDITOR · /todo · /diff"
+                 (if (file-exists? ".badb/geasa")
+                   "geasa active · /geis list · /geis bindings"
+                   "Tip: run /geis onboard to detect toolchain & synthesize geasa")))
+         (ui-server
+           (make-ui-server #:initial-state
+                           (list (cons 'model cur-model) (cons 'status "READY"))))
+         (ui-client (make-ui-client #:id 'local-tui))
+         (repl-mod
+           (make-repl-mod reg
+                          jrn
+                          mgr
+                          client
+                          cfg
+                          mcp-mgr
+                          policy
+                          compactor
+                          rollback-mgr
+                          verifier
+                          composer))
+         (st
+           (make-tui-state #:nref
+                           nref
+                           #:nodelay-proc
+                           nodelay-proc
+                           #:steering-err-val
+                           steering-err-val
+                           #:cfg
+                           cfg
+                           #:initial-api-key
+                           api-key
+                           #:ui-theme
+                           ui-theme
+                           #:cur-endpoint
+                           cur-endpoint
+                           #:cur-model
+                           cur-model
+                           #:cur-api-key
+                           cur-api-key
+                           #:cur-journal-path
+                           cur-journal-path
+                           #:reg
+                           reg
+                           #:jrn
+                           jrn
+                           #:mgr
+                           mgr
+                           #:mcp-mgr
+                           mcp-mgr
+                           #:policy
+                           policy
+                           #:compactor
+                           compactor
+                           #:rollback-mgr
+                           rollback-mgr
+                           #:verifier
+                           verifier
+                           #:composer
+                           composer
+                           #:client
+                           client
+                           #:ctx-idx
+                           ctx-idx
+                           #:skill-reg
+                           skill-reg
+                           #:repl-mod
+                           repl-mod
+                           #:banner-tips
+                           banner-tips
+                           #:session-file
+                           (session-file-path)
+                           #:input-history
+                           (make-history (load-history-file (default-history-file-path)))
+                           #:ui-server
+                           ui-server
+                           #:ui-client
+                           ui-client))
+         (hooks
+           `((format-geis-help-text . ,format-geis-help-text)
+             (format-git-diff-output . ,format-git-diff-output)
+             (render-ncvisual-overlay! . ,render-ncvisual-overlay!)
+             (show-geis-bindings-uplot! . ,show-geis-bindings-uplot!)
+             (spec-tool-status . ,spec-tool-status)
+             (spec-tool-verify . ,spec-tool-verify))))
+      (catch #t
+        (lambda ()
+          (discover-skills! skill-reg)
+          (discover-and-mount-project-geasa! reg #:workspace (getcwd))
+          (mount-bundle-workflows! reg #:workspace (getcwd)))
+        (lambda _
+          #f))
+      (register-builtin-tui-tools! reg
+                                   rollback-mgr
+                                   verifier
+                                   mcp-mgr
+                                   (lambda ()
+                                     (tui-llm-history st))
+                                   #:ctx-idx
+                                   ctx-idx
+                                   #:skill-reg
+                                   skill-reg
+                                   #:client
+                                   (tui-client st)
+                                   #:config
+                                   cfg
+                                   #:policy
+                                   policy)
+      (auto-start-mcp-servers! cfg mcp-mgr)
+      (set-context-compactor-strategy! compactor
+                                       (strategy-cascading #:keep-recent-turns
+                                                           6
+                                                           #:max-tool-chars
+                                                           1200
+                                                           #:pin-first-user
+                                                           #t
+                                                           #:summarize-fn
+                                                           (make-tui-semantic-summarizer (tui-client st))))
+      (tui-sync-context-limit! st)
+      (set-tui-messages! st (list (tui-make-startup-notice-msg st 0)))
+      (set-tui-llm-history! st (list (tui-make-system-turn st)))
+      (set-tui-subagent-bus-sub-id! st
+                                    (harness-event-subscribe!
+                                      (lambda (ev)
+                                        (let
+                                            ((src (harness-event-source-id ev))
+                                             (tgt (or (harness-event-target-id ev) (current-harness-id)))
+                                             (kind (harness-event-kind ev))
+                                             (payload (harness-event-payload ev)))
+                                          (catch #t
+                                            (lambda ()
+                                              (ui-server-route-subagent-event! ui-server src tgt kind payload))
+                                            (lambda _
+                                              #f))
+                                          (set-tui-render-dirty?! st #t)))
+                                      #:target-id
+                                      (current-harness-id)))
+      (startup-auto-detect-model! st)
+      (let ((stdscr (initscr)))
+        (set-tui-stdscr! st stdscr)
+        (cbreak!)
+        (noecho!)
+        (keypad! stdscr #t)
+        (set-tui-ctrl-up-key! st
+                              (resolve-modified-key
+                                (string #\esc #\[ #\1 #\; #\5 #\A)
+                                key-defined
+                                define-key
+                                KEY_FIND))
+        (set-tui-ctrl-down-key! st
                                 (resolve-modified-key
-                                  (string #\esc #\[ #\1 #\; #\5 #\A)
+                                  (string #\esc #\[ #\1 #\; #\5 #\B)
                                   key-defined
                                   define-key
-                                  KEY_FIND))
-          (set-tui-ctrl-down-key! st
-                                  (resolve-modified-key
-                                    (string #\esc #\[ #\1 #\; #\5 #\B)
-                                    key-defined
-                                    define-key
-                                    KEY_OPEN))
-          (tui-safe-curs-set! st 1)
-          (set-tui-colors-enabled?! st (has-colors?))
-          (when (tui-colors-enabled? st) (start-color!))
-          (dynamic-wind
-            (lambda ()
-              #t)
-            (lambda ()
-              (tui-run-event-loop! st
-                                   input-pending?
-                                   drain-input-burst!
-                                   drain-mouse-events
-                                   hooks))
-            (lambda ()
-              (shutdown-tui! st))))))))
+                                  KEY_OPEN))
+        (tui-safe-curs-set! st 1)
+        (set-tui-colors-enabled?! st (has-colors?))
+        (when (tui-colors-enabled? st) (start-color!))
+        (dynamic-wind
+          (lambda ()
+            #t)
+          (lambda ()
+            (tui-run-event-loop! st
+                                 input-pending?
+                                 drain-input-burst!
+                                 drain-mouse-events
+                                 hooks))
+          (lambda ()
+            (shutdown-tui! st)))))))

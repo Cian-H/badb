@@ -6,93 +6,97 @@
 ;;; <todo-list> widget, and safe declarative Scheme response widgets.
 
 (define-module (geasa surfaces-tui widgets)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (geasa surfaces-tui editor)
-               #:use-module (geasa surfaces-theme plugin)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 match)
-               #:use-module (ice-9 regex)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-9)
-               #:export (<rect>
-                          make-rect
-                          rect?
-                          rect-x
-                          rect-y
-                          rect-width
-                          rect-height
-                          <draw-op>
-                          make-draw-op
-                          draw-op?
-                          draw-op-x
-                          draw-op-y
-                          draw-op-text
-                          draw-op-role
-                          draw-op-bold?
-                          draw-op-dim?
-                          draw-op-reverse?
-                          render-ops->lines
-                          draw-ops->segments-by-row
-                          <widget>
-                          make-widget
-                          widget?
-                          widget-kind
-                          widget-props
-                          widget-children
-                          widget-measure
-                          widget-render
-                          widget-on-event
-                          widget-measure-size
-                          widget-render-rect
-                          widget-dispatch-event
-                          render-widget-to-lines
-                          text-widget
-                          rule-widget
-                          pill-widget
-                          box-widget
-                          scroll-view-widget
-                          vstack-widget
-                          hstack-widget
-                          format-input-box-frame
-                          input-box-widget
-                          format-bottom-status-bar
-                          status-bar-widget
-                          %crow-banner-frames
-                          crow-banner-frame-count
-                          crow-banner-frame
-                          format-startup-banner
-                          format-startup-banner-text
-                          startup-banner-widget
-                          parse-git-diff-lines
-                          format-git-diff-view
-                          git-diff-widget
-                          <todo-item>
-                          todo-item?
-                          todo-item-id
-                          todo-item-text
-                          todo-item-done?
-                          todo-item-source
-                          todo-item-priority
-                          <todo-list>
-                          todo-list?
-                          todo-list-title
-                          todo-list-items
-                          make-todo-list
-                          todo-add
-                          todo-toggle
-                          todo-remove
-                          todo-clear-done
-                          todo-counts
-                          todo-list->alist
-                          alist->todo-list
-                          format-todo-widget
-                          todo-widget
-                          safe-eval-widget-datum
-                          extract-response-widgets
-                          render-scheme-response-widget
-                          span-rows->text
-                          handle-todo-command!
-                          format-response-widgets-notice))
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (geasa surfaces-tui editor)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 regex)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:export
+               (<rect> make-rect
+                       rect?
+                       rect-x
+                       rect-y
+                       rect-width
+                       rect-height
+                       <draw-op>
+                       make-draw-op
+                       draw-op?
+                       draw-op-x
+                       draw-op-y
+                       draw-op-text
+                       draw-op-role
+                       draw-op-bold?
+                       draw-op-dim?
+                       draw-op-reverse?
+                       render-ops->lines
+                       draw-ops->segments-by-row
+                       <widget>
+                       make-widget
+                       widget?
+                       widget-kind
+                       widget-props
+                       widget-children
+                       widget-measure
+                       widget-render
+                       widget-on-event
+                       widget-measure-size
+                       widget-render-rect
+                       widget-dispatch-event
+                       render-widget-to-lines
+                       text-widget
+                       rule-widget
+                       pill-widget
+                       box-widget
+                       scroll-view-widget
+                       vstack-widget
+                       hstack-widget
+                       format-input-box-frame
+                       input-box-widget
+                       format-bottom-status-bar
+                       status-bar-widget
+                       %crow-banner-frames
+                       crow-banner-frame-count
+                       crow-banner-frame
+                       format-startup-banner
+                       format-startup-banner-text
+                       startup-banner-widget
+                       parse-git-diff-lines
+                       format-git-diff-view
+                       git-diff-widget
+                       <todo-item>
+                       todo-item?
+                       todo-item-id
+                       todo-item-text
+                       todo-item-done?
+                       todo-item-source
+                       todo-item-priority
+                       <todo-list>
+                       todo-list?
+                       todo-list-title
+                       todo-list-items
+                       make-todo-list
+                       todo-add
+                       todo-toggle
+                       todo-remove
+                       todo-clear-done
+                       todo-counts
+                       todo-list->alist
+                       alist->todo-list
+                       format-todo-widget
+                       todo-widget
+                       safe-eval-widget-datum
+                       extract-response-widgets
+                       render-scheme-response-widget
+                       span-rows->text
+                       handle-todo-command!
+                       format-response-widgets-notice))
 
 ;;;
 ;;; String & Geometry Helpers
@@ -388,93 +392,105 @@ sorted by row and x coordinate."
                              (list (make-draw-op x (+ y h -1) bot-line #:role role))
                              child-ops))))))))
 
-(define* (scroll-view-widget lines
-                             #:key (scroll-offset 0)
-                             (role 'default)
-                             (show-scrollbar? #t))
-         "Scrollable line/segment viewport with optional right-edge scrollbar."
-         (let* ((entries (or lines '()))
-                (total (length entries)))
-           (make-widget
-             'scroll-view
-             #:props `((scroll-offset . ,scroll-offset)
-                       (total-lines . ,total)
-                       (show-scrollbar? . ,show-scrollbar?))
-             #:measure
-             (lambda (_w avail-w avail-h)
-               (cons avail-w (min avail-h (max 1 total))))
-             #:render
-             (lambda (_w rect)
-               (let* ((x (rect-x rect))
-                      (y (rect-y rect))
-                      (w (rect-width rect))
-                      (h (rect-height rect))
-                      (bar? (and show-scrollbar? (> total h) (>= w 4)))
-                      (content-w (if bar? (- w 1) w))
-                      (max-scroll (max 0 (- total h)))
-                      (clamped-scroll (max 0 (min scroll-offset max-scroll)))
-                      (start (max 0 (- total h clamped-scroll)))
-                      (vis (take (drop entries start) (min h (max 0 (- total start)))))
-                      (text-ops
-                        (let loop ((rest vis) (dy 0) (acc '()))
-                                  (if (or (null? rest) (>= dy h))
-                                    (reverse acc)
-                                    (let ((item (car rest)))
-                                      (cond
-                                        ((string? item)
-                                          (loop (cdr rest)
-                                                (+ dy 1)
-                                                (cons (make-draw-op x (+ y dy)
-                                                                    (clip-str item content-w)
-                                                                    #:role role)
-                                                      acc)))
-                                        ((and (pair? item) (every pair? item))
-                                          ;; List of (text role bold? dim?) spans
-                                          (let sloop ((spans item) (cx x) (sacc acc))
-                                                     (if (or (null? spans) (>= cx (+ x content-w)))
-                                                       (loop (cdr rest) (+ dy 1) sacc)
-                                                       (let* ((sp (car spans))
-                                                              (stxt (clip-str (car sp) (- (+ x content-w) cx)))
-                                                              (srole (if (pair? (cdr sp)) (cadr sp) role))
-                                                              (sbold? (and (>= (length sp) 3) (caddr sp)))
-                                                              (sdim? (and (>= (length sp) 4) (cadddr sp))))
-                                                         (sloop (cdr spans)
-                                                                (+ cx (string-length stxt))
-                                                                (if (string-null? stxt)
-                                                                  sacc
-                                                                  (cons (make-draw-op cx (+ y dy) stxt
-                                                                                      #:role srole
-                                                                                      #:bold? sbold?
-                                                                                      #:dim? sdim?)
-                                                                        sacc)))))))
-                                        (else
-                                          (loop (cdr rest)
-                                                (+ dy 1)
-                                                (cons (make-draw-op x (+ y dy)
-                                                                    (clip-str (format #f "~a" item) content-w)
-                                                                    #:role role)
-                                                      acc))))))))
-                      (bar-ops
-                        (if (not bar?)
-                          '()
-                          (let* ((thumb-h (max 1 (inexact->exact (floor (* h (/ h total))))))
+(define*
+  (scroll-view-widget lines
+                      #:key
+                      (scroll-offset 0)
+                      (role 'default)
+                      (show-scrollbar? #t))
+  "Scrollable line/segment viewport with optional right-edge scrollbar."
+  (let*
+      ((entries (or lines '())) (total (length entries)))
+    (make-widget 'scroll-view
+                 #:props
+                 `((scroll-offset . ,scroll-offset)
+                   (total-lines . ,total)
+                   (show-scrollbar? . ,show-scrollbar?))
+                 #:measure
+                 (lambda (_w avail-w avail-h)
+                   (cons avail-w (min avail-h (max 1 total))))
+                 #:render
+                 (lambda (_w rect)
+                   (let*
+                       ((x (rect-x rect)) (y (rect-y rect))
+                        (w (rect-width rect))
+                        (h (rect-height rect))
+                        (bar? (and show-scrollbar? (> total h) (>= w 4)))
+                        (content-w
+                          (if bar?
+                            (- w 1)
+                            w))
+                        (max-scroll (max 0 (- total h)))
+                        (clamped-scroll (max 0 (min scroll-offset max-scroll)))
+                        (start (max 0 (- total h clamped-scroll)))
+                        (vis (take (drop entries start) (min h (max 0 (- total start)))))
+                        (text-ops
+                          (let loop
+                            ((rest vis) (dy 0) (acc '()))
+                            (if (or (null? rest) (>= dy h))
+                              (reverse acc)
+                              (let ((item (car rest)))
+                                (cond
+                                  ((string? item)
+                                    (loop (cdr rest) (+ dy 1)
+                                          (cons (make-draw-op x (+ y dy) (clip-str item content-w) #:role role) acc)))
+                                  ((and (pair? item) (every pair? item))
+                                    ;; List of (text role bold? dim?) spans
+                                    (let sloop
+                                      ((spans item) (cx x) (sacc acc))
+                                      (if (or (null? spans) (>= cx (+ x content-w)))
+                                        (loop (cdr rest) (+ dy 1) sacc)
+                                        (let*
+                                            ((sp (car spans))
+                                             (stxt (clip-str (car sp) (- (+ x content-w) cx)))
+                                             (srole
+                                               (if (pair? (cdr sp))
+                                                 (cadr sp)
+                                                 role))
+                                             (sbold? (and (>= (length sp) 3) (caddr sp)))
+                                             (sdim? (and (>= (length sp) 4) (cadddr sp))))
+                                          (sloop (cdr spans)
+                                                 (+ cx (string-length stxt))
+                                                 (if (string-null? stxt)
+                                                   sacc
+                                                   (cons
+                                                     (make-draw-op cx (+ y dy) stxt #:role srole #:bold? sbold? #:dim? sdim?)
+                                                     sacc)))))))
+                                  (else
+                                    (loop (cdr rest) (+ dy 1)
+                                          (cons
+                                            (make-draw-op x (+ y dy) (clip-str (format #f "~a" item) content-w) #:role role)
+                                            acc))))))))
+                        (bar-ops
+                          (if bar?
+                            (let*
+                                ((thumb-h (max 1 (inexact->exact (floor (* h (/ h total))))))
                                  (thumb-top
                                    (if (zero? max-scroll)
                                      0
-                                     (inexact->exact
-                                       (round (* (- h thumb-h) (/ start max-scroll)))))))
-                            (let bloop ((dy 0) (acc '()))
-                                       (if (>= dy h)
-                                         (reverse acc)
-                                         (let ((in-thumb? (and (>= dy thumb-top)
-                                                               (< dy (+ thumb-top thumb-h)))))
-                                           (bloop (+ dy 1)
-                                                  (cons (make-draw-op (+ x w -1) (+ y dy)
-                                                                      (if in-thumb? "┃" "│")
-                                                                      #:role (if in-thumb? 'accent 'dim)
-                                                                      #:dim? (not in-thumb?))
-                                                        acc)))))))))
-                 (append text-ops bar-ops))))))
+                                     (inexact->exact (round (* (- h thumb-h) (/ start max-scroll)))))))
+                              (let bloop
+                                ((dy 0) (acc '()))
+                                (if (>= dy h)
+                                  (reverse acc)
+                                  (let
+                                      ((in-thumb? (and (>= dy thumb-top) (< dy (+ thumb-top thumb-h)))))
+                                    (bloop (+ dy 1)
+                                           (cons
+                                             (make-draw-op (+ x w -1)
+                                                           (+ y dy)
+                                                           (if in-thumb?
+                                                             "┃"
+                                                             "│")
+                                                           #:role
+                                                           (if in-thumb?
+                                                             'accent
+                                                             'dim)
+                                                           #:dim?
+                                                           (not in-thumb?))
+                                             acc))))))
+                            '())))
+                     (append text-ops bar-ops))))))
 
 (define* (vstack-widget children #:key (gap 0))
          "Vertical stack layout combinator."
@@ -931,191 +947,129 @@ middle items gracefully on narrow terminals."
 ;; Each frame is a list of lines; each line is a list of (text role bold? dim?) spans
 ;; capturing the dark hood/wings vs pale ash-grey hooded-crow mantle.
 (define %crow-banner-frames
-        (vector
-          ;; Frame 0
-          (list
-            (list (list "     " 'default #f #f)
-                  (list "⣠⣴⣶⣶⣶⣦⣄" 'dim #f #t)
-                  (list "      " 'default #f #f))
-            (list (list "⠠⢴⣶⣶⣾⣿⣯" 'dim #f #t)
-                  (list "⠂" 'default #t #f)
-                  (list "⣿⣿⣿⣿⣇" 'dim #f #t)
-                  (list "     " 'default #f #f))
-            (list (list "   " 'default #f #f)
-                  (list "⣨⣿⣿" 'default #f #f)
-                  (list "⣿⣿⣿⣿⣿⣿" 'dim #f #t)
-                  (list "⣿⣷⡄" 'default #f #f)
-                  (list "   " 'default #f #f))
-            (list (list " " 'default #f #f)
-                  (list "⣼" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷" 'default #f #f)
-                  (list "⡄" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list "⢸⣿⣿" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
-                  (list "⣿⣿" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list " " 'default #f #f)
-                  (list "⢻⣿⣿" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
-                  (list "⡿⠃" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list "  " 'default #f #f)
-                  (list "⢻⣿⣿⡿⠛⢻⠛⠛⡟⠛⠋" 'dim #f #t)
-                  (list "     " 'default #f #f))
-            (list (list "⢀⣴⣿⡿⠋" 'dim #f #t)
-                  (list "⣀⣤" 'frame #f #f)
-                  (list "⣾⣄⣴⣧" 'dim #f #t)
-                  (list "⣤⣀" 'frame #f #f)
-                  (list "     " 'default #f #f))
-            (list (list "⠿⠿⠋" 'dim #f #t) (list "               " 'default #f #f)))
-          ;; Frame 1
-          (list
-            (list (list "    " 'default #f #f)
-                  (list "⢀⣤⣶⣶⣶⣶⣤⡀" 'dim #f #t)
-                  (list "      " 'default #f #f))
-            (list (list "    " 'default #f #f)
-                  (list "⣾⣿⣿⣿⣿⣿⣿⣷⣶⠤" 'dim #f #t)
-                  (list "    " 'default #f #f))
-            (list (list "  " 'default #f #f)
-                  (list "⣴⣿⣿" 'default #f #f)
-                  (list "⣿⣿⣿⣿⣿⣿" 'dim #f #t)
-                  (list "⣿⣧⡀" 'default #f #f)
-                  (list "    " 'default #f #f))
-            (list (list " " 'default #f #f)
-                  (list "⣼" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷" 'default #f #f)
-                  (list "⡄" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list "⢸⣿⣿" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
-                  (list "⣿⣿" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list " " 'default #f #f)
-                  (list "⢻⣿⣿" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
-                  (list "⡿⠃" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list "  " 'default #f #f)
-                  (list "⢻⣿⣿⡿⠛⢻⠛⠛⡟⠛⠋" 'dim #f #t)
-                  (list "     " 'default #f #f))
-            (list (list "⢀⣴⣿⡿⠋" 'dim #f #t)
-                  (list "⣀⣤" 'frame #f #f)
-                  (list "⣾⣄⣴⣧" 'dim #f #t)
-                  (list "⣤⣀" 'frame #f #f)
-                  (list "     " 'default #f #f))
-            (list (list "⠿⠿⠋" 'dim #f #t) (list "               " 'default #f #f)))
-          ;; Frame 2
-          (list
-            (list (list "   " 'default #f #f)
-                  (list "⣠⣶⣶⣶⣶⣤⣠⣴⣶⣿⣿⠿⠂" 'dim #f #t)
-                  (list "  " 'default #f #f))
-            (list (list "   " 'default #f #f)
-                  (list "⣿⣿⣿" 'dim #f #t)
-                  (list "⠈" 'default #t #f)
-                  (list "⣿⣿⣿⣿⠟⠉" 'dim #f #t)
-                  (list "     " 'default #f #f))
-            (list (list " " 'default #f #f)
-                  (list "⢀⣾⣿⣿⣿" 'default #f #f)
-                  (list "⣿⣿⣿⣿" 'dim #f #t)
-                  (list "⣿⣿⣦⡀" 'default #f #f)
-                  (list "    " 'default #f #f))
-            (list (list "⢀⣾" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
-                  (list "⣿⣆" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list "⠸⣿⣿" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
-                  (list "⣿⡿" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list " " 'default #f #f)
-                  (list "⠹⣿⣿" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
-                  (list "⣿⠟⠁" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list "  " 'default #f #f)
-                  (list "⣹⣿⣿⠟⠉⢹⠉⠉⡏⠉⠁" 'dim #f #t)
-                  (list "     " 'default #f #f))
-            (list (list "⢠⣾⣿⠟⠁" 'dim #f #t)
-                  (list "⠤⠶" 'frame #f #f)
-                  (list "⠿⠦⠾⠷" 'dim #f #t)
-                  (list "⠶⠤" 'frame #f #f)
-                  (list "     " 'default #f #f))
-            (list (list "⠚⠛⠁" 'dim #f #t) (list "               " 'default #f #f)))
-          ;; Frame 3
-          (list
-            (list (list "    " 'default #f #f)
-                  (list "⢀⣤⣶⣶⣶⣶⣤⡀" 'dim #f #t)
-                  (list "      " 'default #f #f))
-            (list (list "   " 'default #f #f)
-                  (list "⢀⣿⣿⣿⣿⣿⣿⣿⣿⣶⣶⣶⠤" 'dim #f #t)
-                  (list "  " 'default #f #f))
-            (list (list "  " 'default #f #f)
-                  (list "⣴⣿⣿" 'default #f #f)
-                  (list "⣿⣿⣿⣿⣿⣿" 'dim #f #t)
-                  (list "⣿⣯⡀" 'default #f #f)
-                  (list "    " 'default #f #f))
-            (list (list " " 'default #f #f)
-                  (list "⣼" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷" 'default #f #f)
-                  (list "⡄" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list "⢸⣿⣿" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
-                  (list "⣿⣿" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list " " 'default #f #f)
-                  (list "⢻⣿⣿" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
-                  (list "⡿⠃" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list "  " 'default #f #f)
-                  (list "⢻⣿⣿⡿⠛⢻⠛⠛⡟⠛⠋" 'dim #f #t)
-                  (list "     " 'default #f #f))
-            (list (list "⢀⣴⣿⡿⠋" 'dim #f #t)
-                  (list "⣀⣤" 'frame #f #f)
-                  (list "⣾⣄⣴⣧" 'dim #f #t)
-                  (list "⣤⣀" 'frame #f #f)
-                  (list "     " 'default #f #f))
-            (list (list "⠿⠿⠋" 'dim #f #t) (list "               " 'default #f #f)))
-          ;; Frame 4
-          (list
-            (list (list "    " 'default #f #f)
-                  (list "⢀⣤⣶⣶⣶⣶⣤⡀" 'dim #f #t)
-                  (list "      " 'default #f #f))
-            (list (list "   " 'default #f #f)
-                  (list "⢀⣿⣿⣿⣿" 'dim #f #t)
-                  (list "⠐" 'default #t #f)
-                  (list "⣿⣿⣿⣶⣶⣶⠤" 'dim #f #t)
-                  (list "  " 'default #f #f))
-            (list (list "  " 'default #f #f)
-                  (list "⣴⣿⣿" 'default #f #f)
-                  (list "⣿⣿⣿⣿⣿⣿" 'dim #f #t)
-                  (list "⣿⣯⡀" 'default #f #f)
-                  (list "    " 'default #f #f))
-            (list (list " " 'default #f #f)
-                  (list "⣼" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷" 'default #f #f)
-                  (list "⡄" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list "⢸⣿⣿" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
-                  (list "⣿⣿" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list " " 'default #f #f)
-                  (list "⢻⣿⣿" 'dim #f #t)
-                  (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
-                  (list "⡿⠃" 'dim #f #t)
-                  (list "   " 'default #f #f))
-            (list (list "  " 'default #f #f)
-                  (list "⢻⣿⣿⡿⠛⢻⠛⠛⡟⠛⠋" 'dim #f #t)
-                  (list "     " 'default #f #f))
-            (list (list "⢀⣴⣿⡿⠋" 'dim #f #t)
-                  (list "⣀⣤" 'frame #f #f)
-                  (list "⣾⣄⣴⣧" 'dim #f #t)
-                  (list "⣤⣀" 'frame #f #f)
-                  (list "     " 'default #f #f))
-            (list (list "⠿⠿⠋" 'dim #f #t) (list "               " 'default #f #f)))))
+        (let
+            ((body-rows
+               (list
+                 (list (list " " 'default #f #f)
+                       (list "⣼" 'dim #f #t)
+                       (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷" 'default #f #f)
+                       (list "⡄" 'dim #f #t)
+                       (list "   " 'default #f #f))
+                 (list (list "⢸⣿⣿" 'dim #f #t)
+                       (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                       (list "⣿⣿" 'dim #f #t)
+                       (list "   " 'default #f #f))
+                 (list (list " " 'default #f #f)
+                       (list "⢻⣿⣿" 'dim #f #t)
+                       (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                       (list "⡿⠃" 'dim #f #t)
+                       (list "   " 'default #f #f))
+                 (list (list "  " 'default #f #f)
+                       (list "⢻⣿⣿⡿⠛⢻⠛⠛⡟⠛⠋" 'dim #f #t)
+                       (list "     " 'default #f #f))
+                 (list (list "⢀⣴⣿⡿⠋" 'dim #f #t)
+                       (list "⣀⣤" 'frame #f #f)
+                       (list "⣾⣄⣴⣧" 'dim #f #t)
+                       (list "⣤⣀" 'frame #f #f)
+                       (list "     " 'default #f #f))
+                 (list (list "⠿⠿⠋" 'dim #f #t) (list "               " 'default #f #f)))))
+          (vector
+            ;; Frame 0
+            (cons*
+              (list (list "     " 'default #f #f)
+                    (list "⣠⣴⣶⣶⣶⣦⣄" 'dim #f #t)
+                    (list "      " 'default #f #f))
+              (list (list "⠠⢴⣶⣶⣾⣿⣯" 'dim #f #t)
+                    (list "⠂" 'default #t #f)
+                    (list "⣿⣿⣿⣿⣇" 'dim #f #t)
+                    (list "     " 'default #f #f))
+              (list (list "   " 'default #f #f)
+                    (list "⣨⣿⣿" 'default #f #f)
+                    (list "⣿⣿⣿⣿⣿⣿" 'dim #f #t)
+                    (list "⣿⣷⡄" 'default #f #f)
+                    (list "   " 'default #f #f))
+              body-rows)
+            ;; Frame 1
+            (cons*
+              (list (list "    " 'default #f #f)
+                    (list "⢀⣤⣶⣶⣶⣶⣤⡀" 'dim #f #t)
+                    (list "      " 'default #f #f))
+              (list (list "    " 'default #f #f)
+                    (list "⣾⣿⣿⣿⣿⣿⣿⣷⣶⠤" 'dim #f #t)
+                    (list "    " 'default #f #f))
+              (list (list "  " 'default #f #f)
+                    (list "⣴⣿⣿" 'default #f #f)
+                    (list "⣿⣿⣿⣿⣿⣿" 'dim #f #t)
+                    (list "⣿⣧⡀" 'default #f #f)
+                    (list "    " 'default #f #f))
+              body-rows)
+            ;; Frame 2
+            (list
+              (list (list "   " 'default #f #f)
+                    (list "⣠⣶⣶⣶⣶⣤⣠⣴⣶⣿⣿⠿⠂" 'dim #f #t)
+                    (list "  " 'default #f #f))
+              (list (list "   " 'default #f #f)
+                    (list "⣿⣿⣿" 'dim #f #t)
+                    (list "⠈" 'default #t #f)
+                    (list "⣿⣿⣿⣿⠟⠉" 'dim #f #t)
+                    (list "     " 'default #f #f))
+              (list (list " " 'default #f #f)
+                    (list "⢀⣾⣿⣿⣿" 'default #f #f)
+                    (list "⣿⣿⣿⣿" 'dim #f #t)
+                    (list "⣿⣿⣦⡀" 'default #f #f)
+                    (list "    " 'default #f #f))
+              (list (list "⢀⣾" 'dim #f #t)
+                    (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                    (list "⣿⣆" 'dim #f #t)
+                    (list "   " 'default #f #f))
+              (list (list "⠸⣿⣿" 'dim #f #t)
+                    (list "⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                    (list "⣿⡿" 'dim #f #t)
+                    (list "   " 'default #f #f))
+              (list (list " " 'default #f #f)
+                    (list "⠹⣿⣿" 'dim #f #t)
+                    (list "⣿⣿⣿⣿⣿⣿⣿⣿" 'default #f #f)
+                    (list "⣿⠟⠁" 'dim #f #t)
+                    (list "   " 'default #f #f))
+              (list (list "  " 'default #f #f)
+                    (list "⣹⣿⣿⠟⠉⢹⠉⠉⡏⠉⠁" 'dim #f #t)
+                    (list "     " 'default #f #f))
+              (list (list "⢠⣾⣿⠟⠁" 'dim #f #t)
+                    (list "⠤⠶" 'frame #f #f)
+                    (list "⠿⠦⠾⠷" 'dim #f #t)
+                    (list "⠶⠤" 'frame #f #f)
+                    (list "     " 'default #f #f))
+              (list (list "⠚⠛⠁" 'dim #f #t) (list "               " 'default #f #f)))
+            ;; Frame 3
+            (cons*
+              (list (list "    " 'default #f #f)
+                    (list "⢀⣤⣶⣶⣶⣶⣤⡀" 'dim #f #t)
+                    (list "      " 'default #f #f))
+              (list (list "   " 'default #f #f)
+                    (list "⢀⣿⣿⣿⣿⣿⣿⣿⣿⣶⣶⣶⠤" 'dim #f #t)
+                    (list "  " 'default #f #f))
+              (list (list "  " 'default #f #f)
+                    (list "⣴⣿⣿" 'default #f #f)
+                    (list "⣿⣿⣿⣿⣿⣿" 'dim #f #t)
+                    (list "⣿⣯⡀" 'default #f #f)
+                    (list "    " 'default #f #f))
+              body-rows)
+            ;; Frame 4
+            (cons*
+              (list (list "    " 'default #f #f)
+                    (list "⢀⣤⣶⣶⣶⣶⣤⡀" 'dim #f #t)
+                    (list "      " 'default #f #f))
+              (list (list "   " 'default #f #f)
+                    (list "⢀⣿⣿⣿⣿" 'dim #f #t)
+                    (list "⠐" 'default #t #f)
+                    (list "⣿⣿⣿⣶⣶⣶⠤" 'dim #f #t)
+                    (list "  " 'default #f #f))
+              (list (list "  " 'default #f #f)
+                    (list "⣴⣿⣿" 'default #f #f)
+                    (list "⣿⣿⣿⣿⣿⣿" 'dim #f #t)
+                    (list "⣿⣯⡀" 'default #f #f)
+                    (list "    " 'default #f #f))
+              body-rows))))
 
 (define (crow-banner-frame-count)
         "Return the number of animation frames in %crow-banner-frames."

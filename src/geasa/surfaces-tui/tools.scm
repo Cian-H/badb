@@ -52,8 +52,6 @@
                #:use-module
                (ice-9 format)
                #:use-module
-               (ice-9 rdelim)
-               #:use-module
                (srfi srfi-1)
                #:use-module
                (pfds hamts)
@@ -457,8 +455,7 @@ unbounded raw search on the next turn."
     ((i 0) (acc '()) (chars 0) (last-shown #f))
     (let
         ((line-info (read-line-bounded port %read-file-max-chars-per-line)))
-      (if (not line-info)
-        (list i (reverse acc) last-shown)
+      (if line-info
         (let*
             ((line (car line-info))
              (line-length (cdr line-info))
@@ -477,15 +474,15 @@ unbounded raw search on the next turn."
                   chars)
                 (if selected?
                   i
-                  last-shown)))))))
+                  last-shown)))
+        (list i (reverse acc) last-shown)))))
 
 (define*
   (builtin-read-file path #:optional (offset 0) (limit #f))
   "Read a bounded, line-based slice of PATH without loading it all into memory."
   (catch #t
     (lambda ()
-      (if (not (file-exists? path))
-        (format #f "Error: file '~a' does not exist" path)
+      (if (file-exists? path)
         (call-with-input-file path
                               (lambda (port)
                                 (let*
@@ -523,7 +520,8 @@ unbounded raw search on the next turn."
                                                 "~%[~a more lines elided - call read_file with offset=~a to continue (total ~a lines)]"
                                                 (- total next)
                                                 next
-                                                total)))))))))
+                                                total)))))))
+        (format #f "Error: file '~a' does not exist" path)))
     (lambda (_k . a)
       (format #f "Error reading file: ~s" a))))
 
