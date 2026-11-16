@@ -1035,9 +1035,9 @@ middle items gracefully on narrow terminals."
                     (list "⣹⣿⣿⠟⠉⢹⠉⠉⡏⠉⠁" 'dim #f #t)
                     (list "     " 'default #f #f))
               (list (list "⢠⣾⣿⠟⠁" 'dim #f #t)
-                    (list "⠤⠶" 'frame #f #f)
+                    (list "⣀⣤" 'frame #f #f)
                     (list "⠿⠦⠾⠷" 'dim #f #t)
-                    (list "⠶⠤" 'frame #f #f)
+                    (list "⣤⣀" 'frame #f #f)
                     (list "     " 'default #f #f))
               (list (list "⠚⠛⠁" 'dim #f #t) (list "               " 'default #f #f)))
             ;; Frame 3
