@@ -107,10 +107,12 @@ guile-fslib's complex-fsing?."
                 (start-line #f)
                 (end-line #f)
                 (force #f)
-                (ctx-idx #f))
+                (ctx-idx #f)
+                (read-post-hooks '()))
   "Read PATH directly when <= 5KB or when a bounded slice is requested.
 For unbounded reads of files > 5KB with CTX-IDX, delegates transparently to
-context-mode (ctx_execute_file / ctx_search) without dumping the whole file."
+context-mode (ctx_execute_file / ctx_search) without dumping the whole file.
+Runs READ-POST-HOOKS (lambda (path bounded? raw-text result) ...) on the output."
   (let
       ((sline (%coerce-int-or-false start-line))
        (eline (%coerce-int-or-false end-line)))
@@ -146,97 +148,197 @@ context-mode (ctx_execute_file / ctx_search) without dumping the whole file."
                               limit
                               (string->number (or limit "800"))))))
                  (end (min total (+ start max-lines)))
-                 (bounded-slice? (or sline eline (> start 0) (< max-lines 800) force)))
-              (if
-                  (and ctx-idx (not bounded-slice?) (> file-bytes %context-mode-threshold-bytes))
-                (let
-                    ((n-chunks
-                       (ctx-index-content! ctx-idx
-                                           (string-append "read_file:" path)
-                                           raw-text
-                                           (string-suffix? ".md" path))))
-                  (format #f
-                          "[file ~a is ~a bytes (~a lines), exceeding the ~aB (5KB) direct-read threshold; delegated to context-mode (ctx_execute_file / ctx_search) and indexed into ~a chunks.]~%• Search definitions/sections: ctx_search(queries=[\"...\"], source=~s)~%• Analyze/extract with code without loading into context: ctx_execute_file(path=~s, language=\"python\"|\"shell\"|\"scheme\"|\"javascript\", code=\"...\")~%• Need exact N:HHH→anchors for edit_lines? Call read_file(path=~s, start_line=..., end_line=...) or offset/limit on the specific slice."
-                          path
-                          file-bytes
-                          total
-                          %context-mode-threshold-bytes
-                          n-chunks
-                          path
-                          path
-                          path))
-                (let loop
-                  ((i start) (cur (drop raw-lines (min total start))) (acc '()))
-                  (cond
-                    ((or (>= i end) (null? cur))
-                      (let*
-                          ((shown (reverse acc))
-                           (last-shown
-                             (if (null? shown)
-                               start
-                               (+ i -1)))
-                           (header
-                             (format #f
-                                     "[file ~a - ~a total lines - showing lines ~a..~a]~%"
-                                     path
-                                     total
-                                     start
-                                     last-shown))
-                           (body (string-join shown "\n"))
-                           (footer
-                             (if (>= end total)
-                               (format #f "~%[end of file at line ~a of ~a]" total total)
-                               (format #f
-                                       "~%[~a more lines elided - call read_file with offset=~a to continue (total ~a lines)]"
-                                       (- total i)
-                                       i
-                                       total)))
-                           (tip
-                             (if (> total 200)
-                               "~%[Tip: For large files, use symbols_overview, find_symbol, ctx_search, or ctx_execute_file.]"
-                               "")))
-                        (string-append header body footer (format #f tip))))
-                    (else
-                      (let*
-                          ((line (car cur))
-                           (trim
-                             (if
-                                 (> (string-length line) %read-file-max-chars-per-line)
-                               (string-append
-                                 (substring line 0 %read-file-max-chars-per-line)
-                                 " ... [line truncated]")
-                               line))
-                           (numbered (format #f "~a:~a→~a" i (fs-line-anchor line) trim)))
-                        (loop (+ i 1) (cdr cur) (cons numbered acc))))))))
+                 (bounded-slice? (or sline eline (> start 0) (< max-lines 800) force))
+                 (initial-result
+                   (if
+                       (and ctx-idx (not bounded-slice?) (> file-bytes %context-mode-threshold-bytes))
+                     (let
+                         ((n-chunks
+                            (ctx-index-content! ctx-idx
+                                                (string-append "read_file:" path)
+                                                raw-text
+                                                (string-suffix? ".md" path))))
+                       (format #f
+                               "[file ~a is ~a bytes (~a lines), exceeding the ~aB (5KB) direct-read threshold; delegated to context-mode (ctx_execute_file / ctx_search) and indexed into ~a chunks.]~%• Search definitions/sections: ctx_search(queries=[\"...\"], source=~s)~%• Analyze/extract with code without loading into context: ctx_execute_file(path=~s, language=\"python\"|\"shell\"|\"scheme\"|\"javascript\", code=\"...\")~%• Need exact N:HHH→anchors for edit_lines? Call read_file(path=~s, start_line=..., end_line=...) or offset/limit on the specific slice."
+                               path
+                               file-bytes
+                               total
+                               %context-mode-threshold-bytes
+                               n-chunks
+                               path
+                               path
+                               path))
+                     (let loop
+                       ((i start) (cur (drop raw-lines (min total start))) (acc '()))
+                       (cond
+                         ((or (>= i end) (null? cur))
+                           (let*
+                               ((shown (reverse acc))
+                                (last-shown
+                                  (if (null? shown)
+                                    start
+                                    (+ i -1)))
+                                (header
+                                  (format #f
+                                          "[file ~a - ~a total lines - showing lines ~a..~a]~%"
+                                          path
+                                          total
+                                          start
+                                          last-shown))
+                                (body (string-join shown "\n"))
+                                (footer
+                                  (if (>= end total)
+                                    (format #f "~%[end of file at line ~a of ~a]" total total)
+                                    (format #f
+                                            "~%[~a more lines elided - call read_file with offset=~a to continue (total ~a lines)]"
+                                            (- total i)
+                                            i
+                                            total)))
+                                (tip
+                                  (if (> total 200)
+                                    "~%[Tip: For large files, use symbols_overview, find_symbol, ctx_search, or ctx_execute_file.]"
+                                    "")))
+                             (string-append header body footer (format #f tip))))
+                         (else
+                           (let*
+                               ((line (car cur))
+                                (trim
+                                  (if
+                                      (> (string-length line) %read-file-max-chars-per-line)
+                                    (string-append
+                                      (substring line 0 %read-file-max-chars-per-line)
+                                      " ... [line truncated]")
+                                    line))
+                                (numbered (format #f "~a:~a→~a" i (fs-line-anchor line) trim)))
+                             (loop (+ i 1) (cdr cur) (cons numbered acc)))))))))
+              (fold
+                (lambda (hook res)
+                  (or (hook path bounded-slice? raw-text res) res))
+                initial-result
+                read-post-hooks))
             (format #f "Error: file '~a' does not exist." path)))
         (lambda (_k . a)
           (format #f "Error reading file '~a': ~s" path a))))))
 
-(define* (fs-write-file path content #:key (rollback-mgr #f) (verifier #f))
-         "Write CONTENT to PATH, checkpointing with ROLLBACK-MGR and verifying with VERIFIER."
-         (read-cache-invalidate! path)
-         (if (fs-path-escapes? path)
-           (format #f "Error: refusing to write to '~a': path traversal is not permitted" path)
-           (catch #t
+(define (%lisp-file? path)
+        (any
+          (lambda (ext)
+            (string-suffix? ext path))
+          '(".scm" ".lisp" ".el" ".clj" ".rkt" ".ss")))
+
+(define*
+  (%apply-file-mutation! path
+                         new-text
+                         #:key
+                         (label "Edit")
+                         (checkpoint-desc #f)
+                         (verify-first? #t)
+                         (ensure-parent? #f)
+                         (rollback-mgr #f)
+                         (verifier #f)
+                         (pre-mutate-hooks '())
+                         (post-mutate-hooks '())
+                         (on-success
+                           (lambda ()
+                             (format #f "Mutated '~a'" path))))
+  "Shared pre/post-hooked file mutation helper used by write_file, edit_file, and edit_lines."
+  (let
+      ((pre-err
+         (any
+           (lambda (hook)
+             (hook path new-text))
+           pre-mutate-hooks)))
+    (if pre-err
+      pre-err
+      (let*
+          ((run-write!
              (lambda ()
-               (when rollback-mgr
-                 (create-checkpoint! rollback-mgr (format #f "pre-write: ~a" path) #:files (list path)))
-               (let ((do-write!
-                       (lambda ()
-                         (ensure-parent-directory! path)
-                         (call-with-output-file path (lambda (p) (display content p)))
-                         (let ((lines (length (string-split content #\newline))))
-                           (format #f "Wrote ~a (~a lines)" path lines)))))
-                 (if verifier
-                   (let ((v-res (verify-action verifier #:code content #:file path)))
-                     (if (assoc-ref v-res 'passed?)
-                       (do-write!)
-                       (begin
-                         (when rollback-mgr (rollback-latest! rollback-mgr))
-                         (format #f "Write aborted: verification failed: ~s" (assoc-ref v-res 'failures)))))
-                   (do-write!))))
-             (lambda (_k . a)
-               (format #f "Error writing file '~a': ~s" path a)))))
+               (when ensure-parent? (ensure-parent-directory! path))
+               (call-with-output-file path
+                                      (lambda (p)
+                                        (display new-text p)))
+               (read-cache-invalidate! path)
+               (for-each
+                 (lambda (hook)
+                   (hook path new-text))
+                 post-mutate-hooks)
+               (on-success)))
+           (verify-err
+             (lambda (v-res)
+               (let
+                   ((hint
+                      (if
+                          (and (string=? label "Edit") (%lisp-file? path))
+                        "\nHint: For Scheme/Lisp files, prefer structural-editing tools (read_node -> ast_modify -> commit_workspace) instead of raw text edits."
+                        "")))
+                 (format #f
+                         "~a aborted: verification failed: ~s~a"
+                         label
+                         (assoc-ref v-res 'failures)
+                         hint)))))
+        (cond
+          ((and verifier verify-first?)
+            (let
+                ((v-res (verify-action verifier #:code new-text #:file path)))
+              (if (assoc-ref v-res 'passed?)
+                (begin
+                  (when rollback-mgr
+                    (create-checkpoint! rollback-mgr (or checkpoint-desc path) #:files (list path)))
+                  (run-write!))
+                (verify-err v-res))))
+          (verifier
+            (when rollback-mgr
+              (create-checkpoint! rollback-mgr (or checkpoint-desc path) #:files (list path)))
+            (let
+                ((v-res (verify-action verifier #:code new-text #:file path)))
+              (if (assoc-ref v-res 'passed?)
+                (run-write!)
+                (begin (when rollback-mgr (rollback-latest! rollback-mgr)) (verify-err v-res)))))
+          (else
+            (when rollback-mgr
+              (create-checkpoint! rollback-mgr (or checkpoint-desc path) #:files (list path)))
+            (run-write!)))))))
+
+(define*
+  (fs-write-file path
+                 content
+                 #:key
+                 (rollback-mgr #f)
+                 (verifier #f)
+                 (pre-mutate-hooks '())
+                 (post-mutate-hooks '()))
+  "Write CONTENT to PATH, invoking pre/post mutation hooks (and rollback/verifier)."
+  (catch #t
+    (lambda ()
+      (if (fs-path-escapes? path)
+        (format #f
+                "Error: refusing to write '~a': path traversal is not permitted"
+                path)
+        (%apply-file-mutation! path
+                               content
+                               #:label
+                               "Write"
+                               #:checkpoint-desc
+                               (format #f "pre-write: ~a" path)
+                               #:verify-first?
+                               #f
+                               #:ensure-parent?
+                               #t
+                               #:rollback-mgr
+                               rollback-mgr
+                               #:verifier
+                               verifier
+                               #:pre-mutate-hooks
+                               pre-mutate-hooks
+                               #:post-mutate-hooks
+                               post-mutate-hooks
+                               #:on-success
+                               (lambda ()
+                                 (let
+                                     ((lines (length (string-split content #\newline))))
+                                   (format #f "Wrote ~a (~a lines)" path lines))))))
+    (lambda (_k . a)
+      (format #f "Error writing file '~a': ~s" path a))))
 
 (define (find-all-substring-indices text target)
         "Return sorted 0-based character offsets where TARGET occurs in TEXT."
@@ -262,19 +364,16 @@ context-mode (ctx_execute_file / ctx_search) without dumping the whole file."
                 #:key
                 (replace-all? #f)
                 (rollback-mgr #f)
-                (verifier #f))
+                (verifier #f)
+                (pre-mutate-hooks '())
+                (post-mutate-hooks '()))
   "Surgically replace TARGET with REPLACEMENT in PATH."
-  (define (lisp-file? p)
-          (any
-            (lambda (ext)
-              (string-suffix? ext p))
-            '(".scm" ".lisp" ".el" ".clj" ".rkt" ".ss")))
   (catch #t
     (lambda ()
       (cond
         ((fs-path-escapes? path)
           (format #f "Error: refusing to edit '~a': path traversal is not permitted" path))
-        ((not (file-exists? path)) (format #f "Error: file '~a' does not exist." path))
+        ((not (file-exists? path)) (format #f "Error: file '~a' not found." path))
         ((or (not target) (string-null? target))
           (format #f "Error: target text cannot be empty."))
         (else
@@ -312,44 +411,34 @@ context-mode (ctx_execute_file / ctx_search) without dumping the whole file."
                              ((idx (car matches))
                               (prefix (substring old-text 0 idx))
                               (suffix (substring old-text (+ idx (string-length target)))))
-                           (string-append prefix replacement suffix)))))
-                  (let
-                      ((do-apply-edit!
-                         (lambda ()
-                           (when rollback-mgr
-                             (create-checkpoint! rollback-mgr
-                                                 (format #f "pre-edit: ~a" path)
-                                                 #:files
-                                                 (list path)))
-                           (call-with-output-file path
-                                                  (lambda (p)
-                                                    (display new-text p)))
-                           (read-cache-invalidate! path)
-                           (let
-                               ((old-lines (length (string-split old-text #\newline)))
-                                (new-lines (length (string-split new-text #\newline))))
-                             (format #f
-                                     "Edited '~a': replaced ~a occurrence(s) (~a -> ~a lines, file total ~a lines)"
-                                     path
-                                     replaced-count
-                                     old-lines
-                                     new-lines
-                                     new-lines)))))
-                    (if verifier
-                      (let
-                          ((v-res (verify-action verifier #:code new-text #:file path)))
-                        (if (assoc-ref v-res 'passed?)
-                          (do-apply-edit!)
-                          (let
-                              ((hint
-                                 (if (lisp-file? path)
-                                   "\nHint: For Scheme/Lisp files, prefer structural-editing tools (read_node -> ast_modify -> commit_workspace) instead of raw text edits."
-                                   "")))
-                            (format #f
-                                    "Edit aborted: verification failed: ~s~a"
-                                    (assoc-ref v-res 'failures)
-                                    hint))))
-                      (do-apply-edit!))))))))))
+                           (string-append prefix replacement suffix))))
+                     (old-lines (length (string-split old-text #\newline)))
+                     (new-lines (length (string-split new-text #\newline))))
+                  (%apply-file-mutation! path
+                                         new-text
+                                         #:label
+                                         "Edit"
+                                         #:checkpoint-desc
+                                         (format #f "pre-edit: ~a" path)
+                                         #:verify-first?
+                                         #t
+                                         #:rollback-mgr
+                                         rollback-mgr
+                                         #:verifier
+                                         verifier
+                                         #:pre-mutate-hooks
+                                         pre-mutate-hooks
+                                         #:post-mutate-hooks
+                                         post-mutate-hooks
+                                         #:on-success
+                                         (lambda ()
+                                           (format #f
+                                                   "Edited '~a': replaced ~a occurrence(s) (~a -> ~a lines, file total ~a lines)"
+                                                   path
+                                                   replaced-count
+                                                   old-lines
+                                                   new-lines
+                                                   new-lines))))))))))
     (lambda (_k . a)
       (format #f "Error editing file '~a': ~s" path a))))
 
@@ -506,15 +595,14 @@ numbers of earlier ranges remain valid; return the new lines list."
               (loop (cdr rest) (append (take acc from) segs (drop acc (+ to 1))))))))
 
 (define*
-  (fs-edit-lines path edits #:key (rollback-mgr #f) (verifier #f))
-  "Apply a batch of hash-verified line-range edits to PATH.  Each edit
-is an alist with from/from_hash/to/to_hash/new_text: line numbers are
-0-based, the inclusive range [from..to] is replaced by new_text
-(multi-line allowed; empty deletes the range), and both endpoint
-anchors must match the current content at those lines.  The whole
-batch is rejected before any write when an anchor mismatches - the
-file shifted or changed since the last read - preventing edits that
-would silently land on the wrong lines."
+  (fs-edit-lines path
+                 edits
+                 #:key
+                 (rollback-mgr #f)
+                 (verifier #f)
+                 (pre-mutate-hooks '())
+                 (post-mutate-hooks '()))
+  "Apply a batch of hash-verified line-range edits to PATH."
   (catch #t
     (lambda ()
       (let ((entries (%edit-entries edits)))
@@ -531,11 +619,7 @@ would silently land on the wrong lines."
                 ((lines (fs-file-lines path))
                  (total (length lines))
                  (parsed (%parsed-edits entries))
-                 (invalid
-                   (any
-                     (lambda (p)
-                       (not p))
-                     parsed)))
+                 (invalid (any not parsed)))
               (cond
                 (invalid
                   (format #f
@@ -553,32 +637,30 @@ would silently land on the wrong lines."
                              (and final-newline? (not (string-null? new-text-body)))
                            (string-append new-text-body "\n")
                            new-text-body)))
-                    (let
-                        ((do-apply!
-                           (lambda ()
-                             (when rollback-mgr
-                               (create-checkpoint! rollback-mgr
-                                                   (format #f "pre-edit-lines: ~a" path)
-                                                   #:files
-                                                   (list path)))
-                             (call-with-output-file path
-                                                    (lambda (p)
-                                                      (display new-text p)))
-                             (read-cache-invalidate! path)
-                             (format #f
-                                     "Edited '~a': applied ~a edit(s) (~a -> ~a lines, file total ~a lines)"
-                                     path
-                                     (length parsed)
-                                     total
-                                     new-total
-                                     new-total))))
-                      (if verifier
-                        (let
-                            ((v-res (verify-action verifier #:code new-text #:file path)))
-                          (if (assoc-ref v-res 'passed?)
-                            (do-apply!)
-                            (format #f "Edit aborted: verification failed: ~s" (assoc-ref v-res 'failures))))
-                        (do-apply!)))))))))))
+                    (%apply-file-mutation! path
+                                           new-text
+                                           #:label
+                                           "Edit"
+                                           #:checkpoint-desc
+                                           (format #f "pre-edit-lines: ~a" path)
+                                           #:verify-first?
+                                           #t
+                                           #:rollback-mgr
+                                           rollback-mgr
+                                           #:verifier
+                                           verifier
+                                           #:pre-mutate-hooks
+                                           pre-mutate-hooks
+                                           #:post-mutate-hooks
+                                           post-mutate-hooks
+                                           #:on-success
+                                           (lambda ()
+                                             (format #f
+                                                     "Edited '~a': applied ~a edit(s) (~a -> ~a lines)"
+                                                     path
+                                                     (length parsed)
+                                                     total
+                                                     new-total)))))))))))
     (lambda (_k . a)
       (format #f "Error editing lines in '~a': ~s" path a))))
 
@@ -840,7 +922,10 @@ descending... ascending-ordered list of disjoint ranges."
                       (shell-executor #f)
                       (ctx-idx #f)
                       (bash-pre-hooks '())
-                      (bash-post-hooks '()))
+                      (bash-post-hooks '())
+                      (read-post-hooks '())
+                      (pre-mutate-hooks '())
+                      (post-mutate-hooks '()))
   "Register read_file, write_file, edit_file, edit_lines, file_search, and
 a hookable bash tool into REG."
   (registry-attach! reg
@@ -857,7 +942,9 @@ a hookable bash tool into REG."
                                     #:force
                                     force
                                     #:ctx-idx
-                                    ctx-idx))
+                                    ctx-idx
+                                    #:read-post-hooks
+                                    read-post-hooks))
                     '((description .
                        "Read a file at PATH. Files <= 5KB (or bounded slices via offset/limit or start_line/end_line) are returned directly with N:HHH→content anchors for edit_lines. Whole-file reads > 5KB are delegated transparently to context-mode (ctx_execute_file / ctx_search) to keep context lean.")
                       (parameters .
@@ -881,7 +968,16 @@ a hookable bash tool into REG."
   (registry-attach! reg
                     "write_file"
                     (lambda (path content)
-                      (fs-write-file path content #:rollback-mgr rollback-mgr #:verifier verifier))
+                      (fs-write-file path
+                                     content
+                                     #:rollback-mgr
+                                     rollback-mgr
+                                     #:verifier
+                                     verifier
+                                     #:pre-mutate-hooks
+                                     pre-mutate-hooks
+                                     #:post-mutate-hooks
+                                     post-mutate-hooks))
                     '((description . "Write content to a file at PATH")
                       (parameters .
                        ((type . "object")
@@ -902,7 +998,11 @@ a hookable bash tool into REG."
                                       #:rollback-mgr
                                       rollback-mgr
                                       #:verifier
-                                      verifier)))
+                                      verifier
+                                      #:pre-mutate-hooks
+                                      pre-mutate-hooks
+                                      #:post-mutate-hooks
+                                      post-mutate-hooks)))
                     '((description .
                        "Surgically edit PATH by replacing TARGET with REPLACEMENT. Target must match exact text.")
                       (parameters .
@@ -918,7 +1018,16 @@ a hookable bash tool into REG."
   (registry-attach! reg
                     "edit_lines"
                     (lambda (path edits)
-                      (fs-edit-lines path edits #:rollback-mgr rollback-mgr #:verifier verifier))
+                      (fs-edit-lines path
+                                     edits
+                                     #:rollback-mgr
+                                     rollback-mgr
+                                     #:verifier
+                                     verifier
+                                     #:pre-mutate-hooks
+                                     pre-mutate-hooks
+                                     #:post-mutate-hooks
+                                     post-mutate-hooks))
                     '((description .
                        "Apply a batch of hash-verified line-range edits (atomic: all-or-nothing) using N:HHH→anchors from read_file.")
                       (parameters .

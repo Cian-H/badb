@@ -579,7 +579,8 @@ unbounded raw search on the next turn."
   ;; Backward-compatibility shell aliases
   (registry-attach! reg
                     "execute_command"
-                    exec-shell-tool-impl
+                    (lambda (cmd)
+                      ((or (registry-lookup reg "bash") exec-shell-tool-impl) cmd))
                     '((description . "Execute a shell command and return output and exit status")
                       (parameters .
                        ((type . "object")
@@ -588,7 +589,8 @@ unbounded raw search on the next turn."
                         (required . #("cmd"))))))
   (registry-attach! reg
                     "sh"
-                    exec-shell-tool-impl
+                    (lambda (command)
+                      ((or (registry-lookup reg "bash") exec-shell-tool-impl) command))
                     '((description . "Execute a POSIX shell command and return output and exit code")
                       (parameters .
                        ((type . "object")

@@ -519,43 +519,78 @@ delivered nothing, fall back to a single model-complete call."
       (else (impl args)))))
 
 (define*
-  (execute-tool-call tool-call reg mcp-mgr #:key (jrn #f) (mgr #f) (guardrail #f))
-  "Execute a single TOOL-CALL alist. Checks GUARDRAIL, dispatches to REGISTRY or MCP-MGR,
-logs execution provenance to JRN, and returns (values result is-error?)."
+  (execute-tool-call tool-call
+                     reg
+                     mcp-mgr
+                     #:key
+                     (jrn #f)
+                     (mgr #f)
+                     (guardrail #f)
+                     (pre-tool-hook #f)
+                     (post-tool-hook #f))
+  "Execute a single TOOL-CALL alist. Runs PRE-TOOL-HOOK, checks GUARDRAIL,
+dispatches to REGISTRY or MCP-MGR, runs POST-TOOL-HOOK, logs execution
+provenance to JRN, and returns (values result is-error?)."
   (let*
-      ((name (prop-ref tool-call 'name))
-       (args (or (prop-ref tool-call 'arguments) '()))
-       ;; Check guardrail policy
-       (permission
-         (if (procedure? guardrail)
+      ((raw-name (prop-ref tool-call 'name))
+       (raw-args (or (prop-ref tool-call 'arguments) '()))
+       (pre-res
+         (if (procedure? pre-tool-hook)
            (catch #t
              (lambda ()
-               (guardrail name args))
-             (lambda (k . a)
-               (cons 'deny (format #f "Guardrail exception (~a): ~s" k a))))
-           #t)))
+               (pre-tool-hook raw-name raw-args))
+             (lambda _
+               #f))
+           #f))
+       (pre-deny (and (pair? pre-res) (eq? (car pre-res) 'deny) (cdr pre-res)))
+       (name
+         (if (and (pair? pre-res) (string? (car pre-res)))
+           (car pre-res)
+           raw-name))
+       (args
+         (if (and (pair? pre-res) (string? (car pre-res)))
+           (cdr pre-res)
+           raw-args))
+       (permission
+         (if pre-deny
+           (cons 'deny pre-deny)
+           (if (procedure? guardrail)
+             (catch #t
+               (lambda ()
+                 (guardrail name args))
+               (lambda (k . a)
+                 (cons 'deny (format #f "Guardrail exception (~a): ~s" k a))))
+             #t)))
+       (apply-post
+         (lambda (res err?)
+           (if (procedure? post-tool-hook)
+             (catch #t
+               (lambda ()
+                 (post-tool-hook name args res err?))
+               (lambda _
+                 res))
+             res))))
     (cond
       ((or (eq? permission #f) (eq? permission 'deny))
-        (values
-          `((error .
-                   ,(format #f "Permission denied for tool '~a' by guardrail policy" name)))
-          #t))
+        (let
+            ((out
+               `((error .
+                        ,(format #f "Permission denied for tool '~a' by guardrail policy" name)))))
+          (values (apply-post out #t) #t)))
       ((and (pair? permission) (eq? (car permission) 'deny))
-        (values `((error . ,(cdr permission))) #t))
+        (let ((out `((error . ,(cdr permission))))) (values (apply-post out #t) #t)))
       (else
         (catch #t
           (lambda ()
-            (let
-                ((res
+            (let*
+                ((raw-res
                    (cond
-                     ;; 1. Check registry features (exact match or with dots/dashes restored)
                      ((and reg (lookup-registry-feature reg name)) =>
                                                                    (lambda (impl)
                                                                      (if (procedure? impl)
                                                                        (let ((meta (lookup-registry-metadata reg name)))
                                                                          (invoke-registry-procedure impl meta args))
                                                                        (error "Registry entry is not a procedure" name))))
-                     ;; 2. Check MCP manager
                      ((and mcp-mgr
                            (find
                              (lambda (t)
@@ -564,10 +599,10 @@ logs execution provenance to JRN, and returns (values result is-error?)."
                              (mcp-manager-list-tools mcp-mgr)))
                        =>
                        (lambda (matched)
-                         (let ((orig-name (prop-ref matched 'name)))
-                           (mcp-manager-call-tool mcp-mgr orig-name args))))
+                         (mcp-manager-call-tool mcp-mgr (prop-ref matched 'name) args)))
                      (else
-                       (error (format #f "Tool '~a' not found in registry or active MCP servers" name))))))
+                       (error (format #f "Tool '~a' not found in registry or active MCP servers" name)))))
+                 (res (apply-post raw-res #f)))
               (log-tool-execution! jrn
                                    name
                                    args
@@ -575,10 +610,11 @@ logs execution provenance to JRN, and returns (values result is-error?)."
                                    `((result-summary . ,(object->string res))))
               (values res #f)))
           (lambda (key . err-args)
-            (let
-                ((err-msg (format #f "Execution of tool '~a' failed (~a): ~s" name key err-args)))
+            (let*
+                ((err-msg (format #f "Execution of tool '~a' failed (~a): ~s" name key err-args))
+                 (out (apply-post `((error . ,err-msg)) #t)))
               (log-tool-execution! jrn name args "error" `((error . ,err-msg)))
-              (values `((error . ,err-msg)) #t))))))))
+              (values out #t))))))))
 
 ;;;
 ;;; Steering Queue
