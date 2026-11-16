@@ -1,0 +1,20 @@
+#!/usr/bin/env -S guile -s
+!#
+;;; Enforce Conventional Commits on local commits.
+;;; Allows: feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert
+;;; with optional (scope) and optional ! before ": ".
+
+(use-modules (ice-9 textual-ports)
+             (ice-9 regex))
+
+(let* ((msg-file (cadr (command-line)))
+       (msg (call-with-input-file msg-file get-string-all))
+       (first-line (car (string-split msg #\newline)))
+       (pattern "^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\\([A-Za-z0-9._-]+\\))?!?: .+"))
+  (unless (or (string-prefix? "Merge " first-line)
+              (string-prefix? "Revert \"" first-line)
+              (string-match pattern first-line))
+    (format (current-error-port)
+            "Error: Commit message must follow Conventional Commits (e.g., 'feat(surfaces-tui): add widget').\nGot: ~a\n"
+            first-line)
+    (exit 1)))
