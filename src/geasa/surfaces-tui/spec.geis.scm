@@ -27,6 +27,10 @@
                #:use-module
                (geasa surfaces-tui tools)
                #:use-module
+               (geasa runtimes-react plugin)
+               #:use-module
+               (ice-9 threads)
+               #:use-module
                (json)
                #:use-module
                (ice-9 textual-ports))
@@ -2115,6 +2119,143 @@
           (module-set! nc-mod '%pushback saved-pushback)
           (module-set! nc-mod '%mouse-queue saved-mouse)
           (ncinput-copy! ncinput saved-ncinput))))))
+
+(test-group "tui-wp6-mid-run-steering-and-force-stop"
+            ;; Mid-run safe slash command predicate
+            (for-each
+              (lambda (cmd)
+                (test-assert (format #f "mid-run safe command ~a accepted" cmd)
+                             (mid-run-safe-command? cmd)))
+              '("context" "/context" "usage" "/theme nord" "help" "?" "/subagents" "/stop" "/steer" "interrupt"))
+            (for-each
+              (lambda (cmd)
+                (test-assert (format #f "unsafe mid-run command ~s rejected" cmd)
+                             (not (mid-run-safe-command? cmd))))
+              '("clear" "/clear" "/compact" "/rollback" "/model" "/reset" "" "   " #f))
+
+            ;; /steer urgency argument parsing
+            (call-with-values (lambda () (parse-steer-argument "--urgent switch to sqlite"))
+                              (lambda (urgent? text)
+                                (test-assert "--urgent sets urgent?" urgent?)
+                                (test-equal "--urgent strips prefix" "switch to sqlite" text)))
+            (call-with-values (lambda () (parse-steer-argument "! focus on tests"))
+                              (lambda (urgent? text)
+                                (test-assert "! sets urgent?" urgent?)
+                                (test-equal "! strips prefix" "focus on tests" text)))
+            (call-with-values (lambda () (parse-steer-argument "keep going"))
+                              (lambda (urgent? text)
+                                (test-assert "plain steer is not urgent" (not urgent?))
+                                (test-equal "plain steer preserves text" "keep going" text)))
+
+            ;; dispatch-mid-run-input classification
+            (test-equal "blank input yields noop" '(noop) (dispatch-mid-run-input "   "))
+            (test-equal "safe slash /context dispatches"
+                        '(safe-slash "context" "")
+                        (dispatch-mid-run-input "/context"))
+            (test-equal "safe slash /theme nord dispatches with arg"
+                        '(safe-slash "theme" "nord")
+                        (dispatch-mid-run-input "/theme nord"))
+            (test-equal "safe slash /stop dispatches"
+                        '(safe-slash "stop" "")
+                        (dispatch-mid-run-input "/stop"))
+            (test-equal "unsafe slash /clear is blocked mid-run"
+                        '(blocked-slash "clear" "")
+                        (dispatch-mid-run-input "/clear"))
+            (test-equal "plain text dispatches as steer"
+                        '(steer . "check edge cases")
+                        (dispatch-mid-run-input "  check edge cases  "))
+
+            ;; Mid-run slash autocomplete matching
+            (test-assert "matching-mid-run-slash-commands /st includes stop and steer"
+                         (let ((names (map car (matching-mid-run-slash-commands "/st"))))
+                           (and (member "stop" names) (member "steer" names))))
+            (test-assert "matching-mid-run-slash-commands / returns full safe palette"
+                         (>= (length (matching-mid-run-slash-commands "/")) 7))
+
+            ;; push-urgent-steering! front-loads steering-queue ahead of queued entries
+            (let* ((q (make-steering-queue))
+                   (killed? #f)
+                   (cb-msg #f))
+              (steering-push! q "first queued")
+              (steering-push! q "second queued")
+              (test-assert "push-urgent-steering! returns #t on valid input"
+                           (push-urgent-steering! q "  urgent override  "
+                                                  #:kill-subprocess! (lambda () (set! killed? #t))
+                                                  #:on-urgent (lambda (m) (set! cb-msg m))))
+              (test-assert "urgent push invokes subprocess killer" killed?)
+              (test-equal "urgent push passes trimmed message to callback" "urgent override" cb-msg)
+              (test-equal "urgent entry drains first ahead of previously queued entries"
+                          '("urgent override" "first queued" "second queued")
+                          (steering-drain! q))
+              (test-assert "push-urgent-steering! rejects blank text"
+                           (not (push-urgent-steering! q "   ")))
+              (test-assert "push-urgent-steering! rejects non-queue"
+                           (not (push-urgent-steering! #f "hi"))))
+
+            ;; force-stop-agent! cancels live thread, pushes 'interrupt, kills subprocess
+            (let* ((q (make-steering-queue))
+                   (sub-killed? #f)
+                   (on-stop-called? #f)
+                   (ready-m (make-mutex))
+                   (ready-cv (make-condition-variable))
+                   (started? #f)
+                   (worker
+                     (call-with-new-thread
+                       (lambda ()
+                         (with-mutex ready-m
+                                     (set! started? #t)
+                                     (signal-condition-variable ready-cv))
+                         (let loop () (usleep 50000) (loop))))))
+              (with-mutex ready-m
+                          (while (not started?)
+                                 (wait-condition-variable ready-cv ready-m)))
+              (let ((res (force-stop-agent! worker
+                                            #:steering-queue q
+                                            #:kill-subprocess! (lambda () (set! sub-killed? #t))
+                                            #:on-stop (lambda () (set! on-stop-called? #t)))))
+                (join-thread worker (+ (current-time) 2))
+                (test-assert "force-stop-agent! reports stopped?" (assoc-ref res 'stopped?))
+                (test-assert "force-stop-agent! reports thread-cancelled?" (assoc-ref res 'thread-cancelled?))
+                (test-assert "worker thread exited after cancel" (thread-exited? worker))
+                (test-assert "kill-subprocess! callback ran" sub-killed?)
+                (test-assert "on-stop callback ran" on-stop-called?)
+                (test-assert "interrupt pushed onto steering queue" (steering-has-interrupt? q)))
+              ;; Idempotent when thread is #f or already exited
+              (let ((res2 (force-stop-agent! #f #:kill-subprocess! #f)))
+                (test-assert "force-stop-agent! on #f returns stopped? #f"
+                             (not (assoc-ref res2 'stopped?)))))
+
+            ;; Redesigned steering bar layout
+            (let ((idle-bar (steering-bar-layout "" 0 80 #:status-text "REACT [2/15]")))
+              (test-equal "empty steering bar mode is steer" 'steer (assoc-ref idle-bar 'mode))
+              (test-equal "empty steering bar badge" "[STEER]" (assoc-ref idle-bar 'badge))
+              (test-assert "empty steering bar shows placeholder" (assoc-ref idle-bar 'placeholder?))
+              (test-equal "empty steering bar cursor at 0" 0 (assoc-ref idle-bar 'cursor-col))
+              (test-assert "steering bar hint mentions ^u:urgent"
+                           (string-contains (assoc-ref idle-bar 'hint) "^u:urgent"))
+              (test-assert "steering bar hint mentions ^c/esc:force-stop"
+                           (string-contains (assoc-ref idle-bar 'hint) "^c/esc:force-stop")))
+            (let ((cmd-bar (steering-bar-layout "/con" 2 80 #:status-text "REACT [1/15]")))
+              (test-equal "slash prefix sets mode to slash" 'slash (assoc-ref cmd-bar 'mode))
+              (test-equal "slash mode badge is [CMD]" "[CMD]" (assoc-ref cmd-bar 'badge))
+              (test-equal "slash mode cursor col matches length" 4 (assoc-ref cmd-bar 'cursor-col))
+              (test-equal "queue summary formats count" "+2 queued" (assoc-ref cmd-bar 'queue-summary))
+              (test-assert "slash hint mentions enter:run cmd"
+                           (string-contains (assoc-ref cmd-bar 'hint) "enter:run cmd")))
+            (let ((urg-bar (steering-bar-layout "now" 1 80 #:urgent-pending? #t))
+                  (int-bar (steering-bar-layout "" 0 80 #:interrupt-requested? #t))
+                  (narrow-bar (steering-bar-layout "abcdefghijklmnopqrstuvwxyz" 0 16)))
+              (test-equal "urgent pending sets [URGENT] badge" "[URGENT]" (assoc-ref urg-bar 'badge))
+              (test-equal "urgent badge role is warning" 'warning (assoc-ref urg-bar 'badge-role))
+              (test-equal "interrupt sets [INTERRUPT] badge" "[INTERRUPT]" (assoc-ref int-bar 'badge))
+              (test-equal "interrupt badge role is error" 'error (assoc-ref int-bar 'badge-role))
+              (test-assert "narrow steering bar tail-clips without overflow"
+                           (<= (string-length (assoc-ref narrow-bar 'input-text)) 13)))
+
+            ;; /subagents mid-run summary helper
+            (let ((reg (make-registry)))
+              (test-assert "format-mid-run-subagents-summary returns string"
+                           (string? (format-mid-run-subagents-summary reg)))))
 
 (spec-end)
 

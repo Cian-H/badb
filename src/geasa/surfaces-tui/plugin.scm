@@ -110,7 +110,18 @@
                #:use-module
                (ice-9 threads)
                #:export
-               (run-tui collect-enter-burst)
+               (run-tui collect-enter-burst
+                        %mid-run-safe-commands
+                        %mid-run-slash-command-entries
+                        mid-run-safe-command?
+                        parse-steer-argument
+                        dispatch-mid-run-input
+                        matching-mid-run-slash-commands
+                        push-urgent-steering!
+                        force-stop-agent!
+                        format-steering-keymap-line
+                        steering-bar-layout
+                        format-mid-run-subagents-summary)
                #:re-export
                (format-conversation-transcript wrap-line
                                                wrap-text
@@ -222,6 +233,249 @@
 payload codepoint), or #f when Enter should submit."
   (and (input-pending?)
        (let ((burst (drain-input-burst!))) (and (pair? burst) (cons ch burst)))))
+
+;;;
+;;; Mid-Run Steering, Safe Slash Commands & Force-Stop Helpers
+;;;
+(define %steering-op-mutex (make-mutex))
+
+(define %mid-run-safe-commands
+        '("context" "usage" "theme" "help" "?" "subagents" "stop" "steer" "interrupt"))
+
+(define %mid-run-slash-command-entries
+        '(("context" . "View conversation token stats and metrics")
+          ("usage" . "Show per-session token usage report")
+          ("theme" . "Inspect or switch the active UI theme")
+          ("help" . "Show help manual & shortcuts")
+          ("subagents" . "Inspect active subagents and hierarchy")
+          ("stop" . "Force-stop the running agent immediately")
+          ("steer" . "Queue or urgently push steering (! / --urgent)")
+          ("interrupt" . "Halt the running agent at its next boundary")))
+
+(define (mid-run-safe-command? cmd)
+        "Return #t when CMD (with or without leading '/') is safe to invoke while
+%agent-thread is running."
+        (and (string? cmd)
+             (let* ((trimmed (string-trim-both cmd))
+                    (bare
+                      (if (string-prefix? "/" trimmed)
+                        (substring trimmed 1)
+                        trimmed))
+                    (space-idx (string-index bare #\space))
+                    (name
+                      (string-downcase
+                        (if space-idx
+                          (substring bare 0 space-idx)
+                          bare))))
+               (and (not (string-null? name))
+                    (member name %mid-run-safe-commands)
+                    #t))))
+
+(define (parse-steer-argument arg)
+        "Parse /steer ARG for an urgency prefix ('--urgent ' or '! ').
+Return (values urgent? cleaned-text)."
+        (let ((trimmed (string-trim-both (if (string? arg) arg ""))))
+          (cond
+            ((string-prefix? "--urgent " trimmed)
+              (values #t (string-trim-both (substring trimmed 9))))
+            ((string=? "--urgent" trimmed)
+              (values #t ""))
+            ((string-prefix? "! " trimmed)
+              (values #t (string-trim-both (substring trimmed 2))))
+            ((and (> (string-length trimmed) 1) (string-prefix? "!" trimmed))
+              (values #t (string-trim-both (substring trimmed 1))))
+            (else (values #f trimmed)))))
+
+(define (dispatch-mid-run-input raw-input)
+        "Classify RAW-INPUT typed into the steering bar while the agent runs.
+Returns one of:
+  '(noop)
+  '(safe-slash CMD ARG)
+  '(blocked-slash CMD ARG)
+  '(steer . TEXT)"
+        (let ((trimmed (string-trim-both (if (string? raw-input) raw-input ""))))
+          (if (string-null? trimmed)
+            '(noop)
+            (let ((classified (classify-input trimmed)))
+              (if (and (pair? classified) (eq? (car classified) 'slash))
+                (let ((cmd (cadr classified)) (arg (caddr classified)))
+                  (if (mid-run-safe-command? cmd)
+                    (list 'safe-slash (string-downcase cmd) arg)
+                    (list 'blocked-slash cmd arg)))
+                (cons 'steer trimmed))))))
+
+(define (matching-mid-run-slash-commands buffer)
+        "Return matching %mid-run-slash-command-entries for slash BUFFER."
+        (let* ((trimmed (if (string? buffer) buffer ""))
+               (prefix
+                 (if (string-prefix? "/" trimmed)
+                   (substring trimmed 1)
+                   trimmed))
+               (q (string-downcase (string-trim-both prefix))))
+          (if (string-null? q)
+            %mid-run-slash-command-entries
+            (filter
+              (lambda (entry)
+                (string-contains (string-downcase (car entry)) q))
+              %mid-run-slash-command-entries))))
+
+(define* (push-urgent-steering! queue text
+                                #:key
+                                (on-urgent #f)
+                                (kill-subprocess! #f))
+         "Immediately push TEXT to the front of STEERING-QUEUE ahead of any
+already queued steering entries. Optionally invokes KILL-SUBPROCESS! and
+(ON-URGENT clean-text). Returns #t if pushed, #f otherwise."
+         (let ((clean (and (string? text) (string-trim-both text))))
+           (if (or (not (steering-queue? queue)) (not clean) (string-null? clean))
+             #f
+             (begin
+               (with-mutex %steering-op-mutex
+                           (let ((existing (steering-drain! queue)))
+                             (steering-push! queue clean)
+                             (for-each
+                               (lambda (entry)
+                                 (steering-push! queue entry))
+                               existing)))
+               (when (procedure? kill-subprocess!)
+                 (catch #t (lambda () (kill-subprocess!)) (lambda _ #f)))
+               (when (procedure? on-urgent)
+                 (catch #t (lambda () (on-urgent clean)) (lambda _ #f)))
+               #t))))
+
+(define* (force-stop-agent! thread
+                            #:key
+                            (steering-queue #f)
+                            (kill-subprocess! kill-active-subprocess!)
+                            (on-stop #f))
+         "Immediately force-stop a running agent THREAD by killing any active
+subprocess, pushing 'interrupt onto STEERING-QUEUE, and calling cancel-thread.
+Returns an alist: ((stopped? . BOOL) (thread-cancelled? . BOOL) (subprocess-killed? . BOOL))."
+         (let ((subproc-killed? #f) (thread-cancelled? #f))
+           (when (procedure? kill-subprocess!)
+             (let ((had-pid?
+                     (catch #t
+                       (lambda ()
+                         (let ((pid (active-subprocess-pid)))
+                           (and (number? pid) (> pid 0))))
+                       (lambda _ #f))))
+               (catch #t (lambda () (kill-subprocess!)) (lambda _ #f))
+               (set! subproc-killed? (and had-pid? #t))))
+           (when (steering-queue? steering-queue)
+             (with-mutex %steering-op-mutex
+                         (steering-push! steering-queue 'interrupt)))
+           (when (and (thread? thread) (not (thread-exited? thread)))
+             (catch #t
+               (lambda ()
+                 (cancel-thread thread)
+                 (set! thread-cancelled? #t))
+               (lambda _ #f)))
+           (when (procedure? on-stop)
+             (catch #t (lambda () (on-stop)) (lambda _ #f)))
+           `((stopped? . ,(or thread-cancelled? subproc-killed?))
+             (thread-cancelled? . ,thread-cancelled?)
+             (subprocess-killed? . ,subproc-killed?))))
+
+(define* (format-steering-keymap-line #:optional (slash-mode? #f))
+         "Return the dim bottom keymap hint for the redesigned mid-run steering bar."
+         (if slash-mode?
+           "enter:run cmd · tab:complete · esc:clear · ^c:force-stop"
+           "enter:queue · ^u:urgent · /:cmd · ^i:interrupt · ^c/esc:force-stop"))
+
+(define* (steering-bar-layout buffer queued-count maxx
+                              #:key
+                              (interrupt-requested? #f)
+                              (urgent-pending? #f)
+                              (status-text #f))
+         "Compute the redesigned mid-run steering UI bar layout for BUFFER,
+QUEUED-COUNT, and terminal width MAXX."
+         (let* ((safe-buf (if (string? buffer) buffer ""))
+                (safe-q (if (and (integer? queued-count) (> queued-count 0)) queued-count 0))
+                (safe-w (max 12 (if (integer? maxx) maxx 80)))
+                (slash-mode? (string-prefix? "/" safe-buf))
+                (badge
+                  (cond
+                    (interrupt-requested? "[INTERRUPT]")
+                    (urgent-pending? "[URGENT]")
+                    (slash-mode? "[CMD]")
+                    (else "[STEER]")))
+                (badge-role
+                  (cond
+                    (interrupt-requested? 'error)
+                    (urgent-pending? 'warning)
+                    (else 'accent)))
+                (queue-summary
+                  (and (> safe-q 0) (format #f "+~a queued" safe-q)))
+                (status-part
+                  (and (string? status-text)
+                       (not (string-null? (string-trim-both status-text)))
+                       (string-trim-both status-text)))
+                (meta-parts
+                  (filter identity (list queue-summary status-part)))
+                (meta-str
+                  (if (null? meta-parts)
+                    ""
+                    (string-append " " (string-join meta-parts " · "))))
+                (raw-header (string-append badge meta-str))
+                (header-line
+                  (if (> (string-length raw-header) safe-w)
+                    (substring raw-header 0 safe-w)
+                    raw-header))
+                (avail-in (max 1 (- safe-w 3)))
+                (placeholder? (string-null? safe-buf))
+                (placeholder-text
+                  "type steering, or /context /usage /theme /help /subagents /stop...")
+                (input-text
+                  (if placeholder?
+                    (if (> (string-length placeholder-text) avail-in)
+                      (substring placeholder-text 0 avail-in)
+                      placeholder-text)
+                    (let ((len (string-length safe-buf)))
+                      (if (> len avail-in)
+                        (substring safe-buf (- len avail-in) len)
+                        safe-buf))))
+                (cursor-col
+                  (if placeholder?
+                    0
+                    (string-length input-text))))
+           `((mode . ,(if slash-mode? 'slash 'steer))
+             (badge . ,badge)
+             (badge-role . ,badge-role)
+             (queue-summary . ,queue-summary)
+             (meta-line . ,meta-str)
+             (header-line . ,header-line)
+             (input-text . ,input-text)
+             (placeholder? . ,placeholder?)
+             (cursor-col . ,cursor-col)
+             (hint . ,(format-steering-keymap-line slash-mode?)))))
+
+(define (format-mid-run-subagents-summary reg)
+        "Format an overview of active/available subagents for /subagents mid-run.
+Defers to WP5 overview/hierarchy helpers if present, otherwise summarizes
+registered subagent capabilities from REG."
+        (let* ((coord-mod (false-if-exception (resolve-module '(geasa agents-coordination plugin) #f)))
+               (sub-mod (false-if-exception (resolve-module '(geasa agents-subagent plugin) #f)))
+               (overview-fn
+                 (or (and sub-mod (module-ref sub-mod 'format-subagent-overview #f))
+                     (and coord-mod (module-ref coord-mod 'format-subagent-overview #f))))
+               (hier-fn
+                 (or (and sub-mod (module-ref sub-mod 'format-subagent-hierarchy #f))
+                     (and coord-mod (module-ref coord-mod 'format-subagent-hierarchy #f)))))
+          (cond
+            ((procedure? overview-fn) (overview-fn))
+            ((procedure? hier-fn) (hier-fn))
+            (else
+              (let* ((sub-tools
+                       '("investigate" "investigate_parallel" "subagent_transaction" "remote_subagent"))
+                     (registered
+                       (if reg
+                         (filter (lambda (name) (registry-lookup reg name)) sub-tools)
+                         '())))
+                (if (null? registered)
+                  "Subagents: 0 active (no subagent tools registered)."
+                  (format #f
+                          "Subagents: 0 active live links · Registered tools: ~a"
+                          (string-join registered ", "))))))))
 
 (define*
   (run-tui #:key
@@ -603,6 +857,12 @@ Only skips server probing when the user explicitly configured context-limits."
       (define steering-queue (make-steering-queue))
       (define steering-buffer "")
       (define interrupt-requested? #f)
+      (define %steering-mutex (make-mutex))
+      (define %force-stop-requested? #f)
+      (define %urgent-steer-requested? #f)
+      (define %mid-run-pending-commands '())
+      (define current-run-id 0)
+      (define steering-selector-index 0)
       (define %render-mutex (make-mutex 'recursive))
       (define render-dirty? #f)
       (define %agent-thread #f)
@@ -636,14 +896,27 @@ into the session counters and mark the current turn exactly accounted."
                   (set! session-prompt-tokens (+ session-prompt-tokens p))
                   (set! session-completion-tokens (+ session-completion-tokens c))
                   (set! turn-usage-seen? #t))))
-      ;; Poll the terminal without blocking while the react loop runs: drain
-      ;; every pending keypress into the steering buffer / queue. Called from
-      ;; the react hooks (on-step, on-tool-call, on-tool-result) so input
-      ;; typed mid-run is captured at iteration boundaries. Requires nodelay
-      ;; support; without it this is a no-op and /steer between runs is the
-      ;; fallback. Escape sequences from arrow keys may bleed in as stray
-      ;; characters when only partially arrived — accepted for simplicity.
-      (define (poll-steering-input!) #f)
+      ;; Poll mid-run steering/control state from the ReAct loop hooks
+      ;; (on-step, on-tool-call, on-tool-result, on-delta). Drains any queued
+      ;; mid-run safe commands, and returns 'stop or 'urgent-steer when an
+      ;; immediate force-stop or urgent steering preemption was requested.
+      (define (poll-steering-input!)
+              (let ((pending-cmds
+                      (with-mutex %steering-mutex
+                                  (let ((cmds (reverse %mid-run-pending-commands)))
+                                    (set! %mid-run-pending-commands '())
+                                    cmds))))
+                (for-each
+                  (lambda (pair)
+                    (catch #t
+                      (lambda ()
+                        (handle-command! pair))
+                      (lambda _ #f)))
+                  pending-cmds)
+                (cond
+                  (%force-stop-requested? 'stop)
+                  (%urgent-steer-requested? 'urgent-steer)
+                  (else #f))))
       ;; Toggle collapse of the currently selected message card. Selection may
       ;; point at any message, but only collapsible ones (with content or
       ;; thoughts) change state; the toggle itself is a pure alist update.
@@ -1124,84 +1397,172 @@ and append it to the persistent history journal file."
                                                              content-width
                                                              (and sel-idx (= (car tagged) sel-idx))))
                                           (loop (cdr lines) (+ y 1)))))))
-                                ;; Pending steering line: dim feedback above the prompt
-                                ;; for text being typed mid-run, queued steering
-                                ;; entries, and pending interrupt requests
-                                (let
-                                    ((pending
-                                       (steering-pending-line steering-buffer
-                                                              (steering-count steering-queue)
-                                                              interrupt-requested?)))
-                                  (when pending
-                                    (draw-role! 'dim #t)
-                                    (safe-addstr stdscr view-bottom 0 pending maxx)
-                                    (draw-role! 'dim #f)))
-                                ;; 3. Prompt Input Block: themed indicator glyph leading
-                                ;;    the first row of the wrapped input, continuation
-                                ;;    rows below. Long inputs wrap instead of scrolling
-                                ;;    off the right edge.
-                                (call-with-values
-                                  (lambda ()
-                                    (get-prompt-indicator input-buffer status-text prompt-mode))
-                                  (lambda (glyph theme-role bold?)
-                                    (when
-                                        (or (string=? status-text "STREAMING...") (agent-run-active? status-text))
-                                      (set! glyph (streaming-spinner-glyph)))
-                                    (draw-role! theme-role #t)
-                                    (when bold? (attr-on! stdscr A_BOLD))
-                                    (safe-addstr stdscr prompt-top 0 glyph 1)
-                                    (when bold? (attr-off! stdscr A_BOLD))
-                                    (draw-role! theme-role #f)
-                                    (draw-role! 'default #t)
-                                    (let draw-lines
-                                      ((lines input-lines) (y prompt-top))
-                                      (unless (null? lines)
-                                        (safe-addstr stdscr y 2 (car lines) avail-width)
-                                        (draw-lines (cdr lines) (+ y 1))))
-                                    (draw-role! 'default #f)))
-                                ;; 4. Bottom keymap hint line in dim, per active mode
-                                (let
-                                    ((hint
-                                       (format-keymap-line
-                                         (cond
-                                           (active-menu 'menu)
-                                           ((selector-active? input-buffer) 'selector)
-                                           ((and (agent-run-active? status-text) nodelay-proc) 'steering)
-                                           (else prompt-mode)))))
-                                  (draw-role! 'dim #t)
-                                  (safe-addstr stdscr (- maxy 1) 0 hint maxx)
-                                  (draw-role! 'dim #f))
-                                ;; 5. Floating Slash Command Selector Popup Overlay
-                                (when (selector-active? input-buffer)
-                                  (let*
-                                      ((matches (matching-slash-commands input-buffer))
-                                       (box-w (min 62 (max 20 (- maxx 4)))))
-                                    (unless (null? matches)
+                                ;; Steering & Prompt Input Area:
+                                ;; When %agent-thread is active, render the redesigned
+                                ;; steering bar (mode badge, queue count, active input
+                                ;; buffer or placeholder, and mid-run slash palette).
+                                ;; Otherwise render the standard idle prompt and any
+                                ;; pre-queued steering pill.
+                                (let ((running? (agent-running?)))
+                                  (if running?
+                                    (let*
+                                        ((bar
+                                           (steering-bar-layout steering-buffer
+                                                                (steering-count steering-queue)
+                                                                maxx
+                                                                #:interrupt-requested?
+                                                                interrupt-requested?
+                                                                #:urgent-pending?
+                                                                %urgent-steer-requested?
+                                                                #:status-text
+                                                                status-text))
+                                         (badge (assoc-ref bar 'badge))
+                                         (badge-role (assoc-ref bar 'badge-role))
+                                         (meta-line (assoc-ref bar 'meta-line))
+                                         (in-text (assoc-ref bar 'input-text))
+                                         (placeholder? (assoc-ref bar 'placeholder?))
+                                         (slash-mode? (eq? (assoc-ref bar 'mode) 'slash))
+                                         (glyph
+                                           (if slash-mode?
+                                             "/"
+                                             (streaming-spinner-glyph))))
+                                      (draw-role! badge-role #t)
+                                      (attr-on! stdscr A_BOLD)
+                                      (safe-addstr stdscr view-bottom 0 badge maxx)
+                                      (attr-off! stdscr A_BOLD)
+                                      (draw-role! badge-role #f)
+                                      (let ((rem-x (string-length badge)))
+                                        (when (and (string? meta-line) (< rem-x maxx))
+                                          (draw-role! 'dim #t)
+                                          (safe-addstr stdscr view-bottom rem-x meta-line (- maxx rem-x))
+                                          (draw-role! 'dim #f)))
+                                      (draw-role! 'accent #t)
+                                      (attr-on! stdscr A_BOLD)
+                                      (safe-addstr stdscr prompt-top 0 glyph 1)
+                                      (attr-off! stdscr A_BOLD)
+                                      (draw-role! 'accent #f)
+                                      (draw-role! (if placeholder? 'dim 'default) #t)
+                                      (safe-addstr stdscr prompt-top 2 in-text avail-width)
+                                      (draw-role! (if placeholder? 'dim 'default) #f)
+                                      (draw-role! 'dim #t)
+                                      (safe-addstr stdscr (- maxy 1) 0 (assoc-ref bar 'hint) maxx)
+                                      (draw-role! 'dim #f)
+                                      (when (selector-active? steering-buffer)
+                                        (let*
+                                            ((matches (matching-mid-run-slash-commands steering-buffer))
+                                             (box-w (min 62 (max 20 (- maxx 4)))))
+                                          (unless (null? matches)
+                                            (call-with-values
+                                              (lambda ()
+                                                (selector-visible-slice matches
+                                                                        (min %selector-max-visible (max 1 (- maxy 5)))
+                                                                        steering-selector-index))
+                                              (lambda
+                                                  (vis-items offset sel-pos above-count below-count)
+                                                (let*
+                                                    ((vis-count (length vis-items))
+                                                     (box-h (+ vis-count 2))
+                                                     (start-y (- prompt-top 1 box-h))
+                                                     (rows
+                                                       (map
+                                                         (lambda (item)
+                                                           (cons (format #f "/~a" (car item)) (cdr item)))
+                                                         vis-items)))
+                                                  (when (>= start-y 2)
+                                                    (draw-popup! "mid-run commands"
+                                                                 rows
+                                                                 sel-pos
+                                                                 box-w
+                                                                 start-y
+                                                                 2
+                                                                 above-count
+                                                                 below-count))))))))
+                                      (if active-menu
+                                        #f
+                                        (if placeholder?
+                                          (begin
+                                            (move stdscr prompt-top 2)
+                                            (safe-curs-set! 0))
+                                          (begin
+                                            (move stdscr prompt-top (+ 2 (assoc-ref bar 'cursor-col)))
+                                            (safe-curs-set! 1)
+                                            (cursor-shape 'bar)))))
+                                    (begin
+                                      (let
+                                          ((pending
+                                             (steering-pending-line steering-buffer
+                                                                    (steering-count steering-queue)
+                                                                    interrupt-requested?)))
+                                        (when pending
+                                          (draw-role! 'dim #t)
+                                          (safe-addstr stdscr view-bottom 0 pending maxx)
+                                          (draw-role! 'dim #f)))
+                                      ;; 3. Prompt Input Block: themed indicator glyph leading
+                                      ;;    the first row of the wrapped input, continuation
+                                      ;;    rows below. Long inputs wrap instead of scrolling
+                                      ;;    off the right edge.
                                       (call-with-values
                                         (lambda ()
-                                          (selector-visible-slice matches
-                                                                  (min %selector-max-visible (max 1 (- maxy 5)))
-                                                                  selector-index))
-                                        (lambda
-                                            (vis-items offset sel-pos above-count below-count)
-                                          (let*
-                                              ((vis-count (length vis-items))
-                                               (box-h (+ vis-count 2))
-                                               (start-y (- prompt-top 1 box-h))
-                                               (rows
-                                                 (map
-                                                   (lambda (item)
-                                                     (cons (format #f "/~a" (car item)) (cdr item)))
-                                                   vis-items)))
-                                            (when (>= start-y 2)
-                                              (draw-popup! "commands" rows sel-pos box-w start-y 2 above-count below-count)
-                                              ;; Mouse hit map: palette rows are items;
-                                              ;; clicking one selects it.
-                                              (let li
-                                                ((i 0))
-                                                (when (< i vis-count)
-                                                  (hashq-set! %click-targets (+ start-y 1 i) (cons 'palette-item (+ offset i)))
-                                                  (li (+ i 1)))))))))))
+                                          (get-prompt-indicator input-buffer status-text prompt-mode))
+                                        (lambda (glyph theme-role bold?)
+                                          (when
+                                              (or (string=? status-text "STREAMING...") (agent-run-active? status-text))
+                                            (set! glyph (streaming-spinner-glyph)))
+                                          (draw-role! theme-role #t)
+                                          (when bold? (attr-on! stdscr A_BOLD))
+                                          (safe-addstr stdscr prompt-top 0 glyph 1)
+                                          (when bold? (attr-off! stdscr A_BOLD))
+                                          (draw-role! theme-role #f)
+                                          (draw-role! 'default #t)
+                                          (let draw-lines
+                                            ((lines input-lines) (y prompt-top))
+                                            (unless (null? lines)
+                                              (safe-addstr stdscr y 2 (car lines) avail-width)
+                                              (draw-lines (cdr lines) (+ y 1))))
+                                          (draw-role! 'default #f)))
+                                      ;; 4. Bottom keymap hint line in dim, per active mode
+                                      (let
+                                          ((hint
+                                             (format-keymap-line
+                                               (cond
+                                                 (active-menu 'menu)
+                                                 ((selector-active? input-buffer) 'selector)
+                                                 ((and (agent-run-active? status-text) nodelay-proc) 'steering)
+                                                 (else prompt-mode)))))
+                                        (draw-role! 'dim #t)
+                                        (safe-addstr stdscr (- maxy 1) 0 hint maxx)
+                                        (draw-role! 'dim #f))
+                                      ;; 5. Floating Slash Command Selector Popup Overlay
+                                      (when (selector-active? input-buffer)
+                                        (let*
+                                            ((matches (matching-slash-commands input-buffer))
+                                             (box-w (min 62 (max 20 (- maxx 4)))))
+                                          (unless (null? matches)
+                                            (call-with-values
+                                              (lambda ()
+                                                (selector-visible-slice matches
+                                                                        (min %selector-max-visible (max 1 (- maxy 5)))
+                                                                        selector-index))
+                                              (lambda
+                                                  (vis-items offset sel-pos above-count below-count)
+                                                (let*
+                                                    ((vis-count (length vis-items))
+                                                     (box-h (+ vis-count 2))
+                                                     (start-y (- prompt-top 1 box-h))
+                                                     (rows
+                                                       (map
+                                                         (lambda (item)
+                                                           (cons (format #f "/~a" (car item)) (cdr item)))
+                                                         vis-items)))
+                                                  (when (>= start-y 2)
+                                                    (draw-popup! "commands" rows sel-pos box-w start-y 2 above-count below-count)
+                                                    ;; Mouse hit map: palette rows are items;
+                                                    ;; clicking one selects it.
+                                                    (let li
+                                                      ((i 0))
+                                                      (when (< i vis-count)
+                                                        (hashq-set! %click-targets (+ start-y 1 i) (cons 'palette-item (+ offset i)))
+                                                        (li (+ i 1))))))))))))))
                                 ;; 6. Floating Menu Popup Overlay (same visual language as
                                 ;; the slash selector: accent rounded box, bold selected
                                 ;; row, capped visible rows with scroll indicators)
@@ -1248,26 +1609,27 @@ and append it to the persistent history journal file."
                                                 (when (< i vis-count)
                                                   (hashq-set! %click-targets (+ start-y 1 i) (cons 'menu-item (+ offset i)))
                                                   (mi (+ i 1)))))))))))
-                                ;; Position the terminal cursor at the editing position
-                                ;; LAST: row draws below the input line (keymap hint,
-                                ;; pop-ups) displace the cursor, so reposition right
-                                ;; before refreshing or the hardware cursor visibly
-                                ;; rests after the last drawn row.
-                                (move stdscr (+ prompt-top input-cur-row) (+ 2 input-cur-col))
-                                ;; Cursor compatibility: the terminal cursor's shape
-                                ;; signals the active mode - a bar for chat typing,
-                                ;; an underline in the modal REPLs, a block while a
-                                ;; message card is selected - and it hides entirely
-                                ;; while the agent runs (the spinner conveys the
-                                ;; activity). The backend caches shapes, so styling
-                                ;; every frame is free; endwin restores the default.
-                                (cond
-                                  ((agent-run-active? status-text) (safe-curs-set! 0))
-                                  ((integer? msgsel-index) (safe-curs-set! 1) (cursor-shape 'block))
-                                  ((memq prompt-mode '(shell scheme))
-                                    (safe-curs-set! 1)
-                                    (cursor-shape 'underline))
-                                  (else (safe-curs-set! 1) (cursor-shape 'bar)))
+                                (unless (agent-running?)
+                                  ;; Position the terminal cursor at the editing position
+                                  ;; LAST: row draws below the input line (keymap hint,
+                                  ;; pop-ups) displace the cursor, so reposition right
+                                  ;; before refreshing or the hardware cursor visibly
+                                  ;; rests after the last drawn row.
+                                  (move stdscr (+ prompt-top input-cur-row) (+ 2 input-cur-col))
+                                  ;; Cursor compatibility: the terminal cursor's shape
+                                  ;; signals the active mode - a bar for chat typing,
+                                  ;; an underline in the modal REPLs, a block while a
+                                  ;; message card is selected - and it hides entirely
+                                  ;; while the agent runs (the spinner conveys the
+                                  ;; activity). The backend caches shapes, so styling
+                                  ;; every frame is free; endwin restores the default.
+                                  (cond
+                                    ((agent-run-active? status-text) (safe-curs-set! 0))
+                                    ((integer? msgsel-index) (safe-curs-set! 1) (cursor-shape 'block))
+                                    ((memq prompt-mode '(shell scheme))
+                                      (safe-curs-set! 1)
+                                      (cursor-shape 'underline))
+                                    (else (safe-curs-set! 1) (cursor-shape 'bar))))
                                 (refresh stdscr)))
                             (lambda (key . args)
                               ;; Never swallow render failures silently: surface each new
@@ -1398,304 +1760,340 @@ grown journal), which the per-frame header render must not pay."
                   (request-render!))))
       ;; Execute streaming query against LLM with separated thoughts
       (define (execute-chat-stream! user-prompt)
-              (set! scroll-offset 0)
-              ;; Session accounting: a new turn starts, and until an
-              ;; endpoint usage block arrives the growth of the
-              ;; conversation provides the fallback estimate.
-              (set! session-turns (+ session-turns 1))
-              (set! turn-usage-seen? #f)
-              (set! turn-pre-estimate (estimate-conversation-tokens llm-history))
-              (catch #t
-                (lambda ()
-                  (set! llm-history
-                        (append llm-history (list `((role . "user") (content . ,user-prompt)))))
-                  (begin
-                    (when
-                        (and
-                          (not (badb-config-model-context-limit cfg cur-endpoint cur-model))
-                          (or (not context-limit-discovered?) (compaction-needed? compactor llm-history)))
-                      (sync-context-limit!))
-                    (when (compaction-needed? compactor llm-history)
-                      (set! llm-history (compact-messages compactor llm-history))))
-                  (let
-                      ((tools (collect-available-tools reg mcp-mgr)))
-                    (if (pair? tools)
-                      ;; Autonomous ReAct Tool-Calling Loop
-                      (catch #t
-                        (lambda ()
-                          (let*
-                              ((max-react-iters (badb-config-react-max-iterations cfg))
-                               (loop-guard (make-loop-guard))
-                               (gate-options
-                                 (systemone-gate-config->options cfg
-                                                                 #:warn
-                                                                 (lambda (msg)
-                                                                   (add-sys-msg! msg))))
-                               (gate-client
-                                 (and
-                                   (systemone-gate-options-enabled? gate-options)
-                                   (make-systemone-client #:endpoint
-                                                          (or
-                                                            (systemone-gate-options-endpoint gate-options)
-                                                            "https://api.typesafe.ai/v1/systemone")
-                                                          #:api-key
-                                                          (or (systemone-gate-options-api-key gate-options) (getenv "TYPESAFE_API_KEY"))
-                                                          #:model
-                                                          (systemone-gate-options-model gate-options))))
-                               (gate
-                                 (and gate-client
-                                      (make-systemone-gate #:options
-                                                           gate-options
-                                                           #:check
-                                                           (lambda (state)
-                                                             (systemone-gate-check gate-client state))
-                                                           #:journal
-                                                           jrn
-                                                           #:model
-                                                           (badb-config-model-name cfg)
-                                                           #:active-geasa
-                                                           (map
-                                                             (lambda (entry)
-                                                               (ensure-string (assoc-ref entry (quote id))))
-                                                             (registry-list reg))
-                                                           #:on-verdict
-                                                           (lambda (action verdict)
-                                                             (set! status-text (format #f "SYSTEMONE: ~a" action))
-                                                             (render!)))))
-                               (session
-                                 (make-react-session #:client
-                                                     client
-                                                     #:messages
-                                                     llm-history
-                                                     #:registry
-                                                     reg
-                                                     #:mcp-manager
-                                                     mcp-mgr
-                                                     #:journal
-                                                     jrn
-                                                     #:transaction-manager
-                                                     mgr
-                                                     #:max-iterations
-                                                     max-react-iters
-                                                     #:steering-queue
-                                                     steering-queue
-                                                     #:max-tokens
-                                                     (or (badb-config-model-max-tokens cfg) 4096)
-                                                     #:deferred-tools?
-                                                     #t
-                                                     #:offload-hook
-                                                     (make-ctx-offload-hook ctx-idx)
-                                                     #:guardrail
-                                                     (lambda (t-name t-args)
-                                                       (evaluate-guardrail policy t-name t-args))
-                                                     #:hooks
-                                                     (append (make-loop-guard-hooks loop-guard)
-                                                             (if gate
-                                                               (make-systemone-gate-hooks gate)
-                                                               '())
-                                                             (list
-                                                               (cons 'on-step
-                                                                     (lambda (iter phase)
-                                                                       (when (eq? phase 'starting)
-                                                                         (commit-react-stream-message!)
-                                                                         (reset-react-stream-state!))
-                                                                       (set! status-text
-                                                                             (cond
-                                                                               ((and (pair? phase) (eq? (car phase) 'rate-limited))
-                                                                                 (format #f
-                                                                                         "RATE LIMITED (~as)..."
-                                                                                         (inexact->exact (ceiling (or (cdr phase) 1)))))
-                                                                               (max-react-iters (format #f "REACT [~a/~a]" iter max-react-iters))
-                                                                               (else (format #f "REACT [~a]" iter))))
-                                                                       ;; Crash-safe persistence: sync the transcript
-                                                                       ;; from the live session and rewrite the session
-                                                                       ;; file after every executed step so /resume
-                                                                       ;; recovers mid-run state.
-                                                                       (when
-                                                                           (memq phase '(tools-executed loop-detected))
-                                                                         (let ((sess (current-react-session)))
-                                                                           (when (react-session? sess)
-                                                                             (set! llm-history (react-session-messages sess))
-                                                                             (persist-session-file! session-file llm-history))))
-                                                                       (poll-steering-input!)
-                                                                       (request-render!)))
-                                                               (cons 'on-tool-call
-                                                                     (lambda (tc)
-                                                                       (let
-                                                                           ((t-name (prop-ref tc 'name)) (t-args (prop-ref tc 'arguments)))
-                                                                         (set! status-text (format #f "TOOL: ~a..." t-name))
-                                                                         (add-msg! "tool-call" (format #f "Invoking tool: ~a (~s)" t-name t-args))
-                                                                         (poll-steering-input!)
-                                                                         (request-render!))))
-                                                               (cons 'on-tool-result
-                                                                     (lambda (tc res err?)
-                                                                       (let*
-                                                                           ((t-name (prop-ref tc 'name))
-                                                                            (blocked? (tool-result-blocked-payload? res))
-                                                                            (res-str
-                                                                              (if (string? res)
-                                                                                res
-                                                                                (safe-json-string res)))
-                                                                            (preview
-                                                                              (if (> (string-length res-str) 140)
-                                                                                (string-append (substring res-str 0 140) "...")
-                                                                                res-str)))
-                                                                         (add-msg! "tool-result"
-                                                                                   (cond
-                                                                                     (blocked? (format #f "Tool ~a blocked (duplicate call): ~a" t-name preview))
-                                                                                     (err? (format #f "Tool ~a failed: ~a" t-name preview))
-                                                                                     (else (format #f "Tool ~a returned: ~a" t-name preview))))
-                                                                         (poll-steering-input!)
-                                                                         (request-render!))))
-                                                               (cons 'on-delta
-                                                                     (lambda (delta type)
-                                                                       (update-react-stream-message! delta type)
-                                                                       (poll-steering-input!)
-                                                                       (throttled-stream-render!)))))
-                                                     #:compactor
-                                                     compactor
-                                                     #:loop-detector
-                                                     (make-loop-detector)
-                                                     ;; The per-step user-role recitation was repeatedly
-                                                     ;; mistaken for untrusted tool-output instructions.
-                                                     #:recitation?
-                                                     #f)))
-                            (call-with-values
-                              (lambda ()
-                                (react-run! session))
-                              (lambda (verdict final-content sess)
-                                (set! llm-history (react-session-messages sess))
-                                (cond
-                                  ((eq? verdict 'completed)
-                                    (remove-react-stream-message!)
-                                    (call-with-values
-                                      (lambda ()
-                                        (split-thoughts-and-content (or final-content "")))
-                                      (lambda (th ct)
-                                        (with-mutex %render-mutex
-                                                    (set! messages
-                                                          (append messages
-                                                                  (list
-                                                                    (default-collapse-message
-                                                                      `((role . "assistant") (thoughts . ,th) (content . ,ct))))))))))
-                                  ((eq? verdict 'max-iterations-reached)
-                                    (commit-react-stream-message!)
-                                    (add-sys-msg!
-                                      (format #f
-                                              "ReAct iteration ceiling reached (~a iterations). Type 'Continue' or follow up to proceed."
-                                              max-react-iters)))
-                                  ((eq? verdict 'interrupted)
-                                    (commit-react-stream-message!)
-                                    (add-sys-msg!
-                                      "Agent run interrupted — the loop halted at the current iteration boundary. Type a message to continue."))
-                                  ((eq? verdict 'loop-detected)
-                                    (commit-react-stream-message!)
-                                    (add-sys-msg!
-                                      "Loop detected: the identical tool call was repeated too many times, so the agent run halted. Check the loop-detector warning in the transcript, then steer the agent with a follow-up message."))
-                                  ((eq? verdict 'error)
-                                    (commit-react-stream-message!)
-                                    (add-err-msg! (format #f "ReAct error: ~a" final-content))))))))
-                        (lambda (key . args)
-                          (add-err-msg! (format #f "Agent loop failure: ~a ~s" key args))))
-                      ;; Direct Streaming Mode when no tools registered
-                      (begin (set! status-text "STREAMING...")
-                             (with-mutex %render-mutex
-                                         (set! messages
-                                               (append messages
-                                                       (list
-                                                         (default-collapse-message
-                                                           `((role . "assistant") (thoughts . #f) (content . "")))))))
-                             (render!)
-                             ;; Direct-streaming accumulators live OUTSIDE the catch so a
-                             ;; mid-stream failure can still preserve the partial output.
-                             (let ((raw-api-thoughts "") (raw-api-content ""))
-                               (catch #t
-                                 (lambda ()
-                                   (let ((target-cell (last-pair messages)))
-                                     (model-stream client
-                                                   llm-history
-                                                   (lambda (delta . type-args)
-                                                     (let
-                                                         ((chunk-type
-                                                            (if (pair? type-args)
-                                                              (car type-args)
-                                                              'content)))
-                                                       (cond
-                                                         ((eq? chunk-type 'complete-json)
-                                                           ;; Endpoint ignored stream:true:
-                                                           ;; deliver the whole completion
-                                                           ;; as one update; its usage
-                                                           ;; block, when present, feeds
-                                                           ;; the session accounting.
-                                                           (record-session-usage! (extract-usage delta))
-                                                           (call-with-values
-                                                             (lambda ()
-                                                               (determine-step-content delta))
-                                                             (lambda (ct rc)
-                                                               (set! raw-api-content (string-append raw-api-content ct))
-                                                               (set! raw-api-thoughts (string-append raw-api-thoughts (or rc ""))))))
-                                                         ((eq? chunk-type 'thought)
-                                                           (set! raw-api-thoughts (string-append raw-api-thoughts delta)))
-                                                         (else (set! raw-api-content (string-append raw-api-content delta))))
-                                                       (call-with-values
-                                                         (lambda ()
-                                                           (split-thoughts-and-content raw-api-content))
-                                                         (lambda (inline-th inline-ct)
-                                                           (let*
-                                                               ((total-th
-                                                                  (cond
-                                                                    ((and (not (string-null? raw-api-thoughts)) inline-th)
-                                                                      (string-append raw-api-thoughts "\n\n" inline-th))
-                                                                    ((not (string-null? raw-api-thoughts)) raw-api-thoughts)
-                                                                    (else inline-th)))
-                                                                (updated-msg
-                                                                  (default-collapse-message
-                                                                    `((role . "assistant") (thoughts . ,total-th) (content . ,inline-ct)))))
-                                                             (if (pair? target-cell)
-                                                               (set-car! target-cell updated-msg)
-                                                               (set! messages (append (drop-right messages 1) (list updated-msg))))
-                                                             (throttled-stream-render!))))))
-                                                   #:max-tokens
-                                                   (or (badb-config-model-max-tokens cfg) 4096))
-                                     (set! llm-history
-                                           (append llm-history (list `((role . "assistant") (content . ,raw-api-content)))))))
-                                 (lambda (key . args)
-                                   ;; Preserve any partially streamed output in
-                                   ;; llm-history (with its thinking trace) so the
-                                   ;; model sees its own partial answer when the
-                                   ;; next turn recovers from the stream failure.
-                                   (when
-                                       (and (string? raw-api-content)
-                                            (not (string-null? (string-trim-both raw-api-content))))
-                                     (set! llm-history
-                                           (append llm-history
-                                                   (list
-                                                     (append
-                                                       `((role . "assistant")
-                                                         ,@(if (non-empty-string? raw-api-thoughts)
-                                                             `((reasoning_content . ,raw-api-thoughts))
-                                                             '()))
-                                                       `((content . ,raw-api-content)))))))
-                                   (add-err-msg! (format #f "Stream error (~a): ~s" key args)))))))))
-                (lambda (key . args)
-                  (add-err-msg! (format #f "Execution error (~a): ~s" key args))))
-              ;; No endpoint usage block this turn: account an estimate of
-              ;; the conversation growth instead, labeled on the /usage card.
-              (unless turn-usage-seen?
-                (let
-                    ((post (estimate-conversation-tokens llm-history)))
-                  (when (number? post)
-                    (set! session-estimated-tokens
-                          (+ session-estimated-tokens (max 0 (- post (or turn-pre-estimate 0))))))))
-              ;; Persist the whole conversation to the session log after
-              ;; every chat turn so /resume can pick it up later.
-              (persist-session-file! session-file llm-history)
-              ;; Mid-run steering state resets with the run; queued entries
-              ;; in steering-queue persist for the next run by design
-              (set! steering-buffer "")
-              (set! interrupt-requested? #f)
-              (set! status-text "READY")
-              (render!))
+              (let ((my-run-id current-run-id))
+                (set! scroll-offset 0)
+                ;; Session accounting: a new turn starts, and until an
+                ;; endpoint usage block arrives the growth of the
+                ;; conversation provides the fallback estimate.
+                (set! session-turns (+ session-turns 1))
+                (set! turn-usage-seen? #f)
+                (set! turn-pre-estimate (estimate-conversation-tokens llm-history))
+                (dynamic-wind
+                  (lambda () #t)
+                  (lambda ()
+                    (catch #t
+                      (lambda ()
+                        (set! llm-history
+                              (append llm-history (list `((role . "user") (content . ,user-prompt)))))
+                        (begin
+                          (when
+                              (and
+                                (not (badb-config-model-context-limit cfg cur-endpoint cur-model))
+                                (or (not context-limit-discovered?) (compaction-needed? compactor llm-history)))
+                            (sync-context-limit!))
+                          (when (compaction-needed? compactor llm-history)
+                            (set! llm-history (compact-messages compactor llm-history))))
+                        (let run-turn ()
+                                      (let ((tools (collect-available-tools reg mcp-mgr)))
+                                        (if (pair? tools)
+                                          ;; Autonomous ReAct Tool-Calling Loop
+                                          (catch #t
+                                            (lambda ()
+                                              (let*
+                                                  ((max-react-iters (badb-config-react-max-iterations cfg))
+                                                   (loop-guard (make-loop-guard))
+                                                   (gate-options
+                                                     (systemone-gate-config->options cfg
+                                                                                     #:warn
+                                                                                     (lambda (msg)
+                                                                                       (add-sys-msg! msg))))
+                                                   (gate-client
+                                                     (and
+                                                       (systemone-gate-options-enabled? gate-options)
+                                                       (make-systemone-client #:endpoint
+                                                                              (or
+                                                                                (systemone-gate-options-endpoint gate-options)
+                                                                                "https://api.typesafe.ai/v1/systemone")
+                                                                              #:api-key
+                                                                              (or (systemone-gate-options-api-key gate-options) (getenv "TYPESAFE_API_KEY"))
+                                                                              #:model
+                                                                              (systemone-gate-options-model gate-options))))
+                                                   (gate
+                                                     (and gate-client
+                                                          (make-systemone-gate #:options
+                                                                               gate-options
+                                                                               #:check
+                                                                               (lambda (state)
+                                                                                 (systemone-gate-check gate-client state))
+                                                                               #:journal
+                                                                               jrn
+                                                                               #:model
+                                                                               (badb-config-model-name cfg)
+                                                                               #:active-geasa
+                                                                               (map
+                                                                                 (lambda (entry)
+                                                                                   (ensure-string (assoc-ref entry (quote id))))
+                                                                                 (registry-list reg))
+                                                                               #:on-verdict
+                                                                               (lambda (action verdict)
+                                                                                 (set! status-text (format #f "SYSTEMONE: ~a" action))
+                                                                                 (render!)))))
+                                                   (session
+                                                     (make-react-session #:client
+                                                                         client
+                                                                         #:messages
+                                                                         llm-history
+                                                                         #:registry
+                                                                         reg
+                                                                         #:mcp-manager
+                                                                         mcp-mgr
+                                                                         #:journal
+                                                                         jrn
+                                                                         #:transaction-manager
+                                                                         mgr
+                                                                         #:max-iterations
+                                                                         max-react-iters
+                                                                         #:steering-queue
+                                                                         steering-queue
+                                                                         #:max-tokens
+                                                                         (or (badb-config-model-max-tokens cfg) 4096)
+                                                                         #:deferred-tools?
+                                                                         #t
+                                                                         #:offload-hook
+                                                                         (make-ctx-offload-hook ctx-idx)
+                                                                         #:guardrail
+                                                                         (lambda (t-name t-args)
+                                                                           (evaluate-guardrail policy t-name t-args))
+                                                                         #:hooks
+                                                                         (append (make-loop-guard-hooks loop-guard)
+                                                                                 (if gate
+                                                                                   (make-systemone-gate-hooks gate)
+                                                                                   '())
+                                                                                 (list
+                                                                                   (cons 'on-step
+                                                                                         (lambda (iter phase)
+                                                                                           (when (eq? phase 'starting)
+                                                                                             (commit-react-stream-message!)
+                                                                                             (reset-react-stream-state!))
+                                                                                           (set! status-text
+                                                                                                 (cond
+                                                                                                   ((and (pair? phase) (eq? (car phase) 'rate-limited))
+                                                                                                     (format #f
+                                                                                                             "RATE LIMITED (~as)..."
+                                                                                                             (inexact->exact (ceiling (or (cdr phase) 1)))))
+                                                                                                   (max-react-iters (format #f "REACT [~a/~a]" iter max-react-iters))
+                                                                                                   (else (format #f "REACT [~a]" iter))))
+                                                                                           ;; Crash-safe persistence: sync the transcript
+                                                                                           ;; from the live session and rewrite the session
+                                                                                           ;; file after every executed step so /resume
+                                                                                           ;; recovers mid-run state.
+                                                                                           (when
+                                                                                               (memq phase '(tools-executed loop-detected))
+                                                                                             (let ((sess (current-react-session)))
+                                                                                               (when (react-session? sess)
+                                                                                                 (set! llm-history (react-session-messages sess))
+                                                                                                 (persist-session-file! session-file llm-history))))
+                                                                                           (poll-steering-input!)
+                                                                                           (request-render!)))
+                                                                                   (cons 'on-tool-call
+                                                                                         (lambda (tc)
+                                                                                           (let
+                                                                                               ((t-name (prop-ref tc 'name)) (t-args (prop-ref tc 'arguments)))
+                                                                                             (set! status-text (format #f "TOOL: ~a..." t-name))
+                                                                                             (add-msg! "tool-call" (format #f "Invoking tool: ~a (~s)" t-name t-args))
+                                                                                             (poll-steering-input!)
+                                                                                             (request-render!))))
+                                                                                   (cons 'on-tool-result
+                                                                                         (lambda (tc res err?)
+                                                                                           (let*
+                                                                                               ((t-name (prop-ref tc 'name))
+                                                                                                (blocked? (tool-result-blocked-payload? res))
+                                                                                                (res-str
+                                                                                                  (if (string? res)
+                                                                                                    res
+                                                                                                    (safe-json-string res)))
+                                                                                                (preview
+                                                                                                  (if (> (string-length res-str) 140)
+                                                                                                    (string-append (substring res-str 0 140) "...")
+                                                                                                    res-str)))
+                                                                                             (add-msg! "tool-result"
+                                                                                                       (cond
+                                                                                                         (blocked? (format #f "Tool ~a blocked (duplicate call): ~a" t-name preview))
+                                                                                                         (err? (format #f "Tool ~a failed: ~a" t-name preview))
+                                                                                                         (else (format #f "Tool ~a returned: ~a" t-name preview))))
+                                                                                             (poll-steering-input!)
+                                                                                             (request-render!))))
+                                                                                   (cons 'on-delta
+                                                                                         (lambda (delta type)
+                                                                                           (let ((sig (poll-steering-input!)))
+                                                                                             (if (memq sig '(stop urgent-steer))
+                                                                                               'stop
+                                                                                               (begin
+                                                                                                 (update-react-stream-message! delta type)
+                                                                                                 (throttled-stream-render!)
+                                                                                                 #t)))))))
+                                                                         #:compactor
+                                                                         compactor
+                                                                         #:loop-detector
+                                                                         (make-loop-detector)
+                                                                         ;; The per-step user-role recitation was repeatedly
+                                                                         ;; mistaken for untrusted tool-output instructions.
+                                                                         #:recitation?
+                                                                         #f)))
+                                                (call-with-values
+                                                  (lambda ()
+                                                    (react-run! session))
+                                                  (lambda (verdict final-content sess)
+                                                    (set! llm-history (react-session-messages sess))
+                                                    (cond
+                                                      ((and %urgent-steer-requested?
+                                                            (not %force-stop-requested?)
+                                                            (not (steering-empty? steering-queue)))
+                                                        (commit-react-stream-message!)
+                                                        (reset-react-stream-state!)
+                                                        (set! %urgent-steer-requested? #f)
+                                                        (run-turn))
+                                                      ((eq? verdict 'completed)
+                                                        (remove-react-stream-message!)
+                                                        (call-with-values
+                                                          (lambda ()
+                                                            (split-thoughts-and-content (or final-content "")))
+                                                          (lambda (th ct)
+                                                            (with-mutex %render-mutex
+                                                                        (set! messages
+                                                                              (append messages
+                                                                                      (list
+                                                                                        (default-collapse-message
+                                                                                          `((role . "assistant") (thoughts . ,th) (content . ,ct))))))))))
+                                                      ((eq? verdict 'max-iterations-reached)
+                                                        (commit-react-stream-message!)
+                                                        (add-sys-msg!
+                                                          (format #f
+                                                                  "ReAct iteration ceiling reached (~a iterations). Type 'Continue' or follow up to proceed."
+                                                                  max-react-iters)))
+                                                      ((eq? verdict 'interrupted)
+                                                        (commit-react-stream-message!)
+                                                        (add-sys-msg!
+                                                          "Agent run interrupted — the loop halted at the current iteration boundary. Type a message to continue."))
+                                                      ((eq? verdict 'loop-detected)
+                                                        (commit-react-stream-message!)
+                                                        (add-sys-msg!
+                                                          "Loop detected: the identical tool call was repeated too many times, so the agent run halted. Check the loop-detector warning in the transcript, then steer the agent with a follow-up message."))
+                                                      ((eq? verdict 'error)
+                                                        (commit-react-stream-message!)
+                                                        (add-err-msg! (format #f "ReAct error: ~a" final-content))))))))
+                                            (lambda (key . args)
+                                              (add-err-msg! (format #f "Agent loop failure: ~a ~s" key args))))
+                                          ;; Direct Streaming Mode when no tools registered
+                                          (begin (set! status-text "STREAMING...")
+                                                 (with-mutex %render-mutex
+                                                             (set! messages
+                                                                   (append messages
+                                                                           (list
+                                                                             (default-collapse-message
+                                                                               `((role . "assistant") (thoughts . #f) (content . "")))))))
+                                                 (render!)
+                                                 ;; Direct-streaming accumulators live OUTSIDE the catch so a
+                                                 ;; mid-stream failure can still preserve the partial output.
+                                                 (let ((raw-api-thoughts "") (raw-api-content ""))
+                                                   (catch #t
+                                                     (lambda ()
+                                                       (let ((target-cell (last-pair messages)))
+                                                         (model-stream client
+                                                                       llm-history
+                                                                       (lambda (delta . type-args)
+                                                                         (let ((sig (poll-steering-input!)))
+                                                                           (if (memq sig '(stop urgent-steer))
+                                                                             'stop
+                                                                             (let
+                                                                                 ((chunk-type
+                                                                                    (if (pair? type-args)
+                                                                                      (car type-args)
+                                                                                      'content)))
+                                                                               (cond
+                                                                                 ((eq? chunk-type 'complete-json)
+                                                                                   ;; Endpoint ignored stream:true:
+                                                                                   ;; deliver the whole completion
+                                                                                   ;; as one update; its usage
+                                                                                   ;; block, when present, feeds
+                                                                                   ;; the session accounting.
+                                                                                   (record-session-usage! (extract-usage delta))
+                                                                                   (call-with-values
+                                                                                     (lambda ()
+                                                                                       (determine-step-content delta))
+                                                                                     (lambda (ct rc)
+                                                                                       (set! raw-api-content (string-append raw-api-content ct))
+                                                                                       (set! raw-api-thoughts (string-append raw-api-thoughts (or rc ""))))))
+                                                                                 ((eq? chunk-type 'thought)
+                                                                                   (set! raw-api-thoughts (string-append raw-api-thoughts delta)))
+                                                                                 (else (set! raw-api-content (string-append raw-api-content delta))))
+                                                                               (call-with-values
+                                                                                 (lambda ()
+                                                                                   (split-thoughts-and-content raw-api-content))
+                                                                                 (lambda (inline-th inline-ct)
+                                                                                   (let*
+                                                                                       ((total-th
+                                                                                          (cond
+                                                                                            ((and (not (string-null? raw-api-thoughts)) inline-th)
+                                                                                              (string-append raw-api-thoughts "\n\n" inline-th))
+                                                                                            ((not (string-null? raw-api-thoughts)) raw-api-thoughts)
+                                                                                            (else inline-th)))
+                                                                                        (updated-msg
+                                                                                          (default-collapse-message
+                                                                                            `((role . "assistant") (thoughts . ,total-th) (content . ,inline-ct)))))
+                                                                                     (if (pair? target-cell)
+                                                                                       (set-car! target-cell updated-msg)
+                                                                                       (set! messages (append (drop-right messages 1) (list updated-msg))))
+                                                                                     (throttled-stream-render!)
+                                                                                     #t)))))))
+                                                                       #:max-tokens
+                                                                       (or (badb-config-model-max-tokens cfg) 4096))
+                                                         (set! llm-history
+                                                               (append llm-history (list `((role . "assistant") (content . ,raw-api-content)))))
+                                                         (when (and %urgent-steer-requested?
+                                                                    (not %force-stop-requested?)
+                                                                    (not (steering-empty? steering-queue)))
+                                                           (let ((entries (with-mutex %steering-mutex (steering-drain! steering-queue))))
+                                                             (for-each
+                                                               (lambda (e)
+                                                                 (when (string? e)
+                                                                   (set! llm-history (append llm-history (list `((role . "user") (content . ,e)))))))
+                                                               entries))
+                                                           (set! %urgent-steer-requested? #f)
+                                                           (run-turn))))
+                                                     (lambda (key . args)
+                                                       ;; Preserve any partially streamed output in
+                                                       ;; llm-history (with its thinking trace) so the
+                                                       ;; model sees its own partial answer when the
+                                                       ;; next turn recovers from the stream failure.
+                                                       (when
+                                                           (and (string? raw-api-content)
+                                                                (not (string-null? (string-trim-both raw-api-content))))
+                                                         (set! llm-history
+                                                               (append llm-history
+                                                                       (list
+                                                                         (append
+                                                                           `((role . "assistant")
+                                                                             ,@(if (non-empty-string? raw-api-thoughts)
+                                                                                 `((reasoning_content . ,raw-api-thoughts))
+                                                                                 '()))
+                                                                           `((content . ,raw-api-content)))))))
+                                                       (add-err-msg! (format #f "Stream error (~a): ~s" key args))))))))))
+                      (lambda (key . args)
+                        (add-err-msg! (format #f "Execution error (~a): ~s" key args)))))
+                  (lambda ()
+                    (when (= my-run-id current-run-id)
+                      ;; No endpoint usage block this turn: account an estimate of
+                      ;; the conversation growth instead, labeled on the /usage card.
+                      (unless turn-usage-seen?
+                        (let
+                            ((post (estimate-conversation-tokens llm-history)))
+                          (when (number? post)
+                            (set! session-estimated-tokens
+                                  (+ session-estimated-tokens (max 0 (- post (or turn-pre-estimate 0))))))))
+                      ;; Persist the whole conversation to the session log after
+                      ;; every chat turn so /resume can pick it up later.
+                      (persist-session-file! session-file llm-history)
+                      ;; Mid-run steering state resets with the run; queued entries
+                      ;; in steering-queue persist for the next run by design
+                      (set! steering-buffer "")
+                      (set! steering-selector-index 0)
+                      (set! interrupt-requested? #f)
+                      (set! %urgent-steer-requested? #f)
+                      (set! %force-stop-requested? #f)
+                      (set! status-text "READY")
+                      (set! render-dirty? #t)
+                      (render!))))))
       (define (execute-shell! cmd)
               (set! status-text "EXEC...")
               (render!)
@@ -2171,10 +2569,11 @@ any open menu first; submenu actions open the next menu in its place."
               (add-sys-msg! (format-rules-and-tree (getcwd))))
       ;; Handle conversation context metrics
       (define (handle-context-cmd! _arg)
-              (sync-context-limit!)
+              (unless (agent-running?) (sync-context-limit!))
               (add-sys-msg! (format-context-metrics compactor llm-history messages)))
       ;; Handle per-session token usage report
-      (define (handle-usage-cmd!) (sync-context-limit!)
+      (define (handle-usage-cmd!)
+              (unless (agent-running?) (sync-context-limit!))
               (add-sys-msg!
                 (format-usage-report compactor
                                      llm-history
@@ -2255,6 +2654,9 @@ any open menu first; submenu actions open the next menu in its place."
                         (record-history! user-line 'chat)
                         (add-user-msg! user-line)
                         (set! status-text "SYNTHESIZING...")
+                        (set! current-run-id (+ current-run-id 1))
+                        (set! %force-stop-requested? #f)
+                        (set! %urgent-steer-requested? #f)
                         (render!)
                         (set! %agent-thread
                               (call-with-new-thread
@@ -2354,6 +2756,72 @@ any open menu first; submenu actions open the next menu in its place."
                       (format #f
                               "Unknown /geis subcommand '~a'. Type /geis help for available commands."
                               sub))))))
+      (define (trigger-urgent-steering! text)
+              (let ((clean (string-trim-both (if (string? text) text ""))))
+                (if (string-null? clean)
+                  (add-sys-msg! "Usage: /steer ! <message> (or Ctrl+U with steering text)")
+                  (begin
+                    (with-mutex %steering-mutex
+                                (push-urgent-steering! steering-queue clean))
+                    (when (agent-running?)
+                      (set! %urgent-steer-requested? #t)
+                      (kill-active-subprocess!))
+                    (add-msg! "steer"
+                              (if (agent-running?)
+                                (format #f "Urgent steering pushed immediately: ~a" clean)
+                                (format #f "Urgent steering placed at front of queue: ~a" clean)))
+                    (request-render!)))))
+      (define (force-stop-run!)
+              (let ((t %agent-thread))
+                (set! current-run-id (+ current-run-id 1))
+                (set! %force-stop-requested? #t)
+                (set! %urgent-steer-requested? #f)
+                (set! %agent-thread #f)
+                (force-stop-agent! t
+                                   #:steering-queue
+                                   steering-queue
+                                   #:kill-subprocess!
+                                   kill-active-subprocess!)
+                ;; Strip residual 'interrupt markers so the next prompt is not aborted
+                (with-mutex %steering-mutex
+                            (let ((entries (steering-drain! steering-queue)))
+                              (for-each
+                                (lambda (e)
+                                  (unless (eq? e 'interrupt)
+                                    (steering-push! steering-queue e)))
+                                entries)))
+                (commit-react-stream-message!)
+                (reset-react-stream-state!)
+                (set! steering-buffer "")
+                (set! steering-selector-index 0)
+                (set! interrupt-requested? #f)
+                (set! status-text "READY")
+                (add-msg! "steer" "Agent run force-stopped immediately.")
+                (persist-session-file! session-file llm-history)
+                (render!)))
+      (define (execute-mid-run-safe-command! cmd arg)
+              (cond
+                ((string=? cmd "stop") (force-stop-run!))
+                ((string=? cmd "interrupt")
+                  (kill-active-subprocess!)
+                  (with-mutex %steering-mutex
+                              (steering-push! steering-queue 'interrupt))
+                  (set! interrupt-requested? #t)
+                  (set! status-text "INTERRUPT REQUESTED")
+                  (add-msg! "steer" "Interrupt requested — halting at the next iteration boundary."))
+                ((string=? cmd "steer")
+                  (call-with-values
+                    (lambda () (parse-steer-argument arg))
+                    (lambda (urgent? text)
+                      (if (string-null? text)
+                        (add-sys-msg! "Usage: /steer [--urgent|!] <message>")
+                        (if urgent?
+                          (trigger-urgent-steering! text)
+                          (begin
+                            (with-mutex %steering-mutex
+                                        (steering-push! steering-queue text))
+                            (add-msg! "steer" (format #f "Steering queued for the running agent: ~a" text))))))))
+                (else (handle-command! (cons cmd arg)))))
       (define (handle-command! cmd-pair)
               (let ((cmd (car cmd-pair)) (arg (cdr cmd-pair)))
                 (cond
@@ -2433,22 +2901,35 @@ any open menu first; submenu actions open the next menu in its place."
                       (lambda (k . a)
                         (add-err-msg! (format #f "Test error: ~a ~s" k a))))
                     (set! status-text "READY"))
+                  ((string=? cmd "subagents")
+                    (add-sys-msg! (format-mid-run-subagents-summary reg)))
+                  ((string=? cmd "stop")
+                    (if (agent-running?)
+                      (force-stop-run!)
+                      (add-sys-msg! "No agent run is currently active.")))
                   ((string=? cmd "steer")
-                    (let ((text (string-trim-both arg)))
-                      (if (string-null? text)
-                        (add-sys-msg!
-                          "Usage: /steer <message> (queued for the running or next agent run)")
-                        (begin (steering-push! steering-queue text)
-                               (add-msg! "steer"
-                                         (if (agent-run-active? status-text)
-                                           (format #f "Steering queued for the running agent: ~a" text)
-                                           (format #f "Steering queued for the next agent run: ~a" text)))))))
+                    (call-with-values
+                      (lambda () (parse-steer-argument arg))
+                      (lambda (urgent? text)
+                        (if (string-null? text)
+                          (add-sys-msg!
+                            "Usage: /steer [--urgent|!] <message> (queued or pushed urgently)")
+                          (if urgent?
+                            (trigger-urgent-steering! text)
+                            (begin
+                              (with-mutex %steering-mutex
+                                          (steering-push! steering-queue text))
+                              (add-msg! "steer"
+                                        (if (or (agent-running?) (agent-run-active? status-text))
+                                          (format #f "Steering queued for the running agent: ~a" text)
+                                          (format #f "Steering queued for the next agent run: ~a" text)))))))))
                   ((string=? cmd "interrupt")
                     (kill-active-subprocess!)
-                    (steering-push! steering-queue 'interrupt)
+                    (with-mutex %steering-mutex
+                                (steering-push! steering-queue 'interrupt))
                     (set! interrupt-requested? #t)
                     (add-msg! "steer"
-                              (if (agent-run-active? status-text)
+                              (if (or (agent-running?) (agent-run-active? status-text))
                                 "Interrupt requested — the agent halts at the next iteration boundary."
                                 "Interrupt queued — the next agent run halts before its first LLM call.")))
                   ((string=? cmd "clear") (set! messages '())
@@ -2579,30 +3060,131 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                            (let ((ch (key->code (getch stdscr))))
                              (if (agent-running?)
                                (cond
-                                 ((or (eqv? ch 9) (eqv? ch 3))
-                                   (kill-active-subprocess!)
-                                   (steering-push! steering-queue 'interrupt)
-                                   (set! interrupt-requested? #t)
-                                   (set! status-text "INTERRUPT REQUESTED")
-                                   (add-msg! "steer"
-                                             "Interrupt requested — halting at the next iteration boundary.")
+                                 ((and active-menu (not (eqv? ch 3)))
+                                   (cond
+                                     ((or (not ch) (eqv? ch -1))
+                                       (usleep 20000)
+                                       (loop #f))
+                                     ((eqv? ch KEY_UP)
+                                       (set! active-menu (menu-move active-menu -1))
+                                       (render!)
+                                       (loop #f))
+                                     ((eqv? ch KEY_DOWN)
+                                       (set! active-menu (menu-move active-menu 1))
+                                       (render!)
+                                       (loop #f))
+                                     ((eqv? ch 27)
+                                       (set! active-menu #f)
+                                       (render!)
+                                       (loop #f))
+                                     ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
+                                       (let ((item (menu-selected-item active-menu)))
+                                         (when item (apply-menu-selection! item)))
+                                       (render!)
+                                       (loop #f))
+                                     (else (loop #f))))
+                                 ;; Ctrl+C: immediate force-stop
+                                 ((eqv? ch 3)
+                                   (set! active-menu #f)
+                                   (force-stop-run!)
+                                   (loop #f))
+                                 ;; Ctrl+U: urgent steering push (front of queue + stream preemption)
+                                 ((eqv? ch 21)
+                                   (let ((trimmed (string-trim-both steering-buffer)))
+                                     (set! steering-buffer "")
+                                     (set! steering-selector-index 0)
+                                     (unless (string-null? trimmed)
+                                       (let ((disp (dispatch-mid-run-input trimmed)))
+                                         (case (car disp)
+                                           ((safe-slash) (execute-mid-run-safe-command! (cadr disp) (caddr disp)))
+                                           ((blocked-slash)
+                                             (add-sys-msg!
+                                               (format #f
+                                                       "Command /~a cannot run while the agent is active (safe mid-run: /context, /usage, /theme, /help, /subagents, /stop, /steer)."
+                                                       (cadr disp))))
+                                           ((steer) (trigger-urgent-steering! (cdr disp)))
+                                           (else #f)))))
+                                   (render!)
+                                   (loop #f))
+                                 ;; Tab / Ctrl+I: autocomplete mid-run slash command if typing '/',
+                                 ;; otherwise request graceful iteration-boundary interrupt.
+                                 ((eqv? ch 9)
+                                   (if (selector-active? steering-buffer)
+                                     (let* ((matches (matching-mid-run-slash-commands steering-buffer))
+                                            (safe-idx
+                                              (if (null? matches)
+                                                0
+                                                (max 0 (min steering-selector-index (- (length matches) 1)))))
+                                            (chosen (and (pair? matches) (car (list-ref matches safe-idx)))))
+                                       (when chosen
+                                         (set! steering-buffer
+                                               (if (string=? chosen "steer")
+                                                 "/steer "
+                                                 (string-append "/" chosen)))
+                                         (set! steering-selector-index 0)))
+                                     (begin
+                                       (kill-active-subprocess!)
+                                       (with-mutex %steering-mutex
+                                                   (steering-push! steering-queue 'interrupt))
+                                       (set! interrupt-requested? #t)
+                                       (set! status-text "INTERRUPT REQUESTED")
+                                       (add-msg! "steer"
+                                                 "Interrupt requested — halting at the next iteration boundary.")))
                                    (render!)
                                    (loop #f))
                                  ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
-                                   (let ((text (string-trim-both steering-buffer)))
-                                     (unless (string-null? text)
-                                       (steering-push! steering-queue text)
-                                       (add-msg! "steer" (format #f "Steering queued: ~a" text))))
-                                   (set! steering-buffer "")
+                                   (let ((raw
+                                           (if (selector-active? steering-buffer)
+                                             (let ((matches (matching-mid-run-slash-commands steering-buffer)))
+                                               (if (null? matches)
+                                                 (string-trim-both steering-buffer)
+                                                 (let* ((safe-idx
+                                                          (max 0 (min steering-selector-index (- (length matches) 1))))
+                                                        (chosen (car (list-ref matches safe-idx))))
+                                                   (if (string=? chosen "steer")
+                                                     ""
+                                                     (string-append "/" chosen)))))
+                                             (string-trim-both steering-buffer))))
+                                     (if (and (selector-active? steering-buffer)
+                                              (string-null? raw)
+                                              (pair? (matching-mid-run-slash-commands steering-buffer)))
+                                       (begin
+                                         (set! steering-buffer "/steer ")
+                                         (set! steering-selector-index 0))
+                                       (begin
+                                         (set! steering-buffer "")
+                                         (set! steering-selector-index 0)
+                                         (let ((disp (dispatch-mid-run-input raw)))
+                                           (case (car disp)
+                                             ((safe-slash) (execute-mid-run-safe-command! (cadr disp) (caddr disp)))
+                                             ((blocked-slash)
+                                               (add-sys-msg!
+                                                 (format #f
+                                                         "Command /~a cannot run while the agent is active (safe mid-run: /context, /usage, /theme, /help, /subagents, /stop, /steer)."
+                                                         (cadr disp))))
+                                             ((steer)
+                                               (with-mutex %steering-mutex
+                                                           (steering-push! steering-queue (cdr disp)))
+                                               (add-msg! "steer" (format #f "Steering queued: ~a" (cdr disp))))
+                                             (else #f))))))
                                    (render!)
                                    (loop #f))
                                  ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 8) (eqv? ch 127))
                                    (when (> (string-length steering-buffer) 0)
                                      (set! steering-buffer
                                            (substring steering-buffer 0 (- (string-length steering-buffer) 1))))
+                                   (set! steering-selector-index 0)
                                    (render!)
                                    (loop #f))
-                                 ((eqv? ch 27) (set! steering-buffer "") (render!) (loop #f))
+                                 ;; Esc: clear non-empty steering buffer, or force-stop if empty
+                                 ((eqv? ch 27)
+                                   (if (string-null? steering-buffer)
+                                     (force-stop-run!)
+                                     (begin
+                                       (set! steering-buffer "")
+                                       (set! steering-selector-index 0)
+                                       (render!)))
+                                   (loop #f))
                                  ((eqv? ch KEY_PPAGE)
                                    (set! scroll-offset (min max-scroll-seen (+ scroll-offset 10)))
                                    (render!)
@@ -2612,16 +3194,32 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                    (render!)
                                    (loop #f))
                                  ((eqv? ch KEY_UP)
-                                   (set! scroll-offset (min max-scroll-seen (+ scroll-offset 1)))
+                                   (if (selector-active? steering-buffer)
+                                     (let ((matches (matching-mid-run-slash-commands steering-buffer)))
+                                       (unless (null? matches)
+                                         (let* ((cnt (length matches))
+                                                (cur (max 0 (min steering-selector-index (- cnt 1)))))
+                                           (set! steering-selector-index (if (<= cur 0) (- cnt 1) (- cur 1))))))
+                                     (set! scroll-offset (min max-scroll-seen (+ scroll-offset 1))))
                                    (render!)
                                    (loop #f))
                                  ((eqv? ch KEY_DOWN)
-                                   (set! scroll-offset (max 0 (- scroll-offset 1)))
+                                   (if (selector-active? steering-buffer)
+                                     (let ((matches (matching-mid-run-slash-commands steering-buffer)))
+                                       (unless (null? matches)
+                                         (let* ((cnt (length matches))
+                                                (cur (max 0 (min steering-selector-index (- cnt 1)))))
+                                           (set! steering-selector-index (remainder (+ cur 1) cnt)))))
+                                     (set! scroll-offset (max 0 (- scroll-offset 1))))
+                                   (render!)
+                                   (loop #f))
+                                 ((eqv? ch KEY_RESIZE)
                                    (render!)
                                    (loop #f))
                                  ((and (integer? ch) (>= ch 32) (<= ch 126))
                                    (set! steering-buffer
                                          (string-append steering-buffer (string (integer->char ch))))
+                                   (set! steering-selector-index 0)
                                    (render!)
                                    (loop #f))
                                  (else (usleep 20000)
@@ -2743,6 +3341,9 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                                             (delivered (expand-macros user-text)))
                                                          (record-history! delivered 'chat)
                                                          (add-user-msg! delivered)
+                                                         (set! current-run-id (+ current-run-id 1))
+                                                         (set! %force-stop-requested? #f)
+                                                         (set! %urgent-steer-requested? #f)
                                                          (set! %agent-thread
                                                                (call-with-new-thread
                                                                  (lambda ()
