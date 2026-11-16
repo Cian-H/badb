@@ -258,15 +258,21 @@ the buffer. Return (values new-mode new-buffer new-pos absorbed?)."
 
 (define (prompt-mode-on-backspace prompt-mode input-buffer cursor-pos)
         "Handle Backspace in PROMPT-MODE with INPUT-BUFFER at CURSOR-POS.
-On a non-empty buffer, deletes one character backward; on an empty non-'chat
-prompt ('slash, 'shell, or 'scheme), returns to 'chat mode.
+On a non-empty buffer, deletes one character backward (and exits 'scheme mode
+if the leading '(' is deleted); on an empty non-'chat prompt ('slash, 'shell,
+or 'scheme), returns to 'chat mode.
 Return (values new-mode new-buffer new-pos)."
         (let ((buf (if (string? input-buffer) input-buffer "")))
           (cond
             ((> (string-length buf) 0)
               (call-with-values (lambda () (backspace-at buf cursor-pos))
                                 (lambda (new-buf new-pos)
-                                  (values prompt-mode new-buf new-pos))))
+                                  (let ((next-mode (if (and (eq? prompt-mode 'scheme)
+                                                            (or (string-null? new-buf)
+                                                                (not (char=? (string-ref new-buf 0) #\())))
+                                                     'chat
+                                                     prompt-mode)))
+                                    (values next-mode new-buf new-pos)))))
             ((not (eq? prompt-mode 'chat))
               (values 'chat "" 0))
             (else
