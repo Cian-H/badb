@@ -423,15 +423,16 @@ configured model client. Derives only from raw turns, keeps identifiers
 verbatim, and fails open to a verbatim truncation."
               (let*
                   ((rendered
-                     (let loop ((rest older-msgs) (acc '()) (total 0))
-                               (if (or (null? rest) (>= total 24000))
-                                 (string-join (reverse acc) "\n")
-                                 (let* ((m (car rest))
-                                        (line (format #f "~a: ~a"
-                                                      (or (assoc-ref m 'role) "?")
-                                                      (or (assoc-ref m 'content) "")))
-                                        (len (string-length line)))
-                                   (loop (cdr rest) (cons line acc) (+ total len 1))))))
+                     (let loop
+                       ((rest older-msgs) (acc '()) (total 0))
+                       (if (or (null? rest) (>= total 24000))
+                         (string-join (reverse acc) "\n")
+                         (let*
+                             ((m (car rest))
+                              (line
+                                (format #f "~a: ~a" (or (assoc-ref m 'role) "?") (or (assoc-ref m 'content) "")))
+                              (len (string-length line)))
+                           (loop (cdr rest) (cons line acc) (+ total len 1))))))
                    (truncate-to
                      (lambda (s n)
                        (if (> (string-length s) n)
@@ -474,14 +475,13 @@ verbatim, and fails open to a verbatim truncation."
       (define configured-context-limit
               (badb-config-model-context-limit cfg cur-endpoint cur-model))
       (define discovered-context-limit
-              (or
-                configured-context-limit
-                (catch #t
-                  (lambda ()
-                    (let ((lim (fetch-model-context-limit client)))
-                      (and (integer? lim) (min lim 131072))))
-                  (lambda _
-                    #f))))
+              (or configured-context-limit
+                  (catch #t
+                    (lambda ()
+                      (let ((lim (fetch-model-context-limit client)))
+                        (and (integer? lim) (min lim 131072))))
+                    (lambda _
+                      #f))))
       (when
           (and (integer? discovered-context-limit) (> discovered-context-limit 4096))
         (set-context-compactor-max-tokens! compactor discovered-context-limit))
@@ -1319,8 +1319,11 @@ and append it to the persistent history journal file."
                                   (set! status-text (string-append "TOOL: " name "..."))
                                   (set! status-text "TOOL CALL..."))))
                             (else #f))
-                          (let ((react-stream-content (string-concatenate (reverse react-stream-content-chunks)))
-                                (react-stream-thoughts (string-concatenate (reverse react-stream-thoughts-chunks))))
+                          (let
+                              ((react-stream-content
+                                 (string-concatenate (reverse react-stream-content-chunks)))
+                               (react-stream-thoughts
+                                 (string-concatenate (reverse react-stream-thoughts-chunks))))
                             (call-with-values
                               (lambda ()
                                 (split-thoughts-and-content react-stream-content))
@@ -1503,10 +1506,10 @@ grown journal), which the per-frame header render must not pay."
                                                                        (set! status-text
                                                                              (cond
                                                                                ((and (pair? phase) (eq? (car phase) 'rate-limited))
-                                                                                 (format #f "RATE LIMITED (~as)..."
+                                                                                 (format #f
+                                                                                         "RATE LIMITED (~as)..."
                                                                                          (inexact->exact (ceiling (or (cdr phase) 1)))))
-                                                                               (max-react-iters
-                                                                                 (format #f "REACT [~a/~a]" iter max-react-iters))
+                                                                               (max-react-iters (format #f "REACT [~a/~a]" iter max-react-iters))
                                                                                (else (format #f "REACT [~a]" iter))))
                                                                        ;; Crash-safe persistence: sync the transcript
                                                                        ;; from the live session and rewrite the session
@@ -1543,12 +1546,9 @@ grown journal), which the per-frame header render must not pay."
                                                                                 res-str)))
                                                                          (add-msg! "tool-result"
                                                                                    (cond
-                                                                                     (blocked?
-                                                                                       (format #f "Tool ~a blocked (duplicate call): ~a" t-name preview))
-                                                                                     (err?
-                                                                                       (format #f "Tool ~a failed: ~a" t-name preview))
-                                                                                     (else
-                                                                                       (format #f "Tool ~a returned: ~a" t-name preview))))
+                                                                                     (blocked? (format #f "Tool ~a blocked (duplicate call): ~a" t-name preview))
+                                                                                     (err? (format #f "Tool ~a failed: ~a" t-name preview))
+                                                                                     (else (format #f "Tool ~a returned: ~a" t-name preview))))
                                                                          (poll-steering-input!)
                                                                          (request-render!))))
                                                                (cons 'on-delta
@@ -1795,11 +1795,7 @@ grown journal), which the per-frame header render must not pay."
                                      (refresh-client!)
                                      (try-save-config!)
                                      (add-sys-msg! (format #f "Model set to '~a' and saved." val)))
-                                    ("endpoint" (set! cur-endpoint val)
-                                     (badb-config-set-model-endpoint! cfg val)
-                                     (refresh-client!)
-                                     (try-save-config!)
-                                     (add-sys-msg! (format #f "Endpoint set to '~a' and saved." val)))
+                                    ("endpoint" (set-endpoint-url! val "Endpoint set to '~a' and saved."))
                                     ("temperature"
                                      (let ((temp (string->number val)))
                                        (if (and temp (number? temp))
@@ -1840,6 +1836,32 @@ close any open menu, ready for the user to complete the command."
               (set! prompt-mode 'chat)
               (set! input-buffer text)
               (set! cursor-pos (string-length text)))
+      (define (set-endpoint-url! raw-url success-fmt)
+              "Validate RAW-URL as an HTTP(S) URI, apply it to cur-endpoint and cfg,
+refresh client, save config, and log SUCCESS-FMT. Rejects non-URI values
+and hints /provider <name> when RAW-URL matches a configured preset."
+              (let ((trimmed (string-trim-both raw-url)))
+                (if (valid-endpoint-uri? trimmed)
+                  (begin (set! cur-endpoint trimmed)
+                         (badb-config-set-model-endpoint! cfg trimmed)
+                         (refresh-client!)
+                         (try-save-config!)
+                         (add-sys-msg! (format #f success-fmt cur-endpoint)))
+                  (if
+                      (find
+                        (lambda (p)
+                          (and (pair? p) (string=? (ensure-string (car p)) trimmed)))
+                        (badb-config-providers cfg))
+                    (add-err-msg!
+                      (format #f
+                              "Invalid endpoint URL '~a' (expected http://... or https://...). '~a' is a provider preset — use '/provider ~a' to switch to it."
+                              trimmed
+                              trimmed
+                              trimmed))
+                    (add-err-msg!
+                      (format #f
+                              "Invalid endpoint URL '~a' (expected http://... or https://...)."
+                              trimmed))))))
       (define (switch-provider-preset! name)
               "Switch the active model configuration to provider preset NAME,
 refreshing the client, saving, and reporting the outcome."
@@ -2356,12 +2378,7 @@ any open menu first; submenu actions open the next menu in its place."
                   ((string=? cmd "endpoint")
                     (if (string-null? arg)
                       (set! active-menu (make-menu "Endpoint" (endpoint-menu-items-for-config cfg)))
-                      (begin (set! cur-endpoint arg)
-                             (badb-config-set-model-endpoint! cfg arg)
-                             (refresh-client!)
-                             (try-save-config!)
-                             (add-sys-msg!
-                               (format #f "Endpoint updated to: ~a (saved to config)" cur-endpoint)))))
+                      (set-endpoint-url! arg "Endpoint updated to: ~a (saved to config)")))
                   ((string=? cmd "provider") (handle-provider-cmd! arg))
                   ((string=? cmd "mcp") (handle-mcp-cmd! arg))
                   ((string=? cmd "config") (handle-config-cmd! arg))
@@ -2543,7 +2560,8 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                            ;; Rendering is skipped only for no-op scroll keys in a key
                            ;; burst: a held or pasted run of scroll keys must not trigger
                            ;; a full-transcript render per key.
-                           (when (or needs-render? mouse-dirty? render-dirty?)
+                           (when
+                               (or needs-render? mouse-dirty? render-dirty?)
                              (set! render-dirty? #f)
                              (render!))
                            (when (and nodelay-proc (agent-running?)) (nodelay-proc stdscr #t))

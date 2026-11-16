@@ -62,7 +62,8 @@
                                          model-stream
                                          model-entry-context-limit
                                          parse-models-context-limits
-                                         fetch-model-context-limit))
+                                         fetch-model-context-limit
+                                         valid-endpoint-uri?))
 
 ;;;
 ;;; Chat Request Formatting
@@ -512,26 +513,60 @@ Returns a list of tool call alists: ((id . \"...\") (name . \"...\") (arguments 
                   base)
             base)))
 
+(define (valid-endpoint-uri? endpoint)
+        "Return #t when ENDPOINT is an HTTP(S) URI or string with a non-empty host."
+        (let
+            ((uri
+               (cond
+                 ((uri? endpoint) endpoint)
+                 ((string? endpoint) (string->uri (string-trim-both endpoint)))
+                 (else #f))))
+          (and (uri? uri)
+               (memq (uri-scheme uri) '(http https))
+               (non-empty-string? (uri-host uri))
+               #t)))
+
+(define (coerce-endpoint-uri endpoint)
+        "Parse ENDPOINT string or validate a <uri>, raising a descriptive error if invalid."
+        (let
+            ((uri
+               (cond
+                 ((uri? endpoint) endpoint)
+                 ((string? endpoint) (string->uri endpoint))
+                 (else #f))))
+          (unless
+              (and (uri? uri) (uri-scheme uri) (non-empty-string? (uri-host uri)))
+            (error "Invalid model endpoint URI (expected http(s)://host...)" endpoint))
+          uri))
+
 (define (resolve-endpoint-uri endpoint)
         "Normalize ENDPOINT string or uri to an effective chat completions URI.
 If the path does not end with /chat/completions, /completions, /messages, or /chat,
 append /chat/completions."
-        (let* ((uri (if (string? endpoint) (string->uri endpoint) endpoint))
-               (path (or (uri-path uri) "/")))
-          (if (or (string-suffix? "/chat/completions" path)
+        (let*
+            ((uri (coerce-endpoint-uri endpoint)) (path (or (uri-path uri) "/")))
+          (if
+              (or (string-suffix? "/chat/completions" path)
                   (string-suffix? "/completions" path)
                   (string-suffix? "/messages" path)
                   (string-suffix? "/chat" path))
             uri
-            (let* ((clean-path (string-trim-right path #\/))
-                   (new-path (string-append clean-path "/chat/completions")))
+            (let*
+                ((clean-path (string-trim-right path #\/))
+                 (new-path (string-append clean-path "/chat/completions")))
               (build-uri (uri-scheme uri)
-                         #:userinfo (uri-userinfo uri)
-                         #:host (uri-host uri)
-                         #:port (uri-port uri)
-                         #:path new-path
-                         #:query (uri-query uri)
-                         #:fragment (uri-fragment uri))))))
+                         #:userinfo
+                         (uri-userinfo uri)
+                         #:host
+                         (uri-host uri)
+                         #:port
+                         (uri-port uri)
+                         #:path
+                         new-path
+                         #:query
+                         (uri-query uri)
+                         #:fragment
+                         (uri-fragment uri))))))
 
 (define (response-body->string body fallback)
         "Coerce an HTTP response BODY (bytevector or string) to a string,
@@ -1031,50 +1066,59 @@ the first entry of IDS when CURRENT-MODEL is generic (#f, empty, or
         "Normalize ENDPOINT string or uri to a models listing URI.
 Strips any chat-completions style suffix (/chat/completions, /completions,
 /messages, or /chat) from the path and appends /models."
-        (let* ((uri (if (string? endpoint) (string->uri endpoint) endpoint))
-               (path (or (uri-path uri) "/"))
-               (base-path
-                 (cond
-                   ((string-suffix? "/chat/completions" path)
-                     (substring path 0 (- (string-length path) 17)))
-                   ((string-suffix? "/completions" path)
-                     (substring path 0 (- (string-length path) 12)))
-                   ((string-suffix? "/messages" path)
-                     (substring path 0 (- (string-length path) 9)))
-                   ((string-suffix? "/chat" path)
-                     (substring path 0 (- (string-length path) 5)))
-                   (else (string-trim-right path #\/)))))
+        (let*
+            ((uri (coerce-endpoint-uri endpoint))
+             (path (or (uri-path uri) "/"))
+             (base-path
+               (cond
+                 ((string-suffix? "/chat/completions" path)
+                   (substring path 0 (- (string-length path) 17)))
+                 ((string-suffix? "/completions" path)
+                   (substring path 0 (- (string-length path) 12)))
+                 ((string-suffix? "/messages" path)
+                   (substring path 0 (- (string-length path) 9)))
+                 ((string-suffix? "/chat" path) (substring path 0 (- (string-length path) 5)))
+                 (else (string-trim-right path #\/)))))
           (build-uri (uri-scheme uri)
-                     #:userinfo (uri-userinfo uri)
-                     #:host (uri-host uri)
-                     #:port (uri-port uri)
-                     #:path (string-append base-path "/models")
-                     #:query (uri-query uri)
-                     #:fragment (uri-fragment uri))))
+                     #:userinfo
+                     (uri-userinfo uri)
+                     #:host
+                     (uri-host uri)
+                     #:port
+                     (uri-port uri)
+                     #:path
+                     (string-append base-path "/models")
+                     #:query
+                     (uri-query uri)
+                     #:fragment
+                     (uri-fragment uri))))
 
-(define* (list-models client #:key (http-getter #f))
-         "Query the OpenAI-compatible GET /models endpoint for CLIENT.
+(define*
+  (list-models client #:key (http-getter #f))
+  "Query the OpenAI-compatible GET /models endpoint for CLIENT.
 Returns (values model-ids error-string-or-#f), where model-ids is the list
 of available model id strings, or #f on failure."
-         (let* ((uri (resolve-models-uri (model-client-endpoint client)))
-                (headers (build-headers (model-client-api-key client) #f))
-                (getter (or http-getter (current-http-get))))
-           (catch #t
-             (lambda ()
-               (call-with-values
-                 (lambda () (getter uri #:headers headers))
-                 (lambda (response body)
-                   (let* ((code (response-code response))
-                          (body-str (response-body->string body "")))
-                     (if (<= 200 code 299)
-                       (let ((obj (safe-json-parse body-str #f)))
-                         (if (pair? obj)
-                           (values (parse-models-response obj) #f)
-                           (values #f "failed to parse /models response")))
-                       (values #f (format #f "HTTP ~a error: ~a" code body-str)))))))
-             (lambda (key . args)
-               (values #f (format #f "list-models request failed: ~a"
-                                  (format-exception key args)))))))
+  (catch #t
+    (lambda ()
+      (let*
+          ((uri (resolve-models-uri (model-client-endpoint client)))
+           (headers (build-headers (model-client-api-key client) #f))
+           (getter (or http-getter (current-http-get))))
+        (call-with-values
+          (lambda ()
+            (getter uri #:headers headers))
+          (lambda (response body)
+            (let*
+                ((code (response-code response)) (body-str (response-body->string body "")))
+              (if (<= 200 code 299)
+                (let ((obj (safe-json-parse body-str #f)))
+                  (if (pair? obj)
+                    (values (parse-models-response obj) #f)
+                    (values #f "failed to parse /models response")))
+                (values #f (format #f "HTTP ~a error: ~a" code body-str))))))))
+    (lambda (key . args)
+      (values #f
+              (format #f "list-models request failed: ~a" (format-exception key args))))))
 
 (define (first-context-limit entries)
         (cond

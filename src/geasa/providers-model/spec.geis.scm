@@ -1663,5 +1663,37 @@ data: [DONE]
     (test-assert "provider delay >= 2s respected" (>= (car slept) 2))
     (test-equal "streamed content delivered after retry" '("ok") chunks)))
 
+(test-group "endpoint-uri-validation"
+            (test-assert "valid http endpoint URI accepted"
+                         (valid-endpoint-uri? "http://127.0.0.1:1234/v1"))
+            (test-assert "valid https endpoint URI accepted"
+                         (valid-endpoint-uri? "https://api.openai.com/v1"))
+            (test-assert
+              "bare preset name rejected as endpoint URI"
+              (not (valid-endpoint-uri? "lmstudio")))
+            (test-assert
+              "empty string rejected as endpoint URI"
+              (not (valid-endpoint-uri? "")))
+            (test-assert "#f rejected as endpoint URI" (not (valid-endpoint-uri? #f)))
+            (test-assert
+              "list-models returns descriptive error on non-URI endpoint instead of struct-vtable"
+              (let
+                  ((bad-client (make-model-client #:endpoint "lmstudio" #:model "test")))
+                (call-with-values
+                  (lambda ()
+                    (list-models bad-client))
+                  (lambda (ids err)
+                    (and (not ids) (string? err) (string-contains err "Invalid model endpoint URI"))))))
+            (test-assert
+              "model-complete raises descriptive error on non-URI endpoint instead of struct-vtable"
+              (let
+                  ((bad-client (make-model-client #:endpoint "lmstudio" #:model "test")))
+                (catch #t
+                  (lambda ()
+                    (model-complete bad-client '(((role . "user") (content . "hi"))))
+                    #f)
+                  (lambda (key . args)
+                    (eq? key 'misc-error))))))
+
 (spec-end)
 (spec-exit)
