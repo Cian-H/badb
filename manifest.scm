@@ -42,5 +42,6 @@
             "guile-fslib"
             "guile-lsp-server"
             "tree-sitter-scheme"
-            "guile-sqlite3"))
+            "guile-sqlite3"
+            "semcp"))
     (packages->manifest (list cl-indentify))))

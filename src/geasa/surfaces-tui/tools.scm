@@ -24,6 +24,8 @@
                #:use-module
                (geasa capabilities-code-nav plugin)
                #:use-module
+               (geasa capabilities-structural-editing plugin)
+               #:use-module
                (geasa capabilities-context-index plugin)
                #:use-module
                (geasa capabilities-skills plugin)
@@ -551,6 +553,11 @@ unbounded raw search on the next turn."
   (register-macro-tools! reg)
   ;; 2. Code navigation & persistent memories
   (register-code-nav-tools! reg #:workspace (getcwd))
+  (register-structural-editing-tools! reg
+                                      #:workspace
+                                      workspace
+                                      #:rollback-mgr
+                                      rollback-mgr)
   ;; 3. Virtualized output & BM25 context indexing
   (register-context-index-tools! reg
                                  ctx-idx
