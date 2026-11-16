@@ -123,6 +123,7 @@
                (ice-9 threads)
                #:export
                (run-tui collect-enter-burst
+                        nc-shift-held?
                         %mid-run-safe-commands
                         %mid-run-slash-command-entries
                         mid-run-safe-command?
@@ -375,6 +376,26 @@
 payload codepoint), or #f when Enter should submit."
   (and (input-pending?)
        (let ((burst (drain-input-burst!))) (and (pair? burst) (cons ch burst)))))
+
+(define*
+  (nc-shift-held? #:optional
+                  (ncinput
+                    (let
+                        ((m (false-if-exception (resolve-module '(notcurses compat curses) #f))))
+                      (and m (false-if-exception (module-ref m '%ncinput)))))
+                  (get-mods
+                    (let
+                        ((m (false-if-exception (resolve-module '(notcurses structs) #f))))
+                      (and m (false-if-exception (module-ref m 'ncinput-modifiers)))))
+                  (mod-shift
+                    (let
+                        ((m (false-if-exception (resolve-module '(notcurses constants) #f))))
+                      (and m (false-if-exception (module-ref m 'NCKEY_MOD_SHIFT))))))
+  "Return #t when NCINPUT reports the Shift modifier bit MOD-SHIFT."
+  (and ncinput
+       get-mods
+       mod-shift
+       (not (zero? (logand (get-mods ncinput) mod-shift)))))
 
 ;;;
 ;;; Mid-Run Steering, Safe Slash Commands & Force-Stop Helpers
@@ -789,6 +810,15 @@ the output with WP1 format-git-diff-view."
                '())))
          (KEY_FIND (nref 'KEY_FIND))
          (KEY_OPEN (nref 'KEY_OPEN))
+         (ncinput-obj (false-if-exception (nref '%ncinput)))
+         (ncinput-modifiers-proc
+           (let
+               ((m (false-if-exception (resolve-module '(notcurses structs) #f))))
+             (and m (false-if-exception (module-ref m 'ncinput-modifiers)))))
+         (nckey-mod-shift-val
+           (let
+               ((m (false-if-exception (resolve-module '(notcurses constants) #f))))
+             (and m (false-if-exception (module-ref m 'NCKEY_MOD_SHIFT)))))
          ;; Non-blocking input support: the (geasa surfaces-tui nc) backend exports nodelay!
          ;; (kept also as the alias nodelay). When neither resolves, mid-run
          ;; polling is disabled and steering stays available between runs
@@ -1005,26 +1035,27 @@ Only skips server probing when the user explicitly configured context-limits."
                       "geasa active · /geis list · /geis bindings"
                       "Tip: run /geis onboard to detect toolchain & synthesize geasa")))
       (define (make-startup-notice-msg frame)
-              (let ((banner-rows
-                      (format-startup-banner 108
-                                             #:frame
-                                             frame
-                                             #:model
-                                             cur-model
-                                             #:workspace
-                                             (getcwd)
-                                             #:tips
-                                             banner-tips))
-                    (banner-text
-                      (format-startup-banner-text 108
-                                                  #:frame
-                                                  frame
-                                                  #:model
-                                                  cur-model
-                                                  #:workspace
-                                                  (getcwd)
-                                                  #:tips
-                                                  banner-tips)))
+              (let
+                  ((banner-rows
+                     (format-startup-banner 108
+                                            #:frame
+                                            frame
+                                            #:model
+                                            cur-model
+                                            #:workspace
+                                            (getcwd)
+                                            #:tips
+                                            banner-tips))
+                   (banner-text
+                     (format-startup-banner-text 108
+                                                 #:frame
+                                                 frame
+                                                 #:model
+                                                 cur-model
+                                                 #:workspace
+                                                 (getcwd)
+                                                 #:tips
+                                                 banner-tips)))
                 `((role . "notice") (hide-label? . #t)
                   (startup-banner? . #t)
                   (styled-rows . ,banner-rows)
@@ -1035,27 +1066,26 @@ Only skips server probing when the user explicitly configured context-limits."
       (define (advance-startup-banner!)
               (cond
                 (banner-anim-done? #f)
-                ((or (null? messages)
-                     (not (assoc-ref (car messages) 'startup-banner?)))
+                ((or (null? messages) (not (assoc-ref (car messages) 'startup-banner?)))
                   (set! banner-anim-done? #t)
                   #f)
                 ((>= banner-frame (- (crow-banner-frame-count) 1))
                   (set! banner-anim-done? #t)
                   #f)
                 (else
-                  (let* ((now (get-internal-real-time))
-                         (step (quotient internal-time-units-per-second 5)))
+                  (let*
+                      ((now (get-internal-real-time))
+                       (step (quotient internal-time-units-per-second 5)))
                     (if (>= (- now banner-last-time) step)
-                      (begin
-                        (set! banner-frame (+ banner-frame 1))
-                        (set! banner-last-time now)
-                        (set! messages (cons (make-startup-notice-msg banner-frame) (cdr messages)))
-                        (when (>= banner-frame (- (crow-banner-frame-count) 1))
-                          (set! banner-anim-done? #t))
-                        #t)
+                      (begin (set! banner-frame (+ banner-frame 1))
+                             (set! banner-last-time now)
+                             (set! messages (cons (make-startup-notice-msg banner-frame) (cdr messages)))
+                             (when
+                                 (>= banner-frame (- (crow-banner-frame-count) 1))
+                               (set! banner-anim-done? #t))
+                             #t)
                       #f)))))
-      (define messages
-              (list (make-startup-notice-msg 0)))
+      (define messages (list (make-startup-notice-msg 0)))
       (set! llm-history (list (make-system-turn)))
       ;; Session log for /resume: the whole llm-history is rewritten to
       ;; this JSONL file after every chat turn (system prompt first).
@@ -3760,7 +3790,8 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                (or needs-render? mouse-dirty? render-dirty?)
                              (set! render-dirty? #f)
                              (render!))
-                           (when (and nodelay-proc (or (agent-running?) (not banner-anim-done?)))
+                           (when
+                               (and nodelay-proc (or (agent-running?) (not banner-anim-done?)))
                              (nodelay-proc stdscr #t))
                            (let ((ch (key->code (getch stdscr))))
                              (if (agent-running?)
@@ -3940,9 +3971,7 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                    ((or (not ch) (eqv? ch -1))
                                      (if banner-anim-done?
                                        (loop #t)
-                                       (begin
-                                         (usleep 25000)
-                                         (loop (advance-startup-banner!)))))
+                                       (begin (usleep 25000) (loop (advance-startup-banner!)))))
                                    ((and active-menu (not (or (eqv? ch 3) (eqv? ch 4))))
                                      (cond
                                        ((eqv? ch KEY_UP) (set! active-menu (menu-move active-menu -1)))
@@ -3993,6 +4022,7 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                              (clamp-selector-index!))
                                            (add-err-msg! (format #f "External editor error: ~a" res)))))
                                      (loop))
+                                   ;; Shift+Enter: insert a literal newline without submitting.
                                    ;; Enter key: process buffer, execute modal command, or
                                    ;; complete selector. Under cbreak the tty's ICRNL maps the
                                    ;; Enter key to 10, so 10 must submit (Ctrl+N is select-next)

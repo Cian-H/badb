@@ -90,7 +90,6 @@
 ;;;
 ;;; Text Formatting & Word Wrapping Helpers
 ;;;
-
 (define (wrap-line line max-width)
         "Wrap a single LINE into a list of strings with length <= MAX-WIDTH,
 breaking on whitespace when possible."
@@ -131,7 +130,6 @@ breaking on whitespace when possible."
 ;;;
 ;;; Slash Commands Registry & Parsing
 ;;;
-
 (define %slash-commands
         '(("help" . "Show help manual & shortcuts")
           ("model" . "Switch or inspect active LLM model")
@@ -312,7 +310,6 @@ absorbed into the prompt indicator."
 ;;;
 ;;; Input Buffer Cursor Editing Helpers
 ;;;
-
 (define (clamp-cursor pos buffer)
         "Clamp cursor position POS into the valid range 0..(string-length BUFFER)."
         (max 0 (min pos (string-length buffer))))
@@ -404,7 +401,6 @@ column of the cursor within that line."
 ;;;
 ;;; Input History Recall & Session Persistence
 ;;;
-
 (define %history-max-entries 500)
 
 (define-record-type <input-history>
@@ -551,7 +547,6 @@ and #f on any filesystem failure."
 ;;;
 ;;; History Fuzzy Finder (Ctrl+R) & Interactive @ Mention Completion
 ;;;
-
 (define (%word-boundary-char? ch)
         "Return #t if CH separates path/identifier segments for fuzzy scoring."
         (memv ch '(#\/ #\- #\_ #\. #\space #\:)))
@@ -747,7 +742,6 @@ Return (values action new-state result-buffer result-pos) where ACTION is one of
 ;;;
 ;;; Interactive @ Mention Completion
 ;;;
-
 (define (%token-delimiter? ch)
         "Return #t when CH ends/separates a prompt token."
         (memv ch '(#\space #\tab #\newline #\return)))
@@ -890,7 +884,6 @@ expand as @NAME. Return (values new-buffer new-pos)."
 ;;;
 ;;; Configurable Keymaps (<keymap>) & Ctrl+I / Tab Resolution
 ;;;
-
 (define-record-type <keymap>
                     (%make-keymap table)
                     keymap?
@@ -950,8 +943,8 @@ into a canonical symbol key spec."
 
 (define (format-key-spec spec)
         "Format canonical key SPEC as a human-readable label (e.g. \"Ctrl+R\", \"Tab\")."
-        (let* ((sym (normalize-key-spec spec))
-               (s (symbol->string sym)))
+        (let*
+            ((sym (normalize-key-spec spec)) (s (symbol->string sym)))
           (cond
             ((eq? sym 'tab) "Tab")
             ((eq? sym 'shift-tab) "Shift+Tab")
@@ -965,6 +958,8 @@ into a canonical symbol key spec."
               (string-append "Ctrl+" (string-capitalize (substring s 5))))
             ((string-prefix? "alt-" s)
               (string-append "Alt+" (string-capitalize (substring s 4))))
+            ((string-prefix? "shift-" s)
+              (string-append "Shift+" (string-capitalize (substring s 6))))
             (else (string-capitalize s)))))
 
 (define %ctrl-code->spec
@@ -1116,69 +1111,214 @@ in 'steering mode, and collapse/interrupt/fuzzy-history/external-editor are all
 rebindable."
         (let ((km (make-keymap)))
           ;; Completion & navigation: Tab is strictly completion, never interrupt.
-          (keymap-bind! km 'tab 'complete #:context 'global
-                        #:description "Autocomplete slash command or @ mention")
-          (keymap-bind! km 'shift-tab 'complete-prev #:context 'global
-                        #:description "Cycle completion backwards")
+          (keymap-bind! km
+                        'tab
+                        'complete
+                        #:context
+                        'global
+                        #:description
+                        "Autocomplete slash command or @ mention")
+          (keymap-bind! km
+                        'shift-tab
+                        'complete-prev
+                        #:context
+                        'global
+                        #:description
+                        "Cycle completion backwards")
           ;; Fuzzy history (Ctrl+R) & external $EDITOR (Ctrl+X)
-          (keymap-bind! km 'ctrl-r 'fuzzy-history #:context 'global
-                        #:description "Fuzzy search command/chat history")
-          (keymap-bind! km 'ctrl-x 'external-editor #:context 'global
-                        #:description "Edit prompt in external $EDITOR")
+          (keymap-bind! km
+                        'ctrl-r
+                        'fuzzy-history
+                        #:context
+                        'global
+                        #:description
+                        "Fuzzy search command/chat history")
+          (keymap-bind! km
+                        'ctrl-x
+                        'external-editor
+                        #:context
+                        'global
+                        #:description
+                        "Edit prompt in external $EDITOR")
           ;; Collapse toggle: dedicated Ctrl+O globally + Ctrl+E when card selected
-          (keymap-bind! km 'ctrl-o 'toggle-collapse #:context 'global
-                        #:description "Toggle collapse of selected message card")
-          (keymap-bind! km 'ctrl-e 'toggle-collapse #:context 'msgsel
-                        #:description "Toggle collapse of selected message card")
-          (keymap-bind! km 'ctrl-e 'line-end #:context 'chat
-                        #:description "Move cursor to end of line")
+          (keymap-bind! km
+                        'ctrl-o
+                        'toggle-collapse
+                        #:context
+                        'global
+                        #:description
+                        "Toggle collapse of selected message card")
+          (keymap-bind! km
+                        'ctrl-e
+                        'toggle-collapse
+                        #:context
+                        'msgsel
+                        #:description
+                        "Toggle collapse of selected message card")
+          (keymap-bind! km
+                        'ctrl-e
+                        'line-end
+                        #:context
+                        'chat
+                        #:description
+                        "Move cursor to end of line")
           ;; Distinct Ctrl+I (when terminal reports CSI-u Ctrl+I) does not interrupt
-          (keymap-bind! km 'ctrl-i 'toggle-collapse #:context 'global
-                        #:description "Toggle collapse (Kitty/CSI-u Ctrl+I)")
+          (keymap-bind! km
+                        'ctrl-i
+                        'toggle-collapse
+                        #:context
+                        'global
+                        #:description
+                        "Toggle collapse (Kitty/CSI-u Ctrl+I)")
           ;; Agent run steering & interrupt (rebindable; Tab is NOT bound here)
-          (keymap-bind! km 'ctrl-c 'interrupt #:context 'steering
-                        #:description "Force-stop running agent & subprocesses")
-          (keymap-bind! km 'esc 'interrupt #:context 'steering
-                        #:description "Interrupt running agent")
-          (keymap-bind! km 'enter 'steer-send #:context 'steering
-                        #:description "Send steering message to running agent")
+          (keymap-bind! km
+                        'ctrl-c
+                        'interrupt
+                        #:context
+                        'steering
+                        #:description
+                        "Force-stop running agent & subprocesses")
+          (keymap-bind! km
+                        'esc
+                        'interrupt
+                        #:context
+                        'steering
+                        #:description
+                        "Interrupt running agent")
+          (keymap-bind! km
+                        'enter
+                        'steer-send
+                        #:context
+                        'steering
+                        #:description
+                        "Send steering message to running agent")
           ;; Standard editing & selection
-          (keymap-bind! km 'ctrl-c 'exit #:context 'chat
-                        #:description "Exit badb TUI")
-          (keymap-bind! km 'ctrl-d 'exit #:context 'global
-                        #:description "Exit badb TUI")
-          (keymap-bind! km 'ctrl-a 'line-start #:context 'global
-                        #:description "Move cursor to start of input")
-          (keymap-bind! km 'home 'line-start #:context 'global
-                        #:description "Move cursor to start of input")
-          (keymap-bind! km 'end 'line-end #:context 'global
-                        #:description "Move cursor to end of input")
-          (keymap-bind! km 'ctrl-up 'select-prev-message #:context 'global
-                        #:description "Select previous message card")
-          (keymap-bind! km 'ctrl-down 'select-next-message #:context 'global
-                        #:description "Select next message card")
-          (keymap-bind! km 'page-up 'scroll-page-up #:context 'global
-                        #:description "Scroll transcript up")
-          (keymap-bind! km 'page-down 'scroll-page-down #:context 'global
-                        #:description "Scroll transcript down")
-          (keymap-bind! km 'up 'history-prev #:context 'chat
-                        #:description "Recall older input history")
-          (keymap-bind! km 'down 'history-next #:context 'chat
-                        #:description "Recall newer input history")
-          (keymap-bind! km 'up 'selector-prev #:context 'selector
-                        #:description "Highlight previous selector item")
-          (keymap-bind! km 'down 'selector-next #:context 'selector
-                        #:description "Highlight next selector item")
-          (keymap-bind! km 'up 'selector-prev #:context 'menu
-                        #:description "Highlight previous menu item")
-          (keymap-bind! km 'down 'selector-next #:context 'menu
-                        #:description "Highlight next menu item")
-          (keymap-bind! km 'enter 'submit #:context 'global
-                        #:description "Submit input or apply selection")
-          (keymap-bind! km 'esc 'dismiss #:context 'global
-                        #:description "Dismiss popup or exit modal prompt")
-          (keymap-bind! km 'backspace 'delete-backward #:context 'global
-                        #:description "Delete character before cursor")
-          (keymap-bind! km 'delete 'delete-forward #:context 'global
-                        #:description "Delete character at cursor")
+          (keymap-bind! km 'ctrl-c 'exit #:context 'chat #:description "Exit badb TUI")
+          (keymap-bind! km 'ctrl-d 'exit #:context 'global #:description "Exit badb TUI")
+          (keymap-bind! km
+                        'ctrl-a
+                        'line-start
+                        #:context
+                        'global
+                        #:description
+                        "Move cursor to start of input")
+          (keymap-bind! km
+                        'home
+                        'line-start
+                        #:context
+                        'global
+                        #:description
+                        "Move cursor to start of input")
+          (keymap-bind! km
+                        'end
+                        'line-end
+                        #:context
+                        'global
+                        #:description
+                        "Move cursor to end of input")
+          (keymap-bind! km
+                        'ctrl-up
+                        'select-prev-message
+                        #:context
+                        'global
+                        #:description
+                        "Select previous message card")
+          (keymap-bind! km
+                        'ctrl-down
+                        'select-next-message
+                        #:context
+                        'global
+                        #:description
+                        "Select next message card")
+          (keymap-bind! km
+                        'page-up
+                        'scroll-page-up
+                        #:context
+                        'global
+                        #:description
+                        "Scroll transcript up")
+          (keymap-bind! km
+                        'page-down
+                        'scroll-page-down
+                        #:context
+                        'global
+                        #:description
+                        "Scroll transcript down")
+          (keymap-bind! km
+                        'up
+                        'history-prev
+                        #:context
+                        'chat
+                        #:description
+                        "Recall older input history")
+          (keymap-bind! km
+                        'down
+                        'history-next
+                        #:context
+                        'chat
+                        #:description
+                        "Recall newer input history")
+          (keymap-bind! km
+                        'up
+                        'selector-prev
+                        #:context
+                        'selector
+                        #:description
+                        "Highlight previous selector item")
+          (keymap-bind! km
+                        'down
+                        'selector-next
+                        #:context
+                        'selector
+                        #:description
+                        "Highlight next selector item")
+          (keymap-bind! km
+                        'up
+                        'selector-prev
+                        #:context
+                        'menu
+                        #:description
+                        "Highlight previous menu item")
+          (keymap-bind! km
+                        'down
+                        'selector-next
+                        #:context
+                        'menu
+                        #:description
+                        "Highlight next menu item")
+          (keymap-bind! km
+                        'enter
+                        'submit
+                        #:context
+                        'global
+                        #:description
+                        "Submit input or apply selection")
+          (keymap-bind! km
+                        'esc
+                        'dismiss
+                        #:context
+                        'global
+                        #:description
+                        "Dismiss popup or exit modal prompt")
+          (keymap-bind! km
+                        'backspace
+                        'delete-backward
+                        #:context
+                        'global
+                        #:description
+                        "Delete character before cursor")
+          (keymap-bind! km
+                        'delete
+                        'delete-forward
+                        #:context
+                        'global
+                        #:description
+                        "Delete character at cursor")
+          (keymap-bind! km
+                        'shift-enter
+                        'insert-newline
+                        #:context
+                        'global
+                        #:description
+                        "Insert newline without submitting")
           km))

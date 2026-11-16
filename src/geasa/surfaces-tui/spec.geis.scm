@@ -2116,7 +2116,24 @@
                       (test-equal
                         "non-payload key and trailing input keep FIFO pushback order"
                         (list key-up 97)
-                        (map car (module-ref nc-mod '%pushback)))))
+                        (map car (module-ref nc-mod '%pushback))))
+          (test-group "nc-shift-enter"
+                      (let
+                          ((set-mods! (module-ref structs-mod 'ncinput-set-modifiers!))
+                           (mod-shift (module-ref consts-mod 'NCKEY_MOD_SHIFT)))
+                        (set-mods! ncinput 0)
+                        (test-assert "nc-shift-held? is #f when modifiers = 0" (not (nc-shift-held?)))
+                        (set-mods! ncinput mod-shift)
+                        (test-assert
+                          "nc-shift-held? is #t when NCKEY_MOD_SHIFT is set"
+                          (nc-shift-held?)))
+                      (test-equal "format-key-spec formats shift-enter"
+                                  "Shift+Enter"
+                                  ((@(geasa surfaces-tui editor) format-key-spec) 'shift-enter))
+                      (test-equal
+                        "default keymap binds shift-enter to insert-newline"
+                        'insert-newline
+                        (keymap-lookup (make-default-keymap) 'shift-enter))))
         (lambda ()
           (module-set! nc-mod '%pushback saved-pushback)
           (module-set! nc-mod '%mouse-queue saved-mouse)
