@@ -42,20 +42,24 @@
 
 (define (print-usage port)
         (format port
-                "~a ~a [COMMAND] [OPTION]...\n\nMicroharness kernel.\n\n~a\n  ~a   launch interactive terminal user interface (default)\n  ~a          initialize project geasa, workflows & memories\n  ~a          run bootstrap test suite\n  ~a  run the filetree MCP server over stdio\n  ~a   run the Sema plugin synthesis workflow\n  ~a         inspect, verify, or distill contract specifications (geasa)\n  ~a          show BM25 context index token statistics\n  ~a   serve the Agent Client Protocol over stdio (editor surface)\n  ~a    display this help and exit\n  ~a output version information and exit\n"
+                "~a ~a [COMMAND] [OPTION]...\n\nMicroharness kernel.\n\n~a\n~a\n"
                 (bold port "Usage:")
                 %program-name
                 (bold port "Commands & Options:")
-                (cyan port "tui, (none)")
-                (cyan port "init")
-                (cyan port "test")
-                (cyan port "mcp-filetree")
-                (cyan port "synthesize")
-                (cyan port "geis")
-                (cyan port "ctx")
-                (cyan port "acp")
-                (cyan port "-h, --help")
-                (cyan port "-V, --version")))
+                (format-cli-table
+                  port
+                  '(("tui, (none)"   . "launch interactive terminal user interface (default)")
+                    ("init"          . "initialize project geasa, workflows & memories")
+                    ("onboard"       . "inspect workspace toolchain and synthesize baseline geasa")
+                    ("test"          . "run bootstrap test suite")
+                    ("mcp-filetree"  . "run the filetree MCP server over stdio")
+                    ("synthesize"    . "run the Sema plugin synthesis workflow")
+                    ("geis"          . "inspect, verify, or distill contract specifications (geasa)")
+                    ("ctx"           . "show BM25 context index token statistics")
+                    ("acp"           . "serve the Agent Client Protocol over stdio (editor surface)")
+                    ("-h, --help"    . "display this help and exit")
+                    ("-V, --version" . "output version information and exit"))
+                  #:width 16)))
 
 (define (wire-synthesis-assemble!)
         (synthesis-assemble-hook
@@ -109,12 +113,22 @@
                      (format (current-error-port) "Error: ~a~%" (car args))
                      (exit 1)))))
             (format #t
-                    "replay: ~a (workflow-verdict ~a)\nplugin-match: ~a\npinned-hash: ~a\nreplayed-hash: ~a\n"
-                    (assoc-ref report 'feature-id)
-                    (assoc-ref report 'workflow-verdict)
-                    (assoc-ref report 'plugin-match)
-                    (assoc-ref report 'pinned-hash)
-                    (assoc-ref report 'replayed-hash)))))
+                    "~a\n~a\n~a\n~a\n~a\n"
+                    (format-cli-kv (current-output-port) "replay"
+                                   (format #f "~a (workflow-verdict ~a)"
+                                           (assoc-ref report 'feature-id)
+                                           (assoc-ref report 'workflow-verdict))
+                                   #:indent 0 #:width 15 #:color #f)
+                    (format-cli-kv (current-output-port) "plugin-match"
+                                   (assoc-ref report 'plugin-match)
+                                   #:indent 0 #:width 15 #:color #f)
+                    (format-cli-kv (current-output-port) "pinned-hash"
+                                   (assoc-ref report 'pinned-hash)
+                                   #:indent 0 #:width 15 #:color #f)
+                    (format-cli-kv (current-output-port) "replayed-hash"
+                                   (assoc-ref report 'replayed-hash)
+                                   #:indent 0 #:width 15 #:color #f)
+                    ""))))
 
 (define (run-geis-pin sub-args)
         (let ((dirs (cdr sub-args)))
@@ -141,11 +155,18 @@
                (module-ref (resolve-interface '(badb geis bundle)) 'geis-bundle-install))
              (report (install (cadr sub-args))))
           (format #t
-                  "installed: ~a (bundle-sha256 ~a)\nlocked: ~a\nverify: ~a\n"
-                  (assoc-ref report 'feature-id)
-                  (assoc-ref report 'bundle-sha256)
-                  (assoc-ref report 'locked)
-                  (assoc-ref report 'verify-verdict))))
+                  "~a\n~a\n~a\n"
+                  (format-cli-kv (current-output-port) "installed"
+                                 (format #f "~a (bundle-sha256 ~a)"
+                                         (assoc-ref report 'feature-id)
+                                         (assoc-ref report 'bundle-sha256))
+                                 #:indent 0 #:width 11 #:color #f)
+                  (format-cli-kv (current-output-port) "locked"
+                                 (assoc-ref report 'locked)
+                                 #:indent 0 #:width 11 #:color #f)
+                  (format-cli-kv (current-output-port) "verify"
+                                 (assoc-ref report 'verify-verdict)
+                                 #:indent 0 #:width 11 #:color #f))))
 
 (define (run-geis-pack sub-args)
         (let
@@ -153,9 +174,12 @@
                ((module-ref (resolve-interface '(badb geis bundle)) 'geis-bundle-pack)
                 (cadr sub-args))))
           (format #t
-                  "packed: ~a (bundle-sha256 ~a)~%"
-                  (assoc-ref res 'tarball)
-                  (assoc-ref res 'bundle-sha256))))
+                  "~a\n"
+                  (format-cli-kv (current-output-port) "packed"
+                                 (format #f "~a (bundle-sha256 ~a)"
+                                         (assoc-ref res 'tarball)
+                                         (assoc-ref res 'bundle-sha256))
+                                 #:indent 0 #:width 8 #:color #f))))
 
 (define (run-geis-verify sub-args)
         (cond
@@ -200,8 +224,26 @@
         (let ((sub-args (cdr options)))
           (cond
             ((or (null? sub-args) (member (car sub-args) '("help" "-h" "--help")))
-              (format #t
-                      "Usage: badb geis [status [fid]|list|verify <fid>|model [name]|synthesize <fid>|pack <fid>|install <dir>|replay <fid>|pin <dir...>|distill [--analyze-only]|onboard [--workspace <dir>]]\n\nInspect, verify, or synthesize contract specifications (geasa).\npack builds a shareable tarball of a bundle from BADB_GEIS_PATH; install locks\na bundle (and its geis dependencies) into the kernel gate and verifies it.\npin recomputes and writes sha256 pins in a bundle manifest.\nmodel inspects or sets default model for geis contract synthesis.\ndistill analyzes recent execution trajectory and distills into a Geis bundle.\nonboard inspects the workspace toolchain and synthesizes baseline geasa.\nTo dynamically synthesize a feature with an agent, launch the TUI and run:\n  /geis add <feature description>\n"))
+              (let ((out (current-output-port)))
+                (format out
+                        "~a badb geis [COMMAND]\n\nInspect, verify, or synthesize contract specifications (geasa).\n\n~a\n~a\n\n~a\n  Launch the TUI and run: /geis add <feature description>\n"
+                        (bold out "Usage:")
+                        (bold out "Subcommands:")
+                        (format-cli-table
+                          out
+                          '(("status [fid]"             . "check status/hash of locked spec(s)")
+                            ("list"                     . "list all locked feature contracts (geasa)")
+                            ("verify <fid|--all>"       . "replay locked contract in a disposable kernel subprocess")
+                            ("model [name]"             . "inspect or set default model for geis contract synthesis")
+                            ("synthesize <fid>"         . "run Sema plugin synthesis for a locked feature")
+                            ("pack <fid>"               . "build a shareable bundle tarball from BADB_GEIS_PATH")
+                            ("install <dir>"            . "lock a bundle and its geis dependencies, then verify")
+                            ("replay <fid>"             . "replay synthesis cassette and compare hashes")
+                            ("pin <dir...>"             . "recompute and write sha256 pins in bundle manifest(s)")
+                            ("distill [--analyze-only]" . "analyze execution trajectory and distill into a bundle")
+                            ("onboard [--workspace d]"  . "inspect workspace toolchain and synthesize baseline geasa"))
+                          #:width 27)
+                        (bold out "Dynamic Synthesis:"))))
             ((equal? (car sub-args) "onboard") (run-onboard-command sub-args))
             ((equal? (car sub-args) "distill") (run-geis-distill sub-args))
             ((equal? (car sub-args) "model") (run-geis-model sub-args))
@@ -246,11 +288,17 @@
                                            (format p "# Project Symbols Outline~%~%~a~%" outline))))))
             (lambda _
               #f))
-          (format #t "Initialized badb project infrastructure in ~a~%" workspace)
-          (format #t "• .badb/geasa/ (dynamic project capabilities)~%")
-          (format #t "• .badb/workflows/verify.sema (declarative workflows)~%")
-          (format #t "• .badb/memories/ (persistent project knowledge)~%")
-          (format #t "• .badb/rules.scm (project constraints)~%")))
+          (let ((out (current-output-port)))
+            (format out "Initialized badb project infrastructure in ~a\n~a\n"
+                    workspace
+                    (format-cli-table
+                      out
+                      '((".badb/geasa/"               . "dynamic project capabilities")
+                        (".badb/workflows/verify.sema" . "declarative workflows")
+                        (".badb/memories/"            . "persistent project knowledge")
+                        (".badb/rules.scm"            . "project constraints"))
+                      #:bullet "•"
+                      #:width 30)))))
 
 (define (run-ctx-command options)
         (let ((sub-args (cdr options)))
