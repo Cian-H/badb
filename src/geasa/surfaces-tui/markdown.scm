@@ -59,6 +59,7 @@
                           detect-image-protocol
                           kitty-graphics-supported?
                           image-file-path?
+                          extract-markdown-image-paths
                           format-kitty-image-escape
                           render-image-ncvisual
                           format-image-placeholder))
@@ -1271,6 +1272,23 @@ or #f when images are unsupported, PATH does not exist, or blitting fails."
                           (lambda ()
                             (ncvisual_destroy vis)))))))
                 (lambda _ #f))))
+
+(define %md-image-rx
+        (make-regexp "!\\[[^]]*\\]\\(([^)]+)\\)"))
+
+(define (extract-markdown-image-paths text)
+        "Extract image file paths from Markdown ![alt](path) references in TEXT."
+        (if (not (string? text))
+          '()
+          (let loop ((start 0) (acc '()))
+                    (let ((m (regexp-exec %md-image-rx text start)))
+                      (if (not m)
+                        (reverse acc)
+                        (let ((path (string-trim-both (match:substring m 1))))
+                          (loop (match:end m)
+                                (if (and (not (string-null? path)) (image-file-path? path))
+                                  (cons path acc)
+                                  acc))))))))
 
 (define* (format-image-placeholder path
                                    #:key (width 40)

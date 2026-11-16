@@ -163,7 +163,8 @@ breaking on whitespace when possible."
           ("clear" . "Clear chat viewport history")
           ("quit" . "Exit badb microharness")
           ("exit" . "Exit badb microharness")
-          ("dump" . "Export the conversation to a text file [path]")))
+          ("dump" . "Export the conversation to a text file [path]")
+          ("image" . "Preview an image via notcurses/Kitty (/image <path>)")))
 
 (define* (selector-active? input-buffer #:optional (prompt-mode 'chat))
          "Return #t if the slash command selector palette should be visible.

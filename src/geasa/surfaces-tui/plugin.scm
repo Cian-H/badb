@@ -136,7 +136,14 @@
                         steering-bar-layout
                         format-mid-run-subagents-summary
                         handle-todo-command!
-                        format-response-widgets-notice)
+                        format-response-widgets-notice
+                        format-response-images-notice
+                        render-ncvisual-overlay!
+                        show-geis-bindings-uplot!
+                        make-tui-semantic-summarizer
+                        format-geis-help-text
+                        tui-theme-attr-constant
+                        tui-theme-color->backend-value)
                #:re-export
                (format-conversation-transcript wrap-line
                                                wrap-text
@@ -721,6 +728,171 @@ the output with WP1 format-git-diff-view."
                   (force-output port))))
             (lambda _ #f))))
 
+(define (tui-theme-attr-constant attr nref)
+        "Resolve theme attribute symbol ATTR using backend NREF."
+        (case attr
+          ((bold) (nref 'A_BOLD))
+          ((dim) (nref 'A_DIM))
+          ((reverse) (nref 'A_REVERSE))
+          (else #f)))
+
+(define (tui-theme-color->backend-value color nref)
+        "Resolve theme COLOR (hex #rrggbb or curses symbol) via backend NREF."
+        (if (string? color)
+          (string->number (substring color 1) 16)
+          (nref (color-symbol->ncurses-constant color))))
+
+(define (format-geis-help-text)
+        "Return help text for the /geis slash command."
+        (string-append
+          "Geis (Contract Gate & Dynamic Synthesis):\n"
+          "  /geis add <description>            - Prompt agent to draft spec, lock contract, synthesize module, and hot-attach\n"
+          "  /geis model [name]                 - Inspect or set default model for geis contract synthesis\n"
+          "  /geis list                         - List all locked feature contracts (geasa)\n"
+          "  /geis bindings                     - Show shifting geis bindings & journal plot (native ncuplot + graph)\n"
+          "  /geis status [feature-id]          - Check status/hash of locked contract(s)\n"
+          "  /geis verify <feature-id>          - Replay locked contract in a disposable kernel subprocess\n"
+          "  /geis synthesize <feature-id> ...  - Run Sema plugin synthesis for locked feature\n\n"
+          "Example:\n"
+          "  /geis add retrieval for the numpy docs\n"))
+
+(define (make-tui-semantic-summarizer client)
+        "Build a semantic context-compaction summarizer closure backed by CLIENT."
+        (lambda (older-msgs)
+          (let* ((rendered
+                   (let loop ((rest older-msgs) (acc '()) (total 0))
+                             (if (or (null? rest) (>= total 24000))
+                               (string-join (reverse acc) "\n")
+                               (let* ((m (car rest))
+                                      (line (format #f "~a: ~a"
+                                                    (or (assoc-ref m 'role) "?")
+                                                    (or (assoc-ref m 'content) "")))
+                                      (len (string-length line)))
+                                 (loop (cdr rest) (cons line acc) (+ total len 1))))))
+                 (truncate-to
+                   (lambda (s n)
+                     (if (> (string-length s) n)
+                       (string-append (substring s 0 n) "\n[...verbatim fallback truncated...]")
+                       s))))
+            (catch #t
+              (lambda ()
+                (let* ((sys-msg
+                         '((role . "system")
+                           (content . "You are a context-compaction engine. Produce a state block with EXACTLY these sections: Pinned Constraints; Verified State / File Map; Rejected Approaches; Exact Identifiers. Keep identifiers, file paths, hashes and error codes verbatim. Never claim work completed without evidence.")))
+                       (req-msg
+                         `((role . "user")
+                           (content . ,(format #f "Summarize the following ~a conversation turns into the schema state block:\n\n~a"
+                                               (length older-msgs) rendered))))
+                       (resp (model-complete client (list sys-msg req-msg) #:max-tokens 1024)))
+                  (if (and (string? resp) (not (string-null? (string-trim-both resp))))
+                    (format #f "[Context Summary of preceding turns]:\n~a" resp)
+                    (truncate-to (format #f "[Context Summary of preceding turns]:\n~a" rendered) 3000))))
+              (lambda _
+                (truncate-to (format #f "[Context Summary of preceding turns]:\n~a" rendered) 3000))))))
+
+(define* (format-response-images-notice text #:optional (maxx 76))
+         "Extract existing local image paths from Markdown ![alt](path) in TEXT
+and return a notice string with placeholders and /image preview hints, or #f."
+         (let* ((paths (filter file-exists? (extract-markdown-image-paths text))))
+           (if (null? paths)
+             #f
+             (string-join
+               (map (lambda (p)
+                      (string-append (format-image-placeholder p #:width (max 20 (- maxx 18)))
+                                     " — /image " p))
+                    paths)
+               "\n"))))
+
+(define* (render-ncvisual-overlay! stdscr path getch-fn
+                                   #:key (max-rows 20) (max-cols 60))
+         "Display image PATH in a centered notcurses child plane using ncvisual,
+wait for a key via GETCH-FN, and clean up. Returns info alist on success or #f."
+         (and stdscr (string? path) (file-exists? path)
+              (catch #t
+                (lambda ()
+                  (let* ((plane-mod (false-if-exception (resolve-module '(notcurses plane) #f)))
+                         (core-mod (false-if-exception (resolve-module '(notcurses core) #f)))
+                         (structs-mod (false-if-exception (resolve-module '(notcurses structs) #f))))
+                    (if (not (and plane-mod core-mod structs-mod))
+                      #f
+                      (let* ((nc ((module-ref plane-mod 'ncplane_notcurses) stdscr))
+                             (make-opts (module-ref structs-mod 'make-ncplane-options))
+                             (->ptr (module-ref structs-mod '->pointer))
+                             (ncplane-create (module-ref plane-mod 'ncplane_create))
+                             (ncplane-destroy (module-ref plane-mod 'ncplane_destroy))
+                             (nc-render (module-ref core-mod 'notcurses_render))
+                             (opts (make-opts #:y 2 #:x 4 #:rows max-rows #:cols max-cols))
+                             (child (ncplane-create stdscr (->ptr opts))))
+                        (if (not child)
+                          #f
+                          (dynamic-wind
+                            (lambda () #t)
+                            (lambda ()
+                              (let ((info (render-image-ncvisual nc child path
+                                                                 #:y 0 #:x 0
+                                                                 #:max-rows max-rows
+                                                                 #:max-cols max-cols)))
+                                (when info
+                                  (nc-render nc)
+                                  (when (procedure? getch-fn) (getch-fn)))
+                                info))
+                            (lambda ()
+                              (false-if-exception (ncplane-destroy child)))))))))
+                (lambda _ #f))))
+
+(define* (show-geis-bindings-uplot! stdscr jrn getch-fn
+                                    #:key (rows 12) (cols 56))
+         "Render a native notcurses ncuplot overlay of journal geis-binding activity
+when running in a live notcurses session. Returns #t if displayed, #f otherwise."
+         (and stdscr jrn
+              (catch #t
+                (lambda ()
+                  (let* ((entries (journal-entries jrn))
+                         (plane-mod (false-if-exception (resolve-module '(notcurses plane) #f)))
+                         (core-mod (false-if-exception (resolve-module '(notcurses core) #f)))
+                         (structs-mod (false-if-exception (resolve-module '(notcurses structs) #f)))
+                         (widgets-mod (false-if-exception (resolve-module '(notcurses widgets) #f))))
+                    (if (not (and (pair? entries) plane-mod core-mod structs-mod widgets-mod))
+                      #f
+                      (let* ((nc ((module-ref plane-mod 'ncplane_notcurses) stdscr))
+                             (make-popts (module-ref structs-mod 'make-ncplane-options))
+                             (make-uopts (module-ref structs-mod 'make-ncplot-options))
+                             (->ptr (module-ref structs-mod '->pointer))
+                             (ncplane-create (module-ref plane-mod 'ncplane_create))
+                             (ncplane-destroy (module-ref plane-mod 'ncplane_destroy))
+                             (ncuplot-create (module-ref widgets-mod 'ncuplot_create))
+                             (ncuplot-set (module-ref widgets-mod 'ncuplot_set_sample))
+                             (ncuplot-destroy (module-ref widgets-mod 'ncuplot_destroy))
+                             (nc-render (module-ref core-mod 'notcurses_render))
+                             (n (min 16 (length entries)))
+                             (recent (take (reverse entries) n))
+                             (max-y (max 1 (length recent)))
+                             (child (ncplane-create stdscr (->ptr (make-popts #:y 3 #:x 4 #:rows rows #:cols cols)))))
+                        (if (not child)
+                          #f
+                          (let ((plot #f))
+                            (dynamic-wind
+                              (lambda () #t)
+                              (lambda ()
+                                (set! plot (ncuplot-create child (->ptr (make-uopts)) 0 max-y))
+                                (let loop ((i 0) (rest recent))
+                                          (unless (null? rest)
+                                            (let* ((e (car rest))
+                                                   (kind (or (assoc-ref e 'kind) 'event))
+                                                   (w (cond ((eq? kind 'commit) 4)
+                                                            ((eq? kind 'checkpoint) 3)
+                                                            ((eq? kind 'rollback) 5)
+                                                            (else 2))))
+                                              (ncuplot-set plot i (+ w (modulo i 3)))
+                                              (loop (+ i 1) (cdr rest)))))
+                                (nc-render nc)
+                                (when (procedure? getch-fn) (getch-fn))
+                                #t)
+                              (lambda ()
+                                (when plot (false-if-exception (ncuplot-destroy plot)))
+                                (false-if-exception (ncplane-destroy child))))))))))
+                (lambda _ #f))))
+
 (define*
   (run-tui #:key
            (endpoint #f)
@@ -921,52 +1093,7 @@ the output with WP1 format-git-diff-view."
                                    #:policy
                                    policy)
       (auto-start-mcp-servers! cfg mcp-mgr)
-      (define (semantic-summarize-fn older-msgs)
-              "Summarize OLDER-MSGS into the pinned schema state block via the
-configured model client. Derives only from raw turns, keeps identifiers
-verbatim, and fails open to a verbatim truncation."
-              (let*
-                  ((rendered
-                     (let loop
-                       ((rest older-msgs) (acc '()) (total 0))
-                       (if (or (null? rest) (>= total 24000))
-                         (string-join (reverse acc) "\n")
-                         (let*
-                             ((m (car rest))
-                              (line
-                                (format #f "~a: ~a" (or (assoc-ref m 'role) "?") (or (assoc-ref m 'content) "")))
-                              (len (string-length line)))
-                           (loop (cdr rest) (cons line acc) (+ total len 1))))))
-                   (truncate-to
-                     (lambda (s n)
-                       (if (> (string-length s) n)
-                         (string-append (substring s 0 n) "\n[...verbatim fallback truncated...]")
-                         s))))
-                (catch #t
-                  (lambda ()
-                    (let*
-                        ((sys-msg
-                           `((role . "system")
-                             (content .
-                                      "You are a context-compaction engine. Produce a state block with EXACTLY these sections: Pinned Constraints; Verified State / File Map; Rejected Approaches; Exact Identifiers. Keep identifiers, file paths, hashes and error codes verbatim. Never claim work completed without evidence.")))
-                         (req-msg
-                           `((role . "user")
-                             (content .
-                                      ,(format #f
-                                               "Summarize the following ~a conversation turns into the schema state block:\n\n~a"
-                                               (length older-msgs)
-                                               rendered))))
-                         (resp (model-complete client (list sys-msg req-msg) #:max-tokens 1024)))
-                      (if
-                          (and (string? resp) (not (string-null? (string-trim-both resp))))
-                        (format #f "[Context Summary of preceding turns]:\n~a" resp)
-                        (truncate-to
-                          (format #f "[Context Summary of preceding turns]:\n~a" rendered)
-                          3000))))
-                  (lambda (k . a)
-                    (truncate-to
-                      (format #f "[Context Summary of preceding turns]:\n~a" rendered)
-                      3000)))))
+      (define semantic-summarize-fn (make-tui-semantic-summarizer client))
       (set-context-compactor-strategy! compactor
                                        (strategy-cascading #:keep-recent-turns
                                                            6
@@ -1326,24 +1453,15 @@ and append it to the persistent history journal file."
       (define next-pair-id 1)
       (define %max-color-pairs 64)
       (define (theme-attr-constant attr)
-              (case attr
-                ((bold) A_BOLD)
-                ((dim) A_DIM)
-                ((reverse) A_REVERSE)
-                (else #f)))
+              (tui-theme-attr-constant attr nref))
       (define (role-attrs role)
               (let ((a (caddr (theme-ref ui-theme role))))
                 (cond
                   ((memq a '(bold dim reverse)) (list a))
                   ((list? a) a)
                   (else '()))))
-      ;; Theme colors arrive as named curses colors (resolved against the
-      ;; backend module) or as #rrggbb hex strings (resolved to raw RGB
-      ;; integers the backend accepts directly).
       (define (theme-color->backend-value color)
-              (if (string? color)
-                (string->number (substring color 1) 16)
-                (nref (color-symbol->ncurses-constant color))))
+              (tui-theme-color->backend-value color nref))
       (define (ensure-color-pair! fg bg)
               (let ((key (cons fg bg)))
                 (or (assoc-ref role-pair-cache key)
@@ -2507,8 +2625,10 @@ grown journal), which the per-frame header render must not pay."
                                                                             (default-collapse-message
                                                                               `((role . "assistant") (thoughts . ,th) (content . ,ct)))))))
                                                 (let
-                                                    ((widget-txt (format-response-widgets-notice ct 76)))
-                                                  (when widget-txt (add-msg! "notice" widget-txt))))))
+                                                    ((widget-txt (format-response-widgets-notice ct 76))
+                                                     (img-txt (format-response-images-notice ct 76)))
+                                                  (when widget-txt (add-msg! "notice" widget-txt))
+                                                  (when img-txt (add-msg! "notice" img-txt))))))
                                           ((eq? verdict 'max-iterations-reached)
                                             (commit-react-stream-message!)
                                             (add-sys-msg!
@@ -3311,17 +3431,10 @@ any open menu first; submenu actions push onto the parent breadcrumb stack."
                        "")))
                 (cond
                   ((or (string-null? trimmed) (string=? sub "help"))
-                    (add-sys-msg!
-                      (string-append
-                        "Geis (Contract Gate & Dynamic Synthesis):\n"
-                        "  /geis add <description>            - Prompt agent to draft spec, lock contract, synthesize module, and hot-attach\n"
-                        "  /geis model [name]                 - Inspect or set default model for geis contract synthesis\n"
-                        "  /geis list                         - List all locked feature contracts (geasa)\n"
-                        "  /geis status [feature-id]          - Check status/hash of locked contract(s)\n"
-                        "  /geis verify <feature-id>          - Replay locked contract in a disposable kernel subprocess\n"
-                        "  /geis synthesize <feature-id> ...  - Run Sema plugin synthesis for locked feature\n\n"
-                        "Example:\n"
-                        "  /geis add retrieval for the numpy docs\n")))
+                    (add-sys-msg! (format-geis-help-text)))
+                  ((string=? sub "bindings")
+                    (show-geis-bindings-uplot! stdscr jrn (lambda () (getch stdscr)))
+                    (add-sys-msg! (format-geis-bindings-graph jrn reg)))
                   ((string=? sub "add")
                     (if (string-null? rest-arg)
                       (add-sys-msg!
@@ -3648,6 +3761,24 @@ any open menu first; submenu actions push onto the parent breadcrumb stack."
                                           (set! scroll-offset 0)
                                           (set! msgsel-index #f))
                   ((string=? cmd "dump") (handle-dump-cmd! arg))
+                  ((string=? cmd "image")
+                    (let ((p (string-trim-both arg)))
+                      (cond
+                        ((string-null? p)
+                          (add-sys-msg! "Usage: /image <path>"))
+                        ((not (file-exists? p))
+                          (add-err-msg! (format #f "Image file not found: ~a" p)))
+                        (else
+                          (let ((info (render-ncvisual-overlay! stdscr p (lambda () (getch stdscr)))))
+                            (if info
+                              (add-sys-msg!
+                                (format #f "Rendered image ~a (~a, ~ax~a cells)"
+                                        p
+                                        (or (assoc-ref info 'blitter) 'ncvisual)
+                                        (or (assoc-ref info 'cols) "?")
+                                        (or (assoc-ref info 'rows) "?")))
+                              (add-sys-msg!
+                                (format-image-placeholder p))))))))
                   ((string=? cmd "quit") 'exit)
                   (else
                     (add-err-msg! (format #f "Unknown command: /~a (type /help for commands)" cmd))))))

@@ -2307,7 +2307,24 @@
                 (deduplicate-slash-commands . ,(procedure? deduplicate-slash-commands))
                 (format-geis-bindings-graph . ,(procedure? format-geis-bindings-graph))
                 (register-subagent-link! . ,(procedure? register-subagent-link!))
-                (format-subagent-overview . ,(procedure? format-subagent-overview))))
+                (format-subagent-overview . ,(procedure? format-subagent-overview))
+                (render-ncvisual-overlay! . ,(procedure? render-ncvisual-overlay!))
+                (show-geis-bindings-uplot! . ,(procedure? show-geis-bindings-uplot!))
+                (make-tui-semantic-summarizer . ,(procedure? make-tui-semantic-summarizer))
+                (format-geis-help-text . ,(procedure? format-geis-help-text))
+                (format-response-images-notice . ,(procedure? format-response-images-notice))
+                (tui-theme-attr-constant . ,(procedure? tui-theme-attr-constant))
+                (tui-theme-color->backend-value . ,(procedure? tui-theme-color->backend-value))))
+
+            (test-assert "/geis help text mentions /geis bindings"
+                         (string-contains (format-geis-help-text) "/geis bindings"))
+            (test-assert "render-ncvisual-overlay! returns #f when headless"
+                         (not (render-ncvisual-overlay! #f "/nonexistent.png" #f)))
+            (test-assert "show-geis-bindings-uplot! returns #f when headless"
+                         (not (show-geis-bindings-uplot! #f #f #f)))
+            (test-equal "tui-theme-color->backend-value parses hex color"
+                        #x112233
+                        (tui-theme-color->backend-value "#112233" (lambda (s) s)))
 
             ;; /todo controller helper round-trip
             (let ((tl0 (make-todo-list #:title "Tasks")))
