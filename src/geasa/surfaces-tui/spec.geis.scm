@@ -2040,20 +2040,18 @@
                                      '(104 105)))))
 
 (let
-    ((nc-mod (false-if-exception (resolve-module '(geasa surfaces-tui nc)))))
+    ((nc-mod (false-if-exception (resolve-module '(notcurses compat curses)))))
   (when nc-mod
     (let*
-        ((bv-mod (resolve-module '(rnrs bytevectors)))
-         (bv-fill! (module-ref bv-mod 'bytevector-fill!))
-         (bv-s32-set! (module-ref bv-mod 'bytevector-s32-native-set!))
-         (bv-copy (module-ref bv-mod 'bytevector-copy))
-         (bv-len (module-ref bv-mod 'bytevector-length))
-         (bv-u8-ref (module-ref bv-mod 'bytevector-u8-ref))
-         (bv-u8-set! (module-ref bv-mod 'bytevector-u8-set!))
+        ((structs-mod (resolve-module '(notcurses structs)))
+         (consts-mod (resolve-module '(notcurses constants)))
+         (make-ncinput (module-ref structs-mod 'make-ncinput))
+         (ncinput-copy! (module-ref structs-mod 'ncinput-copy!))
+         (ncinput-set-evtype! (module-ref structs-mod 'ncinput-set-evtype!))
          (ncinput (module-ref nc-mod '%ncinput))
-         (nctype-release (module-ref nc-mod '%nctype-release))
-         (nckey-invalid (module-ref nc-mod '%nckey-invalid))
-         (pre-base (module-ref nc-mod '%preterunicode-base))
+         (nctype-release (module-ref consts-mod 'NCTYPE_RELEASE))
+         (nckey-invalid (module-ref consts-mod 'NCKEY_INVALID))
+         (pre-base nckey-invalid)
          (key-enter (module-ref nc-mod 'KEY_ENTER))
          (key-up (module-ref nc-mod 'KEY_UP))
          (input-pending? (module-ref nc-mod 'input-pending?))
@@ -2062,14 +2060,15 @@
          (drain-mouse! (module-ref nc-mod 'drain-mouse-events))
          (push-evt!
            (lambda (id evtype)
-             (bv-fill! ncinput 0)
-             (bv-s32-set! ncinput 20 evtype)
-             (module-set! nc-mod
-                          '%pushback
-                          (append (module-ref nc-mod '%pushback) (list (cons id (bv-copy ncinput)))))))
+             (let ((copy (make-ncinput)))
+               (ncinput-set-evtype! copy evtype)
+               (module-set! nc-mod
+                            '%pushback
+                            (append (module-ref nc-mod '%pushback) (list (cons id copy)))))))
          (saved-pushback (module-ref nc-mod '%pushback))
          (saved-mouse (module-ref nc-mod '%mouse-queue))
-         (saved-ncinput (bv-copy ncinput)))
+         (saved-ncinput (make-ncinput)))
+      (ncinput-copy! saved-ncinput ncinput)
       (dynamic-wind
         (lambda ()
           #f)
@@ -2115,11 +2114,7 @@
         (lambda ()
           (module-set! nc-mod '%pushback saved-pushback)
           (module-set! nc-mod '%mouse-queue saved-mouse)
-          (let loop
-            ((i 0))
-            (when (< i (bv-len saved-ncinput))
-              (bv-u8-set! ncinput i (bv-u8-ref saved-ncinput i))
-              (loop (+ i 1)))))))))
+          (ncinput-copy! ncinput saved-ncinput))))))
 
 (spec-end)
 

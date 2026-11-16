@@ -1,4 +1,5 @@
 (use-modules (badb packages cl-indentify)
+             (badb packages guile-notcurses)
              (guix profiles))
 
 (concatenate-manifests
@@ -45,4 +46,4 @@
             "tree-sitter-scheme"
             "guile-sqlite3"
             "semcp"))
-    (packages->manifest (list cl-indentify))))
+    (packages->manifest (list cl-indentify guile-notcurses))))

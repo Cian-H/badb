@@ -234,22 +234,19 @@ payload codepoint), or #f when Enter should submit."
   (unless
       (catch #t
         (lambda ()
-          (false-if-exception (resolve-interface '(geasa surfaces-tui nc)))
+          (false-if-exception (resolve-interface '(notcurses compat curses)))
           #t)
         (lambda _
           #f))
     (format (current-error-port)
-            "Error: (geasa surfaces-tui nc) notcurses backend is not available.~%~
+            "Error: (notcurses compat curses) notcurses backend is not available.~%~
              Please run badb within the Guix dev environment:~%~
                ./scripts/devenv -- ./scripts/badb~%")
     (exit 1))
   (parameterize
     ((current-warning-port (%make-void-port "w")))
     (let*
-        ((ncurses-mod
-           (or
-             (false-if-exception (resolve-module '(geasa surfaces-tui nc)))
-             (resolve-module '(geasa surfaces-tui nc))))
+        ((ncurses-mod (resolve-module '(notcurses compat curses)))
          (nref
            (lambda (s)
              (module-ref ncurses-mod s)))

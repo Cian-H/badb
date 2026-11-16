@@ -1,0 +1,54 @@
+#!/bin/sh
+# screenshot-tui — Capture a screenshot of the vanilla badb TUI using tui-test.
+#
+# Usage:
+#   ./scripts/screenshot-tui [output-path]
+#
+# Defaults to docs/tui-screenshot.png in the repository root. Runs in an
+# isolated scratch directory with HOME and XDG_* pointed at the scratch
+# directory so no user or project configuration is loaded.
+
+set -eu
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+if ! command -v tui-test >/dev/null 2>&1; then
+  exec "$ROOT_DIR/scripts/devenv" -- "$0" "$@"
+fi
+
+OUT_PATH="${1:-$ROOT_DIR/docs/tui-screenshot.png}"
+COLS="${BADB_SCREENSHOT_COLS:-120}"
+ROWS="${BADB_SCREENSHOT_ROWS:-40}"
+
+case "$OUT_PATH" in
+  /*) ;;
+  *) OUT_PATH="$(pwd)/$OUT_PATH" ;;
+esac
+
+mkdir -p "$(dirname "$OUT_PATH")"
+
+SCRATCH="$(mktemp -d /tmp/badb-screenshot-XXXXXX)"
+SESSION="badb-screenshot-$$"
+
+cleanup() {
+  tui-test --session "$SESSION" key press ctrl+d >/dev/null 2>&1 || true
+  tui-test --session "$SESSION" wait exit --timeout 5000 >/dev/null 2>&1 || true
+  tui-test --session "$SESSION" close >/dev/null 2>&1 || true
+  rm -rf "$SCRATCH"
+}
+trap cleanup EXIT INT TERM
+
+tui-test run --session "$SESSION" --cols "$COLS" --rows "$ROWS" \
+  --cwd "$SCRATCH" \
+  --env "HOME=$SCRATCH" \
+  --env "XDG_CONFIG_HOME=$SCRATCH/.config" \
+  --env "XDG_DATA_HOME=$SCRATCH/.local/share" \
+  --env "GUILE_AUTO_COMPILE=0" \
+  -- "$ROOT_DIR/scripts/badb" tui >/dev/null
+
+tui-test --session "$SESSION" expect text "badb microharness" --timeout 20000 >/dev/null
+tui-test --session "$SESSION" expect text "❯" --timeout 5000 >/dev/null
+tui-test --session "$SESSION" wait idle --timeout 2000 >/dev/null || true
+
+tui-test --session "$SESSION" screenshot "$OUT_PATH" >/dev/null
+echo "Saved vanilla TUI screenshot to: $OUT_PATH"

@@ -207,6 +207,10 @@ The `geis` CLI manages contract specifications, verification, packaging, and dis
 
 ## Interactive TUI Guide
 
+![badb vanilla TUI](docs/tui-screenshot.png)
+
+*Vanilla TUI captured with `./scripts/screenshot-tui` (zero user or project configuration).*
+
 The terminal interface provides an interactive coding and steering environment for agentic ReAct loops.
 
 ### Modes & Navigation

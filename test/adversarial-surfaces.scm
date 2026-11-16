@@ -546,7 +546,8 @@
                   0)))
             (test-assert
               "tui-steering-key-handle-adversarial-events"
-              (and ;; Printable character
+              (and
+                ;; Printable character
                 (call-with-values
                   (lambda ()
                     (steering-key-handle "hello" #\!))
@@ -596,7 +597,8 @@
             ;; --- 3.4 Cursor Editing Robustness ---
             (test-assert
               "tui-cursor-editing-out-of-bounds-resilience"
-              (and ;; insert-at with negative pos
+              (and
+                ;; insert-at with negative pos
                 (call-with-values
                   (lambda ()
                     (insert-at "world" -10 "hello "))
@@ -672,7 +674,7 @@
               "nc-module-fails-gracefully-with-devenv-hint-when-libnotcurses-absent"
               (catch #t
                 (lambda ()
-                  (resolve-module '(geasa surfaces-tui nc))
+                  (resolve-module '(notcurses compat curses))
                   #t)
                 (lambda (key . args)
                   (let ((msg (and (pair? (cdr args)) (cadr args))))

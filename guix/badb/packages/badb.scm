@@ -26,6 +26,7 @@
                #:use-module (gnu packages guile)
                #:use-module (gnu packages guile-xyz)
                #:use-module (gnu packages notcurses)
+               #:use-module (badb packages guile-notcurses)
                #:use-module (badb packages sema)
                #:use-module ((guix licenses) #:prefix license:))
 
@@ -83,6 +84,12 @@
                                                                               (quickcheck-site
                                                                                 (string-append (assoc-ref inputs "guile-quickcheck")
                                                                                                "/share/guile/site/3.0"))
+                                                                              (notcurses-site
+                                                                                (string-append (assoc-ref inputs "guile-notcurses")
+                                                                                               "/share/guile/site/3.0"))
+                                                                              (notcurses-ccache
+                                                                                (string-append (assoc-ref inputs "guile-notcurses")
+                                                                                               "/lib/guile/3.0/site-ccache"))
                                                                               (site (string-append out "/share/guile/site/3.0"))
                                                                               (ccache (string-append out "/lib/guile/3.0/site-ccache"))
                                                                               (share (string-append out "/share/badb"))
@@ -105,10 +112,11 @@ GUILE_AUTO_COMPILE=0
 export GUILE_AUTO_COMPILE
 GUILE_LOAD_COMPILED_PATH=~a${GUILE_LOAD_COMPILED_PATH:+:$GUILE_LOAD_COMPILED_PATH}
 export GUILE_LOAD_COMPILED_PATH
-exec ~a/bin/guile --no-auto-compile -L ~a -L ~a -L ~a \\
+exec ~a/bin/guile --no-auto-compile -L ~a -L ~a -L ~a -L ~a \\
   -e main -s ~a \"$@\"
 "
-                                                                                                          ccache guile site json-site quickcheck-site
+                                                                                                          (string-append ccache ":" notcurses-ccache)
+                                                                                                          guile site json-site quickcheck-site notcurses-site
                                                                                                           (string-append share "/badb-launcher.scm"))))
                                                                          (chmod wrapper #o555))))
                                                    (add-after 'install-launcher-and-wrapper 'pre-compile-modules
@@ -121,15 +129,22 @@ exec ~a/bin/guile --no-auto-compile -L ~a -L ~a -L ~a \\
                                                                                                "/share/guile/site/3.0"))
                                                                               (quickcheck-site
                                                                                 (string-append (assoc-ref inputs "guile-quickcheck")
-                                                                                               "/share/guile/site/3.0")))
+                                                                                               "/share/guile/site/3.0"))
+                                                                              (notcurses-site
+                                                                                (string-append (assoc-ref inputs "guile-notcurses")
+                                                                                               "/share/guile/site/3.0"))
+                                                                              (notcurses-ccache
+                                                                                (string-append (assoc-ref inputs "guile-notcurses")
+                                                                                               "/lib/guile/3.0/site-ccache")))
                                                                          ;; guild needs the full load path (own site first) to
                                                                          ;; resolve dependencies while compiling; libnotcurses
                                                                          ;; must be on the loader path because loading the TUI FFI
                                                                          ;; module at macro-expansion time dlopens it.
                                                                          (setenv "GUILE_AUTO_COMPILE" "0")
                                                                          (setenv "GUILE_LOAD_PATH"
-                                                                                 (string-join (list site json-site quickcheck-site) ":"))
-                                                                         (setenv "GUILE_LOAD_COMPILED_PATH" ccache)
+                                                                                 (string-join (list site json-site quickcheck-site notcurses-site) ":"))
+                                                                         (setenv "GUILE_LOAD_COMPILED_PATH"
+                                                                                 (string-append ccache ":" notcurses-ccache))
                                                                          (setenv "LD_LIBRARY_PATH"
                                                                                  (string-append (assoc-ref inputs "notcurses") "/lib"))
                                                                          (mkdir-p ccache)
@@ -155,7 +170,7 @@ exec ~a/bin/guile --no-auto-compile -L ~a -L ~a -L ~a \\
                  (inputs
                    (list guile-3.0 guile-json-4))
                  (propagated-inputs
-                   (list notcurses guile-quickcheck sema))
+                   (list notcurses guile-notcurses guile-quickcheck sema))
                  (native-search-paths
                    (list (search-path-specification
                            (variable "GUILE_LOAD_PATH")
