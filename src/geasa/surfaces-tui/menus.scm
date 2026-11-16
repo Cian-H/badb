@@ -602,7 +602,6 @@ menu-pop restores CURRENT-THEME-NAME and invokes ON-CANCEL if provided."
           ("Model & Config"
            "Model, provider presets, endpoint, theme, guardrails"
            (("model" "Switch or inspect active LLM model" open-model-menu)
-            ("models" "List models available on the endpoint" (run-command . "models"))
             ("provider" "Switch or inspect model provider preset" open-provider-menu)
             ("endpoint" "Switch or inspect endpoint URL" open-endpoint-menu)
             ("config" "Inspect, reload, or save badb configuration" open-config-menu)
