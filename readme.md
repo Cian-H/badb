@@ -2,6 +2,8 @@
 
 A lightweight, agentic microharness.
 
+![badb TUI](docs/tui-screenshot.png)
+
 badb is a small, contract-governed harness core designed to grow at runtime rather than ship a fixed feature set. When you need a new capability, you or an agent:
 
 1. designs a TDD contract for the feature (`spec.geis.scm`),
