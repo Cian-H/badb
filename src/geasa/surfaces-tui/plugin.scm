@@ -82,11 +82,23 @@
                #:use-module
                (geasa surfaces-tui transcript)
                #:use-module
+               (geasa surfaces-tui markdown)
+               #:use-module
+               (geasa surfaces-tui widgets)
+               #:use-module
+               (geasa surfaces-tui protocol)
+               #:use-module
                (geasa surfaces-tui menus)
                #:use-module
                (geasa surfaces-tui tools)
                #:use-module
                (geasa surfaces-tui commands)
+               #:use-module
+               (geasa agents-lifecycle plugin)
+               #:use-module
+               (geasa agents-coordination plugin)
+               #:use-module
+               (geasa agents-subagent plugin)
                #:use-module
                (json)
                #:use-module
@@ -121,7 +133,9 @@
                         force-stop-agent!
                         format-steering-keymap-line
                         steering-bar-layout
-                        format-mid-run-subagents-summary)
+                        format-mid-run-subagents-summary
+                        handle-todo-command!
+                        format-response-widgets-notice)
                #:re-export
                (format-conversation-transcript wrap-line
                                                wrap-text
@@ -139,6 +153,47 @@
                                                selector-active?
                                                %selector-max-visible
                                                selector-visible-slice
+                                               prompt-mode-on-char
+                                               prompt-mode-on-backspace
+                                               prompt-mode-on-escape
+                                               prompt-mode-submit-text
+                                               format-slash-completion
+                                               fuzzy-score
+                                               fuzzy-match-history
+                                               <history-search>
+                                               history-search?
+                                               make-history-search
+                                               history-search-active?
+                                               history-search-open
+                                               history-search-handle-key
+                                               history-search-matches
+                                               history-search-selected-index
+                                               extract-at-token
+                                               at-selector-active?
+                                               collect-workspace-files
+                                               matching-at-candidates
+                                               apply-at-completion
+                                               <keymap>
+                                               keymap?
+                                               make-keymap
+                                               make-default-keymap
+                                               keymap-bind!
+                                               keymap-unbind!
+                                               keymap-lookup
+                                               keymap-bindings
+                                               keymap->menu-items
+                                               key-event->spec
+                                               resolve-user-shell
+                                               resolve-external-editor
+                                               open-in-external-editor
+                                               read-via-external-editor
+                                               session-turns->transcript-messages
+                                               session-file-metadata
+                                               recent-session-summaries
+                                               repl-help
+                                               repl-inspect
+                                               repl-geasa
+                                               repl-state
                                                %menu-max-visible
                                                make-menu
                                                menu?
@@ -147,11 +202,38 @@
                                                menu-selected-index
                                                menu-count
                                                menu-move
+                                               menu-trigger-highlight!
+                                               menu-push
+                                               menu-pop
+                                               menu-depth
+                                               menu-breadcrumbs
+                                               menu-breadcrumb-title
                                                menu-selected-item
                                                menu-visible-slice
                                                menu-item-label
                                                menu-item-description
                                                menu-item-action
+                                               provider-menu-items
+                                               synthesizer-config-menu-items
+                                               synthesizer-provider-menu-items
+                                               synthesizer-model-menu-items
+                                               apply-synthesis-provider-config!
+                                               session-resurrection-menu-items
+                                               make-theme-preview-menu
+                                               %command-categories
+                                               command-category-menu-items
+                                               command-items-for-category
+                                               make-commands-root-menu
+                                               open-command-category-menu
+                                               %command-aliases
+                                               resolve-command-alias
+                                               deduplicate-slash-commands
+                                               execute-context-subcommand!
+                                               format-config-summary
+                                               format-provider-presets
+                                               format-guardrail-status
+                                               sparkline-plot
+                                               format-geis-bindings-graph
                                                get-prompt-indicator
                                                format-header-segments
                                                format-rule-line
@@ -159,7 +241,65 @@
                                                steering-key-handle
                                                steering-pending-line
                                                agent-run-active?
+                                               spinner-active-status?
+                                               format-osc-tab-title
+                                               reset-osc-tab-title
                                                segment-line
+                                               block-row-segments
+                                               message-role-icon
+                                               format-card-header
+                                               format-card-divider
+                                               card-gutter-glyph
+                                               render-markdown
+                                               render-markdown-lines
+                                               segment-input-line
+                                               highlight-scheme-line
+                                               highlight-shell-line
+                                               format-osc8-link
+                                               extract-clickable-links
+                                               find-link-at-column
+                                               nerd-fonts-enabled?
+                                               nerd-icon
+                                               detect-image-protocol
+                                               kitty-graphics-supported?
+                                               render-image-ncvisual
+                                               <widget>
+                                               make-widget
+                                               widget?
+                                               box-widget
+                                               rule-widget
+                                               pill-widget
+                                               scroll-view-widget
+                                               format-input-box-frame
+                                               format-bottom-status-bar
+                                               %crow-banner-frames
+                                               format-startup-banner
+                                               format-startup-banner-text
+                                               format-git-diff-view
+                                               <todo-list>
+                                               make-todo-list
+                                               todo-add
+                                               todo-toggle
+                                               todo-remove
+                                               todo-clear-done
+                                               todo-counts
+                                               format-todo-widget
+                                               render-scheme-response-widget
+                                               extract-response-widgets
+                                               <ui-server>
+                                               <ui-client>
+                                               make-ui-server
+                                               make-ui-client
+                                               ui-client-subagent-events
+                                               ui-server-route-subagent-event!
+                                               pump-ui-pair!
+                                               current-harness-id
+                                               parent-harness-id
+                                               subagent-harness?
+                                               register-subagent-link!
+                                               subagent-hierarchy-tree
+                                               format-subagent-hierarchy
+                                               format-subagent-overview
                                                clamp-cursor
                                                insert-at
                                                backspace-at
@@ -170,6 +310,8 @@
                                                make-row-cache
                                                row-cache?
                                                row-cache-rows
+                                               row-cache-invalidate!
+                                               row-cache-clear!
                                                row-cache-prune!
                                                make-history
                                                input-history?
@@ -450,32 +592,113 @@ QUEUED-COUNT, and terminal width MAXX."
              (hint . ,(format-steering-keymap-line slash-mode?)))))
 
 (define (format-mid-run-subagents-summary reg)
-        "Format an overview of active/available subagents for /subagents mid-run.
-Defers to WP5 overview/hierarchy helpers if present, otherwise summarizes
-registered subagent capabilities from REG."
-        (let* ((coord-mod (false-if-exception (resolve-module '(geasa agents-coordination plugin) #f)))
-               (sub-mod (false-if-exception (resolve-module '(geasa agents-subagent plugin) #f)))
-               (overview-fn
-                 (or (and sub-mod (module-ref sub-mod 'format-subagent-overview #f))
-                     (and coord-mod (module-ref coord-mod 'format-subagent-overview #f))))
-               (hier-fn
-                 (or (and sub-mod (module-ref sub-mod 'format-subagent-hierarchy #f))
-                     (and coord-mod (module-ref coord-mod 'format-subagent-hierarchy #f)))))
-          (cond
-            ((procedure? overview-fn) (overview-fn))
-            ((procedure? hier-fn) (hier-fn))
-            (else
-              (let* ((sub-tools
-                       '("investigate" "investigate_parallel" "subagent_transaction" "remote_subagent"))
-                     (registered
-                       (if reg
-                         (filter (lambda (name) (registry-lookup reg name)) sub-tools)
-                         '())))
-                (if (null? registered)
-                  "Subagents: 0 active (no subagent tools registered)."
-                  (format #f
-                          "Subagents: 0 active live links · Registered tools: ~a"
-                          (string-join registered ", "))))))))
+        "Format an overview of active/available subagents using WP5 hierarchy &
+event-bus overview, falling back to registered subagent tools in REG."
+        (let* ((links (all-subagent-links))
+               (events (harness-event-poll #:limit 5))
+               (overview (format-subagent-overview #:max-width 76)))
+          (if (and (null? links) (null? events) reg)
+            (let* ((sub-tools
+                     '("investigate" "investigate_parallel" "subagent_transaction" "remote_subagent"))
+                   (registered
+                     (filter (lambda (name) (registry-lookup reg name)) sub-tools)))
+              (if (null? registered)
+                overview
+                (string-append overview "\nRegistered tools: " (string-join registered ", "))))
+            overview)))
+
+(define (span-rows->text rows)
+        "Convert a list of WP1 styled span rows ((text role bold? dim?) ...) into plain text."
+        (string-join
+          (map (lambda (row)
+                 (string-concatenate
+                   (map (lambda (sp) (if (pair? sp) (car sp) "")) row)))
+               (or rows '()))
+          "\n"))
+
+(define* (handle-todo-command! todo-list arg #:optional (width 76))
+         "Apply /todo ARG ('add <text>', 'toggle <id>', 'rm <id>', 'clear', or 'list')
+to TODO-LIST. Returns (values updated-todo-list formatted-text)."
+         (let* ((trimmed (string-trim-both (if (string? arg) arg "")))
+                (space-pos (string-index trimmed #\space))
+                (sub (if space-pos (string-downcase (substring trimmed 0 space-pos)) (string-downcase trimmed)))
+                (rest (if space-pos (string-trim-both (substring trimmed (+ space-pos 1))) "")))
+           (cond
+             ((or (string-null? trimmed) (string=? sub "list") (string=? sub "show"))
+               (values todo-list (span-rows->text (format-todo-widget todo-list width))))
+             ((string=? sub "add")
+               (if (string-null? rest)
+                 (values todo-list "Usage: /todo add <task description>")
+                 (let ((updated (todo-add todo-list rest #:source 'user)))
+                   (values updated (span-rows->text (format-todo-widget updated width))))))
+             ((or (string=? sub "toggle") (string=? sub "done"))
+               (let ((id (string->number rest)))
+                 (if (integer? id)
+                   (let ((updated (todo-toggle todo-list id)))
+                     (values updated (span-rows->text (format-todo-widget updated width))))
+                   (values todo-list "Usage: /todo toggle <id>"))))
+             ((or (string=? sub "rm") (string=? sub "remove"))
+               (let ((id (string->number rest)))
+                 (if (integer? id)
+                   (let ((updated (todo-remove todo-list id)))
+                     (values updated (span-rows->text (format-todo-widget updated width))))
+                   (values todo-list "Usage: /todo rm <id>"))))
+             ((string=? sub "clear")
+               (let ((updated (todo-clear-done todo-list)))
+                 (values updated (span-rows->text (format-todo-widget updated width)))))
+             (else
+               (let ((updated (todo-add todo-list trimmed #:source 'user)))
+                 (values updated (span-rows->text (format-todo-widget updated width))))))))
+
+(define* (format-response-widgets-notice text #:optional (maxx 76))
+         "Extract fenced scheme-widget / widget blocks from TEXT, render them safely
+via render-scheme-response-widget, and return a formatted string or #f."
+         (let ((blocks (if (string? text) (extract-response-widgets text) '())))
+           (if (null? blocks)
+             #f
+             (let ((rendered
+                     (filter-map
+                       (lambda (expr)
+                         (let ((res (render-scheme-response-widget expr (max 20 maxx))))
+                           (if (assoc-ref res 'ok?)
+                             (string-join (or (assoc-ref res 'lines) '()) "\n")
+                             (let ((err (assoc-ref res 'error)))
+                               (and err (format #f "[widget error: ~a]" err))))))
+                       blocks)))
+               (if (null? rendered)
+                 #f
+                 (string-join rendered "\n\n"))))))
+
+(define* (format-git-diff-output #:optional (arg "") (width 78))
+         "Run git diff (optionally with safe path/ref tokens from ARG) and format
+the output with WP1 format-git-diff-view."
+         (let* ((extra-args
+                  (filter (lambda (s) (not (string-null? s)))
+                          (string-split (string-trim-both (or arg "")) #\space)))
+                (out
+                  (catch #t
+                    (lambda ()
+                      (let* ((p (apply open-pipe* OPEN_READ "git" "diff" extra-args))
+                             (txt (read-string p))
+                             (_st (close-pipe p)))
+                        (or txt "")))
+                    (lambda _ ""))))
+           (if (string-null? (string-trim-both out))
+             "No unstaged git diff changes."
+             (span-rows->text (format-git-diff-view out width #:title "git diff")))))
+
+(define (safe-write-osc-title! seq)
+        "Write OSC title sequence SEQ to the notcurses tty control port when available."
+        (when (and (string? seq) (not (string-null? seq)))
+          (catch #t
+            (lambda ()
+              (let* ((term-mod (false-if-exception (resolve-module '(notcurses terminal) #f)))
+                     (port-fn (and term-mod (module-ref term-mod 'tty-control-port #f)))
+                     (port (and (procedure? port-fn) (port-fn))))
+                (when (and (output-port? port) (not (port-closed? port)))
+                  (display seq port)
+                  (force-output port))))
+            (lambda _ #f))))
 
 (define*
   (run-tui #:key
@@ -779,11 +1002,15 @@ Only skips server probing when the user explicitly configured context-limits."
               (list
                 `((role . "notice")
                   (content .
-                           ,(string-append "badb microharness\n"
-                                           "• ! shell · ( scheme · / commands · /help for keys"
-                                           (if (file-exists? ".badb/geasa")
-                                             ""
-                                             "\n• Tip: run /geis onboard to detect project toolchain & synthesize geasa"))))))
+                           ,(format-startup-banner-text 76
+                                                        #:frame 0
+                                                        #:model cur-model
+                                                        #:workspace (getcwd)
+                                                        #:tips
+                                                        (list "badb microharness · ! shell · ( scheme · / commands · /help"
+                                                              (if (file-exists? ".badb/geasa")
+                                                                "ctrl+r history · @ files · ctrl+x $EDITOR · /todo · /diff"
+                                                                "Tip: run /geis onboard to detect toolchain & synthesize geasa")))))))
       (set! llm-history (list (make-system-turn)))
       ;; Session log for /resume: the whole llm-history is rewritten to
       ;; this JSONL file after every chat turn (system prompt first).
@@ -848,6 +1075,30 @@ Only skips server probing when the user explicitly configured context-limits."
       ;; popup rows map to ('menu-item . ABS-INDEX) or
       ;; ('palette-item . INDEX); handle-mouse-event! dispatches on it.
       (define %click-targets (make-hash-table 61))
+      (define %row-texts (make-hash-table 61))
+      (define active-keymap (make-default-keymap))
+      (define history-search (make-history-search))
+      (define %workspace-files-cache #f)
+      (define at-selector-index 0)
+      (define active-todo-list (make-todo-list #:title "Tasks"))
+      (define ui-server
+              (make-ui-server #:initial-state
+                              (list (cons 'model cur-model) (cons 'status "READY"))))
+      (define ui-client (make-ui-client #:id 'local-tui))
+      (define last-tab-title-sig #f)
+      (define %subagent-bus-sub-id
+              (harness-event-subscribe!
+                (lambda (ev)
+                  (let* ((src (harness-event-source-id ev))
+                         (tgt (or (harness-event-target-id ev) (current-harness-id)))
+                         (kind (harness-event-kind ev))
+                         (payload (harness-event-payload ev)))
+                    (catch #t
+                      (lambda ()
+                        (ui-server-route-subagent-event! ui-server src tgt kind payload))
+                      (lambda _ #f))
+                    (set! render-dirty? #t)))
+                #:target-id (current-harness-id)))
       ;; Agent steering state: the queue is shared with every react session
       ;; and persists across runs (and /clear, which only resets the
       ;; transcript) so /steer and /interrupt can pre-queue entries between
@@ -1101,6 +1352,29 @@ and append it to the persistent history journal file."
                       (when bold? (attr-off! stdscr A_BOLD))
                       (draw-role! seg-role #f))
                     (loop (cdr segs) (+ cur-x len)))))))))
+      ;; Render pre-computed (text role bold? dim?) segments from WP2 markdown/syntax
+      ;; highlighters or segment-input-line, padding to INNER-W cleanly.
+      (define (draw-segment-list y start-x segs inner-w)
+              (let loop ((rest segs) (cur-x start-x))
+                        (if (or (null? rest) (>= cur-x (+ start-x inner-w)))
+                          (let ((rem (- (+ start-x inner-w) cur-x)))
+                            (when (> rem 0)
+                              (safe-addstr stdscr y cur-x (make-string rem #\space) rem)))
+                          (let* ((seg (car rest))
+                                 (str (car seg))
+                                 (seg-role (cadr seg))
+                                 (bold? (caddr seg))
+                                 (dim? (cadddr seg))
+                                 (len (min (string-length str) (max 0 (- (+ start-x inner-w) cur-x)))))
+                            (when (> len 0)
+                              (draw-role! seg-role #t)
+                              (when bold? (attr-on! stdscr A_BOLD))
+                              (when dim? (attr-on! stdscr A_DIM))
+                              (safe-addstr stdscr y cur-x str len)
+                              (when dim? (attr-off! stdscr A_DIM))
+                              (when bold? (attr-off! stdscr A_BOLD))
+                              (draw-role! seg-role #f))
+                            (loop (cdr rest) (+ cur-x len))))))
       ;; Left accent gutter shared by every row of a message block: a thin
       ;; role-tinted bar, upgraded to a strong 2-char bar when SELECTED?.
       (define (draw-gutter! y theme-role selected?)
@@ -1137,9 +1411,14 @@ and append it to the persistent history journal file."
                 (draw-role! theme-role #f)))
             ((string=? kind "block-body")
               (let*
-                  ((theme-role (cadr entry)) (text (caddr entry)))
+                  ((theme-role (cadr entry))
+                   (text (caddr entry))
+                   (has-precomputed? (and (pair? (cdddr entry)) (list? (cadddr entry)))))
                 (draw-gutter! y theme-role selected?)
-                (draw-styled-interior y 2 text content-width theme-role)))
+                (hashq-set! %row-texts y text)
+                (if has-precomputed?
+                  (draw-segment-list y 2 (cadddr entry) content-width)
+                  (draw-styled-interior y 2 text content-width theme-role))))
             ;; Collapsed-message summary row: role-tinted chevron
             ;; followed by a single dim line (label, count, expand hint)
             ((string=? kind "block-summary")
@@ -1263,6 +1542,7 @@ and append it to the persistent history journal file."
                             (lambda ()
                               (let*
                                   ((maxy (getmaxy stdscr)) (maxx (getmaxx stdscr))
+                                   (running? (agent-running?))
                                    (avail-width (max 1 (- maxx 3)))
                                    (input-layout
                                      (call-with-values
@@ -1273,12 +1553,32 @@ and append it to the persistent history journal file."
                                    (input-cur-row (cadr input-layout))
                                    (input-cur-col (caddr input-layout))
                                    (input-rows (length input-lines))
-                                   (prompt-top (- maxy 2 (- input-rows 1)))
+                                   (box-style (if (< maxy 14) 'tint 'lines))
+                                   (box-overhead
+                                     (cond
+                                       (running? 1)
+                                       ((eq? box-style 'tint) input-rows)
+                                       (else (+ 2 input-rows))))
+                                   (box-top
+                                     (if running?
+                                       (- maxy 3)
+                                       (- maxy 2 box-overhead)))
+                                   (prompt-top
+                                     (if running?
+                                       (- maxy 3)
+                                       (+ box-top (if (eq? box-style 'tint) 0 1))))
                                    (view-top 2)
-                                   (view-bottom (- maxy 3 (- input-rows 1)))
+                                   (view-bottom (max (+ view-top 1) (- box-top 1)))
                                    (view-height (max 1 (- view-bottom view-top)))
-                                   (content-width (max 10 (- maxx 3))))
+                                   (content-width (max 10 (- maxx 3)))
+                                   (popup-anchor-y (if running? prompt-top box-top)))
                                 (set! %click-targets (make-hash-table 61))
+                                (set! %row-texts (make-hash-table 61))
+                                ;; Update Ghostty/terminal tab title spinner when status changes
+                                (let* ((tab-sig (cons status-text cur-model)))
+                                  (unless (equal? tab-sig last-tab-title-sig)
+                                    (set! last-tab-title-sig tab-sig)
+                                    (safe-write-osc-title! (format-osc-tab-title status-text #:model cur-model))))
                                 (erase stdscr)
                                 ;; 1. Slim header line (wordmark, model, status, counts)
                                 ;;    over a thin horizontal rule
@@ -1445,7 +1745,7 @@ and append it to the persistent history journal file."
                                       (safe-addstr stdscr prompt-top 2 in-text avail-width)
                                       (draw-role! (if placeholder? 'dim 'default) #f)
                                       (draw-role! 'dim #t)
-                                      (safe-addstr stdscr (- maxy 1) 0 (assoc-ref bar 'hint) maxx)
+                                      (safe-addstr stdscr (- maxy 2) 0 (assoc-ref bar 'hint) maxx)
                                       (draw-role! 'dim #f)
                                       (when (selector-active? steering-buffer)
                                         (let*
@@ -1462,7 +1762,7 @@ and append it to the persistent history journal file."
                                                 (let*
                                                     ((vis-count (length vis-items))
                                                      (box-h (+ vis-count 2))
-                                                     (start-y (- prompt-top 1 box-h))
+                                                     (start-y (- popup-anchor-y 1 box-h))
                                                      (rows
                                                        (map
                                                          (lambda (item)
@@ -1497,10 +1797,7 @@ and append it to the persistent history journal file."
                                           (draw-role! 'dim #t)
                                           (safe-addstr stdscr view-bottom 0 pending maxx)
                                           (draw-role! 'dim #f)))
-                                      ;; 3. Prompt Input Block: themed indicator glyph leading
-                                      ;;    the first row of the wrapped input, continuation
-                                      ;;    rows below. Long inputs wrap instead of scrolling
-                                      ;;    off the right edge.
+                                      ;; 3. Prompt Input Block with WP1 demarcation frame & WP2 live input highlighting
                                       (call-with-values
                                         (lambda ()
                                           (get-prompt-indicator input-buffer status-text prompt-mode))
@@ -1508,47 +1805,81 @@ and append it to the persistent history journal file."
                                           (when
                                               (or (string=? status-text "STREAMING...") (agent-run-active? status-text))
                                             (set! glyph (streaming-spinner-glyph)))
-                                          (draw-role! theme-role #t)
-                                          (when bold? (attr-on! stdscr A_BOLD))
-                                          (safe-addstr stdscr prompt-top 0 glyph 1)
-                                          (when bold? (attr-off! stdscr A_BOLD))
-                                          (draw-role! theme-role #f)
-                                          (draw-role! 'default #t)
-                                          (let draw-lines
-                                            ((lines input-lines) (y prompt-top))
-                                            (unless (null? lines)
-                                              (safe-addstr stdscr y 2 (car lines) avail-width)
-                                              (draw-lines (cdr lines) (+ y 1))))
-                                          (draw-role! 'default #f)))
-                                      ;; 4. Bottom keymap hint line in dim, per active mode
+                                          (let* ((frame
+                                                   (format-input-box-frame input-lines maxx
+                                                                           #:prompt-glyph glyph
+                                                                           #:prompt-role theme-role
+                                                                           #:prompt-mode prompt-mode
+                                                                           #:style box-style
+                                                                           #:focused? (not active-menu)
+                                                                           #:cursor-row input-cur-row
+                                                                           #:cursor-col input-cur-col))
+                                                 (text-orig-y (assoc-ref frame 'text-origin-y))
+                                                 (text-orig-x (assoc-ref frame 'text-origin-x))
+                                                 (hl-mode
+                                                   (if (selector-active? input-buffer prompt-mode)
+                                                     'slash
+                                                     prompt-mode)))
+                                            (for-each
+                                              (lambda (row-entry)
+                                                (let* ((dy (car row-entry))
+                                                       (y (+ box-top dy))
+                                                       (is-input-row? (and (>= dy text-orig-y)
+                                                                           (< (- dy text-orig-y) input-rows))))
+                                                  (for-each
+                                                    (lambda (seg)
+                                                      (let ((sx (car seg))
+                                                            (stext (cadr seg))
+                                                            (srole (caddr seg))
+                                                            (sbold? (cadddr seg))
+                                                            (sdim? (car (cddddr seg))))
+                                                        (draw-role! srole #t)
+                                                        (when sbold? (attr-on! stdscr A_BOLD))
+                                                        (when sdim? (attr-on! stdscr A_DIM))
+                                                        (safe-addstr stdscr y sx stext (max 0 (- maxx sx)))
+                                                        (when sdim? (attr-off! stdscr A_DIM))
+                                                        (when sbold? (attr-off! stdscr A_BOLD))
+                                                        (draw-role! srole #f)))
+                                                    (cdr row-entry))
+                                                  (when is-input-row?
+                                                    (let ((line-txt (list-ref input-lines (- dy text-orig-y))))
+                                                      (unless (string-null? line-txt)
+                                                        (draw-segment-list y
+                                                                           text-orig-x
+                                                                           (segment-input-line line-txt #:prompt-mode hl-mode)
+                                                                           (max 1 (- maxx text-orig-x))))))))
+                                              (assoc-ref frame 'rows)))))
+                                      ;; 4. Keymap hint line at (- maxy 2)
                                       (let
                                           ((hint
                                              (format-keymap-line
                                                (cond
                                                  (active-menu 'menu)
-                                                 ((selector-active? input-buffer) 'selector)
+                                                 ((history-search-active? history-search) 'selector)
+                                                 ((selector-active? input-buffer prompt-mode) 'selector)
                                                  ((and (agent-run-active? status-text) nodelay-proc) 'steering)
                                                  (else prompt-mode)))))
                                         (draw-role! 'dim #t)
-                                        (safe-addstr stdscr (- maxy 1) 0 hint maxx)
+                                        (safe-addstr stdscr (- maxy 2) 0 hint maxx)
                                         (draw-role! 'dim #f))
                                       ;; 5. Floating Slash Command Selector Popup Overlay
-                                      (when (selector-active? input-buffer)
+                                      (when (and (not (history-search-active? history-search))
+                                                 (selector-active? input-buffer prompt-mode))
                                         (let*
-                                            ((matches (matching-slash-commands input-buffer))
+                                            ((matches (deduplicate-slash-commands (matching-slash-commands input-buffer)))
                                              (box-w (min 62 (max 20 (- maxx 4)))))
                                           (unless (null? matches)
                                             (call-with-values
                                               (lambda ()
                                                 (selector-visible-slice matches
-                                                                        (min %selector-max-visible (max 1 (- maxy 5)))
+                                                                        (min %selector-max-visible (max 1 (- maxy 6)))
                                                                         selector-index))
                                               (lambda
                                                   (vis-items offset sel-pos above-count below-count)
                                                 (let*
                                                     ((vis-count (length vis-items))
                                                      (box-h (+ vis-count 2))
-                                                     (start-y (- prompt-top 1 box-h))
+                                                     (start-y (- popup-anchor-y 1 box-h))
                                                      (rows
                                                        (map
                                                          (lambda (item)
@@ -1562,16 +1893,97 @@ and append it to the persistent history journal file."
                                                       ((i 0))
                                                       (when (< i vis-count)
                                                         (hashq-set! %click-targets (+ start-y 1 i) (cons 'palette-item (+ offset i)))
-                                                        (li (+ i 1))))))))))))))
-                                ;; 6. Floating Menu Popup Overlay (same visual language as
-                                ;; the slash selector: accent rounded box, bold selected
-                                ;; row, capped visible rows with scroll indicators)
+                                                        (li (+ i 1)))))))))))
+                                      ;; 5b. Floating Ctrl+R Fuzzy History Search Popup
+                                      (when (history-search-active? history-search)
+                                        (let* ((matches (history-search-matches history-search))
+                                               (box-w (min 72 (max 24 (- maxx 4))))
+                                               (q (history-search-query history-search))
+                                               (title (if (string-null? q)
+                                                        "history search (ctrl+r)"
+                                                        (format #f "history: ~a" q))))
+                                          (if (null? matches)
+                                            (let ((start-y (- popup-anchor-y 1 3)))
+                                              (when (>= start-y 2)
+                                                (draw-popup! title '(("(no matching history)" . "type to refine, esc to cancel")) 0 box-w start-y 2 0 0)))
+                                            (call-with-values
+                                              (lambda ()
+                                                (selector-visible-slice matches
+                                                                        (min %selector-max-visible (max 1 (- maxy 6)))
+                                                                        (history-search-selected-index history-search)))
+                                              (lambda (vis-items offset sel-pos above-count below-count)
+                                                (let* ((vis-count (length vis-items))
+                                                       (box-h (+ vis-count 2))
+                                                       (start-y (- popup-anchor-y 1 box-h))
+                                                       (rows (map (lambda (s) (cons s "")) vis-items)))
+                                                  (when (>= start-y 2)
+                                                    (draw-popup! title rows sel-pos box-w start-y 2 above-count below-count))))))))
+                                      ;; 5c. Floating @ Mention Completion Popup
+                                      (when (and (not (history-search-active? history-search))
+                                                 (not (selector-active? input-buffer prompt-mode))
+                                                 (at-selector-active? input-buffer cursor-pos prompt-mode))
+                                        (unless %workspace-files-cache
+                                          (set! %workspace-files-cache (collect-workspace-files)))
+                                        (let* ((cands (matching-at-candidates input-buffer
+                                                                              #:cursor-pos cursor-pos
+                                                                              #:candidates %workspace-files-cache
+                                                                              #:limit 25))
+                                               (box-w (min 62 (max 20 (- maxx 4)))))
+                                          (unless (null? cands)
+                                            (call-with-values
+                                              (lambda ()
+                                                (selector-visible-slice cands
+                                                                        (min %selector-max-visible (max 1 (- maxy 6)))
+                                                                        at-selector-index))
+                                              (lambda (vis-items offset sel-pos above-count below-count)
+                                                (let* ((vis-count (length vis-items))
+                                                       (box-h (+ vis-count 2))
+                                                       (start-y (- popup-anchor-y 1 box-h))
+                                                       (rows (map (lambda (it)
+                                                                    (cons (format #f "@~a" (car it)) (cdr it)))
+                                                                  vis-items)))
+                                                  (when (>= start-y 2)
+                                                    (draw-popup! "@ mentions" rows sel-pos box-w start-y 2 above-count below-count)))))))))))
+                                ;; 4b. WP1 Bottom Status Bar at (- maxy 1)
+                                (let* ((todo-pair (todo-counts active-todo-list))
+                                       (todo-sum
+                                         (and (> (cdr todo-pair) 0)
+                                              (format #f "✓ ~a/~a" (car todo-pair) (cdr todo-pair))))
+                                       (sub-cnt
+                                         (length (filter (lambda (l) (eq? (subagent-link-status l) 'running))
+                                                         (all-subagent-links))))
+                                       (used-tok (or %ctx-cache-tokens (estimate-conversation-tokens llm-history)))
+                                       (lim-tok (context-compactor-effective-ceiling compactor)))
+                                  (for-each
+                                    (lambda (seg)
+                                      (let ((x (car seg))
+                                            (txt (cadr seg))
+                                            (role (caddr seg))
+                                            (b? (cadddr seg))
+                                            (d? (car (cddddr seg))))
+                                        (draw-role! role #t)
+                                        (when b? (attr-on! stdscr A_BOLD))
+                                        (when d? (attr-on! stdscr A_DIM))
+                                        (safe-addstr stdscr (- maxy 1) x txt (max 0 (- maxx x)))
+                                        (when d? (attr-off! stdscr A_DIM))
+                                        (when b? (attr-off! stdscr A_BOLD))
+                                        (draw-role! role #f)))
+                                    (format-bottom-status-bar maxx
+                                                              #:mode (if running? 'steering prompt-mode)
+                                                              #:model (or cur-model "")
+                                                              #:status status-text
+                                                              #:cwd (getcwd)
+                                                              #:tokens-used (if (number? used-tok) used-tok 0)
+                                                              #:tokens-limit (if (number? lim-tok) lim-tok 0)
+                                                              #:subagent-count sub-cnt
+                                                              #:todo-summary todo-sum)))
+                                ;; 6. Floating Menu Popup Overlay (breadcrumb title from WP4)
                                 (when active-menu
                                   (let ((m-count (menu-count active-menu)))
                                     (when (> m-count 0)
                                       (call-with-values
                                         (lambda ()
-                                          (menu-visible-slice active-menu (min %menu-max-visible (max 1 (- maxy 5)))))
+                                          (menu-visible-slice active-menu (min %menu-max-visible (max 1 (- maxy 6)))))
                                         (lambda (vis-items offset)
                                           (let*
                                               ((vis-count (length vis-items))
@@ -1589,14 +2001,14 @@ and append it to the persistent history journal file."
                                                    vis-items))
                                                (box-w (min (max 24 (+ 8 label-w desc-w)) (max 20 (- maxx 4))))
                                                (box-h (+ vis-count 2))
-                                               (start-y (- prompt-top 1 box-h))
+                                               (start-y (- popup-anchor-y 1 box-h))
                                                (rows
                                                  (map
                                                    (lambda (it)
                                                      (cons (menu-item-label it) (menu-item-description it)))
                                                    vis-items)))
                                             (when (>= start-y 2)
-                                              (draw-popup! (menu-title active-menu)
+                                              (draw-popup! (menu-breadcrumb-title active-menu)
                                                            rows
                                                            (- (menu-selected-index active-menu) offset)
                                                            box-w
@@ -1609,20 +2021,8 @@ and append it to the persistent history journal file."
                                                 (when (< i vis-count)
                                                   (hashq-set! %click-targets (+ start-y 1 i) (cons 'menu-item (+ offset i)))
                                                   (mi (+ i 1)))))))))))
-                                (unless (agent-running?)
-                                  ;; Position the terminal cursor at the editing position
-                                  ;; LAST: row draws below the input line (keymap hint,
-                                  ;; pop-ups) displace the cursor, so reposition right
-                                  ;; before refreshing or the hardware cursor visibly
-                                  ;; rests after the last drawn row.
+                                (unless running?
                                   (move stdscr (+ prompt-top input-cur-row) (+ 2 input-cur-col))
-                                  ;; Cursor compatibility: the terminal cursor's shape
-                                  ;; signals the active mode - a bar for chat typing,
-                                  ;; an underline in the modal REPLs, a block while a
-                                  ;; message card is selected - and it hides entirely
-                                  ;; while the agent runs (the spinner conveys the
-                                  ;; activity). The backend caches shapes, so styling
-                                  ;; every frame is free; endwin restores the default.
                                   (cond
                                     ((agent-run-active? status-text) (safe-curs-set! 0))
                                     ((integer? msgsel-index) (safe-curs-set! 1) (cursor-shape 'block))
@@ -1954,7 +2354,10 @@ grown journal), which the per-frame header render must not pay."
                                                                               (append messages
                                                                                       (list
                                                                                         (default-collapse-message
-                                                                                          `((role . "assistant") (thoughts . ,th) (content . ,ct))))))))))
+                                                                                          `((role . "assistant") (thoughts . ,th) (content . ,ct)))))))
+                                                            (let ((widget-txt (format-response-widgets-notice ct 76)))
+                                                              (when widget-txt
+                                                                (add-msg! "notice" widget-txt))))))
                                                       ((eq? verdict 'max-iterations-reached)
                                                         (commit-react-stream-message!)
                                                         (add-sys-msg!
@@ -2094,6 +2497,34 @@ grown journal), which the per-frame header render must not pay."
                       (set! status-text "READY")
                       (set! render-dirty? #t)
                       (render!))))))
+      ;; Masked password prompt modal for safe sudo execution (never echoes or logs)
+      (define (prompt-password-modal prompt-str)
+              (let ((pw "")
+                    (maxy (getmaxy stdscr))
+                    (maxx (getmaxx stdscr)))
+                (when nodelay-proc (nodelay-proc stdscr #f))
+                (let pw-loop ()
+                             (let* ((y (max 2 (- maxy 3)))
+                                    (masked (make-string (string-length pw) #\*))
+                                    (line (format #f " [SUDO] ~a: ~a" (or prompt-str "Password") masked)))
+                               (draw-role! 'warning #t)
+                               (safe-addstr stdscr y 0 (make-string maxx #\space) maxx)
+                               (safe-addstr stdscr y 0 line maxx)
+                               (draw-role! 'warning #f)
+                               (move stdscr y (min (- maxx 1) (string-length line)))
+                               (refresh stdscr)
+                               (let ((ch (key->code (getch stdscr))))
+                                 (cond
+                                   ((or (eqv? ch 27) (eqv? ch 3) (eqv? ch 4)) #f)
+                                   ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13)) pw)
+                                   ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 8) (eqv? ch 127))
+                                     (when (> (string-length pw) 0)
+                                       (set! pw (substring pw 0 (- (string-length pw) 1))))
+                                     (pw-loop))
+                                   ((and (integer? ch) (>= ch 32) (<= ch 126))
+                                     (set! pw (string-append pw (string (integer->char ch))))
+                                     (pw-loop))
+                                   (else (pw-loop))))))))
       (define (execute-shell! cmd)
               (set! status-text "EXEC...")
               (render!)
@@ -2101,7 +2532,7 @@ grown journal), which the per-frame header render must not pay."
                 (add-sys-msg! "Usage: !<command> (e.g. !git status, !ls -la)")
                 (call-with-values
                   (lambda ()
-                    (execute-shell-command cmd))
+                    (execute-shell-command cmd #:password-provider prompt-password-modal))
                   (lambda (out exit-val err)
                     (cond
                       (err (add-err-msg! err))
@@ -2157,7 +2588,7 @@ grown journal), which the per-frame header render must not pay."
                                     (config-menu-items-for-state cfg cur-model cur-endpoint policy))))
                   ("show"
                    (add-sys-msg!
-                     (format-config-summary cfg cur-model cur-endpoint cur-journal-path)))
+                     (format-config-summary cfg cur-model cur-endpoint cur-journal-path #:policy policy)))
                   ("reload"
                    (catch #t
                      (lambda ()
@@ -2213,10 +2644,7 @@ grown journal), which the per-frame header render must not pay."
       (define (handle-guardrail-cmd! arg)
               (let ((trimmed (string-trim-both arg)))
                 (if (string-null? trimmed)
-                  (add-sys-msg!
-                    (format #f
-                            "Guardrail Policy Level: ~a\nUsage: /guardrail <disabled|permissive|cautious|strict|paranoid>"
-                            (guardrail-policy-level policy)))
+                  (add-sys-msg! (format-guardrail-status policy))
                   (let ((sym (string->symbol trimmed)))
                     (if
                         (member sym '(disabled permissive cautious strict paranoid))
@@ -2291,7 +2719,7 @@ refreshing the client, saving, and reporting the outcome."
               "List configured provider presets or switch to the one named in ARG."
               (let ((trimmed (string-trim-both arg)))
                 (if (string-null? trimmed)
-                  (add-sys-msg! (format-provider-presets (badb-config-chat-providers cfg)))
+                  (add-sys-msg! (format-provider-presets (badb-config-providers cfg) cur-endpoint))
                   (switch-provider-preset! trimmed))))
       (define (handle-models-cmd!)
               "Show the models available on the active endpoint as a system
@@ -2314,30 +2742,61 @@ message, or a clear error notice when the listing fails."
                                                 ids)
                                               "\n"))))
                     (add-err-msg! (format #f "Failed to list models: ~a" err))))))
+      (define (apply-live-theme! name)
+              (let ((th (lookup-theme name)))
+                (when th
+                  (set! ui-theme th)
+                  #t)))
+      (define* (open-theme-picker! #:optional (parent-menu #f))
+               (let ((cur-name (or (badb-config-ui-theme cfg) (theme-name ui-theme))))
+                 (set! active-menu
+                       (make-theme-preview-menu cur-name
+                                                apply-live-theme!
+                                                #:parent parent-menu))))
       (define (apply-menu-selection! item)
               "Apply the action data carried by the selected menu ITEM, closing
-any open menu first; submenu actions open the next menu in its place."
-              (set! active-menu #f)
-              (let ((action (menu-item-action item)))
+any open menu first; submenu actions push onto the parent breadcrumb stack."
+              (let ((prev-menu active-menu)
+                    (action (menu-item-action item)))
+                (define* (push-sub! m-or-title #:optional (items '()))
+                         (set! active-menu
+                               (cond
+                                 ((menu? m-or-title)
+                                   (if prev-menu
+                                     (menu-push prev-menu m-or-title)
+                                     m-or-title))
+                                 (prev-menu (menu-push prev-menu m-or-title items))
+                                 (else (make-menu m-or-title items)))))
+                (set! active-menu #f)
                 (cond
                   ((symbol? action)
                     (case action
                       ((open-config-menu)
-                        (set! active-menu
-                              (make-menu "Configuration"
-                                         (config-menu-items-for-state cfg cur-model cur-endpoint policy))))
+                        (push-sub! "Configuration"
+                                   (config-menu-items-for-state cfg cur-model cur-endpoint policy)))
                       ((open-model-menu)
-                        (set! active-menu
-                              (make-menu "Model"
-                                         (build-live-or-recorded-model-menu-items client cfg cur-model))))
+                        (push-sub! "Model"
+                                   (build-live-or-recorded-model-menu-items client cfg cur-model)))
                       ((open-endpoint-menu)
-                        (set! active-menu (make-menu "Endpoint" (endpoint-menu-items-for-config cfg))))
-                      ((open-theme-menu) (set! active-menu (make-menu "Theme" (theme-menu-items))))
+                        (push-sub! "Endpoint" (endpoint-menu-items-for-config cfg)))
+                      ((open-provider-menu)
+                        (push-sub! "Provider" (provider-menu-items cfg cur-endpoint)))
+                      ((open-synthesizer-menu)
+                        (push-sub! "Synthesiser" (synthesizer-config-menu-items cfg)))
+                      ((open-synth-provider-menu)
+                        (push-sub! "Synthesis Provider" (synthesizer-provider-menu-items cfg)))
+                      ((open-synth-model-menu)
+                        (push-sub! "Synthesis Model" (synthesizer-model-menu-items cfg)))
+                      ((open-theme-menu) (open-theme-picker! prev-menu))
                       ((open-guardrail-menu)
-                        (set! active-menu (make-menu "Guardrail" (guardrail-menu-items))))
+                        (push-sub! "Guardrail" (guardrail-menu-items)))
+                      ((open-keymap-menu)
+                        (push-sub! "Keybindings" (keymap->menu-items active-keymap)))
+                      ((open-resume-menu) (handle-resume-cmd! ""))
                       ((prefill-model) (prefill-input! "/model "))
                       ((prefill-endpoint) (prefill-input! "/endpoint "))
                       ((prefill-temperature) (prefill-input! "/config set temperature "))
+                      ((prefill-synth-model) (prefill-input! "/geis model "))
                       ((config-reload) (handle-config-cmd! "reload"))
                       ((config-save) (handle-config-cmd! "save"))
                       (else (add-err-msg! (format #f "Unknown menu action: ~a" action)))))
@@ -2350,17 +2809,41 @@ any open menu first; submenu actions open the next menu in its place."
                       (add-sys-msg! (format #f "Model switched to: ~a (saved to config)" m))))
                   ((and (pair? action) (eq? (car action) 'switch-provider))
                     (switch-provider-preset! (cdr action)))
+                  ((and (pair? action) (eq? (car action) 'set-synth-provider))
+                    (let ((prov (cdr action)))
+                      (apply-synthesis-provider-config! cfg prov)
+                      (try-save-config!)
+                      (add-sys-msg!
+                        (if prov
+                          (format #f "Synthesis provider set to '~a' (saved to config)." prov)
+                          "Synthesis provider reset to inherit chat provider (saved to config)."))))
+                  ((and (pair? action) (eq? (car action) 'set-synth-model))
+                    (let ((m (cdr action)))
+                      (badb-config-set-synthesis-model! cfg m)
+                      (try-save-config!)
+                      (add-sys-msg! (format #f "Geis synthesis model set to: ~a (saved to config)" m))))
                   ((and (pair? action) (eq? (car action) 'set-theme))
-                    (let*
-                        ((name (cdr action)) (th (lookup-theme name)))
+                    (let ((name (cdr action)))
                       (badb-config-set-ui-theme! cfg name)
-                      ;; Colors resolve through ui-theme on every draw, so
-                      ;; switching the theme restyles the interface live.
-                      (when th (set! ui-theme th))
+                      (apply-live-theme! name)
                       (try-save-config!)
                       (add-sys-msg! (format #f "UI theme set to '~a' and saved." name))))
                   ((and (pair? action) (eq? (car action) 'set-guardrail))
                     (handle-guardrail-cmd! (symbol->string (cdr action))))
+                  ((and (pair? action) (eq? (car action) 'open-command-category))
+                    (set! active-menu
+                          (open-command-category-menu
+                            (or prev-menu (make-commands-root-menu))
+                            (cdr action))))
+                  ((and (pair? action) (eq? (car action) 'run-command))
+                    (handle-command! (cons (cdr action) "")))
+                  ((and (pair? action) (eq? (car action) 'prefill-command))
+                    (prefill-input! (cdr action)))
+                  ((and (pair? action) (eq? (car action) 'keymap-bind))
+                    (add-sys-msg!
+                      (format #f "Keybinding ~a in ~a mode (customize via keymap-bind!)."
+                              (cdr action)
+                              (car action))))
                   ((and (pair? action) (eq? (car action) 'resume-session))
                     (let*
                         ((path (cdr action))
@@ -2375,6 +2858,7 @@ any open menu first; submenu actions open the next menu in its place."
                         (add-err-msg!
                           (format #f "Session file ~a is empty or unreadable." (basename path)))
                         (begin (set! llm-history loaded)
+                               (set! messages (session-turns->transcript-messages loaded))
                                ;; Force the header context gauge to re-estimate.
                                (set! %ctx-cache-key #f)
                                (set! scroll-offset 0)
@@ -2386,11 +2870,11 @@ any open menu first; submenu actions open the next menu in its place."
                   (else (add-err-msg! "Unsupported menu action.")))))
       ;; Handle /theme: with a NAME switch instantly through the same
       ;; path as the theme menu (applies live, persists to config);
-      ;; without one, open the theme picker menu.
+      ;; without one, open the live-preview theme picker menu.
       (define (handle-theme-cmd! arg)
               (let ((name (string-trim-both arg)))
                 (cond
-                  ((string-null? name) (set! active-menu (make-menu "Theme" (theme-menu-items))))
+                  ((string-null? name) (open-theme-picker!))
                   ((lookup-theme name) =>
                                        (lambda (th)
                                          (badb-config-set-ui-theme! cfg name)
@@ -2404,7 +2888,7 @@ any open menu first; submenu actions open the next menu in its place."
                               name
                               (length (all-theme-names))))))))
       (define (handle-mouse-event! ev)
-              (let ((button (car ev)) (y (cadr ev)))
+              (let ((button (car ev)) (y (cadr ev)) (x (and (pair? (cddr ev)) (caddr ev))))
                 (cond
                   ((= button 4)
                     (let
@@ -2426,12 +2910,37 @@ any open menu first; submenu actions open the next menu in its place."
                           (let ((item (menu-selected-item active-menu)))
                             (when item (apply-menu-selection! item)))
                           #t)
-                        ((and (selector-active? input-buffer)
+                        ((and (selector-active? input-buffer prompt-mode)
                               (pair? target)
                               (eq? (car target) 'palette-item))
                           (set! selector-index (cdr target))
                           #t)
-                        ((integer? target) (set! msgsel-index target) #t)
+                        ((integer? target)
+                          (let* ((row-txt (hashq-ref %row-texts y))
+                                 (link
+                                   (and (string? row-txt)
+                                        (integer? x)
+                                        (>= x 2)
+                                        (find-link-at-column row-txt (- x 2)))))
+                            (if link
+                              (let ((kind (assoc-ref link 'kind))
+                                    (dest (assoc-ref link 'target))
+                                    (line-num (assoc-ref link 'line)))
+                                (cond
+                                  ((and (eq? kind 'file) (string? dest) (file-exists? dest))
+                                    (open-in-external-editor dest
+                                                             #:line line-num
+                                                             #:suspend-tty! endwin
+                                                             #:resume-tty! refresh))
+                                  ((and (eq? kind 'url) (string? dest))
+                                    (catch #t
+                                      (lambda ()
+                                        (let ((p (open-pipe* OPEN_READ "xdg-open" dest)))
+                                          (close-pipe p)))
+                                      (lambda _ #f))))
+                                (set! msgsel-index target)
+                                #t)
+                              (begin (set! msgsel-index target) #t))))
                         (else
                           (if msgsel-index
                             (begin (set! msgsel-index #f) #t)
@@ -2567,10 +3076,20 @@ any open menu first; submenu actions open the next menu in its place."
       ;; Handle project rules inspection
       (define (handle-rules-cmd! _arg)
               (add-sys-msg! (format-rules-and-tree (getcwd))))
-      ;; Handle conversation context metrics
-      (define (handle-context-cmd! _arg)
+      ;; Handle conversation context metrics & unified ctx subcommands
+      (define (handle-context-cmd! arg)
               (unless (agent-running?) (sync-context-limit!))
-              (add-sys-msg! (format-context-metrics compactor llm-history messages)))
+              (execute-context-subcommand! compactor
+                                           llm-history
+                                           messages
+                                           ctx-idx
+                                           arg
+                                           add-sys-msg!
+                                           add-err-msg!
+                                           #:jrn
+                                           jrn
+                                           #:reg
+                                           reg))
       ;; Handle per-session token usage report
       (define (handle-usage-cmd!)
               (unless (agent-running?) (sync-context-limit!))
@@ -2583,23 +3102,13 @@ any open menu first; submenu actions open the next menu in its place."
                                      session-turns
                                      #:ctx-idx
                                      ctx-idx)))
-      ;; Handle session resume: interactive picker over recent session logs
+      ;; Handle session resume: interactive resurrection picker over recent session logs
       (define (handle-resume-cmd! _arg)
-              (let
-                  ((sessions (recent-session-files (default-sessions-dir))))
-                (if (null? sessions)
+              (let ((items (session-resurrection-menu-items (default-sessions-dir))))
+                (if (null? items)
                   (add-sys-msg!
                     "No saved sessions found. A session file is written after every chat turn.")
-                  (set! active-menu
-                        (make-menu "Resume Session"
-                                   (map
-                                     (lambda (path)
-                                       (cons
-                                         (cons
-                                           (truncate-string (basename path) %session-filename-max-length)
-                                           (session-mtime-string path))
-                                         (cons 'resume-session path)))
-                                     sessions))))))
+                  (set! active-menu (make-menu "Resume Session" items)))))
       ;; Handle slash commands
       (define (handle-dump-cmd! arg)
               (let*
@@ -2695,6 +3204,8 @@ any open menu first; submenu actions open the next menu in its place."
                         (add-sys-msg!
                           (format #f "Geis synthesis model set to: ~a (saved to config)" new-model)))))
                   ((string=? sub "list") (add-sys-msg! (spec-tool-status)))
+                  ((string=? sub "bindings")
+                    (add-sys-msg! (format-geis-bindings-graph jrn reg)))
                   ((string=? sub "status")
                     (add-sys-msg!
                       (apply spec-tool-status
@@ -2823,9 +3334,36 @@ any open menu first; submenu actions open the next menu in its place."
                             (add-msg! "steer" (format #f "Steering queued for the running agent: ~a" text))))))))
                 (else (handle-command! (cons cmd arg)))))
       (define (handle-command! cmd-pair)
-              (let ((cmd (car cmd-pair)) (arg (cdr cmd-pair)))
+              (let ((cmd (resolve-command-alias (car cmd-pair))) (arg (cdr cmd-pair)))
                 (cond
-                  ((or (string=? cmd "help") (string=? cmd "?")) (add-sys-msg! %tui-help-message))
+                  ((string=? cmd "help") (add-sys-msg! %tui-help-message))
+                  ((or (string=? cmd "commands") (string=? cmd "menu"))
+                    (set! active-menu (make-commands-root-menu)))
+                  ((string=? cmd "keys")
+                    (set! active-menu (make-menu "Keybindings" (keymap->menu-items active-keymap))))
+                  ((string=? cmd "todo")
+                    (call-with-values
+                      (lambda () (handle-todo-command! active-todo-list arg))
+                      (lambda (updated txt)
+                        (set! active-todo-list updated)
+                        (add-sys-msg! txt))))
+                  ((string=? cmd "diff")
+                    (add-sys-msg! (format-git-diff-output arg)))
+                  ((string=? cmd "edit")
+                    (let* ((parts (split-words arg))
+                           (path (and (pair? parts) (car parts)))
+                           (line-num (and (pair? parts) (pair? (cdr parts)) (string->number (cadr parts)))))
+                      (if (not path)
+                        (add-sys-msg! "Usage: /edit <file> [line]")
+                        (call-with-values
+                          (lambda ()
+                            (open-in-external-editor path
+                                                     #:line line-num
+                                                     #:suspend-tty! endwin
+                                                     #:resume-tty! refresh))
+                          (lambda (ok? res)
+                            (unless ok?
+                              (add-err-msg! (format #f "Editor error: ~a" res))))))))
                   ((string=? cmd "guardrail") (handle-guardrail-cmd! arg))
                   ((string=? cmd "compact") (handle-compact-cmd! arg))
                   ((string=? cmd "resume") (handle-resume-cmd! arg))
@@ -2836,8 +3374,6 @@ any open menu first; submenu actions open the next menu in its place."
                   ((string=? cmd "rules") (handle-rules-cmd! arg))
                   ((string=? cmd "geis") (handle-geis-cmd! arg))
                   ((string=? cmd "context") (handle-context-cmd! arg))
-                  ((string=? cmd "ctx")
-                    (execute-ctx-subcommand! ctx-idx arg add-sys-msg! add-err-msg!))
                   ((string=? cmd "skills")
                     (execute-skills-subcommand! skill-reg arg add-sys-msg! add-err-msg!))
                   ((string=? cmd "memories")
@@ -2862,11 +3398,11 @@ any open menu first; submenu actions open the next menu in its place."
                   ((string=? cmd "mcp") (handle-mcp-cmd! arg))
                   ((string=? cmd "config") (handle-config-cmd! arg))
                   ((string=? cmd "theme") (handle-theme-cmd! arg))
-                  ((or (string=? cmd "sh") (string=? cmd "shell"))
+                  ((string=? cmd "sh")
                     (if (string-null? arg)
                       (add-sys-msg! "Usage: /sh <command> (or !<command>)")
                       (begin (add-cmd-msg! arg) (execute-shell! arg))))
-                  ((or (string=? cmd "eval") (string=? cmd "scheme"))
+                  ((string=? cmd "eval")
                     (if (string-null? arg)
                       (add-sys-msg!
                         "Usage: /eval <scheme-code> (or ,<scheme-code> or (<scheme-code>))")
@@ -2937,7 +3473,7 @@ any open menu first; submenu actions open the next menu in its place."
                                           (set! scroll-offset 0)
                                           (set! msgsel-index #f))
                   ((string=? cmd "dump") (handle-dump-cmd! arg))
-                  ((or (string=? cmd "quit") (string=? cmd "exit")) 'exit)
+                  ((string=? cmd "quit") 'exit)
                   (else
                     (add-err-msg! (format #f "Unknown command: /~a (type /help for commands)" cmd))))))
       ;; Cleanup handler
@@ -2948,6 +3484,11 @@ any open menu first; submenu actions open the next menu in its place."
                 (lambda _
                   #f)))
       (define (shutdown!) (kill-active-subprocess!)
+              (catch #t
+                (lambda ()
+                  (harness-event-unsubscribe! %subagent-bus-sub-id))
+                (lambda _ #f))
+              (safe-write-osc-title! (reset-osc-tab-title))
               (when
                   (and %agent-thread (not (thread-exited? %agent-thread)))
                 (catch #t
@@ -3000,13 +3541,24 @@ any open menu first; submenu actions open the next menu in its place."
           #t)
         (lambda ()
           (define (clamp-selector-index!)
-                  (when (selector-active? input-buffer)
+                  (when (selector-active? input-buffer prompt-mode)
                     (let
-                        ((matches (matching-slash-commands input-buffer)))
+                        ((matches (deduplicate-slash-commands (matching-slash-commands input-buffer))))
                       (set! selector-index
                             (if (null? matches)
                               0
-                              (max 0 (min selector-index (- (length matches) 1))))))))
+                              (max 0 (min selector-index (- (length matches) 1)))))))
+                  (when (at-selector-active? input-buffer cursor-pos prompt-mode)
+                    (unless %workspace-files-cache
+                      (set! %workspace-files-cache (collect-workspace-files)))
+                    (let ((cands (matching-at-candidates input-buffer
+                                                         #:cursor-pos cursor-pos
+                                                         #:candidates %workspace-files-cache
+                                                         #:limit 25)))
+                      (set! at-selector-index
+                            (if (null? cands)
+                              0
+                              (max 0 (min at-selector-index (- (length cands) 1))))))))
           (define (selected-command-name matches)
                   (and (pair? matches)
                        (let
@@ -3246,11 +3798,44 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                      (cond
                                        ((eqv? ch KEY_UP) (set! active-menu (menu-move active-menu -1)))
                                        ((eqv? ch KEY_DOWN) (set! active-menu (menu-move active-menu 1)))
-                                       ((eqv? ch 27) (set! active-menu #f))
+                                       ((or (eqv? ch 27) (eqv? ch KEY_LEFT) (eqv? ch KEY_BACKSPACE) (eqv? ch 127) (eqv? ch 8))
+                                         (set! active-menu (menu-pop active-menu)))
                                        ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
                                          (let ((item (menu-selected-item active-menu)))
                                            (when item (apply-menu-selection! item))))
                                        (else #f))
+                                     (loop))
+                                   ;; Ctrl+R fuzzy history search popup
+                                   ((and (history-search-active? history-search)
+                                         (not (or (eqv? ch 3) (eqv? ch 4))))
+                                     (call-with-values
+                                       (lambda () (history-search-handle-key history-search input-history ch))
+                                       (lambda (action new-st res-buf res-pos)
+                                         (set! history-search new-st)
+                                         (case action
+                                           ((accept cancel)
+                                             (set! input-buffer res-buf)
+                                             (set! cursor-pos res-pos)
+                                             (clamp-selector-index!)))))
+                                     (loop))
+                                   ;; Ctrl+R (18): open fuzzy history finder
+                                   ((eqv? ch 18)
+                                     (set! history-search (history-search-open input-history input-buffer cursor-pos))
+                                     (loop))
+                                   ;; Ctrl+X (24): compose/edit input in external $EDITOR
+                                   ((eqv? ch 24)
+                                     (call-with-values
+                                       (lambda ()
+                                         (read-via-external-editor #:initial-text input-buffer
+                                                                   #:suspend-tty! endwin
+                                                                   #:resume-tty! refresh))
+                                       (lambda (ok? res)
+                                         (if ok?
+                                           (begin
+                                             (set! input-buffer (string-trim-right res #\newline))
+                                             (set! cursor-pos (string-length input-buffer))
+                                             (clamp-selector-index!))
+                                           (add-err-msg! (format #f "External editor error: ~a" res)))))
                                      (loop))
                                    ;; Enter key: process buffer, execute modal command, or
                                    ;; complete selector. Under cbreak the tty's ICRNL maps the
@@ -3263,18 +3848,21 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                          ;; not a submit: collect the burst and insert it as
                                          ;; multiline text.
                                          (begin (insert-burst! burst) (loop))
-                                         (if (selector-active? input-buffer)
+                                         (if (selector-active? input-buffer prompt-mode)
                                            (let
-                                               ((matches (matching-slash-commands input-buffer)))
+                                               ((matches (deduplicate-slash-commands (matching-slash-commands input-buffer))))
                                              (if (null? matches)
-                                               (let ((trimmed (string-trim-both input-buffer)))
+                                               (let ((trimmed (string-trim-both input-buffer))
+                                                     (was-slash? (eq? prompt-mode 'slash)))
                                                  (set! input-buffer "")
                                                  (set! cursor-pos 0)
                                                  (set! selector-index 0)
+                                                 (when was-slash? (set! prompt-mode 'chat))
                                                  (if (string-null? trimmed)
                                                    (loop)
                                                    (let*
-                                                       ((action (classify-input trimmed))
+                                                       ((canonical (if was-slash? (string-append "/" trimmed) trimmed))
+                                                        (action (classify-input canonical))
                                                         (res
                                                           (if (and action (eq? (car action) 'slash))
                                                             (handle-command! (cons (cadr action) (caddr action)))
@@ -3285,33 +3873,37 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                                    ;; Commands that still need a typed argument get
                                                    ;; prefilled; model/endpoint/config now open their
                                                    ;; interactive menus via the no-argument flow.
-                                                   ((member chosen '("provider" "sh" "eval" "steer" "geis"))
-                                                     (set! input-buffer (string-append "/" chosen " "))
+                                                   ((member chosen '("provider" "sh" "eval" "steer" "geis" "edit" "todo" "diff"))
+                                                     (set! input-buffer (format-slash-completion chosen prompt-mode #t))
                                                      (set! cursor-pos (string-length input-buffer))
                                                      (set! selector-index 0)
                                                      (loop))
                                                    (else (set! input-buffer "")
                                                          (set! cursor-pos 0)
                                                          (set! selector-index 0)
+                                                         (when (eq? prompt-mode 'slash) (set! prompt-mode 'chat))
                                                          (let ((res (handle-command! (cons chosen "")))) (unless (eq? res 'exit) (loop))))))))
-                                           (let ((trimmed (string-trim-both input-buffer)))
+                                           (let ((trimmed (string-trim-both input-buffer))
+                                                 (cur-mode prompt-mode))
                                              (set! input-buffer "")
                                              (set! cursor-pos 0)
                                              (set! selector-index 0)
+                                             (when (eq? cur-mode 'slash) (set! prompt-mode 'chat))
                                              (cond
                                                ((string-null? trimmed) (loop))
-                                               ((eq? prompt-mode 'shell)
+                                               ((eq? cur-mode 'shell)
                                                  (record-history! trimmed 'shell)
                                                  (add-cmd-msg! trimmed)
                                                  (execute-shell! trimmed)
                                                  (loop))
-                                               ((eq? prompt-mode 'scheme)
+                                               ((eq? cur-mode 'scheme)
                                                  (record-history! trimmed 'scheme)
                                                  (add-scm-msg! trimmed)
                                                  (execute-scheme! trimmed)
                                                  (loop))
                                                (else
-                                                 (let ((action (classify-input trimmed)))
+                                                 (let* ((canonical (prompt-mode-submit-text cur-mode trimmed))
+                                                        (action (classify-input canonical)))
                                                    (case (car action)
                                                      ((slash)
                                                        (let*
@@ -3360,45 +3952,60 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                                                        (set! status-text "READY")
                                                                        (render!))))))
                                                          (loop))))))))))))
-                                   ;; Tab key: autocomplete selected slash command
+                                   ;; Tab key: autocomplete selected slash command or @ mention
                                    ((eqv? ch 9)
-                                     (when (selector-active? input-buffer)
-                                       (let*
-                                           ((matches (matching-slash-commands input-buffer))
-                                            (chosen (selected-command-name matches)))
-                                         (when chosen
-                                           (if
-                                               (member chosen
-                                                       '("model" "endpoint" "provider" "mcp" "config" "sh" "eval" "steer"))
-                                             (set! input-buffer (string-append "/" chosen " "))
-                                             (set! input-buffer (string-append "/" chosen)))
-                                           (set! cursor-pos (string-length input-buffer))
-                                           (set! selector-index 0))))
+                                     (cond
+                                       ((selector-active? input-buffer prompt-mode)
+                                         (let*
+                                             ((matches (deduplicate-slash-commands (matching-slash-commands input-buffer)))
+                                              (chosen (selected-command-name matches)))
+                                           (when chosen
+                                             (let ((needs-arg?
+                                                     (and (member chosen
+                                                                  '("model" "endpoint" "provider" "mcp" "config" "sh" "eval" "steer" "edit" "todo" "diff"))
+                                                          #t)))
+                                               (set! input-buffer (format-slash-completion chosen prompt-mode needs-arg?))
+                                               (set! cursor-pos (string-length input-buffer))
+                                               (set! selector-index 0)))))
+                                       ((at-selector-active? input-buffer cursor-pos prompt-mode)
+                                         (unless %workspace-files-cache
+                                           (set! %workspace-files-cache (collect-workspace-files)))
+                                         (let ((cands (matching-at-candidates input-buffer
+                                                                              #:cursor-pos cursor-pos
+                                                                              #:candidates %workspace-files-cache
+                                                                              #:limit 25)))
+                                           (when (pair? cands)
+                                             (let* ((safe-i (max 0 (min at-selector-index (- (length cands) 1))))
+                                                    (chosen (list-ref cands safe-i)))
+                                               (call-with-values
+                                                 (lambda () (apply-at-completion input-buffer cursor-pos chosen))
+                                                 (lambda (nb np)
+                                                   (set! input-buffer nb)
+                                                   (set! cursor-pos np)
+                                                   (set! at-selector-index 0))))))))
                                      (loop))
                                    ;; Escape key: close selector palette, return to normal chat
                                    ;; mode, or clear the message selection on an empty buffer
                                    ((eqv? ch 27)
                                      (cond
-                                       ((selector-active? input-buffer)
-                                         (set! input-buffer "")
-                                         (set! cursor-pos 0)
-                                         (set! selector-index 0))
-                                       ((not (eq? prompt-mode 'chat))
-                                         (set! prompt-mode 'chat)
-                                         (set! input-buffer "")
-                                         (set! cursor-pos 0))
+                                       ((or (selector-active? input-buffer prompt-mode)
+                                            (not (eq? prompt-mode 'chat)))
+                                         (call-with-values
+                                           (lambda () (prompt-mode-on-escape prompt-mode input-buffer cursor-pos))
+                                           (lambda (nm nb np)
+                                             (set! prompt-mode nm)
+                                             (set! input-buffer nb)
+                                             (set! cursor-pos np)
+                                             (set! selector-index 0))))
                                        ((and (integer? msgsel-index) (string-null? input-buffer))
                                          (set! msgsel-index #f)))
                                      (loop))
-                                   ;; Up Arrow: selector navigation or input history recall.
-                                   ;; Arrows no longer scroll the transcript — history cycling
-                                   ;; is their job; scrolling stays on PageUp/PageDown and the
-                                   ;; mouse wheel.
+                                   ;; Up Arrow: selector navigation, @ mention navigation, or history recall.
                                    ((eqv? ch KEY_UP)
                                      (cond
-                                       ((selector-active? input-buffer)
+                                       ((selector-active? input-buffer prompt-mode)
                                          (let
-                                             ((matches (matching-slash-commands input-buffer)))
+                                             ((matches (deduplicate-slash-commands (matching-slash-commands input-buffer))))
                                            (unless (null? matches)
                                              (let*
                                                  ((count (length matches)) (cur (max 0 (min selector-index (- count 1)))))
@@ -3406,6 +4013,14 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                                      (if (<= cur 0)
                                                        (- count 1)
                                                        (- cur 1)))))))
+                                       ((at-selector-active? input-buffer cursor-pos prompt-mode)
+                                         (let ((cands (matching-at-candidates input-buffer
+                                                                              #:cursor-pos cursor-pos
+                                                                              #:candidates %workspace-files-cache
+                                                                              #:limit 25)))
+                                           (unless (null? cands)
+                                             (let* ((cnt (length cands)) (cur (max 0 (min at-selector-index (- cnt 1)))))
+                                               (set! at-selector-index (if (<= cur 0) (- cnt 1) (- cur 1)))))))
                                        (else
                                          (unless (history-recall-position input-history)
                                            (set! history-draft input-buffer)
@@ -3415,17 +4030,24 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                              (set! input-buffer entry)
                                              (set! cursor-pos (string-length entry))))))
                                      (loop))
-                                   ;; Down Arrow: selector navigation or history recall
-                                   ;; forward; at the newest entry the draft is restored.
+                                   ;; Down Arrow: selector navigation, @ mention navigation, or history recall.
                                    ((eqv? ch KEY_DOWN)
                                      (cond
-                                       ((selector-active? input-buffer)
+                                       ((selector-active? input-buffer prompt-mode)
                                          (let
-                                             ((matches (matching-slash-commands input-buffer)))
+                                             ((matches (deduplicate-slash-commands (matching-slash-commands input-buffer))))
                                            (unless (null? matches)
                                              (let*
                                                  ((count (length matches)) (cur (max 0 (min selector-index (- count 1)))))
                                                (set! selector-index (remainder (+ cur 1) count))))))
+                                       ((at-selector-active? input-buffer cursor-pos prompt-mode)
+                                         (let ((cands (matching-at-candidates input-buffer
+                                                                              #:cursor-pos cursor-pos
+                                                                              #:candidates %workspace-files-cache
+                                                                              #:limit 25)))
+                                           (unless (null? cands)
+                                             (let* ((cnt (length cands)) (cur (max 0 (min at-selector-index (- cnt 1)))))
+                                               (set! at-selector-index (remainder (+ cur 1) cnt))))))
                                        (else
                                          (let*
                                              ((was-recalling? (history-recall-position input-history))
@@ -3436,17 +4058,15 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                                (set! input-buffer history-draft)
                                                (set! cursor-pos history-draft-pos))))))
                                      (loop))
-                                   ;; Backspace: delete character or return to normal mode if
-                                   ;; prompt is empty (127 on modern terminals, 8 on older ones)
+                                   ;; Backspace: delete character or return to chat mode if empty
                                    ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 127) (eqv? ch 8))
-                                     (cond
-                                       ((> (string-length input-buffer) 0)
-                                         (call-with-values
-                                           (lambda ()
-                                             (backspace-at input-buffer cursor-pos))
-                                           apply-edit!)
-                                         (clamp-selector-index!))
-                                       ((not (eq? prompt-mode 'chat)) (set! prompt-mode 'chat)))
+                                     (call-with-values
+                                       (lambda () (prompt-mode-on-backspace prompt-mode input-buffer cursor-pos))
+                                       (lambda (nm nb np)
+                                         (set! prompt-mode nm)
+                                         (set! input-buffer nb)
+                                         (set! cursor-pos np)
+                                         (clamp-selector-index!)))
                                      (loop))
                                    ;; Page Up / Page Down: half-viewport jumps
                                    ((eqv? ch KEY_PPAGE)
@@ -3491,6 +4111,13 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                    ((or (eqv? ch KEY_HOME) (eqv? ch 1)) (set! cursor-pos 0) (loop))
                                    ;; End: move editing cursor to end of input
                                    ((eqv? ch KEY_END) (set! cursor-pos (string-length input-buffer)) (loop))
+                                   ;; Ctrl+O (15): non-conflicting collapse toggle on selected message
+                                   ((eqv? ch 15)
+                                     (when (and (integer? msgsel-index)
+                                                (pair? messages)
+                                                (< msgsel-index (length messages)))
+                                       (toggle-selected-collapse!))
+                                     (loop))
                                    ;; Ctrl+E (control char 5): toggle collapse of the selected
                                    ;; message card, or move editing cursor to end of input when
                                    ;; no message is selected (pre-existing binding)
@@ -3533,26 +4160,13 @@ buffer-editing helpers: replace the input buffer and move the cursor."
                                        (if (> (length burst) 1)
                                          (begin (insert-burst! burst) (loop))
                                          (let ((c (integer->char ch)))
-                                           (cond
-                                             ((and (string-null? input-buffer) (eq? prompt-mode 'chat))
-                                               (cond
-                                                 ((eqv? c #\!) (set! prompt-mode 'shell) (loop))
-                                                 ;; "(" enters scheme mode and STAYS in the entry
-                                                 ;; field: it is the opening paren of the sexp being
-                                                 ;; typed, so dropping it (like the old "," trigger)
-                                                 ;; would corrupt the code under evaluation.
-                                                 ((eqv? c #\() (set! prompt-mode 'scheme)
-                                                               (set! input-buffer "(")
-                                                               (set! cursor-pos 1)
-                                                               (loop))
-                                                 (else (set! input-buffer (string c))
-                                                       (set! cursor-pos (string-length input-buffer))
-                                                       (loop))))
-                                             (else
-                                               (call-with-values
-                                                 (lambda ()
-                                                   (insert-at input-buffer cursor-pos (string c)))
-                                                 apply-edit!)
+                                           (call-with-values
+                                             (lambda ()
+                                               (prompt-mode-on-char prompt-mode input-buffer cursor-pos c))
+                                             (lambda (nm nb np _absorbed?)
+                                               (set! prompt-mode nm)
+                                               (set! input-buffer nb)
+                                               (set! cursor-pos np)
                                                (clamp-selector-index!)
                                                (loop)))))))
                                    (else (loop))))))))

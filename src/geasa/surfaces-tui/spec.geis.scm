@@ -29,6 +29,8 @@
                #:use-module
                (geasa runtimes-react plugin)
                #:use-module
+               (geasa agents-lifecycle plugin)
+               #:use-module
                (ice-9 threads)
                #:use-module
                (json)
@@ -2256,6 +2258,105 @@
             (let ((reg (make-registry)))
               (test-assert "format-mid-run-subagents-summary returns string"
                            (string? (format-mid-run-subagents-summary reg)))))
+
+(test-group "tui-wp6-integrated-ui"
+            ;; WP1-WP5 re-exports available through (geasa surfaces-tui plugin)
+            (for-each
+              (lambda (sym-val)
+                (test-assert (format #f "integrated export ~a is bound" (car sym-val))
+                             (cdr sym-val)))
+              `((format-input-box-frame . ,(procedure? format-input-box-frame))
+                (format-bottom-status-bar . ,(procedure? format-bottom-status-bar))
+                (format-startup-banner-text . ,(procedure? format-startup-banner-text))
+                (format-git-diff-view . ,(procedure? format-git-diff-view))
+                (make-todo-list . ,(procedure? make-todo-list))
+                (render-scheme-response-widget . ,(procedure? render-scheme-response-widget))
+                (make-ui-server . ,(procedure? make-ui-server))
+                (make-ui-client . ,(procedure? make-ui-client))
+                (render-markdown . ,(procedure? render-markdown))
+                (segment-input-line . ,(procedure? segment-input-line))
+                (format-osc-tab-title . ,(procedure? format-osc-tab-title))
+                (prompt-mode-on-char . ,(procedure? prompt-mode-on-char))
+                (history-search-open . ,(procedure? history-search-open))
+                (matching-at-candidates . ,(procedure? matching-at-candidates))
+                (make-default-keymap . ,(procedure? make-default-keymap))
+                (session-turns->transcript-messages . ,(procedure? session-turns->transcript-messages))
+                (menu-push . ,(procedure? menu-push))
+                (make-theme-preview-menu . ,(procedure? make-theme-preview-menu))
+                (provider-menu-items . ,(procedure? provider-menu-items))
+                (synthesizer-config-menu-items . ,(procedure? synthesizer-config-menu-items))
+                (session-resurrection-menu-items . ,(procedure? session-resurrection-menu-items))
+                (resolve-command-alias . ,(procedure? resolve-command-alias))
+                (deduplicate-slash-commands . ,(procedure? deduplicate-slash-commands))
+                (format-geis-bindings-graph . ,(procedure? format-geis-bindings-graph))
+                (register-subagent-link! . ,(procedure? register-subagent-link!))
+                (format-subagent-overview . ,(procedure? format-subagent-overview))))
+
+            ;; /todo controller helper round-trip
+            (let ((tl0 (make-todo-list #:title "Tasks")))
+              (call-with-values
+                (lambda () (handle-todo-command! tl0 "add Verify WP6 integration"))
+                (lambda (tl1 txt1)
+                  (test-assert "/todo add includes new task text"
+                               (string-contains txt1 "Verify WP6 integration"))
+                  (call-with-values
+                    (lambda () (handle-todo-command! tl1 "toggle 1"))
+                    (lambda (tl2 txt2)
+                      (test-assert "/todo toggle marks task done"
+                                   (string-contains txt2 "[✓]"))
+                      (call-with-values
+                        (lambda () (handle-todo-command! tl2 "clear"))
+                        (lambda (tl3 txt3)
+                          (test-assert "/todo clear removes completed task"
+                                       (not (string-contains txt3 "Verify WP6 integration"))))))))))
+
+            ;; Response Scheme widget extraction & rendering
+            (test-equal "plain response without widget returns #f"
+                        #f
+                        (format-response-widgets-notice "Just regular prose." 60))
+            (let ((w-txt (format-response-widgets-notice
+                           "Here is status:\n```scheme-widget\n(pill \"PASS\" #:role 'success)\n```\n"
+                           60)))
+              (test-assert "fenced scheme-widget renders cleanly"
+                           (and (string? w-txt) (string-contains w-txt "PASS"))))
+
+            ;; WP5 subagent overview integration via /subagents helper
+            (let ((reg (make-registry))
+                  (cid "wp6-spec-subagent-1"))
+              (dynamic-wind
+                (lambda ()
+                  (register-subagent-link! cid (current-harness-id)
+                                           #:kind 'local
+                                           #:status 'running
+                                           #:label "spec check"))
+                (lambda ()
+                  (let ((summary (format-mid-run-subagents-summary reg)))
+                    (test-assert "subagents summary displays registered child id"
+                                 (string-contains summary cid))))
+                (lambda ()
+                  (unregister-subagent-link! cid))))
+
+            ;; WP1 UI server/client subagent routing round-trip
+            (let ((srv (make-ui-server))
+                  (cli (make-ui-client #:id 'wp6-spec)))
+              (ui-server-route-subagent-event! srv "sub-1" (current-harness-id) 'tool-call '((tool . "read_file")))
+              (pump-ui-pair! srv cli '())
+              (test-assert "ui-client receives routed subagent event"
+                           (pair? (ui-client-subagent-events cli))))
+
+            ;; WP4 command deduplication preserves canonical commands and drops aliases
+            (let ((deduped (deduplicate-slash-commands %slash-commands)))
+              (test-assert "deduplicated slash palette keeps context" (assoc "context" deduped))
+              (test-assert "deduplicated slash palette drops ctx alias" (not (assoc "ctx" deduped)))
+              (test-assert "deduplicated slash palette drops exit alias" (not (assoc "exit" deduped))))
+
+            ;; WP1 + WP2 + WP3 integrated input box & live segmenter
+            (let ((frame (format-input-box-frame '("(+ 1 2)") 60 #:style 'lines))
+                  (segs (segment-input-line "(+ 1 2)" #:prompt-mode 'scheme)))
+              (test-equal "lines input box height is 3 for 1 line" 3 (assoc-ref frame 'height))
+              (test-equal "live segment-input-line preserves text verbatim"
+                          "(+ 1 2)"
+                          (string-concatenate (map car segs)))))
 
 (spec-end)
 
