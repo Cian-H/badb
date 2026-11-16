@@ -79,6 +79,7 @@
                                          #:source 'server
                                          #:payload `((cols . 80)
                                                      (rows . 24)
+                                                     (vec . #(1 2 3))
                                                      (ops . (,op)))))
                    (wire (encode-ui-message msg))
                    (decoded (decode-ui-message wire)))
@@ -87,6 +88,9 @@
               (test-assert "decode-ui-message reconstructs <ui-message>" (ui-message? decoded))
               (test-equal "round-trip message type" 'frame (ui-message-type decoded))
               (test-equal "round-trip seq" 7 (ui-message-seq decoded))
+              (test-equal "round-trip vector payload"
+                          '(1 2 3)
+                          (assoc-ref (ui-message-payload decoded) 'vec))
               (test-equal "decode-ui-message rejects garbage" #f (decode-ui-message "{not-json")))
 
             ;; Port streaming framing

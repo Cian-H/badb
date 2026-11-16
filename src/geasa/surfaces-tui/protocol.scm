@@ -13,6 +13,7 @@
                #:use-module (json)
                #:use-module (srfi srfi-1)
                #:use-module (srfi srfi-9)
+               #:use-module (srfi srfi-43)
                #:export (%ui-protocol-version
                           %ui-client-message-types
                           %ui-server-message-types
