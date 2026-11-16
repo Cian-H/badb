@@ -1452,8 +1452,7 @@ and append it to the persistent history journal file."
       (define role-pair-cache '())
       (define next-pair-id 1)
       (define %max-color-pairs 64)
-      (define (theme-attr-constant attr)
-              (tui-theme-attr-constant attr nref))
+      (define (theme-attr-constant attr) (tui-theme-attr-constant attr nref))
       (define (role-attrs role)
               (let ((a (caddr (theme-ref ui-theme role))))
                 (cond
@@ -1772,7 +1771,7 @@ and append it to the persistent history journal file."
                                           (if (eq? box-style 'tint)
                                             0
                                             1))))
-                                   (view-top 2)
+                                   (view-top 0)
                                    (view-bottom (max (+ view-top 1) (- box-top 1)))
                                    (view-height (max 1 (- view-bottom view-top)))
                                    (content-width (max 10 (- maxx 3)))
@@ -1788,37 +1787,7 @@ and append it to the persistent history journal file."
                                     (set! last-tab-title-sig tab-sig)
                                     (safe-write-osc-title! (format-osc-tab-title status-text #:model cur-model))))
                                 (erase stdscr)
-                                ;; 1. Slim header line (wordmark, model, status, counts)
-                                ;;    over a thin horizontal rule
-                                (let*
-                                    ((active-count
-                                       (length
-                                         (filter
-                                           (lambda (s)
-                                             (assoc-ref s 'running?))
-                                           (mcp-manager-list-servers mcp-mgr))))
-                                     (total-count (length (badb-config-mcp-servers cfg)))
-                                     (mcp-info (and (> total-count 0) (format #f "~a/~a" active-count total-count))))
-                                  (for-each
-                                    (lambda (seg)
-                                      (let
-                                          ((x (car seg)) (text (cadr seg)) (role (caddr seg)) (bold? (cadddr seg)))
-                                        (draw-role! role #t)
-                                        (when bold? (attr-on! stdscr A_BOLD))
-                                        (safe-addstr stdscr 0 x text (max 0 (- maxx x)))
-                                        (when bold? (attr-off! stdscr A_BOLD))
-                                        (draw-role! role #f)))
-                                    (format-header-segments maxx
-                                                            status-text
-                                                            cur-model
-                                                            (registry-count reg)
-                                                            (journal-count-cached)
-                                                            mcp-info
-                                                            (context-gauge-info)))
-                                  (draw-role! 'dim #t)
-                                  (safe-addstr stdscr 1 0 (format-rule-line maxx) maxx)
-                                  (draw-role! 'dim #f))
-                                ;; 2. Flat message history blocks
+                                ;; 1. Flat message history blocks (bottom-anchored status bar replaces top header)
                                 ;; Rows are tagged with their owning message index so the
                                 ;; selection marker and auto-scroll can address messages,
                                 ;; not screen lines. Formatted rows come from the
@@ -1899,7 +1868,8 @@ and append it to the persistent history journal file."
                                         ((lines visible-lines) (y view-top))
                                         (unless (or (null? lines) (>= y view-bottom))
                                           (let ((tagged (car lines)))
-                                            (hashq-set! %click-targets y (car tagged))
+                                            (unless (assoc-ref (list-ref messages (car tagged)) 'startup-banner?)
+                                              (hashq-set! %click-targets y (car tagged)))
                                             (draw-block-line y
                                                              (cdr tagged)
                                                              content-width
@@ -2208,7 +2178,15 @@ and append it to the persistent history journal file."
                                              (eq? (subagent-link-status l) 'running))
                                            (all-subagent-links))))
                                      (used-tok (or %ctx-cache-tokens (estimate-conversation-tokens llm-history)))
-                                     (lim-tok (context-compactor-effective-ceiling compactor)))
+                                     (lim-tok (context-compactor-effective-ceiling compactor))
+                                     (active-mcp
+                                       (length
+                                         (filter
+                                           (lambda (s)
+                                             (assoc-ref s 'running?))
+                                           (mcp-manager-list-servers mcp-mgr))))
+                                     (total-mcp (length (badb-config-mcp-servers cfg)))
+                                     (mcp-info (and (> total-mcp 0) (format #f "~a/~a" active-mcp total-mcp))))
                                   (for-each
                                     (lambda (seg)
                                       (let
@@ -2245,7 +2223,13 @@ and append it to the persistent history journal file."
                                                               #:subagent-count
                                                               sub-cnt
                                                               #:todo-summary
-                                                              todo-sum)))
+                                                              todo-sum
+                                                              #:feat-count
+                                                              (registry-count reg)
+                                                              #:journal-count
+                                                              (journal-count-cached)
+                                                              #:mcp-info
+                                                              mcp-info)))
                                 ;; 6. Floating Menu Popup Overlay (breadcrumb title from WP4)
                                 (when active-menu
                                   (let ((m-count (menu-count active-menu)))
@@ -2395,16 +2379,44 @@ placeholder flag, so the next streamed call starts a fresh card."
       (define %ctx-cache-key #f)
       (define %jrn-count-cache -1)
       (define %jrn-count-time 0)
+      (define %jrn-count-refreshing? #f)
+      (define %jrn-count-mutex (make-mutex))
+      (define (refresh-journal-count-async!)
+              "Recompute the journal entry count in a background thread and update the cache."
+              (catch #t
+                (lambda ()
+                  (call-with-new-thread
+                    (lambda ()
+                      (let
+                          ((cnt
+                             (catch #t
+                               (lambda ()
+                                 (journal-count jrn))
+                               (lambda _
+                                 #f))))
+                        (with-mutex %jrn-count-mutex
+                                    (when (integer? cnt) (set! %jrn-count-cache cnt))
+                                    (set! %jrn-count-time (get-internal-real-time))
+                                    (set! %jrn-count-refreshing? #f))
+                        (when (integer? cnt) (set! render-dirty? #t))))))
+                (lambda _
+                  (with-mutex %jrn-count-mutex (set! %jrn-count-refreshing? #f)))))
       (define (journal-count-cached)
-              "Journal entry count for the header, refreshed at most every two
-seconds: journal-count re-reads the whole journal file (~150ms on a
-grown journal), which the per-frame header render must not pay."
-              (let ((now (get-internal-real-time)))
-                (when
-                    (>= (- now %jrn-count-time) (* 2 internal-time-units-per-second))
-                  (set! %jrn-count-time now)
-                  (set! %jrn-count-cache (journal-count jrn)))
-                %jrn-count-cache))
+              "Journal entry count for the header, refreshed asynchronously at most
+every two seconds so per-frame header rendering never blocks on reading
+the journal file."
+              (let
+                  ((now (get-internal-real-time)) (should-refresh? #f) (cached -1))
+                (with-mutex %jrn-count-mutex
+                            (set! cached %jrn-count-cache)
+                            (when
+                                (and (not %jrn-count-refreshing?)
+                                     (>= (- now %jrn-count-time) (* 2 internal-time-units-per-second)))
+                              (set! %jrn-count-refreshing? #t)
+                              (set! %jrn-count-time now)
+                              (set! should-refresh? #t)))
+                (when should-refresh? (refresh-journal-count-async!))
+                cached))
       (define (context-gauge-info)
               (let ((key (length llm-history)))
                 ;; The estimate only changes when history grows; cache it.
@@ -3433,7 +3445,10 @@ any open menu first; submenu actions push onto the parent breadcrumb stack."
                   ((or (string-null? trimmed) (string=? sub "help"))
                     (add-sys-msg! (format-geis-help-text)))
                   ((string=? sub "bindings")
-                    (show-geis-bindings-uplot! stdscr jrn (lambda () (getch stdscr)))
+                    (show-geis-bindings-uplot! stdscr
+                                               jrn
+                                               (lambda ()
+                                                 (getch stdscr)))
                     (add-sys-msg! (format-geis-bindings-graph jrn reg)))
                   ((string=? sub "add")
                     (if (string-null? rest-arg)
@@ -3764,21 +3779,24 @@ any open menu first; submenu actions push onto the parent breadcrumb stack."
                   ((string=? cmd "image")
                     (let ((p (string-trim-both arg)))
                       (cond
-                        ((string-null? p)
-                          (add-sys-msg! "Usage: /image <path>"))
-                        ((not (file-exists? p))
-                          (add-err-msg! (format #f "Image file not found: ~a" p)))
+                        ((string-null? p) (add-sys-msg! "Usage: /image <path>"))
+                        ((not (file-exists? p)) (add-err-msg! (format #f "Image file not found: ~a" p)))
                         (else
-                          (let ((info (render-ncvisual-overlay! stdscr p (lambda () (getch stdscr)))))
+                          (let
+                              ((info
+                                 (render-ncvisual-overlay! stdscr
+                                                           p
+                                                           (lambda ()
+                                                             (getch stdscr)))))
                             (if info
                               (add-sys-msg!
-                                (format #f "Rendered image ~a (~a, ~ax~a cells)"
+                                (format #f
+                                        "Rendered image ~a (~a, ~ax~a cells)"
                                         p
                                         (or (assoc-ref info 'blitter) 'ncvisual)
                                         (or (assoc-ref info 'cols) "?")
                                         (or (assoc-ref info 'rows) "?")))
-                              (add-sys-msg!
-                                (format-image-placeholder p))))))))
+                              (add-sys-msg! (format-image-placeholder p))))))))
                   ((string=? cmd "quit") 'exit)
                   (else
                     (add-err-msg! (format #f "Unknown command: /~a (type /help for commands)" cmd))))))

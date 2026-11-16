@@ -793,7 +793,10 @@ on ultra-narrow widths (< 16 cols)."
                                    (tokens-limit 0)
                                    (keymap-hint #f)
                                    (subagent-count 0)
-                                   (todo-summary #f))
+                                   (todo-summary #f)
+                                   (feat-count 0)
+                                   (journal-count 0)
+                                   (mcp-info #f))
          "Build a single-line bottom status bar as positioned segments
 ((x text role bold? dim?) ...) fitting within MAXX columns. Drops lower-priority
 middle items gracefully on narrow terminals."
@@ -818,7 +821,7 @@ middle items gracefully on narrow terminals."
                   (cond
                     ((and (> tokens-limit 0) (>= tokens-used 0))
                       (let ((pct (min 100 (inexact->exact (round (* 100 (/ tokens-used tokens-limit)))))))
-                        (format #f "~a/~a (~a%)"
+                        (format #f "ctx ~a/~a (~a%)"
                                 (format-token-kilo tokens-used)
                                 (format-token-kilo tokens-limit)
                                 pct)))
@@ -833,6 +836,12 @@ middle items gracefully on narrow terminals."
                            (list todo-summary 'status #f #f))
                       (and (> subagent-count 0)
                            (list (format #f "⑂ ~a" subagent-count) 'accent #f #f))
+                      (and (string? mcp-info) (not (string-null? mcp-info))
+                           (list (format #f "mcp ~a" mcp-info) 'dim #f #t))
+                      (and (> feat-count 0)
+                           (list (format #f "~a feats" feat-count) 'dim #f #t))
+                      (and (> journal-count 0)
+                           (list (format #f "~a chkpts" journal-count) 'dim #f #t))
                       (and tok-str
                            (list tok-str 'dim #f #t))
                       (and (string? status) (not (string-null? status))
