@@ -1896,7 +1896,7 @@ refreshing the client, saving, and reporting the outcome."
               "List configured provider presets or switch to the one named in ARG."
               (let ((trimmed (string-trim-both arg)))
                 (if (string-null? trimmed)
-                  (add-sys-msg! (format-provider-presets (badb-config-providers cfg)))
+                  (add-sys-msg! (format-provider-presets (badb-config-chat-providers cfg)))
                   (switch-provider-preset! trimmed))))
       (define (handle-models-cmd!)
               "Show the models available on the active endpoint as a system
