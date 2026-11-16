@@ -483,36 +483,40 @@ delivered nothing, fall back to a single model-complete call."
 (define
   (invoke-registry-procedure impl meta args)
   "Invoke registry IMPL with ARGS, adapting alist arguments to schema properties if available."
-  (cond
-    ((null? args) (impl))
-    ((and (pair? args) (pair? (car args)))
-      (catch #t
-        (lambda ()
-          (let*
-              ((params
-                 (and meta (or (assoc-ref meta 'parameters) (assoc-ref meta "parameters"))))
-               (props
-                 (and (pair? params)
-                      (or (assoc-ref params 'properties) (assoc-ref params "properties"))))
-               (ordered-keys
-                 (and (pair? props)
-                      (map
-                        (lambda (p)
-                          (ensure-string (car p)))
-                        props))))
-            (if (and ordered-keys (pair? ordered-keys))
-              (let
-                  ((ordered-vals
-                     (map
-                       (lambda (k)
-                         (or (assoc-ref args k) (assoc-ref args (string->symbol k))))
-                       ordered-keys)))
-                (apply impl ordered-vals))
-              (apply impl (map cdr args)))))
-        (lambda (k . a)
-          (impl args))))
-    ((list? args) (apply impl args))
-    (else (impl args))))
+  (if
+      (and (pair? meta)
+           (or (assoc-ref meta '_badb_alist_args) (assoc-ref meta "_badb_alist_args")))
+    (impl args)
+    (cond
+      ((null? args) (impl))
+      ((and (pair? args) (pair? (car args)))
+        (catch #t
+          (lambda ()
+            (let*
+                ((params
+                   (and meta (or (assoc-ref meta 'parameters) (assoc-ref meta "parameters"))))
+                 (props
+                   (and (pair? params)
+                        (or (assoc-ref params 'properties) (assoc-ref params "properties"))))
+                 (ordered-keys
+                   (and (pair? props)
+                        (map
+                          (lambda (p)
+                            (ensure-string (car p)))
+                          props))))
+              (if (and ordered-keys (pair? ordered-keys))
+                (let
+                    ((ordered-vals
+                       (map
+                         (lambda (k)
+                           (or (assoc-ref args k) (assoc-ref args (string->symbol k))))
+                         ordered-keys)))
+                  (apply impl ordered-vals))
+                (apply impl (map cdr args)))))
+          (lambda (k . a)
+            (impl args))))
+      ((list? args) (apply impl args))
+      (else (impl args)))))
 
 (define*
   (execute-tool-call tool-call reg mcp-mgr #:key (jrn #f) (mgr #f) (guardrail #f))

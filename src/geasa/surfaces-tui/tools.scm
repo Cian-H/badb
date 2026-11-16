@@ -5,44 +5,70 @@
 ;;; write_file, execute_command, bash, sh), rollback, tests, history, and MCP tools.
 
 (define-module (geasa surfaces-tui tools)
-               #:use-module (badb kernel registry)
-               #:use-module (badb kernel geis-gate)
-               #:use-module (badb kernel digest)
-               #:use-module (geasa surfaces-tui session)
-               #:use-module (geasa capabilities-mcp plugin)
-               #:use-module (geasa capabilities-macro plugin)
-               #:use-module (geasa capabilities-history-tools plugin)
-               #:use-module (geasa capabilities-fs-tools plugin)
-               #:use-module (geasa capabilities-code-nav plugin)
-               #:use-module (geasa capabilities-context-index plugin)
-               #:use-module (geasa capabilities-skills plugin)
-               #:use-module (geasa agents-subagent plugin)
-               #:use-module (geasa capabilities-scheme-eval plugin)
-               #:use-module (geasa runtimes-geis-loader plugin)
-               #:use-module (geasa runtimes-react plugin)
-               #:use-module (geasa runtimes-workflows plugin)
-               #:use-module (geasa foundation-config plugin)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (geasa runtimes-rollback plugin)
-               #:use-module (geasa runtimes-verify plugin)
-               #:use-module (json)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 rdelim)
-               #:use-module (srfi srfi-1)
-               #:export (spec-tool-format-failure
-                          spec-tool-lock
-                          spec-tool-verify
-                          spec-tool-list-locked-specs
-                          spec-tool-status
-                          register-spec-tools!
-                          build-geis-add-prompt
-                          exec-shell-tool-impl
-                          %read-file-default-limit
-                          %read-file-max-chars-per-line
-                          %read-file-max-chars
-                          builtin-read-file
-                          register-builtin-tui-tools!
-                          auto-start-mcp-servers!))
+               #:use-module
+               (badb kernel registry)
+               #:use-module
+               (badb kernel geis-gate)
+               #:use-module
+               (badb kernel digest)
+               #:use-module
+               (geasa surfaces-tui session)
+               #:use-module
+               (geasa capabilities-mcp plugin)
+               #:use-module
+               (geasa capabilities-macro plugin)
+               #:use-module
+               (geasa capabilities-history-tools plugin)
+               #:use-module
+               (geasa capabilities-fs-tools plugin)
+               #:use-module
+               (geasa capabilities-code-nav plugin)
+               #:use-module
+               (geasa capabilities-context-index plugin)
+               #:use-module
+               (geasa capabilities-skills plugin)
+               #:use-module
+               (geasa agents-subagent plugin)
+               #:use-module
+               (geasa capabilities-scheme-eval plugin)
+               #:use-module
+               (geasa runtimes-geis-loader plugin)
+               #:use-module
+               (geasa runtimes-react plugin)
+               #:use-module
+               (geasa runtimes-workflows plugin)
+               #:use-module
+               (geasa foundation-config plugin)
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (geasa runtimes-rollback plugin)
+               #:use-module
+               (geasa runtimes-verify plugin)
+               #:use-module
+               (json)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (pfds hamts)
+               #:export
+               (spec-tool-format-failure spec-tool-lock
+                                         spec-tool-verify
+                                         spec-tool-list-locked-specs
+                                         spec-tool-status
+                                         register-spec-tools!
+                                         build-geis-add-prompt
+                                         exec-shell-tool-impl
+                                         %read-file-default-limit
+                                         %read-file-max-chars-per-line
+                                         %read-file-max-chars
+                                         builtin-read-file
+                                         register-builtin-tui-tools!
+                                         auto-start-mcp-servers!))
 
 ;;;
 ;;; Kernel-Owned Spec Gate Tools
@@ -557,16 +583,21 @@ unbounded raw search on the next turn."
                         (required . #("command"))))))
   (registry-attach! reg
                     "checkpoint_create"
-                    (lambda (description)
-                      (let*
-                          ((c (create-checkpoint! rollback-mgr (or description "agent-checkpoint")))
-                           (sess (current-react-session)))
-                        (when sess (set-react-session-active-tools! sess '()))
-                        (format #f
-                                "Created checkpoint: ~a (~a) covering ~a workspace file(s) and the registry. Active tools reset to baseline."
-                                (checkpoint-id c)
-                                (checkpoint-description c)
-                                (length (checkpoint-files c)))))
+                    (lambda* (#:optional description)
+                             (let*
+                                 ((c (create-checkpoint! rollback-mgr (or description "agent-checkpoint")))
+                                  (sess (current-react-session))
+                                  (files (checkpoint-files c))
+                                  (file-count
+                                    (if (hamt? files)
+                                      (hamt-size files)
+                                      (length files))))
+                               (when sess (set-react-session-active-tools! sess '()))
+                               (format #f
+                                       "Created checkpoint: ~a (~a) covering ~a workspace file(s) and the registry. Active tools reset to baseline."
+                                       (checkpoint-id c)
+                                       (checkpoint-description c)
+                                       file-count)))
                     '((description .
                        "Create a rollback checkpoint for current workspace files and registry. Only files under the workspace directory are captured; paths outside it are silently left out of the checkpoint.")
                       (_badb_defer . #t)

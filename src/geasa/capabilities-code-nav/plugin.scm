@@ -36,7 +36,6 @@
 ;;;
 ;;; Tree-sitter integration
 ;;;
-
 ;; Memoization cache for loaded languages
 (define %ts-language-cache (make-hash-table 31))
 
@@ -606,12 +605,14 @@ If topic is 'all' or empty, lists all available memories."
 ;;;
 (define %symbols-overview-schema
         `((name . "symbols_overview")
-          (description . "Extract high-density symbol outline (functions, classes, records, macros) from a file or directory. Use this BEFORE read_file to avoid reading large files blindly.")
+          (description .
+                       "Extract high-density symbol outline (functions, classes, records, macros) from a file or directory. Use this BEFORE read_file to avoid reading large files blindly.")
           (parameters .
                       ((type . "object")
                        (properties .
                                    ((path . ((type . "string") (description . "Path to source file or directory")))))
-                       (required . #("path"))))))
+                       (required . #("path"))))
+          (_badb_alist_args . #t)))
 
 (define %find-symbol-schema
         `((name . "find_symbol")
@@ -646,12 +647,14 @@ If topic is 'all' or empty, lists all available memories."
 
 (define %memory-read-schema
         `((name . "memory_read")
-          (description . "Read persistent project memory from .badb/memories/<topic>.md (or 'all' to list topics).")
+          (description .
+                       "Read persistent project memory from .badb/memories/<topic>.md (or 'all' to list topics).")
           (parameters .
                       ((type . "object")
                        (properties .
                                    ((topic . ((type . "string") (description . "Memory topic name or 'all'")))))
-                       (required . #("topic"))))))
+                       (required . #("topic"))))
+          (_badb_alist_args . #t)))
 
 (define %memory-write-schema
         `((name . "memory_write")
