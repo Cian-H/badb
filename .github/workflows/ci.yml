@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  conventional-commits:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check commit messages
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          else
+            RANGE="${{ github.event.before }}..${{ github.sha }}"
+          fi
+          # Skip initial zero-sha if new branch
+          if echo "$RANGE" | grep -q '^0000000'; then
+            RANGE="HEAD~1..HEAD"
+          fi
+          PATTERN='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([A-Za-z0-9._-]+\))?!?: .+'
+          while IFS= read -r line; do
+            if [[ "$line" == Merge\ * ]] || [[ "$line" == Revert\ \"* ]]; then
+              continue
+            fi
+            if ! [[ "$line" =~ $PATTERN ]]; then
+              echo "Error: Non-conventional commit message: $line"
+              exit 1
+            fi
+          done < <(git log --format=%s "$RANGE")
