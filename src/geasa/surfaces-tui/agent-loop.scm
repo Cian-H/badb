@@ -98,8 +98,15 @@ and return a notice string with placeholders and /image preview hints, or #f."
             pending-cmds)
           (cond
             ((tui-force-stop-requested? st) 'stop)
-            ((tui-urgent-steer-requested? st) 'urgent-steer)
-            (else #f))))
+            ((and (tui-urgent-steer-requested? st)
+                  (not (steering-empty? (tui-steering-queue st))))
+              'urgent-steer)
+            (else
+              ;; The urgent entry was already consumed by the react loop; clear the
+              ;; flag so the continued run is not stopped again on every delta.
+              (when (tui-urgent-steer-requested? st)
+                (set-tui-urgent-steer-requested?! st #f))
+              #f))))
 
 (define (react-stream-placeholder-index st)
         (list-index
@@ -276,6 +283,10 @@ and return a notice string with placeholders and /image preview hints, or #f."
                               (format #f "Steering queued for the running agent: ~a" text))))))))
     (else (on-command! (cons cmd arg)))))
 
+(define (steering-has-text? queue)
+        "Return #t when QUEUE holds at least one queued steering string."
+        (and (not (steering-has-interrupt? queue)) (> (steering-count queue) 0)))
+
 (define (run-react-turn! st on-command!)
         (let*
             ((cfg (tui-cfg st)) (reg (tui-reg st))
@@ -428,6 +439,14 @@ and return a notice string with placeholders and /image preview hints, or #f."
                   (tui-commit-react-stream-message! st)
                   (tui-reset-react-stream-state! st)
                   (set-tui-urgent-steer-requested?! st #f)
+                  'urgent-continue)
+                ((and (eq? verdict 'completed)
+                      (not (tui-force-stop-requested? st))
+                      (steering-has-text? (tui-steering-queue st)))
+                  ;; Steering queued while the final answer was streaming: keep the
+                  ;; answer, then continue the loop so the steering is applied.
+                  (tui-commit-react-stream-message! st)
+                  (tui-reset-react-stream-state! st)
                   'urgent-continue)
                 ((eq? verdict 'completed)
                   (tui-remove-react-stream-message! st)
