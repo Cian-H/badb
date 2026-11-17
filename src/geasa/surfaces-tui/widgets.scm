@@ -7,6 +7,8 @@
 
 (define-module (geasa surfaces-tui widgets)
                #:use-module
+               (badb version)
+               #:use-module
                (geasa foundation-util plugin)
                #:use-module
                (geasa surfaces-tui editor)
@@ -1100,7 +1102,7 @@ middle items gracefully on narrow terminals."
   (format-startup-banner maxx
                          #:key
                          (frame 0)
-                         (version "0.1.0")
+                         (version %badb-version)
                          (model #f)
                          (workspace #f)
                          (tips '()))
@@ -1126,7 +1128,7 @@ where each line is a list of (text role bold? dim?) spans fitting within MAXX."
          (filter-map identity
                      (list (list (list "" 'default #f #f))
                            (list (list "badb" 'accent #t #f)
-                                 (list (format #f " v~a" (ensure-string (or version "0.1.0"))) 'dim #f #t)
+                                 (list (format #f " v~a" (ensure-string (or version %badb-version))) 'dim #f #t)
                                  (list " · badb microharness" 'default #f #f))
                            (list (list (make-string (min 44 info-w) #\─) 'dim #f #t))
                            (and (string? model)
@@ -1172,67 +1174,99 @@ where each line is a list of (text role bold? dim?) spans fitting within MAXX."
                  (list (list (make-string (max 1 (- art-col-w cur-w)) #\space) 'default #f #f))))
             (loop (+ i 1) (cons (clip-spans (append art-spans gap-spans info-spans) w) acc))))))))
 
-(define* (format-startup-banner-text maxx
-                                     #:key (frame 0)
-                                     (version "0.1.0")
-                                     (model #f)
-                                     (workspace #f)
-                                     (tips '()))
-         "Render format-startup-banner into a plain multi-line string."
-         (string-join
-           (map (lambda (spans) (string-concatenate (map car spans)))
-                (format-startup-banner maxx
-                                       #:frame frame
-                                       #:version version
-                                       #:model model
-                                       #:workspace workspace
-                                       #:tips tips))
-           "\n"))
+(define*
+  (format-startup-banner-text maxx
+                              #:key
+                              (frame 0)
+                              (version %badb-version)
+                              (model #f)
+                              (workspace #f)
+                              (tips '()))
+  "Render format-startup-banner into a plain multi-line string."
+  (string-join
+    (map
+      (lambda (spans)
+        (string-concatenate (map car spans)))
+      (format-startup-banner maxx
+                             #:frame
+                             frame
+                             #:version
+                             version
+                             #:model
+                             model
+                             #:workspace
+                             workspace
+                             #:tips
+                             tips))
+    "\n"))
 
-(define* (startup-banner-widget #:key (frame 0)
-                                (version "0.1.0")
-                                (model #f)
-                                (workspace #f)
-                                (tips '()))
-         "Composable <widget> rendering the animated Hooded Crow startup banner."
-         (make-widget
-           'startup-banner
-           #:props `((frame . ,frame) (version . ,version) (model . ,model))
-           #:measure
-           (lambda (_w avail-w avail-h)
-             (let ((rows (format-startup-banner avail-w
-                                                #:frame frame
-                                                #:version version
-                                                #:model model
-                                                #:workspace workspace
-                                                #:tips tips)))
-               (cons avail-w (min avail-h (length rows)))))
-           #:render
-           (lambda (_w rect)
-             (let ((rows (format-startup-banner (rect-width rect)
-                                                #:frame frame
-                                                #:version version
-                                                #:model model
-                                                #:workspace workspace
-                                                #:tips tips))
-                   (rx (rect-x rect))
-                   (ry (rect-y rect))
-                   (rh (rect-height rect)))
-               (let loop ((rest rows) (dy 0) (acc '()))
-                         (if (or (null? rest) (>= dy rh))
-                           (reverse acc)
-                           (let sloop ((spans (car rest)) (cx rx) (sacc acc))
-                                      (if (null? spans)
-                                        (loop (cdr rest) (+ dy 1) sacc)
-                                        (let* ((sp (car spans))
-                                               (txt (car sp)))
-                                          (sloop (cdr spans)
-                                                 (+ cx (string-length txt))
-                                                 (cons (make-draw-op cx (+ ry dy) txt
-                                                                     #:role (cadr sp)
-                                                                     #:bold? (caddr sp)
-                                                                     #:dim? (cadddr sp))
-                                                       sacc)))))))))))
+(define*
+  (startup-banner-widget #:key
+                         (frame 0)
+                         (version %badb-version)
+                         (model #f)
+                         (workspace #f)
+                         (tips '()))
+  "Composable <widget> rendering the animated Hooded Crow startup banner."
+  (make-widget 'startup-banner
+               #:props
+               `((frame . ,frame) (version . ,version) (model . ,model))
+               #:measure
+               (lambda (_w avail-w avail-h)
+                 (let
+                     ((rows
+                        (format-startup-banner avail-w
+                                               #:frame
+                                               frame
+                                               #:version
+                                               version
+                                               #:model
+                                               model
+                                               #:workspace
+                                               workspace
+                                               #:tips
+                                               tips)))
+                   (cons avail-w (min avail-h (length rows)))))
+               #:render
+               (lambda (_w rect)
+                 (let
+                     ((rows
+                        (format-startup-banner (rect-width rect)
+                                               #:frame
+                                               frame
+                                               #:version
+                                               version
+                                               #:model
+                                               model
+                                               #:workspace
+                                               workspace
+                                               #:tips
+                                               tips))
+                      (rx (rect-x rect))
+                      (ry (rect-y rect))
+                      (rh (rect-height rect)))
+                   (let loop
+                     ((rest rows) (dy 0) (acc '()))
+                     (if (or (null? rest) (>= dy rh))
+                       (reverse acc)
+                       (let sloop
+                         ((spans (car rest)) (cx rx) (sacc acc))
+                         (if (null? spans)
+                           (loop (cdr rest) (+ dy 1) sacc)
+                           (let* ((sp (car spans)) (txt (car sp)))
+                             (sloop (cdr spans)
+                                    (+ cx (string-length txt))
+                                    (cons
+                                      (make-draw-op cx
+                                                    (+ ry dy)
+                                                    txt
+                                                    #:role
+                                                    (cadr sp)
+                                                    #:bold?
+                                                    (caddr sp)
+                                                    #:dim?
+                                                    (cadddr sp))
+                                      sacc)))))))))))
 
 ;;;
 ;;; Git Diff Viewer (ui-wp1.5)

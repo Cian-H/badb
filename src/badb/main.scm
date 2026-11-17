@@ -1,4 +1,6 @@
-(define-module (badb main) #:use-module
+(define-module (badb main)
+               #:use-module
+               (badb version) #:use-module
                (ice-9 format)
                #:use-module
                (badb surfaces cli)
@@ -38,7 +40,7 @@
 
 (define %program-name "badb")
 
-(define %version "0.1.0")
+(define %version %badb-version)
 
 (define (print-usage port)
         (format port

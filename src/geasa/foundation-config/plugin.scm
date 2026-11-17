@@ -108,7 +108,7 @@
 
 (define*
   (make-badb-config #:key
-                    (model-name (or (getenv "BADB_MODEL_NAME") "minicpm5-1b:gguf:q8"))
+                    (model-name (or (getenv "BADB_MODEL_NAME") "mistral-large-4"))
                     (model-endpoint
                       (or (getenv "BADB_MODEL_ENDPOINT") "http://127.0.0.1:10100/inference/v1"))
                     (model-api-key (or (getenv "BADB_API_KEY") (getenv "OPENAI_API_KEY") #f))

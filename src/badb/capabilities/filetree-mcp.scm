@@ -10,6 +10,8 @@
 ;;; workspace root.
 
 (define-module (badb capabilities filetree-mcp)
+               #:use-module
+               (badb version)
                ;; DEV-DEBT [accepted-layering]: capabilities infra builds on the mcp-server geasa
                ;; plugin rather than owning the protocol itself.
                #:use-module (geasa capabilities-mcp-server plugin)
@@ -28,7 +30,8 @@
                           filetree-outline
                           filetree-read))
 
-(define %filetree-version "0.1.0")
+(define %filetree-version %badb-version)
+
 (define %tree-entry-cap 500)
 (define %find-result-cap 100)
 (define %read-max-chars 10000)
@@ -36,7 +39,6 @@
 ;;;
 ;;; Tool argument helpers (inbound tool args are string-keyed alists).
 ;;;
-
 (define (arg-string args key)
         "Return the string value of KEY in tool ARGS, raising a tool error
 when it is missing or not a string."
@@ -68,7 +70,6 @@ strings so the MCP core reports them as readable tool results."
 ;;;
 ;;; Workspace guards.
 ;;;
-
 (define (hidden-entry? name)
         "Return #t when NAME should never be listed: dot-prefixed entries
 and .git."
@@ -112,7 +113,6 @@ sorted by name, skipping hidden entries and .git."
 ;;;
 ;;; tree: indented project tree.
 ;;;
-
 (define (tree-entries root max-depth)
         "Walk ROOT collecting (DEPTH NAME DIR?) rows for the tree, listing
 entries up to MAX-DEPTH levels below the root. Return (ROWS FILES DIRS
@@ -168,7 +168,6 @@ and directory counts."
 ;;;
 ;;; find: case-insensitive name search.
 ;;;
-
 (define (find-matches root needle)
         "Walk workspace ROOT collecting relative paths of entries whose name
 contains NEEDLE (case-insensitive). Return (MATCHES TOTAL) with
@@ -211,7 +210,6 @@ search over file names, returning matching relative paths capped at
 ;;;
 ;;; outline: per-file structure.
 ;;;
-
 (define (read-lines path)
         "Return the lines of PATH as a list of strings without newlines."
         (call-with-input-file path
@@ -287,7 +285,6 @@ line and line count for anything else."
 ;;;
 ;;; read: bounded file contents.
 ;;;
-
 (define (filetree-read root args)
         "Handle the read tool for workspace ROOT: the contents of the file at
 ARGS' path, truncated to ARGS' max-chars (default
@@ -317,7 +314,6 @@ ARGS' path, truncated to ARGS' max-chars (default
 ;;;
 ;;; Server assembly.
 ;;;
-
 (define (filetree-tools)
         "Return the filetree tool definitions for the MCP tools/list
 response."

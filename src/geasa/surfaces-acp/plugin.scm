@@ -20,6 +20,8 @@
 
 (define-module (geasa surfaces-acp plugin)
                #:use-module
+               (badb version)
+               #:use-module
                (badb kernel ipc)
                #:use-module
                (badb kernel journal)
@@ -139,7 +141,7 @@
 ;;;
 (define acp-protocol-version 1)
 (define acp-agent-name "badb")
-(define acp-agent-version "0.1.0")
+(define acp-agent-version %badb-version)
 
 ;; Seconds an agent -> client request waits for the client's answer.
 (define %acp-client-request-timeout 30)

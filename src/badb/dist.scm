@@ -7,7 +7,9 @@
 ;;; helper text) are re-exported by (test dist-lib) so test/test-dist.scm
 ;;; exercises exactly what scripts/dist ships.
 
-(define-module (badb dist) #:use-module
+(define-module (badb dist)
+               #:use-module
+               (badb version) #:use-module
                (ice-9 format)
                #:use-module
                (ice-9 match)
@@ -48,7 +50,7 @@
 
 ;; Mirrors %version in (badb main); kept literal so this module stays
 ;; dependency-free (importing (badb main) would drag in the full TUI).
-(define %default-version "0.1.0")
+(define %default-version %badb-version)
 
 (define %default-output-dir "dist")
 

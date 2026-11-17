@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VERSION_FILE="$ROOT_DIR/VERSION"
+
+if ! command -v git-cliff >/dev/null 2>&1; then
+  exit 0
+fi
+
+RAW_VERSION="$(git-cliff --bumped-version 2>/dev/null | tr -d '[:space:]')"
+NEW_VERSION="${RAW_VERSION#v}"
+
+if [ -z "$NEW_VERSION" ]; then
+  exit 0
+fi
+
+OLD_VERSION=""
+if [ -f "$VERSION_FILE" ]; then
+  OLD_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
+fi
+
+if [ "$NEW_VERSION" != "$OLD_VERSION" ]; then
+  printf '%s\n' "$NEW_VERSION" > "$VERSION_FILE"
+  git -C "$ROOT_DIR" add "$VERSION_FILE"
+fi
