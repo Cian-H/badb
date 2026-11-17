@@ -128,14 +128,17 @@
 # badb wrapper: run the pre-compiled badb microharness.
 GUILE_AUTO_COMPILE=0
 export GUILE_AUTO_COMPILE
+GUILE_LOAD_PATH=~a${GUILE_LOAD_PATH:+:$GUILE_LOAD_PATH}
+export GUILE_LOAD_PATH
 GUILE_LOAD_COMPILED_PATH=~a${GUILE_LOAD_COMPILED_PATH:+:$GUILE_LOAD_COMPILED_PATH}
 export GUILE_LOAD_COMPILED_PATH
 exec ~a/bin/guile --no-auto-compile -L ~a -L ~a -L ~a -L ~a \\
   -e main -s ~a \"$@\"
 "
-                                                                                                          (string-append ccache ":" notcurses-ccache)
+                                                                                                          (string-append site ":" (or (getenv "GUILE_LOAD_PATH") ""))
+                                                                                                          (string-append ccache ":" (or (getenv "GUILE_LOAD_COMPILED_PATH") ""))
                                                                                                           guile site json-site quickcheck-site notcurses-site
-                                                                                                          (string-append share "/badb-launcher.scm"))))
+                                                                                                           (string-append share "/badb-launcher.scm"))))
                                                                          (chmod wrapper #o555))))
                                                    (add-after 'install-launcher-and-wrapper 'pre-compile-modules
                                                               (lambda* (#:key inputs outputs #:allow-other-keys)
@@ -160,9 +163,9 @@ exec ~a/bin/guile --no-auto-compile -L ~a -L ~a -L ~a -L ~a \\
                                                                          ;; module at macro-expansion time dlopens it.
                                                                          (setenv "GUILE_AUTO_COMPILE" "0")
                                                                          (setenv "GUILE_LOAD_PATH"
-                                                                                 (string-join (list site json-site quickcheck-site notcurses-site) ":"))
+                                                                                 (string-append site ":" (or (getenv "GUILE_LOAD_PATH") "")))
                                                                          (setenv "GUILE_LOAD_COMPILED_PATH"
-                                                                                 (string-append ccache ":" notcurses-ccache))
+                                                                                 (string-append ccache ":" (or (getenv "GUILE_LOAD_COMPILED_PATH") "")))
                                                                          (setenv "LD_LIBRARY_PATH"
                                                                                  (string-append (assoc-ref inputs "notcurses") "/lib"))
                                                                          (mkdir-p ccache)

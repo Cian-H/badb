@@ -812,7 +812,10 @@ Throw 'geis-bundle-error when validation fails."
                    (lock-geis-bundle (%clean-path dir) dep-fid)
                    (set! locked-fids (append locked-fids (list dep-fid)))))
                dep-dirs)
-             (let* ((verdict (verify-locked-geis-bundle fid))
+             (let* ((verdict (verify-locked-geis-bundle
+                               fid
+                               #:timeout 120
+                               #:load-paths (list (dirname (user-geis-store-dir)) "src" "." "geis")))
                     (verdict-str (assoc-ref verdict 'verdict))
                     (should-compile? (and (equal? verdict-str "pass")
                                           (or compile?
@@ -879,7 +882,11 @@ Returns ((store . dir) (installed . (fid ...)) (failed . (fid ...)))."
                                (copy-file (string-append src-b "/" rel) dst)))
                            (geis-bundle-files src-b))
                          (copy-file (string-append src-b "/manifest.scm")
-                                    (string-append dst-b "/manifest.scm"))
+                                    (string-append dst-b "/manifest.scm"))))
+                     fids)
+                   (for-each
+                     (lambda (fid)
+                       (let ((dst-b (string-append store "/" fid)))
                          (catch #t
                            (lambda ()
                              (let ((rep (geis-bundle-install dst-b #:compile? (not no-compile?))))
