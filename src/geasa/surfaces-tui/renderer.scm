@@ -1054,7 +1054,11 @@ cannot restore the screen; initscr must run again."
                             (hash-clear! (tui-click-targets st))
                             (hash-clear! (tui-row-texts st))
                             (let
-                                ((tab-sig (cons (tui-status-text st) (tui-cur-model st))))
+                                ((tab-sig
+                                   (list (tui-status-text st)
+                                         (tui-cur-model st)
+                                         (and (spinner-active-status? (tui-status-text st))
+                                              (streaming-spinner-glyph)))))
                               (unless
                                   (equal? tab-sig (tui-last-tab-title-sig st))
                                 (set-tui-last-tab-title-sig! st tab-sig)
