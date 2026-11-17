@@ -366,6 +366,12 @@
             (test-assert "slash commands list contains help" (assoc "help" %slash-commands))
             (test-assert "slash commands list contains model"
                          (assoc "model" %slash-commands))
+            (test-assert
+              "slash commands list contains endpoint"
+              (assoc "endpoint" %slash-commands))
+            (test-assert
+              "slash commands list contains provider"
+              (assoc "provider" %slash-commands))
             (test-assert "slash commands list contains mcp" (assoc "mcp" %slash-commands))
             (test-assert
               "slash commands list contains config"
@@ -390,6 +396,13 @@
             (test-assert
               "slash commands list contains context"
               (assoc "context" %slash-commands))
+            (test-assert
+              "slash commands list contains features"
+              (assoc "features" %slash-commands))
+            (test-assert
+              "slash commands list contains journal"
+              (assoc "journal" %slash-commands))
+            (test-assert "slash commands list contains test" (assoc "test" %slash-commands))
             (test-assert "slash commands list contains sh" (assoc "sh" %slash-commands))
             (test-assert "slash commands list contains eval" (assoc "eval" %slash-commands))
             (test-assert "slash commands list contains clear"
@@ -405,8 +418,8 @@
               (test-assert "matches commands containing m"
                            (member "model" (map car m-matches))))
             (let
-                ((exact-matches (matching-slash-commands "/cont")))
-              (test-equal "matches context command" '("context") (map car exact-matches)))
+                ((exact-matches (matching-slash-commands "/jour")))
+              (test-equal "matches journal command" '("journal") (map car exact-matches)))
             (let
                 ((geis-matches (matching-slash-commands "/geis")))
               (test-equal "matches geis command" '("geis") (map car geis-matches)))
@@ -2442,6 +2455,50 @@
               (test-equal "tui-active-menu unwraps <menu>" "Config" (menu-title (tui-active-menu st)))
               (tui-clear-overlay! st)
               (test-equal "tui-clear-overlay! clears active-menu" #f (tui-active-menu st))))
+
+(test-group "Menu Back Navigation"
+            (let*
+                ((root (make-menu "Root" '((("Item 1" . "Desc 1") . act-1))))
+                 (sub (menu-push root "Child" '((("Sub 1" . "Sub desc") . sub-1))))
+                 (ov (make-menu-overlay sub))
+                 (selected #f)
+                 (key-ctx
+                   `((key-up . 259) (key-down . 258)
+                     (key-left . 260)
+                     (key-enter . 343)
+                     (on-select! .
+                                 ,(lambda (item)
+                                    (set! selected (menu-item-action item))))
+                     (on-close! .
+                                ,(lambda ()
+                                   #t)))))
+              (test-equal "root menu has no Back item" 1 (menu-count root))
+              (test-equal "pushed submenu appends Back item" 2 (menu-count sub))
+              (test-equal "last item of submenu is menu-back"
+                          'menu-back
+                          (menu-item-action (list-ref (menu-items sub) 1)))
+              (test-equal
+                "pushing existing menu does not duplicate Back item"
+                2
+                (menu-count (menu-push root sub)))
+              ;; Move down to Back item (index 1) and press Enter
+              ((overlay-on-key ov) ov 258 key-ctx)
+              (test-equal "Enter on Back item returns handled"
+                          'handled
+                          ((overlay-on-key ov) ov 10 key-ctx))
+              (test-equal
+                "Enter on Back item pops back to root menu"
+                "Root"
+                (menu-title (menu-overlay-menu ov)))
+              (test-equal "Enter on Back item does not invoke on-select!" #f selected)
+              ;; Click on Back item on a fresh submenu overlay
+              (let ((ov2 (make-menu-overlay sub)))
+                (test-assert "click on Back item returns #t"
+                             ((overlay-on-click ov2) ov2 '(menu-item . 1) key-ctx))
+                (test-equal
+                  "click on Back item pops back to root menu"
+                  "Root"
+                  (menu-title (menu-overlay-menu ov2))))))
 
 (spec-end)
 

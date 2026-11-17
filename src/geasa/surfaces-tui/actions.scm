@@ -716,6 +716,12 @@
           (cond
             ((symbol? action)
               (case action
+                ((menu-back)
+                  (let
+                      ((parent (and prev-menu (menu-pop prev-menu))))
+                    (when parent
+                      (tui-set-active-menu! st parent)
+                      (menu-trigger-highlight! parent))))
                 ((open-config-menu)
                   (push-sub! "Configuration"
                              (config-menu-items-for-state cfg

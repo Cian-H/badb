@@ -158,22 +158,35 @@ RENDER / ON-KEY / ON-CLICK handlers."
                   'pass)))
             ((or (eqv? ch key-enter) (eqv? ch 10) (eqv? ch 13))
               (let ((item (menu-selected-item m)))
-                (when (and item on-select!) (on-select! item)))
-              'handled)
+                (cond
+                  ((and item (eq? (menu-item-action item) 'menu-back))
+                    (let ((parent (menu-pop m)))
+                      (if parent
+                        (begin (set-overlay-data! ov parent) (menu-trigger-highlight! parent) 'handled)
+                        (begin (when on-close! (on-close!)) 'close))))
+                  (else (when (and item on-select!) (on-select! item)) 'handled))))
             (else 'pass))))
 
 (define
   (handle-menu-overlay-click ov target click-ctx)
   "Handle mouse TARGET on menu overlay OV. Returns #t when handled."
   (let
-      ((m (overlay-data ov)) (on-select! (assq-ref click-ctx 'on-select!)))
+      ((m (overlay-data ov))
+       (on-select! (assq-ref click-ctx 'on-select!))
+       (on-close! (assq-ref click-ctx 'on-close!)))
     (if
         (and (menu? m) (pair? target) (eq? (car target) 'menu-item))
       (let*
           ((moved (menu-move m (- (cdr target) (menu-selected-index m))))
            (item (menu-selected-item moved)))
         (set-overlay-data! ov moved)
-        (when (and item on-select!) (on-select! item))
+        (if
+            (and item (eq? (menu-item-action item) 'menu-back))
+          (let ((parent (menu-pop moved)))
+            (if parent
+              (begin (set-overlay-data! ov parent) (menu-trigger-highlight! parent))
+              (when on-close! (on-close!))))
+          (when (and item on-select!) (on-select! item)))
         #t)
       #f)))
 

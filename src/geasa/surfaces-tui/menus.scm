@@ -96,23 +96,49 @@
                (action (if (pair? item) (cdr item) #f)))
           (cons (cons (ensure-string label) (ensure-string (or desc ""))) action)))
 
-(define* (make-menu title items
-                    #:key (selected-index 0)
-                    (on-highlight #f)
-                    (on-cancel #f)
-                    (parent #f))
-         "Create a menu titled TITLE from ITEMS, each of the form
+(define (append-menu-back-item items)
+        "Append a Back navigation item to ITEMS unless one is already present."
+        (if
+            (any
+              (lambda (it)
+                (eq? (menu-item-action it) 'menu-back))
+              items)
+          items
+          (append items
+                  (list
+                    (normalize-menu-item
+                      (cons (cons "← Back" "Return to previous menu") 'menu-back))))))
+
+(define*
+  (make-menu title
+             items
+             #:key
+             (selected-index 0)
+             (on-highlight #f)
+             (on-cancel #f)
+             (parent #f))
+  "Create a menu titled TITLE from ITEMS, each of the form
 ((label . description) . action), with SELECTED-INDEX preselected,
 optional ON-HIGHLIGHT / ON-CANCEL callbacks, and optional PARENT menu."
-         (let* ((norm-items (map normalize-menu-item (if (list? items) items '())))
-                (count (length norm-items))
-                (idx (min (max 0 selected-index) (max 0 (- count 1)))))
-           (%make-menu (ensure-string (or title "Menu"))
-                       norm-items
-                       idx
-                       (and (procedure? on-highlight) on-highlight)
-                       (and (procedure? on-cancel) on-cancel)
-                       (and (menu? parent) parent))))
+  (let*
+      ((parent-menu (and (menu? parent) parent))
+       (base-items
+         (map normalize-menu-item
+              (if (list? items)
+                items
+                '())))
+       (norm-items
+         (if parent-menu
+           (append-menu-back-item base-items)
+           base-items))
+       (count (length norm-items))
+       (idx (min (max 0 selected-index) (max 0 (- count 1)))))
+    (%make-menu (ensure-string (or title "Menu"))
+                norm-items
+                idx
+                (and (procedure? on-highlight) on-highlight)
+                (and (procedure? on-cancel) on-cancel)
+                parent-menu)))
 
 (define (menu-count menu)
         "Return the number of items in MENU."
@@ -144,27 +170,37 @@ Empty menus are returned unchanged."
               (menu-trigger-highlight! next)
               next))))
 
-(define* (menu-push parent child-or-title
-                    #:optional (items '())
-                    #:key (selected-index 0)
-                    (on-highlight #f)
-                    (on-cancel #f))
-         "Push a child menu onto PARENT's breadcrumb stack. CHILD-OR-TITLE may
+(define*
+  (menu-push parent
+             child-or-title
+             #:optional
+             (items '())
+             #:key
+             (selected-index 0)
+             (on-highlight #f)
+             (on-cancel #f))
+  "Push a child menu onto PARENT's breadcrumb stack. CHILD-OR-TITLE may
 be an existing <menu> record or a title string paired with ITEMS."
-         (let ((parent-menu (and (menu? parent) parent)))
-           (if (menu? child-or-title)
-             (%make-menu (menu-title child-or-title)
-                         (menu-items child-or-title)
-                         (menu-selected-index child-or-title)
-                         (menu-on-highlight child-or-title)
-                         (menu-on-cancel child-or-title)
-                         parent-menu)
-             (make-menu child-or-title
-                        items
-                        #:selected-index selected-index
-                        #:on-highlight on-highlight
-                        #:on-cancel on-cancel
-                        #:parent parent-menu))))
+  (let ((parent-menu (and (menu? parent) parent)))
+    (if (menu? child-or-title)
+      (%make-menu (menu-title child-or-title)
+                  (if parent-menu
+                    (append-menu-back-item (menu-items child-or-title))
+                    (menu-items child-or-title))
+                  (menu-selected-index child-or-title)
+                  (menu-on-highlight child-or-title)
+                  (menu-on-cancel child-or-title)
+                  parent-menu)
+      (make-menu child-or-title
+                 items
+                 #:selected-index
+                 selected-index
+                 #:on-highlight
+                 on-highlight
+                 #:on-cancel
+                 on-cancel
+                 #:parent
+                 parent-menu))))
 
 (define (menu-pop menu)
         "Cancel/close MENU by invoking its optional on-cancel callback and
