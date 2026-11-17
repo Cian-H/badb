@@ -438,7 +438,7 @@ the output with WP1 format-git-diff-view."
           "  /geis list                         - List all locked feature contracts (geasa)\n"
           "  /geis bindings                     - Show shifting geis bindings & journal plot (native ncuplot + graph)\n"
           "  /geis status [feature-id]          - Check status/hash of locked contract(s)\n"
-          "  /geis verify <feature-id>          - Replay locked contract in a disposable kernel subprocess\n"
+          "  /geis verify <feature-id>          - Replay the LOCKED copy (.badb/) in a disposable kernel subprocess; if stale, re-lock via ./scripts/verify-geasa, never copy into .badb/\n"
           "  /geis synthesize <feature-id> ...  - Run Sema plugin synthesis for locked feature\n\n"
           "Example:\n"
           "  /geis add retrieval for the numpy docs\n"))

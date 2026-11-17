@@ -191,7 +191,11 @@
             (let
                 ((status (system* "./scripts/verify-geasa")))
               (exit (status:exit-val status))))
-          (else (display (spec-tool-verify (cadr sub-args))))))
+          (else
+            (display (spec-tool-verify (cadr sub-args)))
+            (format (current-error-port)
+                    "Note: verify replays the locked copy in .badb/ (read-only, generated). If you edited src/geasa/~a, re-pin and re-lock via ./scripts/verify-geasa; never copy files into .badb/ by hand.~%"
+                    (cadr sub-args)))))
 
 (define (run-geis-distill sub-args)
         (let*
@@ -233,7 +237,7 @@
                           out
                           '(("status [fid]"             . "check status/hash of locked spec(s)")
                             ("list"                     . "list all locked feature contracts (geasa)")
-                            ("verify <fid|--all>"       . "replay locked contract in a disposable kernel subprocess")
+                            ("verify <fid|--all>"       . "replay the LOCKED copy in .badb/ (not src/geasa/); run ./scripts/verify-geasa to re-lock first")
                             ("model [name]"             . "inspect or set default model for geis contract synthesis")
                             ("synthesize <fid>"         . "run Sema plugin synthesis for a locked feature")
                             ("pack <fid>"               . "build a shareable bundle tarball from BADB_GEIS_PATH")
