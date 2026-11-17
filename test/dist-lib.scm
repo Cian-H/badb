@@ -9,4 +9,5 @@
                #:re-export (pack-file-name
                              pack-command
                              parse-dist-args
-                             extraction-helper-snippet))
+                             extraction-helper-snippet
+                             single-file-stub))

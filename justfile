@@ -58,6 +58,14 @@ commit-feature fid msg:
 dist *args:
     ./scripts/dist {{args}}
 
+# Build single-file badb executable, install to ~/.local/bin/badb, and bootstrap base geasa
+install:
+    ./scripts/dist --single-file -o dist/badb
+    mkdir -p ~/.local/bin
+    cp dist/badb ~/.local/bin/badb
+    chmod 0755 ~/.local/bin/badb
+    ~/.local/bin/badb bootstrap --from ./src/geasa
+
 # Run ACP TCK suite
 test-acp-tck *args:
     ./scripts/test-acp-tck {{args}}

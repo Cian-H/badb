@@ -42,8 +42,10 @@
                         (list "dist" "/tmp/x.tar.gz")
                         (match (parse-dist-args '("-o" "/tmp/x.tar.gz"))
                                ((out-dir extra) (list out-dir extra))
-                               (_ 'parse-error))
-                        )
+                               (_ 'parse-error)))
+            (test-equal "--single-file returns single-file tag"
+                        (list "dist" #f 'single-file)
+                        (parse-dist-args '("--single-file")))
             (test-assert "unknown option is rejected"
                          (match (parse-dist-args '("--bogus"))
                                 ('error #t)
@@ -73,6 +75,11 @@
                               (not (string-contains helper "sudo"))
                               (not (string-contains helper "guix daemon"))))
             (test-assert "helper documents the run command"
-                         (string-contains helper "./bin/badb")))
+                         (string-contains helper "./bin/badb"))
+            (test-assert "single-file stub embeds hash and payload marker"
+                         (let ((stub (single-file-stub "deadbeef")))
+                           (and (string-contains stub "HASH=\"deadbeef\"")
+                                (string-contains stub "__BADB_PAYLOAD__")
+                                (string-contains stub "exec \"$CACHE_ROOT/bin/badb\"")))))
 
 (test-end "dist")

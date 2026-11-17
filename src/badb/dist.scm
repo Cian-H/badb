@@ -22,6 +22,7 @@
                                  pack-command
                                  parse-dist-args
                                  extraction-helper-snippet
+                                 single-file-stub
                                  usage-text
                                  mkdir-p)
                ;; scripts/dist imports only this module; re-export the bits it needs.
@@ -80,20 +81,45 @@ output path."
                             ("docker" '("-f" "docker"))
                             (_ (error "pack-command: unsupported format" format)))))
            `("pack" "-RR" ,@fmt
+             "-L" ,(string-append root-dir "/guix")
+             "-S" "/bin=bin"
              "-m" ,(string-append root-dir "/guix/badb/pack-manifest.scm")
              ,out)))
 
 (define (parse-dist-args args)
         "Parse scripts/dist argument list ARGS.
-Returns (list OUT-DIR RAW-OUT) where OUT-DIR is the artifact directory
-(default \"dist\") and RAW-OUT is an optional raw `guix pack' output
-override, or the symbol 'error on unrecognized options."
-        (let loop ((args args) (out-dir #f) (raw-out #f))
+Returns (list OUT-DIR RAW-OUT) (or (list OUT-DIR RAW-OUT 'single-file) when
+--single-file is passed), or the symbol 'error on unrecognized options."
+        (let loop ((args args) (out-dir #f) (raw-out #f) (single? #f))
                   (match args
-                         (() (list (or out-dir %default-output-dir) raw-out))
-                         (("--output-dir" dir rest ...) (loop rest dir raw-out))
-                         (("-o" path rest ...) (loop rest out-dir path))
+                         (() (if single?
+                               (list (or out-dir %default-output-dir) raw-out 'single-file)
+                               (list (or out-dir %default-output-dir) raw-out)))
+                         (("--output-dir" dir rest ...) (loop rest dir raw-out single?))
+                         (("-o" path rest ...) (loop rest out-dir path single?))
+                         (("--single-file" rest ...) (loop rest out-dir raw-out #t))
                          (_ 'error))))
+
+(define (single-file-stub payload-hash)
+        "Return the POSIX shell self-extracting stub header for PAYLOAD-HASH."
+        (format #f "#!/bin/sh
+set -eu
+HASH=~s
+CACHE_ROOT=\"${XDG_CACHE_HOME:-$HOME/.cache}/badb/runtime/$HASH\"
+MARKER=\"$CACHE_ROOT/.ready\"
+if [ ! -f \"$MARKER\" ]; then
+  TMP=\"${CACHE_ROOT}.tmp.$$\"
+  rm -rf \"$TMP\"
+  mkdir -p \"$TMP\"
+  ARCHIVE_LINE=$(awk '/^__BADB_PAYLOAD__$/ {print NR + 1; exit 0}' \"$0\")
+  tail -n +\"$ARCHIVE_LINE\" \"$0\" | tar -xz -C \"$TMP\"
+  touch \"$TMP/.ready\"
+  mkdir -p \"$(dirname \"$CACHE_ROOT\")\"
+  mv \"$TMP\" \"$CACHE_ROOT\" 2>/dev/null || rm -rf \"$TMP\"
+fi
+exec \"$CACHE_ROOT/bin/badb\" \"$@\"
+__BADB_PAYLOAD__
+" payload-hash))
 
 (define (extraction-helper-snippet tarball)
         "Return user-facing instructions for extracting and running the

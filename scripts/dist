@@ -42,4 +42,24 @@
            (format #t "This may take a while on first run (channel + closure download).~%")
            ;; Replace the process with the pinned guix pack invocation;
            ;; its exit status becomes ours.
-           (apply execlp "guix" "guix" argv))))))))
+           (apply execlp "guix" "guix" argv)))
+        ((out-dir raw-out 'single-file)
+         (mkdir-p (string-append %root-dir "/" out-dir))
+         (let* ((version %default-version)
+                (argv (pack-command %root-dir version))
+                (tarball (last argv))
+                (bin-out (or raw-out
+                             (string-drop-right tarball (string-length ".tar.gz")))))
+           (format #t "Building single-file executable: ~a~%" bin-out)
+           (let ((st (apply system* "guix" argv)))
+             (unless (and (number? st) (zero? (status:exit-val st)))
+               (exit (or (status:exit-val st) 1))))
+           (let* ((hash-port (open-input-pipe (string-append "sha256sum " tarball)))
+                  (hash-line (read-line hash-port))
+                  (_ (close-pipe hash-port))
+                  (hash (car (string-split hash-line #\space))))
+             (call-with-output-file bin-out
+               (lambda (out-port)
+                 (display (single-file-stub hash) out-port)))
+             (system* "sh" "-c" (format #f "cat ~s >> ~s && chmod 0755 ~s" tarball bin-out bin-out))
+             (format #t "Built single-file executable: ~a~%" bin-out))))))))
