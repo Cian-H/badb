@@ -45,7 +45,9 @@
                                         geis-take-pending-prompt
                                         geis-bundle-assemble!
                                         geis-bundle-replay
-                                        geis-bundle-pin!))
+                                        geis-bundle-pin!
+                                        geis-bundle-ccache-dir
+                                        geis-compile-bundle!))
 
 (define (%string-split-char s delim)
         "Split S on single-character DELIM into a list of substrings."
@@ -317,6 +319,9 @@ otherwise a non-empty list of human-readable reason strings."
                 (when
                     (and wf-exports (not (and (list? wf-exports) (every string? wf-exports))))
                   (add! "workflow-exports field must be a list of workflow name strings")))
+              (let ((precompile (assoc 'precompile manifest)))
+                (when (and precompile (not (boolean? (cdr precompile))))
+                  (add! "precompile field must be a boolean")))
               (let ((pins (manifest-field manifest 'sha256)))
                 (when pins
                   (if (list? pins)
@@ -611,42 +616,99 @@ holding the copy's bundle hash.  Return ((tarball . path)
 ;;;
 ;;; Bundle installation
 ;;;
-(define (geis-bundle-install bundle-dir)
-        "Install the bundle at BUNDLE-DIR: validate its manifest, resolve its
+(define (geis-bundle-ccache-dir bundle-hash)
+        "Return the ccache directory for BUNDLE-HASH under BADB_CCACHE_DIR or
+$XDG_CACHE_HOME/badb/ccache."
+        (let* ((explicit (getenv "BADB_CCACHE_DIR"))
+               (base (if (and explicit (not (string-null? explicit)))
+                       explicit
+                       (let ((xdg (getenv "XDG_CACHE_HOME"))
+                             (home (getenv "HOME")))
+                         (string-append
+                           (cond
+                             ((and xdg (not (string-null? xdg))) xdg)
+                             ((and home (not (string-null? home))) (string-append home "/.cache"))
+                             (else ".cache"))
+                           "/badb/ccache")))))
+          (string-append base "/" bundle-hash)))
+
+(define (geis-compile-bundle! bundle-dir bundle-hash fid)
+        "Compile all .scm plugin/library modules in BUNDLE-DIR (excluding
+manifest.scm, spec.geis.scm, and fixtures/) into
+<ccache-root>/<bundle-hash>/geasa/<fid>/ using `guild compile'.
+Returns the list of compiled .go paths."
+        (let* ((ccache-root (geis-bundle-ccache-dir bundle-hash))
+               (out-dir (string-append ccache-root "/geasa/" fid))
+               (scm-files
+                 (filter (lambda (rel)
+                           (and (string-suffix? ".scm" rel)
+                                (not (string=? rel "spec.geis.scm"))
+                                (not (string-prefix? "fixtures/" rel))))
+                         (geis-bundle-files bundle-dir)))
+               (compiled '()))
+          (%mkdir-p out-dir)
+          (for-each
+            (lambda (rel)
+              (let* ((src (string-append bundle-dir "/" rel))
+                     (base (if (string-suffix? ".scm" rel)
+                             (substring rel 0 (- (string-length rel) 4))
+                             rel))
+                     (dst (string-append out-dir "/" base ".go")))
+                (%mkdir-p (dirname dst))
+                (let ((status (system* "guild" "compile" "-o" dst src)))
+                  (when (and (number? status) (zero? (status:exit-val status)))
+                    (set! compiled (cons dst compiled))))))
+            scm-files)
+          (reverse compiled)))
+
+(define* (geis-bundle-install bundle-dir #:key (compile? #f))
+         "Install the bundle at BUNDLE-DIR: validate its manifest, resolve its
 geis dependencies, lock every dependency and the target (dependencies
 first) into the gate's read-only store, verify the target against the
 locked copy, and return a report alist:
 ((feature-id . fid) (bundle-sha256 . hash) (locked . (fid ...))
- (verify-verdict . \"pass\"|\"fail\") (verify-reason . \"...\")).
+ (verify-verdict . \"pass\"|\"fail\") (verify-reason . \"...\")
+ (compiled . (go-path ...))).
+When VERIFY-VERDICT is \"pass\" and either COMPILE? is #t or the manifest
+sets (precompile . #t), pre-compile the bundle's .scm modules into
+$XDG_CACHE_HOME/badb/ccache/<bundle-sha256>/.
 Throw 'geis-bundle-error when validation fails."
-        (let ((manifest (read-geis-manifest
-                          (string-append bundle-dir "/manifest.scm"))))
-          (unless manifest
-            (throw 'geis-bundle-error
-                   (format #f "invalid manifest in bundle at '~a'" bundle-dir)))
-          (let ((errors (geis-manifest-valid? bundle-dir)))
-            (unless (null? errors)
-              (throw 'geis-bundle-error
-                     (format #f "manifest validation failed: ~a"
-                             (string-join errors "; ")))))
-          (let* ((fid (manifest-field manifest 'feature-id))
-                 (dep-dirs (resolve-geis-load-path fid))
-                 (target-hash (geis-bundle-hash bundle-dir))
-                 (locked-fids '()))
-            (for-each
-              (lambda (dir)
-                (let* ((dep-manifest (read-geis-manifest
-                                       (string-append dir "/manifest.scm")))
-                       (dep-fid (manifest-field dep-manifest 'feature-id)))
-                  (lock-geis-bundle (%clean-path dir) dep-fid)
-                  (set! locked-fids (append locked-fids (list dep-fid)))))
-              dep-dirs)
-            (let ((verdict (verify-locked-geis-bundle fid)))
-              (list (cons 'feature-id fid)
-                    (cons 'bundle-sha256 target-hash)
-                    (cons 'locked locked-fids)
-                    (cons 'verify-verdict (assoc-ref verdict 'verdict))
-                    (cons 'verify-reason (assoc-ref verdict 'reason)))))))
+         (let ((manifest (read-geis-manifest
+                           (string-append bundle-dir "/manifest.scm"))))
+           (unless manifest
+             (throw 'geis-bundle-error
+                    (format #f "invalid manifest in bundle at '~a'" bundle-dir)))
+           (let ((errors (geis-manifest-valid? bundle-dir)))
+             (unless (null? errors)
+               (throw 'geis-bundle-error
+                      (format #f "manifest validation failed: ~a"
+                              (string-join errors "; ")))))
+           (let* ((fid (manifest-field manifest 'feature-id))
+                  (dep-dirs (resolve-geis-load-path fid))
+                  (target-hash (geis-bundle-hash bundle-dir))
+                  (locked-fids '()))
+             (for-each
+               (lambda (dir)
+                 (let* ((dep-manifest (read-geis-manifest
+                                        (string-append dir "/manifest.scm")))
+                        (dep-fid (manifest-field dep-manifest 'feature-id)))
+                   (lock-geis-bundle (%clean-path dir) dep-fid)
+                   (set! locked-fids (append locked-fids (list dep-fid)))))
+               dep-dirs)
+             (let* ((verdict (verify-locked-geis-bundle fid))
+                    (verdict-str (assoc-ref verdict 'verdict))
+                    (should-compile? (and (equal? verdict-str "pass")
+                                          (or compile?
+                                              (eq? #t (manifest-field manifest 'precompile)))))
+                    (compiled-files (if should-compile?
+                                      (geis-compile-bundle! bundle-dir target-hash fid)
+                                      '())))
+               (list (cons 'feature-id fid)
+                     (cons 'bundle-sha256 target-hash)
+                     (cons 'locked locked-fids)
+                     (cons 'verify-verdict verdict-str)
+                     (cons 'verify-reason (assoc-ref verdict 'reason))
+                     (cons 'compiled compiled-files))))))
 (define (%list-dir d)
         " scandir without the dot entries; empty list on error."
         (or
