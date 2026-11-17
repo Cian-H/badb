@@ -66,9 +66,7 @@
 (define (tui-handle-mouse-event! st ev hooks)
         "Handle a single decoded mouse event EV on ST. Returns #t if dirty."
         (let*
-            ((nref (tui-nref st)) (endwin (nref 'endwin))
-             (refresh (nref 'refresh))
-             (button (car ev))
+            ((button (car ev))
              (y (cadr ev))
              (x (and (pair? (cddr ev)) (caddr ev))))
           (cond
@@ -439,8 +437,6 @@
   (let*
       ((nref (tui-nref st)) (stdscr (tui-stdscr st))
        (getmaxy (nref 'getmaxy))
-       (endwin (nref 'endwin))
-       (refresh (nref 'refresh))
        (KEY_UP (nref 'KEY_UP))
        (KEY_DOWN (nref 'KEY_DOWN))
        (KEY_LEFT (nref 'KEY_LEFT))

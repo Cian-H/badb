@@ -827,8 +827,6 @@
              (jrn (tui-jrn st))
              (nref (tui-nref st))
              (stdscr (tui-stdscr st))
-             (endwin (nref 'endwin))
-             (refresh (nref 'refresh))
              (getch (nref 'getch))
              (add-sys!
                (lambda (m)
