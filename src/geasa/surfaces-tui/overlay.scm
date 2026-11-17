@@ -121,13 +121,14 @@ RENDER / ON-KEY / ON-CLICK handlers."
 
 (define (handle-menu-overlay-key ov ch key-ctx)
         "Handle key CH for menu overlay OV using KEY-CTX (alist with 'key-up,
-'key-down, 'key-left, 'key-enter, 'on-select!, 'on-close!). Returns 'handled,
-'close, or 'pass."
+'key-down, 'key-left, 'key-backspace, 'key-enter, 'on-select!, 'on-close!).
+Returns 'handled, 'close, or 'pass."
         (let
             ((m (overlay-data ov))
              (key-up (assq-ref key-ctx 'key-up))
              (key-down (assq-ref key-ctx 'key-down))
              (key-left (assq-ref key-ctx 'key-left))
+             (key-backspace (assq-ref key-ctx 'key-backspace))
              (key-enter (assq-ref key-ctx 'key-enter))
              (on-select! (assq-ref key-ctx 'on-select!))
              (on-close! (assq-ref key-ctx 'on-close!)))
@@ -151,7 +152,10 @@ RENDER / ON-KEY / ON-CLICK handlers."
                     (when (procedure? (menu-on-cancel m)) ((menu-on-cancel m)))
                     (when on-close! (on-close!))
                     'close))))
-            ((eqv? ch key-left)
+            ((or (eqv? ch key-left)
+                 (and key-backspace (eqv? ch key-backspace))
+                 (eqv? ch 8)
+                 (eqv? ch 127))
               (let ((parent (menu-pop m)))
                 (if parent
                   (begin (set-overlay-data! ov parent) (menu-trigger-highlight! parent) 'handled)

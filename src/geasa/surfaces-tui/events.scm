@@ -55,6 +55,7 @@
           `((key-up . ,(nref 'KEY_UP))
             (key-down . ,(nref 'KEY_DOWN))
             (key-left . ,(nref 'KEY_LEFT))
+            (key-backspace . ,(nref 'KEY_BACKSPACE))
             (key-enter . ,(nref 'KEY_ENTER))
             (on-select! .
                         ,(lambda (item)

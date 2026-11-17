@@ -2465,6 +2465,7 @@
                  (key-ctx
                    `((key-up . 259) (key-down . 258)
                      (key-left . 260)
+                     (key-backspace . 263)
                      (key-enter . 343)
                      (on-select! .
                                  ,(lambda (item)
@@ -2491,6 +2492,29 @@
                 "Root"
                 (menu-title (menu-overlay-menu ov)))
               (test-equal "Enter on Back item does not invoke on-select!" #f selected)
+              ;; Left, Backspace, and Esc all pop 1 level up from submenu
+              (let ((ov-left (make-menu-overlay sub)))
+                (test-equal "Left pops submenu"
+                            'handled
+                            ((overlay-on-key ov-left) ov-left 260 key-ctx))
+                (test-equal "Left returns to root menu"
+                            "Root"
+                            (menu-title (menu-overlay-menu ov-left))))
+              (let ((ov-bs (make-menu-overlay sub)))
+                (test-equal "Backspace (127) pops submenu"
+                            'handled
+                            ((overlay-on-key ov-bs) ov-bs 127 key-ctx))
+                (test-equal
+                  "Backspace (127) returns to root menu"
+                  "Root"
+                  (menu-title (menu-overlay-menu ov-bs))))
+              (let ((ov-esc (make-menu-overlay sub)))
+                (test-equal "Esc pops submenu instead of closing"
+                            'handled
+                            ((overlay-on-key ov-esc) ov-esc 27 key-ctx))
+                (test-equal "Esc returns to root menu"
+                            "Root"
+                            (menu-title (menu-overlay-menu ov-esc))))
               ;; Click on Back item on a fresh submenu overlay
               (let ((ov2 (make-menu-overlay sub)))
                 (test-assert "click on Back item returns #t"
