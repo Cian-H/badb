@@ -18,9 +18,12 @@
                (srfi srfi-9)
                #:use-module
                (srfi srfi-19)
+               #:use-module
+               (geasa surfaces-tui menus)
                #:export
                (wrap-line wrap-text
                           %slash-commands
+                          rebuild-slash-commands!
                           selector-active?
                           matching-slash-commands
                           %selector-max-visible
@@ -136,41 +139,32 @@ breaking on whitespace when possible."
 ;;;
 ;;; Slash Commands Registry & Parsing
 ;;;
-(define %slash-commands
-        '(("help" . "Show help manual & shortcuts")
-          ("model" . "Switch or inspect active LLM model")
-          ("endpoint" . "Switch or inspect endpoint URL")
-          ("provider" . "Switch or inspect model provider preset (e.g. lmstudio)")
-          ("mcp" . "Manage MCP servers (list, start, stop, add, remove, tools)")
-          ("config" . "Inspect, reload, or save badb configuration")
-          ("theme" . "Inspect or switch the active UI theme")
-          ("guardrail" . "Inspect or set guardrail security policy level")
-          ("compact" . "Compact conversation history context")
-          ("resume" . "Resume a previous chat session from disk")
-          ("checkpoint" . "Create a workspace and registry checkpoint")
-          ("rollback" . "Revert to latest or specified checkpoint")
-          ("fork" . "Create a conversation branch at the current or saved checkpoint")
-          ("replay" . "Restore a saved conversation and workspace checkpoint")
-          ("rules" . "Inspect discovered project rules & workspace tree")
-          ("geis" .
-           "Contract-gated dynamic harness synthesis (/geis add <desc>, model [name], list, verify, status)")
-          ("context" . "View conversation token stats and metrics")
-          ("ctx" . "Context index search and token savings stats")
-          ("skills" . "List available agent skills")
-          ("memories" . "Inspect persistent project memories")
-          ("usage" . "Show per-session token usage report")
-          ("features" . "List kernel registered features")
-          ("journal" . "View checkpoint provenance audit log")
-          ("test" . "Run bootstrap verification test suite")
-          ("sh" . "Execute shell command (!<cmd>)")
-          ("eval" . "Evaluate Scheme code in REPL (,<expr>)")
-          ("steer" . "Queue steering text for the running agent")
-          ("interrupt" . "Halt the running agent at its next boundary")
-          ("clear" . "Clear chat viewport history")
-          ("quit" . "Exit badb microharness")
-          ("exit" . "Exit badb microharness")
-          ("dump" . "Export the conversation to a text file [path]")
-          ("image" . "Preview an image via notcurses/Kitty (/image <path>)")))
+(define (derive-slash-commands)
+        "Derive the flat ((cmd . desc) ...) alist from %command-categories."
+        (let loop
+          ((cats %command-categories) (seen '()) (acc '()))
+          (if (null? cats)
+            (let ((res (reverse acc)))
+              (if (member "exit" seen)
+                res
+                (append res '(("exit" . "Exit badb microharness")))))
+            (let* ((cat (car cats)) (items (caddr cat)))
+              (let inner
+                ((its items) (s seen) (a acc))
+                (if (null? its)
+                  (loop (cdr cats) s a)
+                  (let*
+                      ((item (car its)) (cmd (car item)) (desc (cadr item)))
+                    (if (member cmd s)
+                      (inner (cdr its) s a)
+                      (inner (cdr its) (cons cmd s) (cons (cons cmd desc) a))))))))))
+
+(define %slash-commands (derive-slash-commands))
+
+(define (rebuild-slash-commands!)
+        "Re-derive %slash-commands from %command-categories (e.g. after loading a module or geis)."
+        (set! %slash-commands (derive-slash-commands))
+        %slash-commands)
 
 (define* (selector-active? input-buffer #:optional (prompt-mode 'chat))
          "Return #t if the slash command selector palette should be visible.
