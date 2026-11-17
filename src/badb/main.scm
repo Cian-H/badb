@@ -171,17 +171,28 @@
                                  #:indent 0 #:width 11 #:color #f))))
 
 (define (run-geis-pack sub-args)
-        (let
-            ((res
-               ((module-ref (resolve-interface '(badb geis bundle)) 'geis-bundle-pack)
-                (cadr sub-args))))
-          (format #t
-                  "~a\n"
-                  (format-cli-kv (current-output-port) "packed"
-                                 (format #f "~a (bundle-sha256 ~a)"
-                                         (assoc-ref res 'tarball)
-                                         (assoc-ref res 'bundle-sha256))
-                                 #:indent 0 #:width 8 #:color #f))))
+        (if (member (cadr sub-args) '("--all" "-a" "all"))
+          (let ((res ((module-ref (resolve-interface '(badb geis bundle))
+                                  'geis-pack-base-collection)
+                      #:version %version)))
+            (format #t
+                    "~a\n"
+                    (format-cli-kv (current-output-port) "packed"
+                                   (format #f "~a (~a bundles)"
+                                           (assoc-ref res 'tarball)
+                                           (assoc-ref res 'bundle-count))
+                                   #:indent 0 #:width 8 #:color #f)))
+          (let
+              ((res
+                 ((module-ref (resolve-interface '(badb geis bundle)) 'geis-bundle-pack)
+                  (cadr sub-args))))
+            (format #t
+                    "~a\n"
+                    (format-cli-kv (current-output-port) "packed"
+                                   (format #f "~a (bundle-sha256 ~a)"
+                                           (assoc-ref res 'tarball)
+                                           (assoc-ref res 'bundle-sha256))
+                                   #:indent 0 #:width 8 #:color #f)))))
 
 (define (run-geis-verify sub-args)
         (cond
