@@ -21,13 +21,19 @@
 (define-module (badb packages badb)
                #:use-module (guix packages)
                #:use-module (guix gexp)
+               #:use-module (guix utils)
                #:use-module (guix search-paths)
                #:use-module (guix build-system copy)
                #:use-module (gnu packages guile)
                #:use-module (gnu packages guile-xyz)
                #:use-module (gnu packages notcurses)
+               #:use-module (gnu packages version-control)
+               #:use-module (gnu packages virtualization)
+               #:use-module (gnu packages base)
                #:use-module (badb packages guile-notcurses)
+               #:use-module (badb packages rtk)
                #:use-module (badb packages sema)
+               #:use-module (badb packages semcp)
                #:use-module ((guix licenses) #:prefix license:))
 
 (define %repo-root
@@ -48,7 +54,19 @@
         ;; scheme, then import the real entry point from (badb main) so that
         ;; `guile -e main' can find it.
         "\
-(let ((geis-path (getenv \"BADB_GEIS_PATH\")))
+(let ((geis-path (getenv \"BADB_GEIS_PATH\"))
+      (xdg-data (or (getenv \"XDG_DATA_HOME\")
+                    (and (getenv \"HOME\") (string-append (getenv \"HOME\") \"/.local/share\"))))
+      (xdg-cache (or (getenv \"XDG_CACHE_HOME\")
+                     (and (getenv \"HOME\") (string-append (getenv \"HOME\") \"/.cache\")))))
+  (when xdg-data
+    (let ((user-geis (string-append xdg-data \"/badb/geasa\")))
+      (when (file-exists? user-geis)
+        (add-to-load-path user-geis))))
+  (when xdg-cache
+    (let ((user-ccache (string-append xdg-cache \"/badb/ccache\")))
+      (when (file-exists? user-ccache)
+        (set! %load-compiled-path (cons user-ccache %load-compiled-path)))))
   (for-each
     (lambda (root)
       (unless (or (not root) (string-null? root))
@@ -170,7 +188,34 @@ exec ~a/bin/guile --no-auto-compile -L ~a -L ~a -L ~a -L ~a \\
                  (inputs
                    (list guile-3.0 guile-json-4))
                  (propagated-inputs
-                   (list notcurses guile-notcurses guile-quickcheck sema))
+                   (list notcurses
+                         guile-notcurses
+                         guile-quickcheck
+                         guile-fibers
+                         guile-file-names
+                         guile-fslib
+                         guile-git
+                         guile-knots
+                         guile-lens
+                         guile-lib
+                         guile-libyaml
+                         guile-pfds
+                         guile-pipe
+                         guile-semver
+                         guile-sqlite3
+                         guile-srfi-158
+                         guile-srfi-197
+                         guile-srfi-234
+                         guile-sundown
+                         guile-syntax-highlight
+                         guile-ts
+                         guile-uuid
+                         bubblewrap
+                         coreutils
+                         git
+                         rtk
+                         sema
+                         semcp))
                  (native-search-paths
                    (list (search-path-specification
                            (variable "GUILE_LOAD_PATH")
@@ -188,3 +233,19 @@ interface.  The harness journals every run transactionally and can
 verify, pack, and install capability bundles against their pinned
 manifests.")
                  (license license:lgpl3)))
+
+(define-public badb-kernel
+               (package
+                 (inherit badb)
+                 (name "badb-kernel")
+                 (arguments
+                   (substitute-keyword-arguments (package-arguments badb)
+                     ((#:phases phases)
+                      #~(modify-phases #$phases
+                                       (add-after 'install 'strip-geasa
+                                                  (lambda* (#:key outputs #:allow-other-keys)
+                                                           (let ((geasa (string-append (assoc-ref outputs "out")
+                                                                                       "/share/guile/site/3.0/geasa")))
+                                                             (when (file-exists? geasa)
+                                                               (delete-file-recursively geasa)))))))))
+                 (synopsis "Kernel-only badb microharness (bootstrap base geasa at runtime)")))
