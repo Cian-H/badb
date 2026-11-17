@@ -425,7 +425,7 @@ unbounded raw search on the next turn."
                  (else (object->string cmd-or-arg)))))
           (call-with-values
             (lambda ()
-              (execute-shell-command cmd))
+              (execute-shell-command cmd #:bash? #t))
             (lambda (out exit-val err)
               (if err
                 (format #f "Error: ~a" err)

@@ -613,6 +613,7 @@ Return (values output-string exit-code error-or-#f)."
                          (shell #f)
                          (password-provider #f)
                          (stdin-data #f)
+                         (bash? #f)
                          (exec-fn #f))
   "Execute shell CMD through the user's $SHELL (nu, fish, zsh, bash, sh),
 returning (values output-string exit-code error-or-#f). Records the secret-
@@ -622,7 +623,11 @@ prompts securely in memory without logging secrets and pipes via sudo -S."
   (%append-exec-log! (redact-shell-secrets cmd))
   (let*
       ((sh (resolve-user-shell shell))
-       (base-argv (build-shell-command-argv sh cmd))
+       (build-argv (lambda (c)
+                     (if bash?
+                       (list "/usr/bin/env" "bash" "-c" c)
+                       (build-shell-command-argv sh c))))
+       (base-argv (build-argv cmd))
        (setsid-bin
          (and (not exec-fn)
               (not stdin-data)
@@ -646,7 +651,7 @@ prompts securely in memory without logging secrets and pipes via sudo -S."
             (if (and (string? pw) (not (string-null? pw)))
               (let*
                   ((sudo-cmd (inject-sudo-stdin-flag cmd))
-                   (sudo-argv (build-shell-command-argv sh sudo-cmd))
+                   (sudo-argv (build-argv sudo-cmd))
                    (payload (string-append pw "\n")))
                 (call-with-values
                   (lambda ()
