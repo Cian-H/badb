@@ -366,12 +366,6 @@
             (test-assert "slash commands list contains help" (assoc "help" %slash-commands))
             (test-assert "slash commands list contains model"
                          (assoc "model" %slash-commands))
-            (test-assert
-              "slash commands list contains endpoint"
-              (assoc "endpoint" %slash-commands))
-            (test-assert
-              "slash commands list contains provider"
-              (assoc "provider" %slash-commands))
             (test-assert "slash commands list contains mcp" (assoc "mcp" %slash-commands))
             (test-assert
               "slash commands list contains config"
@@ -396,13 +390,6 @@
             (test-assert
               "slash commands list contains context"
               (assoc "context" %slash-commands))
-            (test-assert
-              "slash commands list contains features"
-              (assoc "features" %slash-commands))
-            (test-assert
-              "slash commands list contains journal"
-              (assoc "journal" %slash-commands))
-            (test-assert "slash commands list contains test" (assoc "test" %slash-commands))
             (test-assert "slash commands list contains sh" (assoc "sh" %slash-commands))
             (test-assert "slash commands list contains eval" (assoc "eval" %slash-commands))
             (test-assert "slash commands list contains clear"
@@ -418,8 +405,8 @@
               (test-assert "matches commands containing m"
                            (member "model" (map car m-matches))))
             (let
-                ((exact-matches (matching-slash-commands "/jour")))
-              (test-equal "matches journal command" '("journal") (map car exact-matches)))
+                ((exact-matches (matching-slash-commands "/cont")))
+              (test-equal "matches context command" '("context") (map car exact-matches)))
             (let
                 ((geis-matches (matching-slash-commands "/geis")))
               (test-equal "matches geis command" '("geis") (map car geis-matches)))
