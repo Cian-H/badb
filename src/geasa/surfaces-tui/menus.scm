@@ -68,6 +68,9 @@
                                   command-category-menu-items
                                   command-items-for-category
                                   make-commands-root-menu
+                                  register-menu-category!
+                                  register-slash-command!
+                                  flatten-command-tree
                                   open-command-category-menu))
 
 ;;;
@@ -651,32 +654,180 @@ menu-pop restores CURRENT-THEME-NAME and invokes ON-CANCEL if provided."
              (run-command . "help"))
             ("quit" "Exit badb microharness (alias: /exit)" (run-command . "quit"))))))
 
-(define (command-category-menu-items)
-        "Build top-level category menu items from %command-categories."
-        (map (lambda (cat)
-               (let* ((name (car cat))
-                      (summary (cadr cat))
-                      (cmds (caddr cat))
-                      (desc (format #f "~a (~a)" summary (length cmds))))
-                 (cons (cons name desc)
-                       (cons 'open-command-category name))))
-             %command-categories))
+(define %command-tree
+        (map
+          (lambda (cat)
+            (list (car cat) (cadr cat) (caddr cat) '()))
+          %command-categories))
 
-(define (command-items-for-category cat-name)
-        "Return normalized menu items for the command category CAT-NAME, or '()."
+(define (%node-total-commands node)
+        (+ (length (caddr node)) (fold + 0 (map %node-total-commands (cadddr node)))))
+
+(define (%find-command-node nodes path)
+        (if (null? path)
+          #f
+          (let ((node (assoc (car path) nodes)))
+            (and node
+                 (if (null? (cdr path))
+                   node
+                   (%find-command-node (cadddr node) (cdr path)))))))
+
+(define
+  (%insert-command-at nodes path cmd desc action)
+  (if (null? path)
+    nodes
+    (let*
+        ((seg (car path)) (rest (cdr path))
+         (existing (assoc seg nodes))
+         (target (or existing (list seg "" '() '())))
+         (updated
+           (if (null? rest)
+             (let*
+                 ((items (caddr target))
+                  (filtered
+                    (remove
+                      (lambda (s)
+                        (string=? (car s) cmd))
+                      items)))
+               (list (car target)
+                     (cadr target)
+                     (append filtered (list (list cmd desc action)))
+                     (cadddr target)))
+             (list (car target)
+                   (cadr target)
+                   (caddr target)
+                   (%insert-command-at (cadddr target) rest cmd desc action)))))
+      (if existing
+        (map
+          (lambda (n)
+            (if (string=? (car n) seg)
+              updated
+              n))
+          nodes)
+        (append nodes (list updated))))))
+
+(define
+  (%upsert-category-summary nodes path summary)
+  (if (null? path)
+    nodes
+    (let*
+        ((seg (car path)) (rest (cdr path)) (existing (assoc seg nodes)))
+      (if existing
+        (map
+          (lambda (n)
+            (if (string=? (car n) seg)
+              (if (null? rest)
+                (list seg summary (caddr n) (cadddr n))
+                (list (car n)
+                      (cadr n)
+                      (caddr n)
+                      (%upsert-category-summary (cadddr n) rest summary)))
+              n))
+          nodes)
         (let
-            ((entry (assoc cat-name %command-categories)))
-          (if entry
-            (map
-              (lambda (spec)
-                (cons (cons (string-append "/" (car spec)) (cadr spec)) (caddr spec)))
-              (caddr entry))
-            '())))
+            ((new-node
+               (if (null? rest)
+                 (list seg summary '() '())
+                 (list seg "" '() (%upsert-category-summary '() rest summary)))))
+          (append nodes (list new-node)))))))
+
+(define (register-menu-category! path summary)
+        "Declare or update a command menu category at PATH (string or list of strings) with SUMMARY."
+        (let
+            ((p
+               (if (list? path)
+                 path
+                 (list path))))
+          (set! %command-tree (%upsert-category-summary %command-tree p summary))
+          %command-tree))
+
+(define*
+  (register-slash-command! cmd desc action #:key (path '("Tools & Execution")))
+  "Register slash command CMD with DESC and ACTION at menu PATH (string or list of strings).
+Creates any missing intermediate category nodes automatically."
+  (let
+      ((p
+         (if (list? path)
+           path
+           (list path))))
+    (set! %command-tree (%insert-command-at %command-tree p cmd desc action))
+    %command-tree))
+
+(define (flatten-command-tree)
+        "Flatten all registered commands across all depths of %command-tree into ((cmd . desc) ...)."
+        (let walk-nodes
+          ((nodes %command-tree) (acc '()))
+          (if (null? nodes)
+            (reverse acc)
+            (let*
+                ((node (car nodes)) (items (caddr node))
+                 (subcats (cadddr node))
+                 (acc1
+                   (fold
+                     (lambda (spec a)
+                       (cons (cons (car spec) (cadr spec)) a))
+                     acc
+                     items))
+                 (acc2 (walk-nodes subcats (reverse acc1))))
+              (walk-nodes (cdr nodes) (reverse acc2))))))
+
+(define (command-category-menu-items)
+        "Build top-level category menu items from %command-tree."
+        (map
+          (lambda (node)
+            (let*
+                ((name (car node)) (summary (cadr node))
+                 (cnt (%node-total-commands node))
+                 (desc (format #f "~a (~a)" summary cnt)))
+              (cons (cons name desc) (cons 'open-command-category (list name)))))
+          %command-tree))
+
+(define (command-items-for-category path-or-name)
+        "Return normalized menu items (subcategories + commands) for PATH-OR-NAME, or '()."
+        (let*
+            ((path
+               (if (list? path-or-name)
+                 path-or-name
+                 (list path-or-name)))
+             (node (%find-command-node %command-tree path)))
+          (if (not node)
+            '()
+            (let*
+                ((items (caddr node)) (subcats (cadddr node))
+                 (sub-items
+                   (map
+                     (lambda (sub)
+                       (let*
+                           ((sname (car sub)) (ssum (cadr sub))
+                            (cnt (%node-total-commands sub))
+                            (desc
+                              (if (string-null? ssum)
+                                (format #f "Submenu (~a)" cnt)
+                                (format #f "~a (~a)" ssum cnt))))
+                         (cons (cons sname desc)
+                               (cons 'open-command-category (append path (list sname))))))
+                     subcats))
+                 (cmd-items
+                   (map
+                     (lambda (spec)
+                       (cons (cons (string-append "/" (car spec)) (cadr spec)) (caddr spec)))
+                     items)))
+              (append sub-items cmd-items)))))
 
 (define* (make-commands-root-menu #:key (parent #f))
          "Create the root categorized commands menu."
          (make-menu "Commands" (command-category-menu-items) #:parent parent))
 
-(define (open-command-category-menu parent-menu cat-name)
-        "Push the command submenu for CAT-NAME onto PARENT-MENU's breadcrumb stack."
-        (menu-push parent-menu cat-name (command-items-for-category cat-name)))
+(define
+  (open-command-category-menu parent-menu path-or-name)
+  "Push the command submenu for PATH-OR-NAME (string or list path) onto PARENT-MENU's stack."
+  (let*
+      ((path
+         (if (list? path-or-name)
+           path-or-name
+           (list path-or-name)))
+       (title
+         (if (pair? path)
+           (last path)
+           "Commands")))
+    (menu-push parent-menu title (command-items-for-category path))))

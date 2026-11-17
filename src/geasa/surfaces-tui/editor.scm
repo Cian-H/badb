@@ -140,10 +140,10 @@ breaking on whitespace when possible."
 ;;; Slash Commands Registry & Parsing
 ;;;
 (define (derive-slash-commands)
-        "Derive the flat ((cmd . desc) ...) alist from %command-categories, sorted alphabetically."
+        "Derive the flat ((cmd . desc) ...) alist from %command-tree, sorted alphabetically."
         (let loop
-          ((cats %command-categories) (seen '()) (acc '()))
-          (if (null? cats)
+          ((items (flatten-command-tree)) (seen '()) (acc '()))
+          (if (null? items)
             (let*
                 ((res (reverse acc))
                  (with-exit
@@ -153,16 +153,11 @@ breaking on whitespace when possible."
               (sort with-exit
                     (lambda (a b)
                       (string<? (car a) (car b)))))
-            (let* ((cat (car cats)) (items (caddr cat)))
-              (let inner
-                ((its items) (s seen) (a acc))
-                (if (null? its)
-                  (loop (cdr cats) s a)
-                  (let*
-                      ((item (car its)) (cmd (car item)) (desc (cadr item)))
-                    (if (member cmd s)
-                      (inner (cdr its) s a)
-                      (inner (cdr its) (cons cmd s) (cons (cons cmd desc) a))))))))))
+            (let*
+                ((item (car items)) (cmd (car item)) (desc (cdr item)))
+              (if (member cmd seen)
+                (loop (cdr items) seen acc)
+                (loop (cdr items) (cons cmd seen) (cons (cons cmd desc) acc)))))))
 
 (define %slash-commands (derive-slash-commands))
 
