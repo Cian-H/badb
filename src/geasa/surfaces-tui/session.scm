@@ -22,6 +22,8 @@
                #:use-module
                (badb kernel registry)
                #:use-module
+               (badb geis bundle)
+               #:use-module
                (json)
                #:use-module
                (ice-9 format)
@@ -178,18 +180,25 @@ parentheses (e.g. '+ 1 2' or '+ 1 2)') are wrapped for evaluation."
             (format #f "~s" obj))))
 
 (define (%list-workspace-geasa-dirs)
-        "Return sorted feature-id directory names found under src/geasa/."
-        (if (file-exists? "src/geasa")
-          (sort (scandir-valid-entries "src/geasa"
-                                       (lambda (name)
-                                         (file-is-directory? (string-append "src/geasa/" name))))
-                string<?)
-          '()))
+        "Return sorted, de-duplicated feature-id directory names found across
+the geis-bundle-search-path roots (project 'geis', user store,
+src/geasa and any site geasa stores) so discovery works from any cwd."
+        (let* ((roots (geis-bundle-search-path))
+               (names
+                 (append-map
+                   (lambda (root)
+                     (if (file-exists? root)
+                       (filter (lambda (name)
+                                 (file-is-directory?
+                                   (string-append root "/" name)))
+                               (scandir-valid-entries root))
+                       '()))
+                   roots)))
+          (delete-duplicates (sort names string<?))))
 
 (define* (repl-geasa #:optional (feature-id #f) (reg #f))
-         "Inspect geis registrations in REG and bundle directories in src/geasa/.
-Without FEATURE-ID, return an alist of registered entries and available bundles.
-With FEATURE-ID, return an alist describing that feature or #f if unknown."
+         "Inspect geis registrations in REG and bundle directories across the
+geis-bundle-search-path roots."
          (let ((registered (if (registry? reg)
                              (map ensure-string (registry-list reg))
                              '()))
@@ -252,8 +261,8 @@ With FEATURE-ID, return an alist describing that feature or #f if unknown."
                  (verifier #f)
                  (composer #f))
   "Create an isolated user module pre-populated with kernel state bindings,
-core badb modules, and REPL introspection helpers (repl-help, repl-inspect,
-repl-geasa, repl-state)."
+         core badb modules, and REPL introspection helpers (repl-help, repl-inspect,
+                                                                     repl-geasa, repl-state)."
   (let ((mod (make-fresh-user-module)))
     (module-use! mod (resolve-interface '(guile)))
     (module-use! mod (resolve-interface '(geasa providers-model plugin)))
@@ -375,7 +384,7 @@ repl-geasa, repl-state)."
 
 (define (%exec-log-path)
         "Exec log destination: BADB_EXEC_LOG when set (empty string disables
-logging), else .badb/exec-log.jsonl."
+                                                             logging), else .badb/exec-log.jsonl."
         (let ((env (getenv "BADB_EXEC_LOG")))
           (cond
             ((and (string? env) (string-null? env)) #f)
@@ -384,8 +393,8 @@ logging), else .badb/exec-log.jsonl."
 
 (define (%append-exec-log! cmd)
         "Append a byte-exact record of CMD to the exec log just before spawn,
-best effort: never throws, silently skips when the log is disabled or
-unwritable."
+         best effort: never throws, silently skips when the log is disabled or
+         unwritable."
         (catch #t
           (lambda ()
             (let ((path (%exec-log-path)))

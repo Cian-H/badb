@@ -312,13 +312,21 @@ entries appended.  Returns the bundle directory."
                              (setenv "BADB_GEIS_PATH" (string-append root1 ":" root2))
                              (not (find-geis-bundle "nonexistent"))))
               (test-assert
-                "empty BADB_GEIS_PATH defaults to harness + project roots"
+                "empty BADB_GEIS_PATH defaults to project + user + harness roots"
                 (begin (setenv "BADB_GEIS_PATH" "")
-                       (equal? (quote ("src/geasa" "geis")) (geis-bundle-search-path))))
+                       (let ((paths (geis-bundle-search-path)))
+                         (and (member "geis" paths)
+                              (member (user-geis-store-dir) paths)
+                              (member "src/geasa" paths)
+                              #t))))
               (test-assert
-                "unset BADB_GEIS_PATH defaults to harness + project roots"
+                "unset BADB_GEIS_PATH defaults to project + user + harness roots"
                 (begin (unsetenv "BADB_GEIS_PATH")
-                       (equal? (quote ("src/geasa" "geis")) (geis-bundle-search-path))))
+                       (let ((paths (geis-bundle-search-path)))
+                         (and (member "geis" paths)
+                              (member (user-geis-store-dir) paths)
+                              (member "src/geasa" paths)
+                              #t))))
               (test-assert "multiple roots split in order"
                            (begin
                              (setenv "BADB_GEIS_PATH" (string-append root1 ":" root2 ":/some/other"))

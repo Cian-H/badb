@@ -30,22 +30,23 @@
                #:use-module
                (badb kernel geis-gate)
                #:export
-               (geis-bundle-search-path find-geis-bundle
-                                        read-geis-manifest
-                                        manifest-field
-                                        geis-manifest-valid?
-                                        geis-manifest-capabilities-valid?
-                                        geis-bundle-files
-                                        compute-geis-sha256-pins
-                                        geis-bundle-hash
-                                        resolve-geis-load-path
-                                        geis-bundle-pack
-                                        geis-bundle-install
-                                        geis-capture-pending-prompt!
-                                        geis-take-pending-prompt
-                                        geis-bundle-assemble!
-                                        geis-bundle-replay
-                                        geis-bundle-pin!))
+               (user-geis-store-dir
+                 geis-bundle-search-path find-geis-bundle
+                 read-geis-manifest
+                 manifest-field
+                 geis-manifest-valid?
+                 geis-manifest-capabilities-valid?
+                 geis-bundle-files
+                 compute-geis-sha256-pins
+                 geis-bundle-hash
+                 resolve-geis-load-path
+                 geis-bundle-pack
+                 geis-bundle-install
+                 geis-capture-pending-prompt!
+                 geis-take-pending-prompt
+                 geis-bundle-assemble!
+                 geis-bundle-replay
+                 geis-bundle-pin!))
 
 (define (%string-split-char s delim)
         "Split S on single-character DELIM into a list of substrings."
@@ -122,12 +123,41 @@
 ;;;
 ;;; Search path and discovery
 ;;;
+(define (%home-dir)
+        "Return the user's home directory, or #f when it cannot be determined."
+        (let ((home (getenv "HOME")))
+          (if (and home (not (string-null? home)))
+            home
+            (let ((pw (catch #t (lambda () (getpwnam "root")) (lambda _ #f))))
+              (and pw (dirname (pw:dir pw)))))))
+
+(define (user-geis-store-dir)
+        "Return the user-level geasa store directory.
+Honors BADB_USER_GEIS_DIR, then $XDG_DATA_HOME/badb/geasa, defaulting to
+~/.local/share/badb/geasa."
+        (let ((explicit (getenv "BADB_USER_GEIS_DIR")))
+          (if (and explicit (not (string-null? explicit)))
+            explicit
+            (let* ((data (getenv "XDG_DATA_HOME"))
+                   (base (if (and data (not (string-null? data)))
+                           data
+                           (let ((h (%home-dir)))
+                             (if h (string-append h "/.local/share") ".local/share")))))
+              (string-append base "/badb/geasa")))))
+
+(define (%load-path-geasa-dirs)
+        "Return '<dir>/geasa' directories that exist in %load-path."
+        (filter file-exists?
+                (map (lambda (lp) (string-append lp "/geasa")) %load-path)))
+
 (define (geis-bundle-search-path)
-        "Return the bundle search roots: BADB_GEIS_PATH split on colons, or
-'(\"src/geasa\") when unset or empty."
+        "Return the bundle search roots: BADB_GEIS_PATH split on colons when
+set and non-empty; otherwise 'geis', the user geasa store, 'src/geasa',
+and any '<load-path>/geasa' directories present in %load-path."
         (let ((path (getenv "BADB_GEIS_PATH")))
           (if (or (not path) (string-null? path))
-            '("src/geasa" "geis")
+            (append (list "geis" (user-geis-store-dir) "src/geasa")
+                    (%load-path-geasa-dirs))
             (%string-split-char path #\:))))
 
 (define (%fid->string fid)
