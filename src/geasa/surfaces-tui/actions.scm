@@ -869,9 +869,9 @@
                                                #:line
                                                line-num
                                                #:suspend-tty!
-                                               endwin
+                                               (lambda () (tui-suspend-tty! st))
                                                #:resume-tty!
-                                               refresh))
+                                               (lambda () (tui-resume-tty! st))))
                     (lambda (ok? res)
                       (unless ok? (tui-add-err-msg! st (format #f "Editor error: ~a" res)))))
                   (tui-add-sys-msg! st "Usage: /edit <file> [line]"))))

@@ -50,6 +50,8 @@
                  tui-theme-color->backend-value
                  tui-safe-write-osc-title!
                  tui-safe-curs-set!
+                 tui-suspend-tty!
+                 tui-resume-tty!
                  tui-draw-role!
                  tui-safe-addstr
                  tui-draw-popup!
@@ -91,6 +93,23 @@
                   (force-output port))))
             (lambda _
               #f))))
+
+(define (tui-suspend-tty! st)
+        "Stop the terminal backend so a child process (e.g. $EDITOR) owns the tty."
+        (catch #t
+          (lambda ()
+            (((tui-nref st) 'endwin)))
+          (lambda _
+            #f)))
+
+(define (tui-resume-tty! st)
+        "Re-initialize the terminal backend after TUI-SUSPEND-TTY! and force a redraw.
+The notcurses curses shim's endwin stops notcurses entirely, so a bare refresh
+cannot restore the screen; initscr must run again."
+        (let* ((nref (tui-nref st)) (initscr (nref 'initscr)))
+          (set-tui-stdscr! st (initscr))
+          (tui-safe-curs-set! st 1)
+          (set-tui-render-dirty?! st #t)))
 
 (define (tui-safe-curs-set! st v)
         "Set cursor visibility V via ST's backend, ignoring errors."

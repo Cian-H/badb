@@ -120,9 +120,9 @@
                                                        #:line
                                                        line-num
                                                        #:suspend-tty!
-                                                       endwin
+                                                       (lambda () (tui-suspend-tty! st))
                                                        #:resume-tty!
-                                                       refresh))
+                                                       (lambda () (tui-resume-tty! st))))
                             ((and (eq? kind 'url) (string? dest))
                               (catch #t
                                 (lambda ()
@@ -498,9 +498,9 @@
             (read-via-external-editor #:initial-text
                                       (tui-input-buffer st)
                                       #:suspend-tty!
-                                      endwin
+                                      (lambda () (tui-suspend-tty! st))
                                       #:resume-tty!
-                                      refresh))
+                                      (lambda () (tui-resume-tty! st))))
           (lambda (ok? res)
             (if ok?
               (begin
