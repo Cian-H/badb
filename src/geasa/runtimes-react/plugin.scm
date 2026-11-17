@@ -705,6 +705,10 @@ repeated COUNT times within WINDOW observed calls."
                   "[badb loop-detector] The identical tool call \"~a\" has now been made ~a times within the last ~a tool calls. You appear to be repeating yourself, possibly because earlier results were compacted away. Change your approach now: call a different tool or use different arguments, summarize what you already know from memory, or give your final answer. Further identical repetition will halt the run."
                   display-sig count window)))
 
+;; Marker emitted by the context-mode bash post-hook (capabilities-context-index)
+;; once it has already virtualized an oversized bash result into the ctx index.
+(define %ctx-virtualized-marker "[Output virtualized by context-mode bash hook.")
+
 (define* (offload-tool-result! dir tc-name content-str threshold #:key (offload-hook #f))
          "When content-str length exceeds threshold and dir is non-#f:
 ensure dir exists (mkdir unless present), write the FULL raw content
@@ -719,7 +723,10 @@ return content-str unchanged (fail-open). If OFFLOAD-HOOK is given, invoke
                   (not (string-null? dir))
                   content-str
                   (string? content-str)
-                  (> (string-length content-str) threshold))
+                  (> (string-length content-str) threshold)
+                  ;; Already virtualized by the context-mode bash hook: do not
+                  ;; offload the summary again (it would duplicate/mask the index).
+                  (not (string-contains content-str %ctx-virtualized-marker)))
            (catch #t
              (lambda ()
                (unless (file-exists? dir) (mkdir dir))

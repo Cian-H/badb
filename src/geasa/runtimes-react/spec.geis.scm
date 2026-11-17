@@ -890,7 +890,12 @@
                 ((large-content (make-string 2500 #\a))
                  (result
                    (offload-tool-result! "/tmp/badb-react-offload-test" "test" large-content 3000)))
-              (test-equal "large result unchanged when below threshold" large-content result)))
+              (test-equal "large result unchanged when below threshold" large-content result))
+            (let*
+                ((virt (string-append (make-string 2500 #\a)
+                                      "\n[Output virtualized by context-mode bash hook. Use ctx_search(...)]"))
+                 (result (offload-tool-result! "/tmp/badb-react-offload-test" "bash" virt 2000)))
+              (test-equal "ctx-virtualized bash output is not offloaded again" virt result)))
 
 (test-group "react-recitation"
             (let*
