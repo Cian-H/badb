@@ -18,7 +18,7 @@ In Celtic mythology, **Badb** (pronounced "bave", like "cave" with a "b") is a s
 
 That is how this harness works: the harness morphs into whatever shape you require, granting powerful agentic capabilities governed by verified contracts.
 
-**Status:** Alpha — ships with a pure microkernel, 30+ contract-verified capability and runtime geasa, and a full-featured interactive terminal user interface (TUI).
+**Status:** Alpha — ships with a pure microkernel, 45 contract-verified geasa bundles, and a full-featured interactive terminal user interface (TUI).
 
 ---
 
@@ -91,7 +91,7 @@ The core microkernel lives under `src/badb/kernel/` (`(badb kernel ...)`):
 - **`journal.scm`**: Append-only provenance log (`.badb/journal.jsonl`) recording iterations, checkpoints, and execution history.
 - **`transaction.scm`**: Transactional isolation and rollback machinery.
 - **`digest.scm`**: Cryptographic content digests and manifest pinning (`sha256`).
-- **`geis-gate.scm`**: Kernel-owned verification gate that re適lays contract specifications (`spec.geis.scm`) inside isolated subprocesses before locking capabilities into runtime.
+- **`geis-gate.scm`**: Kernel-owned verification gate that replays contract specifications (`spec.geis.scm`) inside isolated subprocesses before locking capabilities into runtime.
 - **`ipc.scm`**: Safe inter-process communication primitives.
 
 Formal kernel invariants (zero user-space imports, epistemic purity, McCabe complexity limits, whitelist containment) are continuously verified in the test suite (`test/test-kernel-design.scm`).
@@ -176,6 +176,9 @@ Running `./scripts/badb init` or `onboard` establishes project-scoped harness st
 # Context index token virtualization statistics
 ./scripts/badb ctx stats
 
+# Serve the Agent Client Protocol over stdio (editor surface)
+./scripts/badb acp
+
 # Help and version flags
 ./scripts/badb -h, --help
 ./scripts/badb -V, --version
@@ -217,14 +220,14 @@ The terminal interface provides an interactive coding and steering environment f
 
 ### Modes & Navigation
 
-- **Input Prompt:** Type regular messages to talk to the agent.
+- **Input Prompt:** Type regular messages to talk to the agent. Use `@` to reference workspace files, `Ctrl + R` to search input history, and `Ctrl + X` to compose in `$EDITOR`.
 - **Shell Commands:** Prefix input with `!` (or use `/sh <cmd>`) to execute local shell commands directly.
 - **Scheme Evaluation:** Prefix with `,` or enter an s-expression `(...)` (or use `/eval <expr>`) to evaluate Guile Scheme in the running harness.
 - **Message Selection:** Use `Ctrl + Up` and `Ctrl + Down` to navigate message history blocks.
-- **Fold/Unfold:** Press `Ctrl + E` to collapse or expand the selected message block.
-- **Interactive Steering:** While an agent loop is running, type text and press `Enter` to queue steering instructions.
-- **Interrupt:** Press `Ctrl + I` (or `/interrupt`) to pause the agent at the next iteration boundary.
-- **Menus:** Commands like `/model`, `/endpoint`, or `/config` open interactive navigation menus (`Up`/`Down` to navigate, `Enter` to select, `Esc` to cancel).
+- **Fold/Unfold:** Press `Ctrl + E` to collapse or expand the selected message block (or the latest collapsed message when none is selected).
+- **Interactive Steering:** While an agent loop is running, type text and press `Enter` to queue steering instructions (or use `/steer [--urgent|!] <text>`).
+- **Interrupt:** Press `Ctrl + I` (or `/interrupt`) to pause the agent at the next iteration boundary, or `/stop` to force-stop the active run.
+- **Menus:** Typing `/` opens categorized, nested command menus (`Up`/`Down` to navigate, `Enter` to select, `Esc`/`Left` to go back or close), as do `/model`, `/endpoint`, and `/config`.
 
 ### Slash Commands
 
@@ -235,6 +238,8 @@ The TUI provides built-in commands for managing the session, models, tools, and 
 - `/models` — Query and list available models from the active endpoint.
 - `/endpoint [URL]` — Switch API base URL (opens selection menu if omitted).
 - `/provider [NAME]` — Switch or inspect provider presets (e.g. `openai`, `anthropic`, `local`).
+- `/config [CMD]` — Inspect, reload, save, or set badb configuration (opens menu if omitted).
+- `/theme [NAME]` — Switch UI theme with live preview.
 
 #### Environment & MCP
 - `/mcp` — Manage Model Context Protocol servers:
@@ -250,10 +255,19 @@ The TUI provides built-in commands for managing the session, models, tools, and 
 - `/guardrail [LEVEL]` — Set execution guardrail policy (`disabled`, `permissive`, `cautious`, `strict`, `paranoid`).
 - `/checkpoint [DESC]` — Take a snapshot of the current workspace state.
 - `/rollback [ID]` — Revert workspace to latest or specified checkpoint.
+- `/fork [ID]` — Create a conversation branch at the current or specified checkpoint.
+- `/replay <ID>` — Restore a saved conversation and workspace checkpoint.
 - `/compact` — Compact conversation history to reduce context window usage.
 - `/resume` — Resume a saved chat session from disk.
 - `/dump [PATH]` — Export current conversation transcript to a text file.
 - `/clear` — Clear the conversation buffer.
+
+#### Workspace & Execution
+- `/todo [add|toggle|remove|clear]` — Manage the interactive session task list.
+- `/diff [ARGS]` — View formatted unstaged `git diff` output in the transcript.
+- `/steer [--urgent|!] <TEXT>` — Queue steering text for the running or next agent loop.
+- `/interrupt` / `/stop` — Halt the agent at its next boundary or force-stop the active run.
+- `/subagents` — List active subagents for the current run.
 
 #### Context & Knowledge
 - `/rules` — View discovered project rules, conventions, and filetree structure.
@@ -392,6 +406,12 @@ badb features a comprehensive testing pipeline covering kernel invariants, adver
 
 # Run headless TUI terminal scenarios via tui-test
 ./scripts/devenv -- ./scripts/test-e2e --tui
+
+# Run adversarial challenger suites
+./scripts/devenv -- ./scripts/test-adversarial
+
+# Run the ACP Test Compatibility Kit against `badb acp`
+./scripts/devenv -- ./scripts/test-acp-tck
 ```
 
 ### Real Model Testing
@@ -411,32 +431,38 @@ E2E_CHAT_MODEL="your-model-id" \
 ```text
 badb/
 ├── channels.scm / manifest.scm   # Pinned GNU Guix environment definitions
-├── license.md                     # LGPLv3 license terms
+├── LICENSE.md                    # LGPLv3 license terms
+├── docs/tui-screenshot.png       # Vanilla TUI screenshot
 ├── scripts/
 │   ├── badb                      # Harness CLI entrypoint launcher
 │   ├── devenv                    # Guix time-machine development shell wrapper
+│   ├── dist                      # Relocatable Guix pack tarball builder
+│   ├── format-scheme             # cl-indentify formatter & bundle manifest re-pinner
+│   ├── screenshot-tui            # Vanilla TUI screenshot capture via tui-test
 │   ├── test                      # Bootstrap unit and kernel invariant test runner
+│   ├── test-acp-tck              # ACP Test Compatibility Kit runner
+│   ├── test-adversarial          # Adversarial challenger test runner
 │   ├── test-e2e                  # Headless end-to-end and TUI test runner
 │   └── verify-geasa              # Parallel geis contract verification script
 ├── src/
-│   ├── srfi/srfi-253.scm         # SRFI-253 contract specification support
-│   ├── badb/                     # Microkernel core & CLI dispatch
+│   ├── badb/                     # Microkernel core, bundle tooling & CLI dispatch
 │   │   ├── kernel/               # Pure kernel: digest, geis-gate, ipc, journal, registry, transaction
 │   │   ├── spec.scm              # Contract & property test engine
 │   │   ├── spec-gate.scm         # Locked-spec verification gate
-│   │   ├── geis/bundle.scm       # Bundle discovery, packing, installation & verification
+│   │   ├── dist.scm              # Relocatable bundle distribution helper
+│   │   ├── geis/                 # Bundle discovery, capabilities, worker & verification
 │   │   ├── capabilities/         # filetree-mcp (stdio MCP server)
 │   │   ├── surfaces/cli.scm      # CLI rendering, formatting & ANSI colors
 │   │   └── main.scm              # Command-line entrypoint & option dispatch
 │   └── geasa/                    # Modular capability bundles (the geasa):
-│       ├── capabilities-*        # fs-tools, context-index, code-nav, mcp, history, skills
-│       ├── runtimes-*            # react, react-stream, context, prompt, rollback, synthesis
-│       ├── providers-model       # Model client adapters (OpenAI, Anthropic, mock)
-│       ├── providers-systemone     # TypeSafe System One (Jev) HTTP provider
-│       ├── surfaces-tui          # Interactive terminal UI (editor, session, transcript, menus)
-│       ├── policies-guardrail    # Safety policies & security levels
-│       ├── policies-systemone-gate # Optional system-1 geis gate (ReAct hooks)
-│       └── persona-*             # Personas (base, badb, synthesizer)
+│       ├── agents-*              # coordination, lifecycle, subagent
+│       ├── capabilities-*        # bubblewrap, code-nav, context-index, fs-tools, git, history-tools, lsp, macro, mcp, mcp-server, rtk, scheme-eval, skills, structural-editing, treesitter
+│       ├── foundation-*          # config, log, srfi-253, util
+│       ├── persona-*             # badb, base, synthesizer
+│       ├── policies-*            # guardrail, systemone-gate
+│       ├── providers-*           # model, systemone
+│       ├── runtimes-*            # context, freshness, geis-loader, loop-guard, prompt, react, react-stream, retry, rollback, synthesis, verify, workflows
+│       └── surfaces-*            # acp, spec-tools, theme, tui
 ├── workflows/                    # Declarative Sema workflows
 └── test/                         # Test fixtures, adversarial suites, specs & e2e tests
 ```
@@ -445,7 +471,7 @@ badb/
 
 ## License
 
-badb is released under the **GNU Lesser General Public License v3.0** (LGPLv3). See [license.md](license.md) for complete details.
+badb is released under the **GNU Lesser General Public License v3.0** (LGPLv3). See [LICENSE.md](LICENSE.md) for complete details.
 
 [GNU Guix]: https://guix.gnu.org
 [GNU Guile]: https://www.gnu.org/software/guile/
