@@ -593,43 +593,76 @@ menu-pop restores CURRENT-THEME-NAME and invokes ON-CANCEL if provided."
            "Resume, compact, checkpoint, rollback, fork, export"
            (("resume" "Resume a previous chat session from disk" open-resume-menu)
             ("compact" "Compact conversation history context" (run-command . "compact"))
-            ("checkpoint" "Create a workspace and registry checkpoint" (prefill-command . "/checkpoint "))
-            ("rollback" "Revert to latest or specified checkpoint" (prefill-command . "/rollback "))
-            ("fork" "Create a conversation branch at checkpoint" (prefill-command . "/fork "))
-            ("replay" "Restore a saved conversation and workspace checkpoint" (prefill-command . "/replay "))
-            ("dump" "Export conversation transcript to a text file" (prefill-command . "/dump "))
+            ("checkpoint"
+             "Create a workspace and registry checkpoint"
+             (prefill-command . "/checkpoint "))
+            ("rollback"
+             "Revert to latest or specified checkpoint"
+             (prefill-command . "/rollback "))
+            ("fork"
+             "Create a conversation branch at checkpoint"
+             (prefill-command . "/fork "))
+            ("replay"
+             "Restore a saved conversation and workspace checkpoint"
+             (prefill-command . "/replay "))
+            ("dump"
+             "Export conversation transcript to a text file"
+             (prefill-command . "/dump "))
             ("clear" "Clear chat viewport history" (run-command . "clear"))))
           ("Model & Config"
-           "Model, provider presets, endpoint, theme, guardrails"
+           "Model, provider presets, endpoint, guardrails"
            (("model" "Switch or inspect active LLM model" open-model-menu)
             ("provider" "Switch or inspect model provider preset" open-provider-menu)
             ("endpoint" "Switch or inspect endpoint URL" open-endpoint-menu)
             ("config" "Inspect, reload, or save badb configuration" open-config-menu)
-            ("theme" "Choose UI color theme with live preview" open-theme-menu)
-            ("guardrail" "Inspect or set guardrail security policy level" open-guardrail-menu)))
+            ("guardrail"
+             "Inspect or set guardrail security policy level"
+             open-guardrail-menu)))
           ("Context & Knowledge"
            "Token usage, BM25 index (/ctx), rules, skills, memories"
-           (("context" "Token metrics, bindings plot, or BM25 index (alias: /ctx)" (run-command . "context"))
+           (("context"
+             "Token metrics, bindings plot, or BM25 index (alias: /ctx)"
+             (run-command . "context"))
             ("usage" "Show per-session token usage report" (run-command . "usage"))
-            ("rules" "Inspect discovered project rules & workspace tree" (run-command . "rules"))
+            ("rules"
+             "Inspect discovered project rules & workspace tree"
+             (run-command . "rules"))
             ("skills" "List active agent skills" (run-command . "skills"))
-            ("memories" "Inspect persistent project memories" (prefill-command . "/memories "))))
+            ("memories" "Inspect persistent project memories"
+             (prefill-command . "/memories "))))
           ("Geasa & Synthesis"
            "Geis contracts, features, journal provenance, tests"
-           (("geis" "Contract-gated synthesis (/geis add|model|list|verify|bindings)" (prefill-command . "/geis "))
-            ("features" "List available geasa & kernel registry features" (run-command . "features"))
-            ("journal" "View checkpoint provenance & bindings shift plot" (run-command . "journal"))
+           (("geis"
+             "Contract-gated synthesis (/geis add|model|list|verify|bindings)"
+             (prefill-command . "/geis "))
+            ("features"
+             "List available geasa & kernel registry features"
+             (run-command . "features"))
+            ("journal"
+             "View checkpoint provenance & bindings shift plot"
+             (run-command . "journal"))
             ("test" "Run bootstrap verification test suite" (run-command . "test"))))
           ("Tools & Execution"
            "MCP servers, shell passthrough, Scheme REPL, steering"
-           (("mcp" "Manage MCP servers (list, start, stop, add, remove, tools)" (prefill-command . "/mcp "))
-            ("sh" "Execute shell command (!<cmd>, alias: /shell)" (prefill-command . "/sh "))
-            ("eval" "Evaluate Scheme code in REPL (,<expr>, alias: /scheme)" (prefill-command . "/eval "))
-            ("steer" "Queue steering text for the running agent" (prefill-command . "/steer "))
-            ("interrupt" "Halt the running agent at its next boundary" (run-command . "interrupt"))))
-          ("Navigation & Help"
-           "Help manual and exit"
-           (("help" "Show categorized help manual & shortcuts (alias: /?)" (run-command . "help"))
+           (("mcp"
+             "Manage MCP servers (list, start, stop, add, remove, tools)"
+             (prefill-command . "/mcp "))
+            ("sh"
+             "Execute shell command (!<cmd>, alias: /shell)"
+             (prefill-command . "/sh "))
+            ("eval"
+             "Evaluate Scheme code in REPL (,<expr>, alias: /scheme)"
+             (prefill-command . "/eval "))
+            ("steer"
+             "Queue steering text for the running agent"
+             (prefill-command . "/steer "))
+            ("interrupt"
+             "Halt the running agent at its next boundary"
+             (run-command . "interrupt"))))
+          ("Navigation & Help" "Help manual and exit"
+           (("help"
+             "Show categorized help manual & shortcuts (alias: /?)"
+             (run-command . "help"))
             ("quit" "Exit badb microharness (alias: /exit)" (run-command . "quit"))))))
 
 (define (command-category-menu-items)
