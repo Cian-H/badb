@@ -789,6 +789,39 @@ Creates any missing intermediate category nodes automatically."
     (set! %command-tree (%insert-command-at %command-tree p cmd desc action))
     %command-tree))
 
+(begin
+  (register-menu-category!
+    '("Model & Config" "Connection")
+    "Endpoint and provider presets")
+  (register-slash-command! "endpoint"
+                           "Switch or inspect endpoint URL"
+                           'open-endpoint-menu
+                           #:path
+                           '("Model & Config" "Connection"))
+  (register-slash-command! "provider"
+                           "Switch or inspect model provider preset"
+                           'open-provider-menu
+                           #:path
+                           '("Model & Config" "Connection"))
+  (register-menu-category!
+    '("Geasa & Synthesis" "Diagnostics")
+    "Features, journal provenance, and tests")
+  (register-slash-command! "features"
+                           "List available geasa & kernel registry features"
+                           '(run-command . "features")
+                           #:path
+                           '("Geasa & Synthesis" "Diagnostics"))
+  (register-slash-command! "journal"
+                           "View checkpoint provenance & bindings shift plot"
+                           '(run-command . "journal")
+                           #:path
+                           '("Geasa & Synthesis" "Diagnostics"))
+  (register-slash-command! "test"
+                           "Run bootstrap verification test suite"
+                           '(run-command . "test")
+                           #:path
+                           '("Geasa & Synthesis" "Diagnostics")))
+
 (define (flatten-command-tree)
         "Flatten all registered commands across all depths of %command-tree into ((cmd . desc) ...)."
         (let walk-nodes
