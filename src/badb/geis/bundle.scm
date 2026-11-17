@@ -30,25 +30,27 @@
                #:use-module
                (badb kernel geis-gate)
                #:export
-               (geis-bundle-search-path find-geis-bundle
-                                        read-geis-manifest
-                                        manifest-field
-                                        geis-manifest-valid?
-                                        geis-manifest-capabilities-valid?
-                                        geis-bundle-files
-                                        compute-geis-sha256-pins
-                                        geis-bundle-hash
-                                        resolve-geis-load-path
-                                        geis-bundle-pack
-                                        geis-pack-base-collection
-                                        geis-bundle-install
-                                        geis-capture-pending-prompt!
-                                        geis-take-pending-prompt
-                                        geis-bundle-assemble!
-                                        geis-bundle-replay
-                                        geis-bundle-pin!
-                                        geis-bundle-ccache-dir
-                                        geis-compile-bundle!))
+               (user-geis-store-dir
+                 geis-bundle-search-path find-geis-bundle
+                 read-geis-manifest
+                 manifest-field
+                 geis-manifest-valid?
+                 geis-manifest-capabilities-valid?
+                 geis-bundle-files
+                 compute-geis-sha256-pins
+                 geis-bundle-hash
+                 resolve-geis-load-path
+                 geis-bundle-pack
+                 geis-pack-base-collection
+                 geis-bundle-install
+                 geis-capture-pending-prompt!
+                 geis-take-pending-prompt
+                 geis-bundle-assemble!
+                 geis-bundle-replay
+                 geis-bundle-pin!
+                 geis-bundle-ccache-dir
+                 geis-compile-bundle!
+                 geis-bootstrap-base!))
 
 (define (%string-split-char s delim)
         "Split S on single-character DELIM into a list of substrings."
@@ -824,6 +826,76 @@ Throw 'geis-bundle-error when validation fails."
                      (cons 'verify-verdict verdict-str)
                      (cons 'verify-reason (assoc-ref verdict 'reason))
                      (cons 'compiled compiled-files))))))
+
+(define* (geis-bootstrap-base! #:key (from #f) (no-compile? #f))
+         "Bootstrap base geasa bundles from FROM (a directory or .tar.gz archive,
+defaulting to $BADB_BOOTSTRAP_SOURCE or \"src/geasa\") into (user-geis-store-dir),
+validating, locking, verifying, and precompiling (unless NO-COMPILE? is #t).
+Returns ((store . dir) (installed . (fid ...)) (failed . (fid ...)))."
+         (let* ((source (or from (getenv "BADB_BOOTSTRAP_SOURCE") "src/geasa"))
+                (temp-dir #f)
+                (store (user-geis-store-dir))
+                (user-root (dirname store)))
+           (catch #t
+             (lambda ()
+               (let ((geasa-src
+                       (cond
+                         ((%directory? source) source)
+                         ((and (file-exists? source) (string-suffix? ".tar.gz" source))
+                           (set! temp-dir (mkdtemp "/tmp/badb-bootstrap-XXXXXX"))
+                           (let ((st (system* "tar" "-xzf" source "-C" temp-dir)))
+                             (unless (and (number? st) (zero? (status:exit-val st)))
+                               (throw 'geis-bundle-error
+                                      (format #f "failed to extract bootstrap archive '~a'" source))))
+                           (let ((nested (string-append temp-dir "/badb-base-geasa/geasa"))
+                                 (wf (string-append temp-dir "/badb-base-geasa/workflows/plugin-synthesis.sema")))
+                             (when (file-exists? wf)
+                               (%mkdir-p (string-append user-root "/workflows"))
+                               (copy-file wf (string-append user-root "/workflows/plugin-synthesis.sema")))
+                             (if (%directory? nested) nested temp-dir)))
+                         (else
+                           (throw 'geis-bundle-error
+                                  (format #f "bootstrap source not found: '~a'" source))))))
+                 (%mkdir-p store)
+                 (let ((fids (sort (or (scandir geasa-src
+                                                (lambda (n)
+                                                  (and (not (member n '("." "..")))
+                                                       (%directory? (string-append geasa-src "/" n))
+                                                       (file-exists? (string-append geasa-src "/" n "/manifest.scm")))))
+                                       '())
+                                   string<?))
+                       (installed '())
+                       (failed '()))
+                   (for-each
+                     (lambda (fid)
+                       (let ((src-b (string-append geasa-src "/" fid))
+                             (dst-b (string-append store "/" fid)))
+                         (when (file-exists? dst-b) (%delete-tree! dst-b))
+                         (%mkdir-p dst-b)
+                         (for-each
+                           (lambda (rel)
+                             (let ((dst (string-append dst-b "/" rel)))
+                               (%mkdir-p (dirname dst))
+                               (copy-file (string-append src-b "/" rel) dst)))
+                           (geis-bundle-files src-b))
+                         (copy-file (string-append src-b "/manifest.scm")
+                                    (string-append dst-b "/manifest.scm"))
+                         (catch #t
+                           (lambda ()
+                             (let ((rep (geis-bundle-install dst-b #:compile? (not no-compile?))))
+                               (if (equal? (assoc-ref rep 'verify-verdict) "pass")
+                                 (set! installed (cons fid installed))
+                                 (set! failed (cons fid failed)))))
+                           (lambda _
+                             (set! failed (cons fid failed))))))
+                     fids)
+                   (when temp-dir (%delete-tree! temp-dir))
+                   (list (cons 'store store)
+                         (cons 'installed (reverse installed))
+                         (cons 'failed (reverse failed))))))
+             (lambda (key . args)
+               (when temp-dir (catch #t (lambda () (%delete-tree! temp-dir)) (lambda _ #f)))
+               (apply throw key args)))))
 (define (%list-dir d)
         " scandir without the dot entries; empty list on error."
         (or

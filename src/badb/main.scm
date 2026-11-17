@@ -52,6 +52,7 @@
                   port
                   '(("tui, (none)"   . "launch interactive terminal user interface (default)")
                     ("init"          . "initialize project geasa, workflows & memories")
+                    ("bootstrap"     . "fetch, verify, and lock base geasa into user store")
                     ("onboard"       . "inspect workspace toolchain and synthesize baseline geasa")
                     ("test"          . "run bootstrap test suite")
                     ("mcp-filetree"  . "run the filetree MCP server over stdio")
@@ -425,11 +426,34 @@
                       "Error: badb acp --permission must be allow or ask\n")
               (exit 1)))))
 
+(define (run-bootstrap-command options)
+        (let loop ((args (cdr options)) (from #f) (no-compile? #f))
+                  (cond
+                    ((null? args)
+                      (let* ((bootstrap (module-ref (resolve-interface '(badb geis bundle))
+                                                    'geis-bootstrap-base!))
+                             (res (bootstrap #:from from #:no-compile? no-compile?))
+                             (installed (assoc-ref res 'installed))
+                             (failed (assoc-ref res 'failed)))
+                        (format #t "Bootstrapped ~a base geasa into ~a (~a failed)~%"
+                                (length installed)
+                                (assoc-ref res 'store)
+                                (length failed))
+                        (unless (null? failed)
+                          (format (current-error-port) "Failed bundles: ~s~%" failed)
+                          (exit 1))))
+                    ((and (equal? (car args) "--from") (pair? (cdr args)))
+                      (loop (cddr args) (cadr args) no-compile?))
+                    ((equal? (car args) "--no-compile")
+                      (loop (cdr args) from #t))
+                    (else (loop (cdr args) from no-compile?)))))
+
 (define (main args)
         (let ((options (cdr args)))
           (cond
             ((or (null? options) (member (car options) '("tui" "-t" "--tui"))) (run-tui))
             ((equal? (car options) "init") (run-init-command))
+            ((equal? (car options) "bootstrap") (run-bootstrap-command options))
             ((equal? (car options) "ctx") (run-ctx-command options))
             ((equal? (car options) "test") (run-test-command))
             ((equal? (car options) "mcp-filetree") (run-filetree-mcp))
