@@ -6,10 +6,6 @@
                (badb surfaces cli)
                #:use-module
                (srfi srfi-13)
-               #:use-module
-               (srfi srfi-1)
-               #:use-module
-               (ice-9 ftw)
                #:autoload
                (geasa surfaces-tui plugin)
                (run-tui spec-tool-status spec-tool-verify)
@@ -175,44 +171,28 @@
                                  #:indent 0 #:width 11 #:color #f))))
 
 (define (run-geis-pack sub-args)
-        (let
-            ((res
-               ((module-ref (resolve-interface '(badb geis bundle)) 'geis-bundle-pack)
-                (cadr sub-args))))
-          (format #t
-                  "~a\n"
-                  (format-cli-kv (current-output-port) "packed"
-                                 (format #f "~a (bundle-sha256 ~a)"
-                                         (assoc-ref res 'tarball)
-                                         (assoc-ref res 'bundle-sha256))
-                                 #:indent 0 #:width 8 #:color #f))))
-(define (run-geis-verify-all-in-scheme!)
-        "Verify all discovered geasa bundles directly in Scheme when ./scripts/verify-geasa is absent."
-        (let* ((bundle-mod (resolve-interface '(badb geis bundle)))
-               (search-path-fn (module-ref bundle-mod 'geis-bundle-search-path))
-               (install-fn (module-ref bundle-mod 'geis-bundle-install))
-               (all-ok? #t))
-          (for-each
-            (lambda (root)
-              (when (file-exists? root)
-                (let ((entries (scandir root (lambda (n) (not (member n '("." "..")))))))
-                  (for-each
-                    (lambda (sub)
-                      (let ((dir (string-append root "/" sub)))
-                        (when (file-exists? (string-append dir "/manifest.scm"))
-                          (catch #t
-                            (lambda ()
-                              (let* ((rep (install-fn dir))
-                                     (verdict (assoc-ref rep 'verify-verdict)))
-                                (format #t "~a: ~a~%" sub verdict)
-                                (unless (equal? verdict "pass")
-                                  (set! all-ok? #f))))
-                            (lambda (key . args)
-                              (format (current-error-port) "Error verifying ~a: ~s~%" sub (cons key args))
-                              (set! all-ok? #f))))))
-                    (or entries '())))))
-            (search-path-fn))
-          all-ok?))
+        (if (member (cadr sub-args) '("--all" "-a" "all"))
+          (let ((res ((module-ref (resolve-interface '(badb geis bundle))
+                                  'geis-pack-base-collection)
+                      #:version %version)))
+            (format #t
+                    "~a\n"
+                    (format-cli-kv (current-output-port) "packed"
+                                   (format #f "~a (~a bundles)"
+                                           (assoc-ref res 'tarball)
+                                           (assoc-ref res 'bundle-count))
+                                   #:indent 0 #:width 8 #:color #f)))
+          (let
+              ((res
+                 ((module-ref (resolve-interface '(badb geis bundle)) 'geis-bundle-pack)
+                  (cadr sub-args))))
+            (format #t
+                    "~a\n"
+                    (format-cli-kv (current-output-port) "packed"
+                                   (format #f "~a (bundle-sha256 ~a)"
+                                           (assoc-ref res 'tarball)
+                                           (assoc-ref res 'bundle-sha256))
+                                   #:indent 0 #:width 8 #:color #f)))))
 
 (define (run-geis-verify sub-args)
         (cond
@@ -221,13 +201,9 @@
                     "Error: badb geis verify requires <feature-id> or --all\n")
             (exit 1))
           ((member (cadr sub-args) '("--all" "-a" "all"))
-            (let ((script (string-append (getcwd) "/scripts/verify-geasa")))
-              (if (file-exists? script)
-                (exit (status:exit-val (system* "./scripts/verify-geasa")))
-                ;; No runner script (e.g. badb installed out-of-tree): verify
-                ;; the discovered bundles' contracts directly in Scheme so
-                ;; discovery from any cwd still runs.
-                (exit (if (run-geis-verify-all-in-scheme!) 0 1)))))
+            (let
+                ((status (system* "./scripts/verify-geasa")))
+              (exit (status:exit-val status))))
           (else
             (display (spec-tool-verify (cadr sub-args)))
             (format (current-error-port)

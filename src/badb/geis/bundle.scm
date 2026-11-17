@@ -40,6 +40,7 @@
                                         geis-bundle-hash
                                         resolve-geis-load-path
                                         geis-bundle-pack
+                                        geis-pack-base-collection
                                         geis-bundle-install
                                         geis-capture-pending-prompt!
                                         geis-take-pending-prompt
@@ -641,6 +642,91 @@ holding the copy's bundle hash.  Return ((tarball . path)
                   (lambda _
                     #f))
                 (apply throw key args))))))
+
+(define* (geis-pack-base-collection #:key (source-dir "src/geasa") (version "0.1.0") (precompile? #t))
+         "Pack all valid bundles under SOURCE-DIR into dist/badb-base-geasa-<version>.tar.gz
+with a manifest-index.scm mapping each feature-id to its version, bundle-sha256,
+and dependencies (plus workflows/plugin-synthesis.sema when present).
+Returns ((tarball . path) (bundle-count . n) (index . entries))."
+         (unless (%directory? source-dir)
+           (throw 'geis-bundle-error
+                  (format #f "base geasa directory not found: '~a'" source-dir)))
+         (let* ((temp-parent (mkdtemp "/tmp/badb-base-pack-XXXXXX"))
+                (stage-dir (string-append temp-parent "/badb-base-geasa"))
+                (geasa-stage (string-append stage-dir "/geasa"))
+                (entries (sort (or (scandir source-dir
+                                            (lambda (n)
+                                              (and (not (member n '("." "..")))
+                                                   (%directory? (string-append source-dir "/" n))
+                                                   (file-exists? (string-append source-dir "/" n "/manifest.scm")))))
+                                   '())
+                               string<?))
+                (index-entries '()))
+           (catch #t
+             (lambda ()
+               (%mkdir-p geasa-stage)
+               (for-each
+                 (lambda (fid)
+                   (let* ((src-bundle (string-append source-dir "/" fid))
+                          (errors (geis-manifest-valid? src-bundle)))
+                     (unless (null? errors)
+                       (throw 'geis-bundle-error
+                              (format #f "manifest validation failed for '~a': ~a"
+                                      fid (string-join errors "; "))))
+                     (let* ((manifest (read-geis-manifest (string-append src-bundle "/manifest.scm")))
+                            (ver (manifest-field manifest 'version))
+                            (deps (map (lambda (d) (%fid->string (car d))) (%geis-deps manifest)))
+                            (dst-bundle (string-append geasa-stage "/" fid)))
+                       (mkdir dst-bundle)
+                       (for-each
+                         (lambda (rel)
+                           (let ((dst (string-append dst-bundle "/" rel)))
+                             (%mkdir-p (dirname dst))
+                             (copy-file (string-append src-bundle "/" rel) dst)))
+                         (geis-bundle-files src-bundle))
+                       (let* ((pins (compute-geis-sha256-pins dst-bundle))
+                              (m1 (append (remove (lambda (pair) (memq (car pair) '(sha256 precompile))) manifest)
+                                          (if precompile? (list (cons 'precompile #t)) '())
+                                          (list (cons 'sha256 pins))))
+                              (bhash (geis-bundle-hash dst-bundle)))
+                         (call-with-output-file
+                           (string-append dst-bundle "/manifest.scm")
+                           (lambda (port) (write m1 port)))
+                         (set! index-entries
+                               (cons (list (cons 'feature-id fid)
+                                           (cons 'version ver)
+                                           (cons 'bundle-sha256 bhash)
+                                           (cons 'depends deps))
+                                     index-entries))))))
+                 entries)
+               (when (file-exists? "workflows/plugin-synthesis.sema")
+                 (%mkdir-p (string-append stage-dir "/workflows"))
+                 (copy-file "workflows/plugin-synthesis.sema"
+                            (string-append stage-dir "/workflows/plugin-synthesis.sema")))
+               (let* ((ordered-index (reverse index-entries))
+                      (dist-dir (string-append (canonicalize-path ".") "/dist"))
+                      (tarball-name (format #f "badb-base-geasa-~a.tar.gz" version))
+                      (tarball-path (string-append dist-dir "/" tarball-name)))
+                 (call-with-output-file
+                   (string-append stage-dir "/manifest-index.scm")
+                   (lambda (port) (write ordered-index port)))
+                 (%mkdir-p dist-dir)
+                 (let ((status (system* "tar" "-czf" tarball-path "-C" temp-parent "badb-base-geasa")))
+                   (unless (and (number? status) (zero? (status:exit-val status)))
+                     (throw 'geis-bundle-error
+                            (format #f "failed to create base geasa tarball '~a'" tarball-path))))
+                 (call-with-output-file
+                   (string-append tarball-path ".sha256")
+                   (lambda (port)
+                     (display (sha256-hex (%read-file-string tarball-path)) port)
+                     (newline port)))
+                 (%delete-tree! temp-parent)
+                 (list (cons 'tarball tarball-path)
+                       (cons 'bundle-count (length ordered-index))
+                       (cons 'index ordered-index))))
+             (lambda (key . args)
+               (catch #t (lambda () (%delete-tree! temp-parent)) (lambda _ #f))
+               (apply throw key args)))))
 
 ;;;
 ;;; Bundle installation
