@@ -9,13 +9,16 @@
 
 (setenv "GUILE_AUTO_COMPILE" "0")
 
-(define %script-path
-  (canonicalize-path (car (command-line))))
+(eval-when (expand load eval compile)
+  (define %script-path
+    (canonicalize-path (car (command-line))))
 
-(define %root-dir
-  (canonicalize-path (string-append (dirname %script-path) "/..")))
+  (define %root-dir
+    (canonicalize-path (string-append (dirname %script-path) "/..")))
 
-(set! %load-path (cons (string-append %root-dir "/src") %load-path))
+  ;; Needed at expansion time too, so the use-modules below resolves
+  ;; (badb dist) while the script is being auto-compiled.
+  (set! %load-path (cons (string-append %root-dir "/src") %load-path)))
 
 (use-modules (badb dist)
              (ice-9 popen)

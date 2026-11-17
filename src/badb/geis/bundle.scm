@@ -838,6 +838,7 @@ Throw 'geis-bundle-error when validation fails."
                      (cons 'locked locked-fids)
                      (cons 'verify-verdict verdict-str)
                      (cons 'verify-reason (assoc-ref verdict 'reason))
+                     (cons 'verify-failures (assoc-ref verdict 'failures))
                      (cons 'compiled compiled-files))))))
 
 (define* (geis-bootstrap-base! #:key (from #f) (no-compile? #f))
@@ -902,8 +903,12 @@ Returns ((store . dir) (installed . (fid ...)) (failed . (fid ...)))."
                              (let ((rep (geis-bundle-install dst-b #:compile? (not no-compile?))))
                                (if (equal? (assoc-ref rep 'verify-verdict) "pass")
                                  (set! installed (cons fid installed))
-                                 (set! failed (cons fid failed)))))
-                           (lambda _
+                                 (begin
+                                   (format (current-error-port) "bootstrap: ~a failed verification: ~a~%~s~%"
+                                           fid (assoc-ref rep 'verify-reason) (assoc-ref rep 'verify-failures))
+                                   (set! failed (cons fid failed))))))
+                           (lambda (key . args)
+                             (format (current-error-port) "bootstrap: ~a failed: ~s ~s~%" fid key args)
                              (set! failed (cons fid failed))))))
                      fids)
                    (when temp-dir (%delete-tree! temp-dir))

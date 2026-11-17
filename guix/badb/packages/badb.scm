@@ -132,13 +132,25 @@ GUILE_LOAD_PATH=~a${GUILE_LOAD_PATH:+:$GUILE_LOAD_PATH}
 export GUILE_LOAD_PATH
 GUILE_LOAD_COMPILED_PATH=~a${GUILE_LOAD_COMPILED_PATH:+:$GUILE_LOAD_COMPILED_PATH}
 export GUILE_LOAD_COMPILED_PATH
+PATH=${PATH:+$PATH:}~a
+export PATH
 exec ~a/bin/guile --no-auto-compile -L ~a -L ~a -L ~a -L ~a \\
   -e main -s ~a \"$@\"
 "
                                                                                                           (string-append site ":" (or (getenv "GUILE_LOAD_PATH") ""))
                                                                                                           (string-append ccache ":" (or (getenv "GUILE_LOAD_COMPILED_PATH") ""))
+                                                                                                          ;; Runtime tools (sema, guile for spec replay, ...) appended so the
+                                                                                                          ;; caller's PATH still wins.
+                                                                                                          (string-join
+                                                                                                            (apply append
+                                                                                                                   (map
+                                                                                                                     (lambda (name)
+                                                                                                                       (let ((dir (assoc-ref inputs name)))
+                                                                                                                         (if dir (list (string-append dir "/bin")) '())))
+                                                                                                                     '("guile" "sema" "semcp" "rtk" "bubblewrap" "git" "coreutils")))
+                                                                                                            ":")
                                                                                                           guile site json-site quickcheck-site notcurses-site
-                                                                                                           (string-append share "/badb-launcher.scm"))))
+                                                                                                          (string-append share "/badb-launcher.scm"))))
                                                                          (chmod wrapper #o555))))
                                                    (add-after 'install-launcher-and-wrapper 'pre-compile-modules
                                                               (lambda* (#:key inputs outputs #:allow-other-keys)
@@ -243,12 +255,12 @@ manifests.")
                  (name "badb-kernel")
                  (arguments
                    (substitute-keyword-arguments (package-arguments badb)
-                     ((#:phases phases)
-                      #~(modify-phases #$phases
-                                       (add-after 'install 'strip-geasa
-                                                  (lambda* (#:key outputs #:allow-other-keys)
-                                                           (let ((geasa (string-append (assoc-ref outputs "out")
-                                                                                       "/share/guile/site/3.0/geasa")))
-                                                             (when (file-exists? geasa)
-                                                               (delete-file-recursively geasa)))))))))
+                                                 ((#:phases phases)
+                                                  #~(modify-phases #$phases
+                                                                   (add-after 'install 'strip-geasa
+                                                                              (lambda* (#:key outputs #:allow-other-keys)
+                                                                                       (let ((geasa (string-append (assoc-ref outputs "out")
+                                                                                                                   "/share/guile/site/3.0/geasa")))
+                                                                                         (when (file-exists? geasa)
+                                                                                           (delete-file-recursively geasa)))))))))
                  (synopsis "Kernel-only badb microharness (bootstrap base geasa at runtime)")))
