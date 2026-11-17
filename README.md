@@ -75,6 +75,22 @@ guix time-machine -C channels.scm -- shell -m manifest.scm
 ./scripts/devenv -- ./scripts/badb init
 ```
 
+### Installing as a Single-File Executable (`~/.local/bin/badb`)
+
+Build a relocatable single-file executable, install it to `~/.local/bin/badb`, and bootstrap the base geasa into `~/.local/share/badb/geasa`:
+
+```sh
+just install
+```
+
+Or manually:
+
+```sh
+./scripts/dist --single-file -o dist/badb
+install -Dm755 dist/badb ~/.local/bin/badb
+~/.local/bin/badb bootstrap --from ./src/geasa
+```
+
 Terminal output respects standard `NO_COLOR` and `FORCE_COLOR` environment variables.
 
 ---
