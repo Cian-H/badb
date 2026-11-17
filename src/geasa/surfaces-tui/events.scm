@@ -729,7 +729,8 @@
                  (pair? (tui-messages st))
                  (< (tui-msgsel-index st) (length (tui-messages st))))
           (tui-toggle-selected-collapse! st)
-          (set-tui-cursor-pos! st (string-length (tui-input-buffer st))))
+          (unless (tui-expand-latest-collapsed! st)
+            (set-tui-cursor-pos! st (string-length (tui-input-buffer st)))))
         'render)
       ((eqv? ch KEY_DC)
         (call-with-values

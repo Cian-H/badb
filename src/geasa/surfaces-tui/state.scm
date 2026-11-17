@@ -228,6 +228,7 @@
                             tui-add-user-msg!
                             tui-record-session-usage!
                             tui-toggle-selected-collapse!
+                            tui-expand-latest-collapsed!
                             tui-record-history!
                             tui-try-save-config!
                             tui-sync-context-limit!
@@ -637,6 +638,21 @@
              (msg (list-ref msgs idx)))
           (when (message-collapsible? msg)
             (set-tui-messages! st (replace-nth msgs idx (message-toggle-collapsed msg))))))
+
+(define (tui-expand-latest-collapsed! st)
+        "Expand the most recent collapsed message in ST when none is selected.
+Return #t if a message was expanded, else #f."
+        (let* ((msgs (tui-messages st))
+               (idx (let loop ((i (- (length msgs) 1)))
+                              (cond
+                                ((< i 0) #f)
+                                ((message-collapsed? (list-ref msgs i)) i)
+                                (else (loop (- i 1)))))))
+          (and idx
+               (begin
+                 (set-tui-messages! st
+                                    (replace-nth msgs idx (message-toggle-collapsed (list-ref msgs idx))))
+                 #t))))
 
 (define (tui-record-history! st input mode)
         "Record INPUT under MODE in ST's shared input history and journal file."
