@@ -140,14 +140,19 @@ breaking on whitespace when possible."
 ;;; Slash Commands Registry & Parsing
 ;;;
 (define (derive-slash-commands)
-        "Derive the flat ((cmd . desc) ...) alist from %command-categories."
+        "Derive the flat ((cmd . desc) ...) alist from %command-categories, sorted alphabetically."
         (let loop
           ((cats %command-categories) (seen '()) (acc '()))
           (if (null? cats)
-            (let ((res (reverse acc)))
-              (if (member "exit" seen)
-                res
-                (append res '(("exit" . "Exit badb microharness")))))
+            (let*
+                ((res (reverse acc))
+                 (with-exit
+                   (if (member "exit" seen)
+                     res
+                     (append res '(("exit" . "Exit badb microharness"))))))
+              (sort with-exit
+                    (lambda (a b)
+                      (string<? (car a) (car b)))))
             (let* ((cat (car cats)) (items (caddr cat)))
               (let inner
                 ((its items) (s seen) (a acc))
