@@ -234,7 +234,7 @@
                                                    (lambda (n)
                                                      (tui-apply-live-theme! st n))
                                                    #:parent
-                                                   parent-menu))))
+                                                   (or parent-menu (make-commands-root-menu))))))
 
 (define (handle-config-cmd! st arg)
         (let*
@@ -257,7 +257,9 @@
                                               (config-menu-items-for-state cfg
                                                                            (tui-cur-model st)
                                                                            (tui-cur-endpoint st)
-                                                                           (tui-policy st)))))
+                                                                           (tui-policy st))
+                                              #:parent
+                                              (make-commands-root-menu))))
             ("show"
              (tui-add-sys-msg! st
                                (format-config-summary cfg
@@ -380,13 +382,18 @@
                                         name
                                         (length (all-theme-names))))))))
 
-(define (handle-resume-cmd! st _arg)
-        (let
-            ((items (session-resurrection-menu-items (default-sessions-dir))))
-          (if (null? items)
-            (tui-add-sys-msg! st
-                              "No saved sessions found. A session file is written after every chat turn.")
-            (tui-set-active-menu! st (make-menu "Resume Session" items)))))
+(define*
+  (handle-resume-cmd! st _arg #:optional (parent-menu #f))
+  (let
+      ((items (session-resurrection-menu-items (default-sessions-dir))))
+    (if (null? items)
+      (tui-add-sys-msg! st
+                        "No saved sessions found. A session file is written after every chat turn.")
+      (tui-set-active-menu! st
+                            (make-menu "Resume Session"
+                                       items
+                                       #:parent
+                                       (or parent-menu (make-commands-root-menu)))))))
 
 (define (handle-compact-cmd! st _arg)
         (let*
@@ -745,7 +752,7 @@
                 ((open-guardrail-menu) (push-sub! "Guardrail" (guardrail-menu-items)))
                 ((open-keymap-menu)
                   (push-sub! "Keybindings" (keymap->menu-items (tui-active-keymap st))))
-                ((open-resume-menu) (handle-resume-cmd! st ""))
+                ((open-resume-menu) (handle-resume-cmd! st "" prev-menu))
                 ((prefill-model) (tui-prefill-input! st "/model "))
                 ((prefill-endpoint) (tui-prefill-input! st "/endpoint "))
                 ((prefill-temperature) (tui-prefill-input! st "/config set temperature "))
@@ -848,7 +855,10 @@
               (tui-set-active-menu! st (make-commands-root-menu)))
             ((string=? cmd "keys")
               (tui-set-active-menu! st
-                                    (make-menu "Keybindings" (keymap->menu-items (tui-active-keymap st)))))
+                                    (make-menu "Keybindings"
+                                               (keymap->menu-items (tui-active-keymap st))
+                                               #:parent
+                                               (make-commands-root-menu))))
             ((string=? cmd "todo")
               (call-with-values
                 (lambda ()
@@ -873,9 +883,11 @@
                                                #:line
                                                line-num
                                                #:suspend-tty!
-                                               (lambda () (tui-suspend-tty! st))
+                                               (lambda ()
+                                                 (tui-suspend-tty! st))
                                                #:resume-tty!
-                                               (lambda () (tui-resume-tty! st))))
+                                               (lambda ()
+                                                 (tui-resume-tty! st))))
                     (lambda (ok? res)
                       (unless ok? (tui-add-err-msg! st (format #f "Editor error: ~a" res)))))
                   (tui-add-sys-msg! st "Usage: /edit <file> [line]"))))
@@ -920,7 +932,9 @@
               (if (string-null? arg)
                 (tui-set-active-menu! st
                                       (make-menu "Model"
-                                                 (build-live-or-recorded-model-menu-items (tui-client st) cfg (tui-cur-model st))))
+                                                 (build-live-or-recorded-model-menu-items (tui-client st) cfg (tui-cur-model st))
+                                                 #:parent
+                                                 (make-commands-root-menu)))
                 (begin (set-tui-cur-model! st arg)
                        (badb-config-set-model-name! cfg arg)
                        (tui-refresh-client! st)
@@ -929,7 +943,10 @@
             ((string=? cmd "endpoint")
               (if (string-null? arg)
                 (tui-set-active-menu! st
-                                      (make-menu "Endpoint" (endpoint-menu-items-for-config cfg)))
+                                      (make-menu "Endpoint"
+                                                 (endpoint-menu-items-for-config cfg)
+                                                 #:parent
+                                                 (make-commands-root-menu)))
                 (tui-set-endpoint-url! st arg "Endpoint updated to: ~a (saved to config)")))
             ((string=? cmd "provider") (handle-provider-cmd! st arg))
             ((string=? cmd "mcp")
