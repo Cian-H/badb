@@ -762,6 +762,13 @@ Returns the list of compiled .go paths."
                                 (not (string=? rel "spec.geis.scm"))
                                 (not (string-prefix? "fixtures/" rel))))
                          (geis-bundle-files bundle-dir)))
+               ;; guild does not inherit the in-process %load-path: pass (badb ...)
+               ;; in src/ and sibling bundles in the store parent explicitly.
+               (l-flags (append-map
+                          (lambda (dir) (list "-L" dir))
+                          (delete-duplicates
+                            (append (list (dirname (user-geis-store-dir)) "src" "." "geis")
+                                    %load-path))))
                (compiled '()))
           (%mkdir-p out-dir)
           (for-each
@@ -772,9 +779,12 @@ Returns the list of compiled .go paths."
                              rel))
                      (dst (string-append out-dir "/" base ".go")))
                 (%mkdir-p (dirname dst))
-                (let ((status (system* "guild" "compile" "-o" dst src)))
-                  (when (and (number? status) (zero? (status:exit-val status)))
-                    (set! compiled (cons dst compiled))))))
+                (let ((status (apply system* "guild" "compile"
+                                     (append l-flags (list "-o" dst src)))))
+                  (if (and (number? status) (zero? (status:exit-val status)))
+                    (set! compiled (cons dst compiled))
+                    (format (current-error-port)
+                            "warning: failed to precompile ~a/~a~%" fid rel)))))
             scm-files)
           (reverse compiled)))
 
