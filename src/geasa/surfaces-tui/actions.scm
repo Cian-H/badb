@@ -733,7 +733,11 @@
                     (when parent
                       (tui-set-active-menu! st parent)
                       (menu-trigger-highlight! parent))))
-                ((back-to-slash) (tui-prefill-input! st "/"))
+                ((back-to-slash) (tui-clear-overlay! st)
+                                 (set-tui-prompt-mode! st 'slash)
+                                 (set-tui-input-buffer! st "")
+                                 (set-tui-cursor-pos! st 0)
+                                 (set-tui-selector-index! st 0))
                 ((open-config-menu)
                   (push-sub! "Configuration"
                              (config-menu-items-for-state cfg
