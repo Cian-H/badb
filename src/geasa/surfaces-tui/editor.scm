@@ -139,7 +139,6 @@ breaking on whitespace when possible."
 (define %slash-commands
         '(("help" . "Show help manual & shortcuts")
           ("model" . "Switch or inspect active LLM model")
-          ("models" . "List models available on the endpoint")
           ("endpoint" . "Switch or inspect endpoint URL")
           ("provider" . "Switch or inspect model provider preset (e.g. lmstudio)")
           ("mcp" . "Manage MCP servers (list, start, stop, add, remove, tools)")
@@ -153,7 +152,8 @@ breaking on whitespace when possible."
           ("fork" . "Create a conversation branch at the current or saved checkpoint")
           ("replay" . "Restore a saved conversation and workspace checkpoint")
           ("rules" . "Inspect discovered project rules & workspace tree")
-          ("geis" . "Contract-gated dynamic harness synthesis (/geis add <desc>, model [name], list, verify, status)")
+          ("geis" .
+           "Contract-gated dynamic harness synthesis (/geis add <desc>, model [name], list, verify, status)")
           ("context" . "View conversation token stats and metrics")
           ("ctx" . "Context index search and token savings stats")
           ("skills" . "List available agent skills")
