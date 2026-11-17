@@ -96,18 +96,19 @@
                (action (if (pair? item) (cdr item) #f)))
           (cons (cons (ensure-string label) (ensure-string (or desc ""))) action)))
 
-(define (append-menu-back-item items)
-        "Append a Back navigation item to ITEMS unless one is already present."
-        (if
-            (any
-              (lambda (it)
-                (eq? (menu-item-action it) 'menu-back))
-              items)
-          items
-          (append items
-                  (list
-                    (normalize-menu-item
-                      (cons (cons "← Back" "Return to previous menu") 'menu-back))))))
+(define*
+  (append-menu-back-item items
+                         #:optional
+                         (action 'menu-back)
+                         (desc "Return to previous menu"))
+  "Append a Back navigation item to ITEMS unless one is already present."
+  (if
+      (any
+        (lambda (it)
+          (memq (menu-item-action it) '(menu-back back-to-slash)))
+        items)
+    items
+    (append items (list (normalize-menu-item (cons (cons "← Back" desc) action))))))
 
 (define*
   (make-menu title
@@ -116,10 +117,12 @@
              (selected-index 0)
              (on-highlight #f)
              (on-cancel #f)
-             (parent #f))
+             (parent #f)
+             (back-action #f))
   "Create a menu titled TITLE from ITEMS, each of the form
 ((label . description) . action), with SELECTED-INDEX preselected,
-optional ON-HIGHLIGHT / ON-CANCEL callbacks, and optional PARENT menu."
+optional ON-HIGHLIGHT / ON-CANCEL callbacks, optional PARENT menu,
+and optional BACK-ACTION when PARENT is #f."
   (let*
       ((parent-menu (and (menu? parent) parent))
        (base-items
@@ -128,9 +131,11 @@ optional ON-HIGHLIGHT / ON-CANCEL callbacks, and optional PARENT menu."
                 items
                 '())))
        (norm-items
-         (if parent-menu
-           (append-menu-back-item base-items)
-           base-items))
+         (cond
+           (parent-menu (append-menu-back-item base-items))
+           (back-action
+             (append-menu-back-item base-items back-action "Return to / command palette"))
+           (else base-items)))
        (count (length norm-items))
        (idx (min (max 0 selected-index) (max 0 (- count 1)))))
     (%make-menu (ensure-string (or title "Menu"))
@@ -564,34 +569,48 @@ marking ACTIVE-NAME."
                         (cons 'set-theme name))))
               (all-theme-names)))
 
-(define* (make-theme-preview-menu current-theme-name apply-theme!
-                                  #:key (parent #f) (on-cancel #f) (title "Theme"))
-         "Create a <menu> for theme selection with live on-highlight preview.
+(define*
+  (make-theme-preview-menu current-theme-name
+                           apply-theme!
+                           #:key
+                           (parent #f)
+                           (on-cancel #f)
+                           (title "Theme")
+                           (back-action #f))
+  "Create a <menu> for theme selection with live on-highlight preview.
 Moving across items invokes (APPLY-THEME! name) immediately; canceling via
 menu-pop restores CURRENT-THEME-NAME and invokes ON-CANCEL if provided."
-         (let* ((names (all-theme-names))
-                (idx (or (and (string? current-theme-name)
-                              (list-index (lambda (n) (string=? n current-theme-name)) names))
-                         0))
-                (items (theme-menu-items current-theme-name)))
-           (make-menu title
-                      items
-                      #:selected-index idx
-                      #:parent parent
-                      #:on-highlight
-                      (lambda (item)
-                        (let ((act (menu-item-action item)))
-                          (when (and (pair? act)
-                                     (eq? (car act) 'set-theme)
-                                     (procedure? apply-theme!))
-                            (apply-theme! (cdr act)))))
-                      #:on-cancel
-                      (lambda ()
-                        (when (and (string? current-theme-name)
-                                   (procedure? apply-theme!))
-                          (apply-theme! current-theme-name))
-                        (when (procedure? on-cancel)
-                          (on-cancel))))))
+  (let*
+      ((names (all-theme-names))
+       (idx
+         (or
+           (and (string? current-theme-name)
+                (list-index
+                  (lambda (n)
+                    (string=? n current-theme-name))
+                  names))
+           0))
+       (items (theme-menu-items current-theme-name)))
+    (make-menu title
+               items
+               #:selected-index
+               idx
+               #:parent
+               parent
+               #:back-action
+               back-action
+               #:on-highlight
+               (lambda (item)
+                 (let ((act (menu-item-action item)))
+                   (when
+                       (and (pair? act) (eq? (car act) 'set-theme) (procedure? apply-theme!))
+                     (apply-theme! (cdr act)))))
+               #:on-cancel
+               (lambda ()
+                 (when
+                     (and (string? current-theme-name) (procedure? apply-theme!))
+                   (apply-theme! current-theme-name))
+                 (when (procedure? on-cancel) (on-cancel))))))
 
 (define (guardrail-menu-items)
         "Build the guardrail level menu items."

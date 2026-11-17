@@ -159,7 +159,18 @@ Returns 'handled, 'close, or 'pass."
               (let ((parent (menu-pop m)))
                 (if parent
                   (begin (set-overlay-data! ov parent) (menu-trigger-highlight! parent) 'handled)
-                  'pass)))
+                  (let
+                      ((slash-item
+                         (find
+                           (lambda (it)
+                             (eq? (menu-item-action it) 'back-to-slash))
+                           (menu-items m))))
+                    (if slash-item
+                      (begin
+                        (when (procedure? (menu-on-cancel m)) ((menu-on-cancel m)))
+                        (when on-select! (on-select! slash-item))
+                        'close)
+                      'pass)))))
             ((or (eqv? ch key-enter) (eqv? ch 10) (eqv? ch 13))
               (let ((item (menu-selected-item m)))
                 (cond

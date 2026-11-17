@@ -234,7 +234,9 @@
                                                    (lambda (n)
                                                      (tui-apply-live-theme! st n))
                                                    #:parent
-                                                   (or parent-menu (make-commands-root-menu))))))
+                                                   parent-menu
+                                                   #:back-action
+                                                   (and (not parent-menu) 'back-to-slash)))))
 
 (define (handle-config-cmd! st arg)
         (let*
@@ -258,8 +260,8 @@
                                                                            (tui-cur-model st)
                                                                            (tui-cur-endpoint st)
                                                                            (tui-policy st))
-                                              #:parent
-                                              (make-commands-root-menu))))
+                                              #:back-action
+                                              'back-to-slash)))
             ("show"
              (tui-add-sys-msg! st
                                (format-config-summary cfg
@@ -393,7 +395,9 @@
                             (make-menu "Resume Session"
                                        items
                                        #:parent
-                                       (or parent-menu (make-commands-root-menu)))))))
+                                       parent-menu
+                                       #:back-action
+                                       (and (not parent-menu) 'back-to-slash))))))
 
 (define (handle-compact-cmd! st _arg)
         (let*
@@ -729,6 +733,7 @@
                     (when parent
                       (tui-set-active-menu! st parent)
                       (menu-trigger-highlight! parent))))
+                ((back-to-slash) (tui-prefill-input! st "/"))
                 ((open-config-menu)
                   (push-sub! "Configuration"
                              (config-menu-items-for-state cfg
@@ -857,8 +862,8 @@
               (tui-set-active-menu! st
                                     (make-menu "Keybindings"
                                                (keymap->menu-items (tui-active-keymap st))
-                                               #:parent
-                                               (make-commands-root-menu))))
+                                               #:back-action
+                                               'back-to-slash)))
             ((string=? cmd "todo")
               (call-with-values
                 (lambda ()
@@ -933,8 +938,8 @@
                 (tui-set-active-menu! st
                                       (make-menu "Model"
                                                  (build-live-or-recorded-model-menu-items (tui-client st) cfg (tui-cur-model st))
-                                                 #:parent
-                                                 (make-commands-root-menu)))
+                                                 #:back-action
+                                                 'back-to-slash))
                 (begin (set-tui-cur-model! st arg)
                        (badb-config-set-model-name! cfg arg)
                        (tui-refresh-client! st)
@@ -945,8 +950,8 @@
                 (tui-set-active-menu! st
                                       (make-menu "Endpoint"
                                                  (endpoint-menu-items-for-config cfg)
-                                                 #:parent
-                                                 (make-commands-root-menu)))
+                                                 #:back-action
+                                                 'back-to-slash))
                 (tui-set-endpoint-url! st arg "Endpoint updated to: ~a (saved to config)")))
             ((string=? cmd "provider") (handle-provider-cmd! st arg))
             ((string=? cmd "mcp")

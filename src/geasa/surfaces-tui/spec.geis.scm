@@ -2515,6 +2515,27 @@
                 (test-equal "Esc returns to root menu"
                             "Root"
                             (menu-title (menu-overlay-menu ov-esc))))
+              ;; Slash-command root menu with #:back-action 'back-to-slash
+              (let*
+                  ((slash-m (make-menu "Config" '((("A" . "B") . a)) #:back-action 'back-to-slash))
+                   (ov-slash (make-menu-overlay slash-m))
+                   (slash-act #f)
+                   (s-ctx
+                     `((key-up . 259) (key-down . 258)
+                       (key-left . 260)
+                       (key-backspace . 263)
+                       (key-enter . 343)
+                       (on-select! .
+                                   ,(lambda (item)
+                                      (set! slash-act (menu-item-action item))))
+                       (on-close! .
+                                  ,(lambda ()
+                                     #t)))))
+                (test-equal
+                  "Backspace on slash-root menu returns close and triggers back-to-slash"
+                  'close
+                  ((overlay-on-key ov-slash) ov-slash 127 s-ctx))
+                (test-equal "back-to-slash action delivered" 'back-to-slash slash-act))
               ;; Click on Back item on a fresh submenu overlay
               (let ((ov2 (make-menu-overlay sub)))
                 (test-assert "click on Back item returns #t"
