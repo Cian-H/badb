@@ -59,11 +59,11 @@ pass "menu click applies the theme (tokyo-night blue)"
 press Backspace
 type_text "/mo"
 sleep 1
-ROW=$(tui text | grep -an "/models " | head -1 | cut -d: -f1)
+ROW=$(tui text | grep -an "/model " | head -1 | cut -d: -f1)
 Y=$((ROW - 1))
 tui mouse click 6 "$Y"
 sleep 1
-if tui text --full | grep -aq "❯ /models"; then
+if tui text --full | grep -aq "❯ /model"; then
   pass "palette click selects the row"
 else
   fail "palette click did not select"

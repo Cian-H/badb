@@ -352,7 +352,7 @@
             (let
                 ((chosen (selected-command-name st matches)))
               (if
-                  (member chosen '("provider" "sh" "eval" "steer" "geis" "edit" "todo" "diff"))
+                  (member chosen '("provider" "sh" "eval" "steer" "edit" "todo" "diff"))
                 (begin
                   (set-tui-input-buffer! st
                                          (format-slash-completion chosen (tui-prompt-mode st) #t))

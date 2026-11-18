@@ -961,14 +961,19 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
       (catch #t
         (lambda ()
           (register-geis-updater-extensions!)
-          (start-background-geasa-update-check!
-            #:workspace (getcwd)
-            #:on-complete (lambda (results)
-                            (let ((notice (geis-updater-startup-notice results)))
-                              (when notice
-                                (set-tui-status-text! st notice)
-                                (set-tui-render-dirty?! st #t))))))
-        (lambda _ #f))
+          (start-background-geasa-update-check! #:workspace
+                                                (getcwd)
+                                                #:config
+                                                (tui-cfg st)
+                                                #:on-complete
+                                                (lambda (results)
+                                                  (let
+                                                      ((notice (geis-updater-startup-notice results)))
+                                                    (when notice
+                                                      (set-tui-status-text! st notice)
+                                                      (set-tui-render-dirty?! st #t))))))
+        (lambda _
+          #f))
       (let ((stdscr (initscr)))
         (set-tui-stdscr! st stdscr)
         (cbreak!)

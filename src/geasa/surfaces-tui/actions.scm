@@ -30,6 +30,10 @@
                #:use-module
                (geasa surfaces-theme plugin)
                #:use-module
+               (geasa surfaces-geis-manager plugin)
+               #:use-module
+               (geasa surfaces-geis-updater plugin)
+               #:use-module
                (geasa surfaces-tui editor)
                #:use-module
                (geasa surfaces-tui session)
@@ -583,7 +587,15 @@
                (lambda (m)
                  (tui-add-err-msg! st m))))
           (cond
-            ((or (string-null? trimmed) (string=? sub "help"))
+            ((or (string-null? trimmed)
+                 (string=? sub "manager")
+                 (string=? sub "user")
+                 (string=? sub "project"))
+              (handle-geasa-manager-cmd! st
+                                         (if (string=? sub "project")
+                                           "project"
+                                           "user")))
+            ((string=? sub "help")
               (tui-add-sys-msg! st
                                 (if format-geis-help-text
                                   (format-geis-help-text)
@@ -839,6 +851,18 @@
                                                    turn-count))))))
             (else (tui-add-err-msg! st "Unsupported menu action.")))))
 
+(define (handle-geasa-manager-cmd! st arg)
+        "Open the /geasa manager modal overlay (optionally targeting user or project scope)."
+        (let*
+            ((trimmed (string-trim-both (or arg "")))
+             (scope
+               (if (string=? trimmed "project")
+                 'project
+                 'user)))
+          (register-geis-updater-extensions!)
+          (set-tui-active-overlay! st
+                                   (make-geis-manager-overlay #:scope scope #:workspace (getcwd)))))
+
 (define (tui-handle-command! st cmd-pair hooks)
         "Dispatch parsed slash command CMD-PAIR on ST."
         (let*
@@ -909,6 +933,7 @@
             ((string=? cmd "replay") (handle-replay-cmd! st arg))
             ((string=? cmd "rules") (tui-add-sys-msg! st (format-rules-and-tree (getcwd))))
             ((string=? cmd "geis") (handle-geis-cmd! st arg hooks))
+            ((string=? cmd "geasa") (handle-geis-cmd! st arg hooks))
             ((string=? cmd "context")
               (unless (tui-agent-running? st) (tui-sync-context-limit! st))
               (execute-context-subcommand! (tui-compactor st)

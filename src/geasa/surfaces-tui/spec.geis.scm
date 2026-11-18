@@ -31,6 +31,8 @@
                #:use-module
                (geasa surfaces-tui tools)
                #:use-module
+               (geasa surfaces-tui actions)
+               #:use-module
                (geasa runtimes-react plugin)
                #:use-module
                (geasa agents-lifecycle plugin)
@@ -402,7 +404,8 @@
             (test-assert
               "slash commands list contains journal"
               (assoc "journal" %slash-commands))
-            (test-assert "slash commands list contains test" (assoc "test" %slash-commands))
+            (test-assert "slash commands list does not contain test at root"
+                         (not (assoc "test" %slash-commands)))
             (test-assert "slash commands list contains sh" (assoc "sh" %slash-commands))
             (test-assert "slash commands list contains eval" (assoc "eval" %slash-commands))
             (test-assert "slash commands list contains clear"
@@ -2487,65 +2490,110 @@
                 "(+ 1 2)"
                 (string-concatenate (map car segs)))))
 
-(test-group "Pluggable Overlay & TUI State Modularity"
-            ;; Custom overlay protocol works without menus
-            (let* ((rendered #f)
-                   (ov (make-overlay
-                         #:kind 'custom-picker
-                         #:data '("alpha" "beta")
-                         #:render (lambda (o _ctx _maxy _maxx _anchor)
-                                    (set! rendered (overlay-data o))
-                                    #t)
-                         #:on-key (lambda (_o ch _ctx) (if (eqv? ch 27) 'close 'handled))
-                         #:on-click (lambda (_o target _ctx) (eq? target 'pick)))))
-              (test-assert "custom overlay? is #t" (overlay? ov))
-              (test-equal "custom overlay kind" 'custom-picker (overlay-kind ov))
-              (test-assert "custom overlay-render runs" ((overlay-render ov) ov '() 24 80 20))
-              (test-equal "custom overlay-render captured data" '("alpha" "beta") rendered)
-              (test-equal "custom overlay-on-key handles Esc" 'close ((overlay-on-key ov) ov 27 '()))
-              (test-assert "custom overlay-on-click handles target" ((overlay-on-click ov) ov 'pick '())))
-
-            ;; Menu overlay adapter wraps <menu> and dispatches render/key/click
-            (let* ((m (make-menu "Test Menu"
-                                 '((("First" . "Desc 1") . act-1)
-                                   (("Second" . "Desc 2") . act-2))))
-                   (ov (make-menu-overlay m))
-                   (drawn-title #f)
-                   (clicks '())
-                   (selected #f)
-                   (draw-ctx `((draw-popup! . ,(lambda (title _rows _sel _bw _sy _sx _ab _be)
-                                                 (set! drawn-title title)))
-                               (register-click! . ,(lambda (y target)
-                                                     (set! clicks (cons (cons y target) clicks))))))
-                   (key-ctx `((key-up . 259)
-                              (key-down . 258)
-                              (key-left . 260)
-                              (key-enter . 343)
-                              (on-select! . ,(lambda (item) (set! selected (menu-item-action item))))
-                              (on-close! . ,(lambda () #t)))))
-              (test-assert "menu-overlay? is #t" (menu-overlay? ov))
-              (test-assert "menu overlay renders via draw-ctx" ((overlay-render ov) ov draw-ctx 24 80 20))
-              (test-equal "menu overlay passes breadcrumb title" "Test Menu" drawn-title)
-              (test-equal "menu overlay registers 2 click targets" 2 (length clicks))
-              (test-equal "menu overlay key-down moves selection" 'handled ((overlay-on-key ov) ov 258 key-ctx))
-              (test-equal "menu selection moved to index 1" 1 (menu-selected-index (menu-overlay-menu ov)))
-              (test-equal "menu overlay Enter selects item" 'handled ((overlay-on-key ov) ov 10 key-ctx))
-              (test-equal "menu overlay on-select! received act-2" 'act-2 selected)
-              (test-equal "menu overlay Esc closes root menu" 'close ((overlay-on-key ov) ov 27 key-ctx))
-              (test-assert "menu overlay click selects item 0"
-                           ((overlay-on-click ov) ov '(menu-item . 0) key-ctx))
-              (test-equal "menu overlay click dispatched act-1" 'act-1 selected))
-
-            ;; <tui-state> wraps active-menu via active-overlay
-            (let ((st (make-tui-state))
-                  (m (make-menu "Config" '((("A" . "B") . a)))))
-              (test-assert "tui-state? is #t" (tui-state? st))
-              (test-equal "initial active-menu is #f" #f (tui-active-menu st))
-              (tui-set-active-menu! st m)
-              (test-assert "tui-set-active-menu! sets menu-overlay" (menu-overlay? (tui-active-overlay st)))
-              (test-equal "tui-active-menu unwraps <menu>" "Config" (menu-title (tui-active-menu st)))
-              (tui-clear-overlay! st)
-              (test-equal "tui-clear-overlay! clears active-menu" #f (tui-active-menu st))))
+(test-group
+  "Pluggable Overlay & TUI State Modularity"
+  ;; Custom overlay protocol works without menus
+  (let*
+      ((rendered #f)
+       (ov
+         (make-overlay #:kind
+                       'custom-picker
+                       #:data
+                       '("alpha" "beta")
+                       #:render
+                       (lambda (o _ctx _maxy _maxx _anchor)
+                         (set! rendered (overlay-data o))
+                         #t)
+                       #:on-key
+                       (lambda (_o ch _ctx)
+                         (if (eqv? ch 27)
+                           'close
+                           'handled))
+                       #:on-click
+                       (lambda (_o target _ctx)
+                         (eq? target 'pick)))))
+    (test-assert "custom overlay? is #t" (overlay? ov))
+    (test-equal "custom overlay kind" 'custom-picker (overlay-kind ov))
+    (test-assert "custom overlay-render runs" ((overlay-render ov) ov '() 24 80 20))
+    (test-equal "custom overlay-render captured data" '("alpha" "beta") rendered)
+    (test-equal "custom overlay-on-key handles Esc"
+                'close
+                ((overlay-on-key ov) ov 27 '()))
+    (test-assert
+      "custom overlay-on-click handles target"
+      ((overlay-on-click ov) ov 'pick '())))
+  ;; Menu overlay adapter wraps <menu> and dispatches render/key/click
+  (let*
+      ((m
+         (make-menu "Test Menu"
+                    '((("First" . "Desc 1") . act-1) (("Second" . "Desc 2") . act-2))))
+       (ov (make-menu-overlay m))
+       (drawn-title #f)
+       (clicks '())
+       (selected #f)
+       (draw-ctx
+         `((draw-popup! .
+                        ,(lambda (title _rows _sel _bw _sy _sx _ab _be)
+                           (set! drawn-title title)))
+           (register-click! .
+                            ,(lambda (y target)
+                               (set! clicks (cons (cons y target) clicks))))))
+       (key-ctx
+         `((key-up . 259) (key-down . 258)
+           (key-left . 260)
+           (key-enter . 343)
+           (on-select! .
+                       ,(lambda (item)
+                          (set! selected (menu-item-action item))))
+           (on-close! .
+                      ,(lambda ()
+                         #t)))))
+    (test-assert "menu-overlay? is #t" (menu-overlay? ov))
+    (test-assert "menu overlay renders via draw-ctx"
+                 ((overlay-render ov) ov draw-ctx 24 80 20))
+    (test-equal "menu overlay passes breadcrumb title" "Test Menu" drawn-title)
+    (test-equal "menu overlay registers 2 click targets" 2 (length clicks))
+    (test-equal
+      "menu overlay key-down moves selection"
+      'handled
+      ((overlay-on-key ov) ov 258 key-ctx))
+    (test-equal "menu selection moved to index 1"
+                1
+                (menu-selected-index (menu-overlay-menu ov)))
+    (test-equal "menu overlay Enter selects item"
+                'handled
+                ((overlay-on-key ov) ov 10 key-ctx))
+    (test-equal "menu overlay on-select! received act-2" 'act-2 selected)
+    (test-equal "menu overlay Esc closes root menu"
+                'close
+                ((overlay-on-key ov) ov 27 key-ctx))
+    (test-assert "menu overlay click selects item 0"
+                 ((overlay-on-click ov) ov '(menu-item . 0) key-ctx))
+    (test-equal "menu overlay click dispatched act-1" 'act-1 selected))
+  ;; <tui-state> wraps active-menu via active-overlay
+  (let
+      ((st (make-tui-state)) (m (make-menu "Config" '((("A" . "B") . a)))))
+    (test-assert "tui-state? is #t" (tui-state? st))
+    (test-equal "initial active-menu is #f" #f (tui-active-menu st))
+    (tui-set-active-menu! st m)
+    (test-assert
+      "tui-set-active-menu! sets menu-overlay"
+      (menu-overlay? (tui-active-overlay st)))
+    (test-equal "tui-active-menu unwraps <menu>"
+                "Config"
+                (menu-title (tui-active-menu st)))
+    (tui-clear-overlay! st)
+    (test-equal "tui-clear-overlay! clears active-menu" #f (tui-active-menu st)))
+  (let
+      ((st
+         (make-tui-state #:nref
+                         (lambda _
+                           (lambda _
+                             -1)))))
+    (tui-handle-command! st '("geasa" . "") '())
+    (test-assert "/geasa command opens modal overlay"
+                 (modal-overlay? (tui-active-overlay st)))
+    (tui-clear-overlay! st)))
 
 (test-group "Menu Back Navigation"
             (let*

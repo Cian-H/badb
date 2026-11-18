@@ -1057,8 +1057,7 @@ cannot restore the screen; initscr must run again."
                                 ((tab-sig
                                    (list (tui-status-text st)
                                          (tui-cur-model st)
-                                         (and (spinner-active-status? (tui-status-text st))
-                                              (streaming-spinner-glyph)))))
+                                         (and (spinner-active-status? (tui-status-text st)) (streaming-spinner-glyph)))))
                               (unless
                                   (equal? tab-sig (tui-last-tab-title-sig st))
                                 (set-tui-last-tab-title-sig! st tab-sig)
@@ -1087,26 +1086,51 @@ cannot restore the screen; initscr must run again."
                             (render-bottom-status-bar! st maxy maxx running?)
                             (let ((ov (tui-active-overlay st)))
                               (when ov
-                                (let
-                                    ((draw-ctx
+                                (let*
+                                    ((attr-on! (nref 'attr-on!))
+                                     (attr-off! (nref 'attr-off!))
+                                     (A_BOLD (nref 'A_BOLD))
+                                     (A_DIM (nref 'A_DIM))
+                                     (A_REVERSE (nref 'A_REVERSE))
+                                     (draw-ctx
                                        `((draw-popup! .
                                                       ,(lambda
                                                            (title rows sel-pos box-w start-y start-x above below)
                                                          (tui-draw-popup! st title rows sel-pos box-w start-y start-x above below)))
                                          (draw-ops! .
-                                                    ,(lambda (ops _rect)
+                                                    ,(lambda (ops rect)
+                                                       (when (rect? rect)
+                                                         (let
+                                                             ((rx (max 0 (rect-x rect)))
+                                                              (ry (max 0 (rect-y rect)))
+                                                              (rw (max 0 (min (rect-width rect) (- maxx (max 0 (rect-x rect))))))
+                                                              (rh (rect-height rect)))
+                                                           (when (> rw 0)
+                                                             (let ((blank (make-string rw #\space)))
+                                                               (let clear
+                                                                 ((i 0))
+                                                                 (when (and (< i rh) (< (+ ry i) maxy))
+                                                                   (tui-safe-addstr st stdscr (+ ry i) rx blank rw)
+                                                                   (clear (+ i 1))))))))
                                                        (for-each
                                                          (lambda (op)
-                                                           (when (and (>= (draw-op-y op) 0)
-                                                                      (< (draw-op-y op) maxy)
-                                                                      (>= (draw-op-x op) 0)
-                                                                      (< (draw-op-x op) maxx))
-                                                             (tui-safe-addstr st
-                                                                              stdscr
-                                                                              (draw-op-y op)
-                                                                              (draw-op-x op)
-                                                                              (draw-op-text op)
-                                                                              (- maxx (draw-op-x op)))))
+                                                           (let
+                                                               ((ox (draw-op-x op)) (oy (draw-op-y op))
+                                                                (role (draw-op-role op))
+                                                                (bold? (draw-op-bold? op))
+                                                                (dim? (draw-op-dim? op))
+                                                                (rev? (draw-op-reverse? op)))
+                                                             (when
+                                                                 (and (>= oy 0) (< oy maxy) (>= ox 0) (< ox maxx))
+                                                               (when (and role (not (eq? role 'default))) (tui-draw-role! st role #t))
+                                                               (when bold? (attr-on! stdscr A_BOLD))
+                                                               (when dim? (attr-on! stdscr A_DIM))
+                                                               (when rev? (attr-on! stdscr A_REVERSE))
+                                                               (tui-safe-addstr st stdscr oy ox (draw-op-text op) (- maxx ox))
+                                                               (when rev? (attr-off! stdscr A_REVERSE))
+                                                               (when dim? (attr-off! stdscr A_DIM))
+                                                               (when bold? (attr-off! stdscr A_BOLD))
+                                                               (when (and role (not (eq? role 'default))) (tui-draw-role! st role #f)))))
                                                          ops)))
                                          (register-click! .
                                                           ,(lambda (y target)

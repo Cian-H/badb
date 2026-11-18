@@ -6,72 +6,76 @@
 ;;; components (selectable-list, tab-bar, status-badge, toggle, key-hints).
 
 (define-module (geasa surfaces-widgets plugin)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (ice-9 format)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-9)
-               #:export (clip-str
-                          pad-str
-                          <rect>
-                          make-rect
-                          rect?
-                          rect-x
-                          rect-y
-                          rect-width
-                          rect-height
-                          <draw-op>
-                          make-draw-op
-                          draw-op?
-                          draw-op-x
-                          draw-op-y
-                          draw-op-text
-                          draw-op-role
-                          draw-op-bold?
-                          draw-op-dim?
-                          draw-op-reverse?
-                          render-ops->lines
-                          draw-ops->segments-by-row
-                          <widget>
-                          make-widget
-                          widget?
-                          widget-kind
-                          widget-props
-                          widget-children
-                          widget-measure
-                          widget-render
-                          widget-on-event
-                          widget-measure-size
-                          widget-render-rect
-                          widget-dispatch-event
-                          render-widget-to-lines
-                          text-widget
-                          rule-widget
-                          pill-widget
-                          box-widget
-                          scroll-view-widget
-                          vstack-widget
-                          hstack-widget
-                          <selectable-list>
-                          make-selectable-list
-                          selectable-list?
-                          selectable-list-items
-                          selectable-list-selected-index
-                          selectable-list-scroll-offset
-                          selectable-list-max-visible
-                          selectable-list-on-highlight
-                          list-move
-                          list-visible-slice
-                          list-selected-item
-                          selectable-list-widget
-                          tab-bar-widget
-                          status-badge-widget
-                          toggle-widget
-                          key-hints-widget))
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:export
+               (clip-str pad-str
+                         <rect>
+                         make-rect
+                         rect?
+                         rect-x
+                         rect-y
+                         rect-width
+                         rect-height
+                         <draw-op>
+                         make-draw-op
+                         draw-op?
+                         draw-op-x
+                         draw-op-y
+                         draw-op-text
+                         draw-op-role
+                         draw-op-bold?
+                         draw-op-dim?
+                         draw-op-reverse?
+                         render-ops->lines
+                         draw-ops->segments-by-row
+                         <widget>
+                         make-widget
+                         widget?
+                         widget-kind
+                         widget-props
+                         widget-children
+                         widget-measure
+                         widget-render
+                         widget-on-event
+                         widget-measure-size
+                         widget-render-rect
+                         widget-dispatch-event
+                         render-widget-to-lines
+                         text-widget
+                         rule-widget
+                         pill-widget
+                         box-widget
+                         scroll-view-widget
+                         vstack-widget
+                         hstack-widget
+                         <selectable-list>
+                         make-selectable-list
+                         selectable-list?
+                         selectable-list-items
+                         selectable-list-selected-index
+                         selectable-list-scroll-offset
+                         selectable-list-max-visible
+                         selectable-list-on-highlight
+                         list-move
+                         list-visible-slice
+                         list-selected-item
+                         selectable-list-widget
+                         tab-bar-widget
+                         status-badge-widget
+                         toggle-widget
+                         key-hints-widget
+                         table-widget))
 
 ;;;
 ;;; String & Geometry Helpers
 ;;;
-
 (define (clip-str s max-len)
         "Clip S to at most MAX-LEN characters."
         (let ((str (ensure-string (or s "")))
@@ -199,7 +203,6 @@ each row is a list of (TEXT ROLE BOLD? DIM? [REVERSE?]) tuples sorted by X."
 ;;;
 ;;; Core Pure-Data Widget Protocol (<widget>)
 ;;;
-
 (define-record-type <widget>
                     (%make-widget kind props children measure-fn render-fn on-event-fn)
                     widget?
@@ -235,16 +238,16 @@ each row is a list of (TEXT ROLE BOLD? DIM? [REVERSE?]) tuples sorted by X."
           '()))
 
 (define (widget-dispatch-event widget event)
-        "Dispatch EVENT to WIDGET and its children; returns list of emitted results."
-        (if (not (widget? widget))
-          '()
-          (let* ((self-res (if (procedure? (widget-on-event widget))
-                             (let ((r ((widget-on-event widget) widget event)))
-                               (if r (list r) '()))
-                             '()))
-                 (child-res (append-map (lambda (c) (widget-dispatch-event c event))
-                                        (widget-children widget))))
-            (append self-res child-res))))
+        "Dispatch EVENT to WIDGET's on-event handler or children. Returns first non-#f result or #f."
+        (if (widget? widget)
+          (let ((handler (widget-on-event widget)))
+            (or
+              (and (procedure? handler) (handler widget event))
+              (any
+                (lambda (c)
+                  (widget-dispatch-event c event))
+                (widget-children widget))))
+          #f))
 
 (define (render-widget-to-lines widget width height)
         "Convenience helper: render WIDGET into WIDTH x HEIGHT plain-text lines."
@@ -254,165 +257,395 @@ each row is a list of (TEXT ROLE BOLD? DIM? [REVERSE?]) tuples sorted by X."
 ;;;
 ;;; Standard Layout & Chrome Combinators
 ;;;
-
-(define* (text-widget text #:key (role 'default) (bold? #f) (dim? #f) (reverse? #f) (wrap? #f))
-         "Single-line or wrapped text widget."
-         (let ((str (ensure-string (or text ""))))
-           (make-widget
-             'text
-             #:props `((text . ,str) (role . ,role) (bold? . ,bold?)
-                       (dim? . ,dim?) (reverse? . ,reverse?) (wrap? . ,wrap?))
-             #:measure
-             (lambda (_self avail-w _avail-h)
-               (if (not wrap?)
-                 (cons (min avail-w (string-length str)) 1)
-                 (let ((w (max 1 avail-w)))
-                   (cons w (max 1 (ceiling (/ (max 1 (string-length str)) w)))))))
-             #:render
-             (lambda (_self rect)
-               (let ((x (rect-x rect))
-                     (y (rect-y rect))
-                     (w (rect-width rect))
-                     (h (rect-height rect)))
-                 (if (or (<= w 0) (<= h 0))
-                   '()
+(define*
+  (text-widget text
+               #:key
+               (role 'default)
+               (bold? #f)
+               (dim? #f)
+               (reverse? #f)
+               (wrap? #f)
+               (align 'left))
+  "Single-line or wrapped text widget with optional horizontal alignment."
+  (let ((str (ensure-string (or text ""))))
+    (make-widget 'text
+                 #:props
+                 `((text . ,str) (role . ,role)
+                   (bold? . ,bold?)
+                   (dim? . ,dim?)
+                   (reverse? . ,reverse?)
+                   (wrap? . ,wrap?)
+                   (align . ,align))
+                 #:measure
+                 (lambda (_self avail-w avail-h)
                    (if (not wrap?)
-                     (list (make-draw-op x y (clip-str str w)
-                                         #:role role #:bold? bold?
-                                         #:dim? dim? #:reverse? reverse?))
-                     (let loop ((pos 0) (row 0) (ops '()))
-                               (if (or (>= row h) (>= pos (string-length str)))
-                                 (reverse ops)
-                                 (let* ((end (min (string-length str) (+ pos w)))
-                                        (chunk (substring str pos end)))
-                                   (loop end (+ row 1)
-                                         (cons (make-draw-op x (+ y row) chunk
-                                                             #:role role #:bold? bold?
-                                                             #:dim? dim? #:reverse? reverse?)
-                                               ops))))))))))))
+                     (cons (min avail-w (string-length str)) 1)
+                     (let ((w (max 1 avail-w)))
+                       (cons w (min avail-h (max 1 (ceiling (/ (max 1 (string-length str)) w))))))))
+                 #:render
+                 (lambda (_self rect)
+                   (let
+                       ((x (rect-x rect)) (y (rect-y rect))
+                        (w (rect-width rect))
+                        (h (rect-height rect)))
+                     (if (or (<= w 0) (<= h 0))
+                       '()
+                       (let
+                           ((align-x
+                              (lambda (chunk)
+                                (let ((len (string-length chunk)))
+                                  (+ x
+                                     (case align
+                                       ((center) (max 0 (quotient (- w len) 2)))
+                                       ((right) (max 0 (- w len)))
+                                       (else 0)))))))
+                         (if (not wrap?)
+                           (let ((clipped (clip-str str w)))
+                             (list
+                               (make-draw-op (align-x clipped)
+                                             y
+                                             clipped
+                                             #:role
+                                             role
+                                             #:bold?
+                                             bold?
+                                             #:dim?
+                                             dim?
+                                             #:reverse?
+                                             reverse?)))
+                           (let loop
+                             ((pos 0) (row 0) (ops '()))
+                             (if (or (>= row h) (>= pos (string-length str)))
+                               (reverse ops)
+                               (let*
+                                   ((end (min (string-length str) (+ pos w))) (chunk (substring str pos end)))
+                                 (loop end (+ row 1)
+                                       (cons
+                                         (make-draw-op (align-x chunk)
+                                                       (+ y row)
+                                                       chunk
+                                                       #:role
+                                                       role
+                                                       #:bold?
+                                                       bold?
+                                                       #:dim?
+                                                       dim?
+                                                       #:reverse?
+                                                       reverse?)
+                                         ops)))))))))))))
 
-(define* (rule-widget #:key (char #\─) (role 'dim) (title #f))
-         "Horizontal rule widget, optionally with an inline title."
-         (make-widget
-           'rule
-           #:props `((char . ,char) (role . ,role) (title . ,title))
-           #:measure (lambda (_self avail-w _avail-h) (cons avail-w 1))
-           #:render
-           (lambda (_self rect)
-             (let ((x (rect-x rect))
-                   (y (rect-y rect))
-                   (w (rect-width rect))
-                   (h (rect-height rect)))
-               (if (or (<= w 0) (<= h 0))
-                 '()
-                 (let ((line
-                         (if (and (string? title) (> (string-length title) 0) (>= w 4))
-                           (let* ((tag (clip-str (string-append " " title " ") (- w 2)))
-                                  (rem (max 0 (- w 2 (string-length tag)))))
-                             (string-append (make-string 2 char)
-                                            tag
-                                            (make-string rem char)))
-                           (make-string w char))))
-                   (list (make-draw-op x y line #:role role #:dim? (eq? role 'dim)))))))))
+(define*
+  (rule-widget #:key (char #\─) (role 'dim) (title #f) (label #f) (dim? 'auto))
+  "Horizontal rule widget, optionally with an inline title or label."
+  (let
+      ((lbl (or title label))
+       (dim-flag?
+         (if (eq? dim? 'auto)
+           (eq? role 'dim)
+           (and dim? #t))))
+    (make-widget 'rule
+                 #:props
+                 `((char . ,char) (role . ,role)
+                   (title . ,lbl)
+                   (label . ,lbl)
+                   (dim? . ,dim-flag?))
+                 #:measure
+                 (lambda (_self avail-w _avail-h)
+                   (cons avail-w 1))
+                 #:render
+                 (lambda (_self rect)
+                   (let
+                       ((x (rect-x rect)) (y (rect-y rect))
+                        (w (rect-width rect))
+                        (h (rect-height rect)))
+                     (if (or (<= w 0) (<= h 0))
+                       '()
+                       (let
+                           ((line
+                              (if
+                                  (and (string? lbl) (> (string-length lbl) 0) (>= w 4))
+                                (let*
+                                    ((tag (clip-str (string-append " " lbl " ") (max 0 (- w 2))))
+                                     (rem (max 0 (- w (string-length tag))))
+                                     (left-n (min 2 rem))
+                                     (right-n (max 0 (- rem left-n))))
+                                  (string-append (make-string left-n char) tag (make-string right-n char)))
+                                (make-string w char))))
+                         (list (make-draw-op x y line #:role role #:dim? dim-flag?)))))))))
 
-(define* (pill-widget label #:key (role 'accent) (bold? #t))
-         "Compact badge/pill widget: [LABEL]."
-         (let ((txt (string-append "[" (ensure-string (or label "")) "]")))
-           (make-widget
-             'pill
-             #:props `((label . ,label) (role . ,role) (bold? . ,bold?))
-             #:measure (lambda (_self avail-w _avail-h) (cons (min avail-w (string-length txt)) 1))
-             #:render
-             (lambda (_self rect)
-               (if (or (<= (rect-width rect) 0) (<= (rect-height rect) 0))
-                 '()
-                 (list (make-draw-op (rect-x rect) (rect-y rect)
+(define*
+  (pill-widget label #:key (role 'accent) (bold? #t) (prefix "[") (suffix "]"))
+  "Compact badge/pill widget: [LABEL]."
+  (let
+      ((txt
+         (string-append (ensure-string prefix)
+                        (ensure-string (or label ""))
+                        (ensure-string suffix))))
+    (make-widget 'pill
+                 #:props
+                 `((label . ,label) (role . ,role)
+                   (bold? . ,bold?)
+                   (prefix . ,prefix)
+                   (suffix . ,suffix))
+                 #:measure
+                 (lambda (_self avail-w _avail-h)
+                   (cons (min avail-w (string-length txt)) 1))
+                 #:render
+                 (lambda (_self rect)
+                   (if
+                       (or (<= (rect-width rect) 0) (<= (rect-height rect) 0))
+                     '()
+                     (list
+                       (make-draw-op (rect-x rect)
+                                     (rect-y rect)
                                      (clip-str txt (rect-width rect))
-                                     #:role role #:bold? bold?)))))))
+                                     #:role
+                                     role
+                                     #:bold?
+                                     bold?)))))))
 
-(define* (box-widget child #:key (title #f) (border-role 'dim) (role #f) (padding 0))
-         "Bordered box container around CHILD with optional TITLE."
-         (let ((border-role (or role border-role)))
-           (make-widget
-             'box
-             #:props `((title . ,title) (border-role . ,border-role) (padding . ,padding))
-             #:children (if child (list child) '())
-             #:measure
-             (lambda (_self avail-w avail-h)
-               (let* ((pad (max 0 padding))
-                      (inner-w (max 0 (- avail-w 2 (* 2 pad))))
-                      (inner-h (max 0 (- avail-h 2 (* 2 pad))))
-                      (csz (if child (widget-measure-size child inner-w inner-h) '(0 . 0))))
-                 (cons (min avail-w (+ (car csz) 2 (* 2 pad)))
-                       (min avail-h (+ (cdr csz) 2 (* 2 pad))))))
-             #:render
-             (lambda (_self rect)
-               (let ((x (rect-x rect))
-                     (y (rect-y rect))
-                     (w (rect-width rect))
-                     (h (rect-height rect)))
-                 (if (or (< w 2) (< h 2))
-                   '()
-                   (let* ((inner-w (- w 2))
-                          (top-bar
-                            (if (and (string? title) (> (string-length title) 0) (>= inner-w 2))
-                              (let* ((tag (clip-str (string-append " " title " ") inner-w))
+(define*
+  (box-widget child
+              #:key
+              (title #f)
+              (border-role 'dim)
+              (role #f)
+              (padding 0)
+              (rounded? #t))
+  "Bordered box container around CHILD with optional TITLE."
+  (let*
+      ((border-role (or role border-role))
+       (pad (max 0 padding))
+       (tl
+         (if rounded?
+           "╭"
+           "┌"))
+       (tr
+         (if rounded?
+           "╮"
+           "┐"))
+       (bl
+         (if rounded?
+           "╰"
+           "└"))
+       (br
+         (if rounded?
+           "╯"
+           "┘")))
+    (make-widget 'box
+                 #:props
+                 `((title . ,title) (border-role . ,border-role)
+                   (padding . ,pad)
+                   (rounded? . ,rounded?))
+                 #:children
+                 (if child
+                   (list child)
+                   '())
+                 #:measure
+                 (lambda (_self avail-w avail-h)
+                   (let*
+                       ((overhead (+ 2 (* 2 pad)))
+                        (inner-w (max 0 (- avail-w overhead)))
+                        (inner-h (max 0 (- avail-h overhead)))
+                        (csz
+                          (if child
+                            (widget-measure-size child inner-w inner-h)
+                            '(0 . 0)))
+                        (title-w
+                          (if
+                              (and (string? title) (not (string-null? title)))
+                            (+ (string-length title) 4)
+                            0)))
+                     (cons
+                       (min avail-w (max title-w (+ (car csz) overhead)))
+                       (min avail-h (+ (cdr csz) overhead)))))
+                 #:render
+                 (lambda (_self rect)
+                   (let
+                       ((x (rect-x rect)) (y (rect-y rect))
+                        (w (rect-width rect))
+                        (h (rect-height rect)))
+                     (if (or (< w 2) (< h 2))
+                       '()
+                       (let*
+                           ((inner-w (- w 2))
+                            (top-bar
+                              (if
+                                  (and (string? title) (> (string-length title) 0) (>= inner-w 3))
+                                (let*
+                                    ((tag (clip-str (string-append "─ " title " ") inner-w))
                                      (rem (max 0 (- inner-w (string-length tag)))))
-                                (string-append "┌" tag (make-string rem #\─) "┐"))
-                              (string-append "┌" (make-string inner-w #\─) "┐")))
-                          (bot-bar (string-append "└" (make-string inner-w #\─) "┘"))
-                          (side-ops
-                            (let loop ((row 1) (acc '()))
-                                      (if (>= row (- h 1))
-                                        acc
-                                        (loop (+ row 1)
-                                              (cons (make-draw-op x (+ y row) "│" #:role border-role)
-                                                    (cons (make-draw-op (+ x (- w 1)) (+ y row) "│" #:role border-role)
-                                                          acc))))))
-                          (pad (max 0 padding))
-                          (child-rect (make-rect (+ x 1 pad)
-                                                 (+ y 1 pad)
-                                                 (max 0 (- inner-w (* 2 pad)))
-                                                 (max 0 (- h 2 (* 2 pad)))))
-                          (child-ops (if (and child (> (rect-width child-rect) 0) (> (rect-height child-rect) 0))
-                                       (widget-render-rect child child-rect)
-                                       '())))
-                     (append (list (make-draw-op x y top-bar #:role border-role)
-                                   (make-draw-op x (+ y (- h 1)) bot-bar #:role border-role))
-                             side-ops
-                             child-ops))))))))
+                                  (string-append tl tag (make-string rem #\─) tr))
+                                (string-append tl (make-string inner-w #\─) tr)))
+                            (bot-bar (string-append bl (make-string inner-w #\─) br))
+                            (side-ops
+                              (let loop
+                                ((row 1) (acc '()))
+                                (if (>= row (- h 1))
+                                  (reverse acc)
+                                  (loop (+ row 1)
+                                        (cons
+                                          (make-draw-op (+ x (- w 1)) (+ y row) "│" #:role border-role)
+                                          (cons (make-draw-op x (+ y row) "│" #:role border-role) acc))))))
+                            (child-rect
+                              (make-rect (+ x 1 pad)
+                                         (+ y 1 pad)
+                                         (max 0 (- inner-w (* 2 pad)))
+                                         (max 0 (- h 2 (* 2 pad)))))
+                            (child-ops
+                              (if
+                                  (and child (> (rect-width child-rect) 0) (> (rect-height child-rect) 0))
+                                (widget-render-rect child child-rect)
+                                '())))
+                         (append
+                           (list (make-draw-op x y top-bar #:role border-role))
+                           side-ops
+                           (list (make-draw-op x (+ y (- h 1)) bot-bar #:role border-role))
+                           child-ops))))))))
 
-(define* (scroll-view-widget child #:key (offset 0))
-         "Scrollable viewport around CHILD starting at vertical line OFFSET."
-         (make-widget
-           'scroll-view
-           #:props `((offset . ,offset))
-           #:children (if child (list child) '())
-           #:measure
-           (lambda (_self avail-w avail-h)
-             (if child (widget-measure-size child avail-w avail-h) (cons avail-w avail-h)))
-           #:render
-           (lambda (_self rect)
-             (let ((x (rect-x rect))
-                   (y (rect-y rect))
-                   (w (rect-width rect))
-                   (h (rect-height rect))
-                   (off (max 0 offset)))
-               (if (or (not child) (<= w 0) (<= h 0))
-                 '()
-                 (let* ((csz (widget-measure-size child w 10000))
-                        (total-h (max h (cdr csz)))
-                        (raw-ops (widget-render-rect child (make-rect x 0 w total-h))))
-                   (filter-map
-                     (lambda (op)
-                       (let ((ny (+ y (- (draw-op-y op) off))))
-                         (and (>= ny y) (< ny (+ y h))
-                              (make-draw-op (draw-op-x op) ny (draw-op-text op)
-                                            #:role (draw-op-role op)
-                                            #:bold? (draw-op-bold? op)
-                                            #:dim? (draw-op-dim? op)
-                                            #:reverse? (draw-op-reverse? op)))))
-                     raw-ops)))))))
+(define*
+  (scroll-view-widget child-or-lines
+                      #:key
+                      (offset #f)
+                      (scroll-offset #f)
+                      (role 'default)
+                      (show-scrollbar? #t))
+  "Scrollable viewport around a <widget> CHILD or a list of lines/span-rows."
+  (let
+      ((eff-off (max 0 (or scroll-offset offset 0))))
+    (if (widget? child-or-lines)
+      (make-widget 'scroll-view
+                   #:props
+                   `((offset . ,eff-off) (scroll-offset . ,eff-off))
+                   #:children
+                   (list child-or-lines)
+                   #:measure
+                   (lambda (_self avail-w avail-h)
+                     (widget-measure-size child-or-lines avail-w avail-h))
+                   #:render
+                   (lambda (_self rect)
+                     (let
+                         ((x (rect-x rect)) (y (rect-y rect))
+                          (w (rect-width rect))
+                          (h (rect-height rect)))
+                       (if (or (<= w 0) (<= h 0))
+                         '()
+                         (let*
+                             ((csz (widget-measure-size child-or-lines w 10000))
+                              (total-h (max h (cdr csz)))
+                              (raw-ops (widget-render-rect child-or-lines (make-rect x 0 w total-h))))
+                           (filter-map
+                             (lambda (op)
+                               (let ((ny (+ y (- (draw-op-y op) eff-off))))
+                                 (and (>= ny y)
+                                      (< ny (+ y h))
+                                      (make-draw-op (draw-op-x op)
+                                                    ny
+                                                    (draw-op-text op)
+                                                    #:role
+                                                    (draw-op-role op)
+                                                    #:bold?
+                                                    (draw-op-bold? op)
+                                                    #:dim?
+                                                    (draw-op-dim? op)
+                                                    #:reverse?
+                                                    (draw-op-reverse? op)))))
+                             raw-ops))))))
+      (let*
+          ((entries
+             (if (list? child-or-lines)
+               child-or-lines
+               '()))
+           (total (length entries)))
+        (make-widget 'scroll-view
+                     #:props
+                     `((offset . ,eff-off) (scroll-offset . ,eff-off)
+                       (total-lines . ,total)
+                       (show-scrollbar? . ,show-scrollbar?))
+                     #:measure
+                     (lambda (_self avail-w avail-h)
+                       (cons avail-w (min avail-h (max 1 total))))
+                     #:render
+                     (lambda (_self rect)
+                       (let*
+                           ((x (rect-x rect)) (y (rect-y rect))
+                            (w (rect-width rect))
+                            (h (rect-height rect))
+                            (bar? (and show-scrollbar? (> total h) (>= w 4)))
+                            (content-w
+                              (if bar?
+                                (- w 1)
+                                w))
+                            (max-scroll (max 0 (- total h)))
+                            (clamped (max 0 (min eff-off max-scroll)))
+                            (start (max 0 (- total h clamped)))
+                            (vis (take (drop entries start) (min h (max 0 (- total start)))))
+                            (text-ops
+                              (let loop
+                                ((rest vis) (dy 0) (acc '()))
+                                (if (or (null? rest) (>= dy h))
+                                  (reverse acc)
+                                  (let ((item (car rest)))
+                                    (cond
+                                      ((string? item)
+                                        (loop (cdr rest) (+ dy 1)
+                                              (cons (make-draw-op x (+ y dy) (clip-str item content-w) #:role role) acc)))
+                                      ((and (pair? item) (every pair? item))
+                                        (let sloop
+                                          ((spans item) (cx x) (sacc acc))
+                                          (if (or (null? spans) (>= cx (+ x content-w)))
+                                            (loop (cdr rest) (+ dy 1) sacc)
+                                            (let*
+                                                ((sp (car spans))
+                                                 (stxt (clip-str (car sp) (- (+ x content-w) cx)))
+                                                 (srole
+                                                   (if (pair? (cdr sp))
+                                                     (cadr sp)
+                                                     role))
+                                                 (sbold? (and (>= (length sp) 3) (caddr sp)))
+                                                 (sdim? (and (>= (length sp) 4) (cadddr sp))))
+                                              (sloop (cdr spans)
+                                                     (+ cx (string-length stxt))
+                                                     (if (string-null? stxt)
+                                                       sacc
+                                                       (cons
+                                                         (make-draw-op cx (+ y dy) stxt #:role srole #:bold? sbold? #:dim? sdim?)
+                                                         sacc)))))))
+                                      (else
+                                        (loop (cdr rest) (+ dy 1)
+                                              (cons
+                                                (make-draw-op x (+ y dy) (clip-str (format #f "~a" item) content-w) #:role role)
+                                                acc))))))))
+                            (bar-ops
+                              (if bar?
+                                (let*
+                                    ((thumb-h (max 1 (inexact->exact (floor (* h (/ h total))))))
+                                     (thumb-top
+                                       (if (zero? max-scroll)
+                                         0
+                                         (inexact->exact (round (* (- h thumb-h) (/ start max-scroll)))))))
+                                  (let bloop
+                                    ((dy 0) (acc '()))
+                                    (if (>= dy h)
+                                      (reverse acc)
+                                      (let
+                                          ((in-thumb? (and (>= dy thumb-top) (< dy (+ thumb-top thumb-h)))))
+                                        (bloop (+ dy 1)
+                                               (cons
+                                                 (make-draw-op (+ x w -1)
+                                                               (+ y dy)
+                                                               (if in-thumb?
+                                                                 "┃"
+                                                                 "│")
+                                                               #:role
+                                                               (if in-thumb?
+                                                                 'accent
+                                                                 'dim)
+                                                               #:dim?
+                                                               (not in-thumb?))
+                                                 acc))))))
+                                '())))
+                         (append text-ops bar-ops))))))))
 
 (define* (vstack-widget children #:key (gap 0))
          "Vertical stack of CHILDREN widgets separated by GAP rows."
@@ -491,7 +724,6 @@ each row is a list of (TEXT ROLE BOLD? DIM? [REVERSE?]) tuples sorted by X."
 ;;;
 ;;; Reusable UI Components
 ;;;
-
 (define-record-type <selectable-list>
                     (%make-selectable-list items selected-index scroll-offset max-visible on-highlight)
                     selectable-list?
@@ -569,60 +801,117 @@ Invokes on-highlight hook if present and selection changed. Returns new <selecta
               (hook new-sel (list-ref items new-sel)))
             (%make-selectable-list items new-sel new-off cap hook))))
 
-(define* (selectable-list-widget sl
-                                 #:key
-                                 (item-renderer (lambda (item _selected?) (ensure-string item)))
-                                 (role 'default)
-                                 (selected-role 'accent)
-                                 (indicator "▸ ")
-                                 (empty-text "(empty)"))
-         "Renderable widget for <selectable-list> SL."
-         (make-widget
-           'selectable-list
-           #:props `((list . ,sl) (role . ,role) (selected-role . ,selected-role))
-           #:measure
-           (lambda (_self avail-w avail-h)
-             (let* ((items (if (selectable-list? sl) (selectable-list-items sl) '()))
-                    (count (length items))
-                    (cap (if (selectable-list? sl) (selectable-list-max-visible sl) 10))
-                    (h (if (= count 0) 1 (min avail-h (min count cap))))
-                    (ind-w (string-length indicator))
-                    (max-w (if (= count 0)
-                             (string-length empty-text)
-                             (fold (lambda (it acc)
-                                     (max acc (+ ind-w (string-length (ensure-string (item-renderer it #f))))))
-                                   0 items))))
-               (cons (min avail-w max-w) h)))
-           #:render
-           (lambda (_self rect)
-             (let ((x (rect-x rect))
-                   (y (rect-y rect))
-                   (w (rect-width rect))
-                   (h (rect-height rect)))
-               (if (or (<= w 0) (<= h 0))
-                 '()
-                 (if (or (not (selectable-list? sl)) (null? (selectable-list-items sl)))
-                   (list (make-draw-op x y (clip-str empty-text w) #:role 'dim #:dim? #t))
-                   (call-with-values
-                     (lambda () (list-visible-slice sl h))
-                     (lambda (visible offset)
-                       (let ((sel (selectable-list-selected-index sl))
-                             (blank-ind (make-string (string-length indicator) #\space)))
-                         (let loop ((rest visible) (idx offset) (row 0) (ops '()))
-                                   (if (or (null? rest) (>= row h))
-                                     (reverse ops)
-                                     (let* ((selected? (= idx sel))
-                                            (prefix (if selected? indicator blank-ind))
-                                            (txt (ensure-string (item-renderer (car rest) selected?)))
-                                            (line (clip-str (string-append prefix txt) w)))
-                                       (loop (cdr rest)
-                                             (+ idx 1)
-                                             (+ row 1)
-                                             (cons (make-draw-op x (+ y row) line
-                                                                 #:role (if selected? selected-role role)
-                                                                 #:bold? selected?
-                                                                 #:reverse? selected?)
-                                                   ops))))))))))))))
+(define*
+  (selectable-list-widget sl
+                          #:key
+                          (item-renderer
+                            (lambda (item _selected?)
+                              (ensure-string item)))
+                          (role 'default)
+                          (selected-role 'accent)
+                          (indicator "▸ ")
+                          (empty-text "(empty)"))
+  "Renderable widget for <selectable-list> SL. ITEM-RENDERER may return a string or <widget>."
+  (make-widget 'selectable-list
+               #:props
+               `((list . ,sl) (role . ,role) (selected-role . ,selected-role))
+               #:measure
+               (lambda (_self avail-w avail-h)
+                 (let*
+                     ((items
+                        (if (selectable-list? sl)
+                          (selectable-list-items sl)
+                          '()))
+                      (count (length items))
+                      (cap
+                        (if (selectable-list? sl)
+                          (selectable-list-max-visible sl)
+                          10))
+                      (h
+                        (if (= count 0)
+                          1
+                          (min avail-h (min count cap))))
+                      (ind-w (string-length indicator))
+                      (inner-avail (max 0 (- avail-w ind-w)))
+                      (max-w
+                        (if (= count 0)
+                          (string-length empty-text)
+                          (fold
+                            (lambda (it acc)
+                              (let*
+                                  ((r (item-renderer it #f))
+                                   (rw
+                                     (if (widget? r)
+                                       (car (widget-measure-size r inner-avail 1))
+                                       (string-length (ensure-string r)))))
+                                (max acc (+ ind-w rw))))
+                            0
+                            items))))
+                   (cons (min avail-w max-w) h)))
+               #:render
+               (lambda (_self rect)
+                 (let
+                     ((x (rect-x rect)) (y (rect-y rect))
+                      (w (rect-width rect))
+                      (h (rect-height rect))
+                      (ind-w (string-length indicator)))
+                   (if (or (<= w 0) (<= h 0))
+                     '()
+                     (if
+                         (or (not (selectable-list? sl)) (null? (selectable-list-items sl)))
+                       (list (make-draw-op x y (clip-str empty-text w) #:role 'dim #:dim? #t))
+                       (call-with-values
+                         (lambda ()
+                           (list-visible-slice sl h))
+                         (lambda (visible offset)
+                           (let
+                               ((sel (selectable-list-selected-index sl))
+                                (blank-ind (make-string ind-w #\space)))
+                             (let loop
+                               ((rest visible) (idx offset) (row 0) (ops '()))
+                               (if (or (null? rest) (>= row h))
+                                 ops
+                                 (let*
+                                     ((selected? (= idx sel))
+                                      (prefix
+                                        (if selected?
+                                          indicator
+                                          blank-ind))
+                                      (rendered (item-renderer (car rest) selected?))
+                                      (row-ops
+                                        (if (widget? rendered)
+                                          (let*
+                                              ((ind-op
+                                                 (make-draw-op x
+                                                               (+ y row)
+                                                               (clip-str prefix w)
+                                                               #:role
+                                                               (if selected?
+                                                                 selected-role
+                                                                 role)
+                                                               #:bold?
+                                                               selected?))
+                                               (inner-w (max 0 (- w ind-w)))
+                                               (child-ops
+                                                 (if (> inner-w 0)
+                                                   (widget-render-rect rendered (make-rect (+ x ind-w) (+ y row) inner-w 1))
+                                                   '())))
+                                            (cons ind-op child-ops))
+                                          (let
+                                              ((line (clip-str (string-append prefix (ensure-string rendered)) w)))
+                                            (list
+                                              (make-draw-op x
+                                                            (+ y row)
+                                                            line
+                                                            #:role
+                                                            (if selected?
+                                                              selected-role
+                                                              role)
+                                                            #:bold?
+                                                            selected?
+                                                            #:reverse?
+                                                            selected?))))))
+                                   (loop (cdr rest) (+ idx 1) (+ row 1) (append ops row-ops))))))))))))))
 
 (define (tab-label-text tab counts idx)
         (let* ((base (if (pair? tab) (ensure-string (cdr tab)) (ensure-string tab)))
@@ -803,3 +1092,140 @@ Invokes on-highlight hook if present and selection changed. Returns new <selecta
                                                     ops1)
                                               ops1)))
                                  (loop (cdr rest) cx2 ops2))))))))))
+(define (table-col-header col)
+        (cond
+          ((and (pair? col) (string? (car col))) (car col))
+          ((list? col) (or (assoc-ref col 'header) ""))
+          (else "")))
+
+(define (table-col-width col)
+        (cond
+          ((and (pair? col) (number? (cdr col))) (max 1 (cdr col)))
+          ((list? col) (max 1 (or (assoc-ref col 'width) 12)))
+          (else 12)))
+
+(define*
+  (table-widget columns
+                rows
+                #:key
+                (selected-index #f)
+                (scroll-offset 0)
+                (max-visible #f)
+                (gap 1)
+                (indicator "▸ ")
+                (empty-text "(empty)")
+                (show-header? #t))
+  "Aligned multi-column table widget. COLUMNS is a list of ((header . str) (width . n))
+or (header . width) pairs. ROWS is a list of cell lists (strings or <widget>s)."
+  (let*
+      ((cols (or columns '())) (all-rows (or rows '()))
+       (total (length all-rows))
+       (ind-w (string-length indicator))
+       (blank-ind (make-string ind-w #\space))
+       (g (max 0 gap))
+       (header-rows
+         (if (and show-header? (not (null? cols)))
+           1
+           0)))
+    (make-widget 'table
+                 #:props
+                 `((columns . ,cols) (total-rows . ,total))
+                 #:measure
+                 (lambda (_self avail-w avail-h)
+                   (let*
+                       ((col-sum
+                          (fold
+                            (lambda (c acc)
+                              (+ acc (table-col-width c)))
+                            0
+                            cols))
+                        (gap-sum
+                          (if (null? cols)
+                            0
+                            (* g (max 0 (- (length cols) 1)))))
+                        (tot-w (+ ind-w col-sum gap-sum))
+                        (body-h
+                          (if (= total 0)
+                            1
+                            (min total (or max-visible total))))
+                        (tot-h (+ header-rows body-h)))
+                     (cons (min avail-w tot-w) (min avail-h tot-h))))
+                 #:render
+                 (lambda (_self rect)
+                   (let
+                       ((x (rect-x rect)) (y (rect-y rect))
+                        (w (rect-width rect))
+                        (h (rect-height rect)))
+                     (if (or (<= w 0) (<= h 0))
+                       '()
+                       (let*
+                           ((render-row
+                              (lambda (ry prefix cells role bold? dim?)
+                                (let
+                                    ((ind-op
+                                       (make-draw-op x ry (clip-str prefix w) #:role role #:bold? bold? #:dim? dim?)))
+                                  (let loop
+                                    ((cs cols) (vs cells) (cx (+ x ind-w)) (ops (list ind-op)))
+                                    (if (or (null? cs) (>= cx (+ x w)))
+                                      (reverse ops)
+                                      (let*
+                                          ((cw (min (table-col-width (car cs)) (max 0 (- (+ x w) cx))))
+                                           (cell
+                                             (if (pair? vs)
+                                               (car vs)
+                                               ""))
+                                           (cell-ops
+                                             (cond
+                                               ((<= cw 0) '())
+                                               ((widget? cell) (widget-render-rect cell (make-rect cx ry cw 1)))
+                                               (else
+                                                 (list
+                                                   (make-draw-op cx
+                                                                 ry
+                                                                 (clip-str (ensure-string cell) cw)
+                                                                 #:role
+                                                                 role
+                                                                 #:bold?
+                                                                 bold?
+                                                                 #:dim?
+                                                                 dim?))))))
+                                        (loop (cdr cs)
+                                              (if (pair? vs)
+                                                (cdr vs)
+                                                '()) (+ cx cw g) (append (reverse cell-ops) ops))))))))
+                            (hdr-ops
+                              (if (and show-header? (not (null? cols)))
+                                (render-row y blank-ind (map table-col-header cols) 'dim #f #t)
+                                '()))
+                            (body-y (+ y header-rows))
+                            (body-h (max 0 (- h header-rows))))
+                         (cond
+                           ((<= body-h 0) hdr-ops)
+                           ((= total 0)
+                             (append hdr-ops
+                                     (list (make-draw-op x body-y (clip-str empty-text w) #:role 'dim #:dim? #t))))
+                           (else
+                             (let*
+                                 ((cap (min body-h (or max-visible body-h)))
+                                  (off (max 0 (min scroll-offset (max 0 (- total cap)))))
+                                  (vis (take (drop all-rows off) (min cap (max 0 (- total off))))))
+                               (let loop
+                                 ((rest vis) (idx off) (dy 0) (acc hdr-ops))
+                                 (if (or (null? rest) (>= dy body-h))
+                                   acc
+                                   (let*
+                                       ((sel? (and (integer? selected-index) (= idx selected-index)))
+                                        (prefix
+                                          (if sel?
+                                            indicator
+                                            blank-ind))
+                                        (row-ops
+                                          (render-row (+ body-y dy)
+                                                      prefix
+                                                      (car rest)
+                                                      (if sel?
+                                                        'accent
+                                                        'default)
+                                                      sel?
+                                                      #f)))
+                                     (loop (cdr rest) (+ idx 1) (+ dy 1) (append acc row-ops)))))))))))))))

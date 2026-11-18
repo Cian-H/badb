@@ -616,29 +616,42 @@ menu-pop restores CURRENT-THEME-NAME and invokes ON-CANCEL if provided."
                      (cons 'set-guardrail (car entry))))
              %guardrail-levels))
 
-(define (config-menu-items-for-state cfg cur-model cur-endpoint policy)
-        "Build the top-level config menu items with live state woven into descriptions."
-        (list
-          (cons (cons "Model" (format #f "Switch active model (~a)" cur-model))
-                'open-model-menu)
-          (cons (cons "Provider" (format #f "Switch provider preset (~a)" cur-endpoint))
-                'open-provider-menu)
-          (cons (cons "Endpoint" (format #f "Switch endpoint (~a)" cur-endpoint))
-                'open-endpoint-menu)
-          (cons (cons "Synthesiser"
-                      (format #f "Default synthesiser (~a)" (badb-config-synthesis-model cfg)))
-                'open-synthesizer-menu)
-          (cons (cons "Temperature"
-                      (format #f "Set sampling temperature (~a)" (badb-config-model-temperature cfg)))
-                'prefill-temperature)
-          (cons (cons "Theme"
-                      (format #f "Choose UI color theme (~a)" (or (badb-config-ui-theme cfg) "default")))
-                'open-theme-menu)
-          (cons (cons "Guardrail"
-                      (format #f "Set policy level (~a)" (guardrail-policy-level policy)))
-                'open-guardrail-menu)
-          (cons (cons "Reload" "Reload configuration from disk") 'config-reload)
-          (cons (cons "Save" "Save configuration to disk") 'config-save)))
+(define
+  (config-menu-items-for-state cfg cur-model cur-endpoint policy)
+  "Build the top-level config menu items with live state woven into descriptions."
+  (list
+    (cons
+      (cons "Model" (format #f "Switch active model (~a)" cur-model))
+      'open-model-menu)
+    (cons
+      (cons "Provider" (format #f "Switch provider preset (~a)" cur-endpoint))
+      'open-provider-menu)
+    (cons
+      (cons "Endpoint" (format #f "Switch endpoint (~a)" cur-endpoint))
+      'open-endpoint-menu)
+    (cons
+      (cons "Synthesiser"
+            (format #f "Default synthesiser (~a)" (badb-config-synthesis-model cfg)))
+      'open-synthesizer-menu)
+    (cons
+      (cons "Temperature"
+            (format #f "Set sampling temperature (~a)" (badb-config-model-temperature cfg)))
+      'prefill-temperature)
+    (cons
+      (cons "Theme"
+            (format #f
+                    "Choose UI color theme (~a)"
+                    (or (badb-config-ui-theme cfg) "default")))
+      'open-theme-menu)
+    (cons
+      (cons "Guardrail"
+            (format #f "Set policy level (~a)" (guardrail-policy-level policy)))
+      'open-guardrail-menu)
+    (cons (cons "Reload" "Reload configuration from disk") 'config-reload)
+    (cons (cons "Save" "Save configuration to disk") 'config-save)
+    (cons
+      (cons "Run test suite" "Run ./scripts/test verification suite")
+      '(run-command . "test"))))
 
 ;;;
 ;;; Categorized & Nested Slash Command Menus
@@ -679,10 +692,11 @@ menu-pop restores CURRENT-THEME-NAME and invokes ON-CANCEL if provided."
             ("skills" "List active agent skills" (run-command . "skills"))
             ("memories" "Inspect persistent project memories"
              (prefill-command . "/memories "))))
-          ("Geasa & Synthesis" "Contract-gated synthesis"
+          ("Geasa & Synthesis"
+           "Geis Manager & contract-gated synthesis"
            (("geis"
-             "Contract-gated synthesis (/geis add|model|list|verify|bindings)"
-             (prefill-command . "/geis "))))
+             "Open Geis Manager modal, or /geis add|model|list|verify|bindings (alias: /geasa)"
+             (run-command . "geis"))))
           ("Tools & Execution"
            "MCP servers, shell passthrough, Scheme REPL, steering"
            (("mcp"
@@ -821,7 +835,7 @@ Creates any missing intermediate category nodes automatically."
                            '("Model & Config" "Connection"))
   (register-menu-category!
     '("Geasa & Synthesis" "Diagnostics")
-    "Features, journal provenance, and tests")
+    "Features and journal provenance")
   (register-slash-command! "features"
                            "List available geasa & kernel registry features"
                            '(run-command . "features")
@@ -831,20 +845,7 @@ Creates any missing intermediate category nodes automatically."
                            "View checkpoint provenance & bindings shift plot"
                            '(run-command . "journal")
                            #:path
-                           '("Geasa & Synthesis" "Diagnostics"))
-  (register-slash-command! "test"
-                           "Run bootstrap verification test suite"
-                           '(run-command . "test")
-                           #:path
-                           '("Geasa & Synthesis" "Diagnostics"))
-  (register-menu-category!
-    '("Geasa")
-    "Manage installed geasa bundles")
-  (register-slash-command! "geasa"
-                           "Open Geasa Manager modal"
-                           '(run-command . "geasa")
-                           #:path
-                           '("Geasa")))
+                           '("Geasa & Synthesis" "Diagnostics")))
 
 (define (flatten-command-tree)
         "Flatten all registered commands across all depths of %command-tree into ((cmd . desc) ...)."

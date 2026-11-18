@@ -51,12 +51,25 @@
         (when (file-exists? path)
           (if (eq? 'directory (stat:type (lstat path)))
             (begin
-              (for-each (lambda (entry)
-                          (unless (or (string=? entry ".") (string=? entry ".."))
-                            (rm-rf (string-append path "/" entry))))
-                        (scandir path))
+              (catch #t
+                (lambda ()
+                  (chmod path #o755))
+                (lambda _
+                  #f))
+              (for-each
+                (lambda (entry)
+                  (unless
+                      (or (string=? entry ".") (string=? entry ".."))
+                    (rm-rf (string-append path "/" entry))))
+                (scandir path))
               (rmdir path))
-            (delete-file path))))
+            (begin
+              (catch #t
+                (lambda ()
+                  (chmod path #o644))
+                (lambda _
+                  #f))
+              (delete-file path)))))
 
 (define (copy-tree src dst)
         (ensure-dir-p dst)
@@ -94,17 +107,53 @@
           (repos . ())
           (geasa . ())))
 
-(define* (geis-pkg-read-lockfile scope #:optional (workspace (getcwd)))
-         (let ((path (geis-pkg-lockfile-path scope workspace)))
-           (if (file-exists? path)
-             (catch #t
-               (lambda ()
-                 (let ((data (call-with-input-file path read)))
-                   (if (and (list? data) (assoc 'lock-version data))
-                     data
-                     (default-lockfile))))
-               (lambda _ (default-lockfile)))
-             (default-lockfile))))
+(define*
+  (geis-pkg-read-lockfile scope #:optional (workspace (getcwd)))
+  (let*
+      ((path (geis-pkg-lockfile-path scope workspace))
+       (store-dir (geis-pkg-store-dir scope workspace))
+       (base-lock
+         (if (file-exists? path)
+           (catch #t
+             (lambda ()
+               (let ((data (call-with-input-file path read)))
+                 (if (and (list? data) (assoc 'lock-version data))
+                   data
+                   (default-lockfile))))
+             (lambda _
+               (default-lockfile)))
+           (default-lockfile)))
+       (existing (or (assoc-ref base-lock 'geasa) '()))
+       (discovered
+         (if
+             (and (file-exists? store-dir) (eq? 'directory (stat:type (lstat store-dir))))
+           (filter-map
+             (lambda (name)
+               (and
+                 (not (or (string=? name ".") (string=? name "..")))
+                 (not (assoc name existing))
+                 (let
+                     ((mpath (string-append store-dir "/" name "/manifest.scm")))
+                   (and (file-exists? mpath)
+                        (catch #t
+                          (lambda ()
+                            (let ((m (call-with-input-file mpath read)))
+                              (and (list? m)
+                                   (cons (or (assoc-ref m 'feature-id) name)
+                                         `((source . ,(assoc-ref m 'source))
+                                           (version . ,(or (assoc-ref m 'version) "0.0.0.0"))
+                                           (commit . #f)
+                                           (bundle-sha256 . #f)
+                                           (enabled? . #t)
+                                           (pinned? . #f))))))
+                          (lambda _
+                            #f))))))
+             (or (scandir store-dir) '()))
+           '())))
+    (if (null? discovered)
+      base-lock
+      (cons (cons 'geasa (append existing discovered))
+            (alist-delete 'geasa base-lock eq?)))))
 
 (define* (geis-pkg-write-lockfile! scope lock-data #:optional (workspace (getcwd)))
          (let* ((path (geis-pkg-lockfile-path scope workspace))

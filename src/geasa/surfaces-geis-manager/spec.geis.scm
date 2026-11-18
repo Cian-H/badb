@@ -29,50 +29,52 @@
             (test-equal "cleared columns" 0 (length (list-geis-manager-columns))))
 
 (test-group "modal-lifecycle-and-actions"
-            (let* ((tmp (mkdtemp "/tmp/badb-gm-XXXXXX"))
-                   (ws (string-append tmp "/ws"))
-                   (lock-dir (string-append ws "/.badb")))
+            (let*
+                ((tmp (mkdtemp "/tmp/badb-gm-XXXXXX"))
+                 (ws (string-append tmp "/ws"))
+                 (lock-dir (string-append ws "/.badb")))
               (mkdir ws)
               (mkdir lock-dir)
-              (geis-pkg-write-lockfile!
-                'project
-                `((lock-version . 1)
-                  (last-check . #f)
-                  (repos . ())
-                  (geasa
-                    ("surfaces-tui"
-                     (version . "2026.11.18.0")
-                     (pinned? . #f)
-                     (enabled? . #t))
-                    ("capabilities-rtk"
-                     (version . "2026.11.18.1")
-                     (pinned? . #f)
-                     (enabled? . #t))))
-                ws)
-              (let* ((ov (make-geis-manager-overlay #:scope 'project #:workspace ws))
-                     (st (modal-overlay-state ov))
-                     (lines '()))
+              (geis-pkg-write-lockfile! 'project
+                                        `((lock-version . 1) (last-check . #f)
+                                          (repos . ())
+                                          (geasa
+                                            ("surfaces-tui" (version . "2026.11.18.0") (pinned? . #f) (enabled? . #t))
+                                            ("capabilities-rtk" (version . "2026.11.18.1") (pinned? . #f) (enabled? . #t))))
+                                        ws)
+              (let*
+                  ((ov (make-geis-manager-overlay #:scope 'project #:workspace ws))
+                   (st (modal-overlay-state ov))
+                   (lines '()))
                 (test-assert "is modal overlay" (modal-overlay? ov))
                 (test-equal "scope is project" 'project (geis-manager-scope st))
                 (test-equal "two entries loaded" 2 (length (geis-manager-entries st)))
-                ((overlay-render ov)
-                 ov
-                 `((draw-ops! . ,(lambda (ops rect)
-                                   (set! lines (render-ops->lines ops 80 24)))))
+                ((overlay-render ov) ov
+                 `((draw-ops! .
+                              ,(lambda (ops _rect)
+                                 (set! lines (render-ops->lines ops 80 24)))))
                  24
                  80
                  0)
                 (test-assert "rendered non-empty" (> (length lines) 0))
-                ;; Core protection on surfaces-tui
-                (test-equal "space on core" 'handled ((overlay-on-key ov) ov (char->integer #\space) '()))
+                ;; Sorted alphabetically: capabilities-rtk (0), surfaces-tui (1)
+                (test-equal "t disables non-core"
+                            'handled
+                            ((overlay-on-key ov) ov (char->integer #\t) '()))
+                (test-equal "p pins" 'handled ((overlay-on-key ov) ov (char->integer #\p) '()))
+                ;; Navigate down to surfaces-tui (core) and check core protection
+                (test-equal "j moves down"
+                            'handled
+                            ((overlay-on-key ov) ov (char->integer #\j) '()))
+                (test-equal "space on core"
+                            'handled
+                            ((overlay-on-key ov) ov (char->integer #\space) '()))
                 (test-equal "core protection message"
                             "Core geis cannot be disabled"
                             (geis-manager-status-message st))
-                ;; Navigate down to capabilities-rtk and toggle
-                (test-equal "j moves down" 'handled ((overlay-on-key ov) ov (char->integer #\j) '()))
-                (test-equal "t disables non-core" 'handled ((overlay-on-key ov) ov (char->integer #\t) '()))
-                (test-equal "p pins" 'handled ((overlay-on-key ov) ov (char->integer #\p) '()))
-                (test-equal "Enter toggles detail" 'handled ((overlay-on-key ov) ov (char->integer #\newline) '()))
+                (test-equal "Enter toggles detail"
+                            'handled
+                            ((overlay-on-key ov) ov (char->integer #\newline) '()))
                 (test-assert "detail is shown" (modal-show-detail? ov))
                 (test-equal "q closes" 'close ((overlay-on-key ov) ov (char->integer #\q) '())))
               (system* "rm" "-rf" tmp)))

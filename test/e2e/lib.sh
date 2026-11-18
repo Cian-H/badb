@@ -105,6 +105,7 @@ cleanup() {
   tui key press ctrl+d >/dev/null 2>&1
   tui wait exit --timeout 10000 >/dev/null 2>&1
   tui-test --session "$SESSION" close >/dev/null 2>&1
+  chmod -R u+w "$E2E_SCRATCH" 2>/dev/null || true
   rm -rf "$E2E_SCRATCH"
 }
 trap cleanup EXIT INT TERM

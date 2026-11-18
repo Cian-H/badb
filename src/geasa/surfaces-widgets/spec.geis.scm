@@ -97,4 +97,22 @@
               (test-assert "key-hints renders" (string-contains (car kh) "[↑↓] move"))
               (test-assert "key-hints renders second" (string-contains (car kh) "[Esc] close"))))
 
+(test-group "table-widget"
+            (let*
+                ((cols '(((header . "State") (width . 10)) ((header . "Name") (width . 10))))
+                 (rows
+                   (list
+                     (list (toggle-widget #t #:locked? #t) "core-mod")
+                     (list (toggle-widget #f) "user-mod")))
+                 (tbl (table-widget cols rows #:selected-index 1 #:max-visible 5))
+                 (lines (render-widget-to-lines tbl 24 4)))
+              (test-equal "table renders header + 2 rows" 4 (length lines))
+              (test-assert "header has aligned State and Name"
+                           (and (string-contains (car lines) "State") (string-contains (car lines) "Name")))
+              (test-equal
+                "columns stay aligned across locked and unlocked rows"
+                (string-contains (cadr lines) "core-mod")
+                (string-contains (caddr lines) "user-mod"))
+              (test-assert "selected row has indicator" (string-prefix? "▸ " (caddr lines)))))
+
 (spec-end)

@@ -1,9 +1,16 @@
 (define-module (test surfaces-geis-updater-spec)
-               #:use-module (srfi srfi-64)
-               #:use-module (badb spec)
-               #:use-module (geasa surfaces-geis-manager plugin)
-               #:use-module (geasa surfaces-geis-updater plugin)
-               #:use-module (geasa surfaces-widgets plugin))
+               #:use-module
+               (srfi srfi-64)
+               #:use-module
+               (badb spec)
+               #:use-module
+               (geasa surfaces-overlay plugin)
+               #:use-module
+               (geasa surfaces-geis-manager plugin)
+               #:use-module
+               (geasa surfaces-geis-updater plugin)
+               #:use-module
+               (geasa surfaces-widgets plugin))
 
 (spec-begin "surfaces-geis-updater")
 
@@ -57,15 +64,43 @@
                           '(((scope . user) (mode . notify)
                              (entries . (("a" (status . up-to-date)))))))))
 
-(test-group "cycle-mode"
-            (let ((ws (mkdtemp "/tmp/badb-updater-ui-XXXXXX")))
+(test-group "cycle-mode-and-modal-integration"
+            (let
+                ((ws (mkdtemp "/tmp/badb-updater-ui-XXXXXX")))
               (mkdir (string-append ws "/.badb"))
-              (let ((m1 (geis-updater-cycle-mode! 'project ws)))
+              (let
+                  ((m1 (geis-updater-cycle-mode! 'project ws)))
                 (test-equal "cycles notify -> auto" 'auto m1))
-              (let ((m2 (geis-updater-cycle-mode! 'project ws)))
+              (let
+                  ((m2 (geis-updater-cycle-mode! 'project ws)))
                 (test-equal "cycles auto -> manual" 'manual m2))
-              (let ((m3 (geis-updater-cycle-mode! 'project ws)))
-                (test-equal "cycles manual -> notify" 'notify m3))))
+              (let
+                  ((m3 (geis-updater-cycle-mode! 'project ws)))
+                (test-equal "cycles manual -> notify" 'notify m3))
+              (test-assert "persists config.scm on disk"
+                           (file-exists? (string-append ws "/.badb/config.scm")))
+              (clear-geis-manager-extensions!)
+              (register-geis-updater-extensions!)
+              (let*
+                  ((ov (make-geis-manager-overlay #:scope 'user #:workspace ws)) (lines '()))
+                ((overlay-render ov) ov
+                 `((draw-ops! .
+                              ,(lambda (ops _rect)
+                                 (set! lines (render-ops->lines ops 100 28)))))
+                 28
+                 100
+                 0)
+                (let ((txt (string-join lines "\n")))
+                  (test-assert "modal shows Policy: banner" (string-contains txt "Policy:"))
+                  (test-assert "modal shows Status header" (string-contains txt "Status")))
+                (test-equal "Tab switches scope to project"
+                            'handled
+                            ((overlay-on-key ov) ov 9 '((key-tab . 9))))
+                (test-equal "scope updated to project after Tab"
+                            'project
+                            (geis-manager-scope (modal-overlay-state ov))))
+              (unregister-geis-updater-extensions!)
+              (system* "rm" "-rf" ws)))
 
 (spec-end)
 (spec-exit)

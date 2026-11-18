@@ -40,7 +40,6 @@
 ;;;
 ;;; Core <overlay> Protocol
 ;;;
-
 (define-record-type <overlay>
                     (%make-overlay kind data render on-key on-click)
                     overlay?
@@ -63,7 +62,6 @@ RENDER / ON-KEY / ON-CLICK handlers."
 ;;;
 ;;; Menu Overlay (generic over menu-ops or <selectable-list>)
 ;;;
-
 (define (default-list-ops)
         `((is-menu? . ,selectable-list?)
           (count . ,(lambda (m) (length (selectable-list-items m))))
@@ -244,7 +242,6 @@ otherwise defaults to <selectable-list> operations."
 ;;;
 ;;; Modular Modal Overlay Framework
 ;;;
-
 (define-record-type <modal-state>
                     (%make-modal-state user-state active-tab show-detail? extension-slots last-rect)
                     modal-state?
@@ -354,45 +351,102 @@ WIDTH and HEIGHT may be integers or fractions in (0, 1]. ANCHOR may be 'center,
               (else #f)))
           (else #f)))
 
-(define (build-modal-widget ov ms rect title tabs body-renderer detail-renderer footer-hints)
-        (let* ((ustate (modal-state-user ms))
-               (active-tab (modal-state-active-tab ms))
-               (show-detail? (modal-state-show-detail? ms))
-               (inner-w (max 1 (- (rect-width rect) 2)))
-               (inner-h (max 1 (- (rect-height rect) 2)))
-               (banner-providers (modal-slot-providers ov 'top-banner))
-               (banner-widgets
-                 (filter-map (lambda (p) (if (procedure? p) (p ov ustate) p))
-                             banner-providers))
-               (tab-w (if (and (pair? tabs) (not (null? tabs)))
-                        (let ((idx (or (list-index (lambda (t) (eq? (car t) active-tab)) tabs) 0)))
-                          (list (tab-bar-widget (map cdr tabs) #:active idx)))
-                        '()))
-               (footer-base (or (resolve-value footer-hints ustate) '()))
-               (footer-extra
-                 (append-map (lambda (p)
-                               (let ((res (if (procedure? p) (p ov ustate) p)))
-                                 (if (list? res) res '())))
-                             (modal-slot-providers ov 'footer-actions)))
-               (all-hints (append footer-base footer-extra))
-               (footer-w (if (null? all-hints)
-                           '()
-                           (list (key-hints-widget all-hints))))
-               (overhead (+ (length tab-w) (length banner-widgets) (length footer-w)))
-               (avail-h (max 1 (- inner-h overhead)))
-               (detail-h (if (and show-detail? detail-renderer)
-                           (max 3 (quotient avail-h 3))
-                           0))
-               (body-h (max 1 (- avail-h detail-h)))
-               (body-rect (make-rect 0 0 inner-w body-h))
-               (body-w (if body-renderer (body-renderer ov ustate body-rect) (text-widget "")))
-               (detail-w (if (and show-detail? detail-renderer (> detail-h 0))
-                           (list (rule-widget)
-                                 (detail-renderer ov ustate (make-rect 0 0 inner-w (max 1 (- detail-h 1)))))
-                           '()))
-               (children (append tab-w banner-widgets (list body-w) detail-w footer-w)))
-          (box-widget (vstack-widget children)
-                      #:title (resolve-value title ustate))))
+(define
+  (build-modal-widget ov
+                      ms
+                      rect
+                      title
+                      tabs
+                      body-renderer
+                      detail-renderer
+                      footer-hints)
+  (let*
+      ((ustate (modal-state-user ms))
+       (active-tab (modal-state-active-tab ms))
+       (show-detail? (modal-state-show-detail? ms))
+       (inner-w (max 1 (- (rect-width rect) 2)))
+       (inner-h (max 1 (- (rect-height rect) 2)))
+       (banner-providers (modal-slot-providers ov 'top-banner))
+       (banner-widgets
+         (filter-map
+           (lambda (p)
+             (if (procedure? p)
+               (p ov ustate)
+               p))
+           banner-providers))
+       (tab-w
+         (if (and (pair? tabs) (not (null? tabs)))
+           (let
+               ((idx
+                  (or
+                    (list-index
+                      (lambda (t)
+                        (eq? (car t) active-tab))
+                      tabs)
+                    0)))
+             (list (tab-bar-widget (map cdr tabs) #:active idx)))
+           '()))
+       (footer-base (or (resolve-value footer-hints ustate) '()))
+       (footer-extra
+         (append-map
+           (lambda (p)
+             (let
+                 ((res
+                    (if (procedure? p)
+                      (p ov ustate)
+                      p)))
+               (if (list? res)
+                 res
+                 '())))
+           (modal-slot-providers ov 'footer-actions)))
+       (all-hints (append footer-base footer-extra))
+       (footer-w
+         (if (null? all-hints)
+           '()
+           (list (key-hints-widget all-hints))))
+       (footer-gap
+         (if (null? footer-w)
+           0
+           1))
+       (overhead
+         (+ (length tab-w) (length banner-widgets) (length footer-w) footer-gap))
+       (avail-h (max 1 (- inner-h overhead)))
+       (detail-h
+         (if (and show-detail? detail-renderer)
+           (max 3 (quotient avail-h 3))
+           0))
+       (body-h (max 1 (- avail-h detail-h)))
+       (body-rect (make-rect 0 0 inner-w body-h))
+       (body-w
+         (if body-renderer
+           (body-renderer ov ustate body-rect)
+           (text-widget "")))
+       (detail-w
+         (if
+             (and show-detail? detail-renderer (> detail-h 0))
+           (list (rule-widget)
+                 (detail-renderer ov ustate (make-rect 0 0 inner-w (max 1 (- detail-h 1)))))
+           '()))
+       (top-children (append tab-w banner-widgets (list body-w) detail-w))
+       (top-stack (vstack-widget top-children))
+       (top-h (cdr (widget-measure-size top-stack inner-w avail-h)))
+       (spacer-h
+         (if (null? footer-w)
+           0
+           (max 1 (- inner-h top-h (length footer-w)))))
+       (spacer
+         (if (> spacer-h 0)
+           (list
+             (make-widget 'spacer
+                          #:measure
+                          (lambda (_s aw ah)
+                            (cons (min aw 1) (min ah spacer-h)))
+                          #:render
+                          (lambda (_s _r)
+                            '())))
+           '()))
+       (children (append top-children spacer footer-w)))
+    (box-widget (vstack-widget children) #:title (resolve-value title ustate))))
 
 (define* (make-modal-overlay #:key
                              (title "Modal")
