@@ -836,7 +836,15 @@ Creates any missing intermediate category nodes automatically."
                            "Run bootstrap verification test suite"
                            '(run-command . "test")
                            #:path
-                           '("Geasa & Synthesis" "Diagnostics")))
+                           '("Geasa & Synthesis" "Diagnostics"))
+  (register-menu-category!
+    '("Geasa")
+    "Manage installed geasa bundles")
+  (register-slash-command! "geasa"
+                           "Open Geasa Manager modal"
+                           '(run-command . "geasa")
+                           #:path
+                           '("Geasa")))
 
 (define (flatten-command-tree)
         "Flatten all registered commands across all depths of %command-tree into ((cmd . desc) ...)."

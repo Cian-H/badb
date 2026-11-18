@@ -38,6 +38,8 @@
                #:use-module
                (geasa runtimes-geis-loader plugin)
                #:use-module
+               (geasa runtimes-geis-pkg plugin)
+               #:use-module
                (geasa runtimes-react plugin)
                #:use-module
                (geasa runtimes-workflows plugin)
@@ -532,6 +534,12 @@ unbounded raw search on the next turn."
     (lambda (_k . a)
       (format #f "Error reading file: ~s" a))))
 
+(define (geis-tui-enabled? fid workspace)
+        "Return #t if FID is core-protected or enabled in both user and project scopes."
+        (or (member fid %core-protected-geasa)
+            (and (geis-pkg-enabled? 'user fid workspace)
+                 (geis-pkg-enabled? 'project fid workspace))))
+
 (define*
   (register-builtin-tui-tools! reg
                                rollback-mgr
@@ -558,29 +566,37 @@ unbounded raw search on the next turn."
                       ctx-idx
                       #:bash-pre-hooks
                       (list (make-rtk-bash-pre-hook)))
-  (register-rtk-tools! reg)
+  (when (geis-tui-enabled? "capabilities-rtk" workspace)
+    (register-rtk-tools! reg))
   ;; 1b. Input macro expansion (@@, @file:PATH, @SHORTCUT directives)
-  (register-macro-tools! reg)
+  (when (geis-tui-enabled? "capabilities-macro" workspace)
+    (register-macro-tools! reg))
   ;; 2. Code navigation & persistent memories
-  (register-code-nav-tools! reg #:workspace (getcwd))
-  (register-structural-editing-tools! reg
-                                      #:workspace
-                                      workspace
-                                      #:rollback-mgr
-                                      rollback-mgr)
-  (when (and verifier (semcp-available?))
-    (add-verifier-validator! verifier (make-semcp-lint-validator)))
+  (when (geis-tui-enabled? "capabilities-code-nav" workspace)
+    (register-code-nav-tools! reg #:workspace (getcwd)))
+  (when (geis-tui-enabled? "capabilities-structural-editing" workspace)
+    (register-structural-editing-tools! reg
+                                        #:workspace
+                                        workspace
+                                        #:rollback-mgr
+                                        rollback-mgr)
+    (when (and verifier (semcp-available?))
+      (add-verifier-validator! verifier (make-semcp-lint-validator))))
   ;; 3. Virtualized output & BM25 context indexing
-  (register-context-index-tools! reg
-                                 ctx-idx
-                                 #:shell-executor
-                                 exec-shell-tool-impl)
+  (when (geis-tui-enabled? "capabilities-context-index" workspace)
+    (register-context-index-tools! reg
+                                   ctx-idx
+                                   #:shell-executor
+                                   exec-shell-tool-impl))
   ;; 4. Skills registry & loader
-  (register-skill-tools! reg skill-reg)
+  (when (geis-tui-enabled? "capabilities-skills" workspace)
+    (register-skill-tools! reg skill-reg))
   ;; 5. Delegated subagent investigation
-  (register-subagent-tools! reg #:client client)
+  (when (geis-tui-enabled? "agents-subagent" workspace)
+    (register-subagent-tools! reg #:client client))
   ;; 6. Sandboxed Scheme evaluation
-  (register-scheme-eval-tools! reg)
+  (when (geis-tui-enabled? "capabilities-scheme-eval" workspace)
+    (register-scheme-eval-tools! reg))
   ;; Backward-compatibility shell aliases
   (registry-attach! reg
                     "execute_command"
