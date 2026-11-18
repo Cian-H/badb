@@ -482,5 +482,34 @@
                 #f
                 (badb-config-model-api-key merged))))
 
+(test-group "geasa-config"
+            (let* ((tmp-dir (mkdtemp "/tmp/badb-cfg-XXXXXX"))
+                   (global-path (string-append tmp-dir "/global.scm"))
+                   (local-path (string-append tmp-dir "/local.scm"))
+                   (gcfg (make-badb-config))
+                   (lcfg (make-badb-config)))
+              (badb-config-add-geasa! gcfg '((url . "https://example.com/u.git")
+                                             (path . "src/geasa/foo")
+                                             (ref . "main")))
+              (badb-config-set-geasa-update! gcfg '((mode . auto) (ttl-hours . 12)))
+              (write-config-file gcfg global-path)
+              (badb-config-add-geasa! lcfg '((url . "https://example.com/p.git")
+                                             (path . "geasa/bar")
+                                             (pin . #t)
+                                             (enabled . #f)))
+              (badb-config-set-geasa-update! lcfg '((mode . manual) (ttl-hours . 48)))
+              (write-config-file lcfg local-path)
+              (let ((loaded (load-config #:global-path global-path #:local-path local-path)))
+                (test-equal "merged geasa count" 2 (length (badb-config-geasa loaded)))
+                (test-equal "user scope geasa count" 1 (length (badb-config-geasa loaded #:scope 'user)))
+                (test-equal "project scope geasa count" 1 (length (badb-config-geasa loaded #:scope 'project)))
+                (test-equal "user geasa-update mode" 'auto
+                            (assoc-ref (badb-config-geasa-update loaded #:scope 'user) 'mode))
+                (test-equal "project geasa-update mode" 'manual
+                            (assoc-ref (badb-config-geasa-update loaded #:scope 'project) 'mode))
+                (test-equal "project geasa-update ttl" 48
+                            (assoc-ref (badb-config-geasa-update loaded #:scope 'project) 'ttl-hours)))
+              (system* "rm" "-rf" tmp-dir)))
+
 (spec-end)
 (spec-exit)

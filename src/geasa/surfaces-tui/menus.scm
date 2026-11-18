@@ -11,6 +11,8 @@
                #:use-module
                (geasa surfaces-tui session)
                #:use-module
+               (geasa surfaces-widgets plugin)
+               #:use-module
                (geasa providers-model openai)
                #:use-module
                (geasa policies-guardrail plugin)
@@ -243,25 +245,20 @@ returning its parent <menu> (or #f when already at root)."
          "Format MENU's breadcrumb path joined by SEP (e.g. \"Configuration › Theme\")."
          (string-join (menu-breadcrumbs menu) sep))
 
+(define (menu->selectable-list menu max-visible)
+        "Convert MENU into a <selectable-list> with MAX-VISIBLE viewport."
+        (make-selectable-list (menu-items menu)
+                              #:selected-index (menu-selected-index menu)
+                              #:max-visible max-visible))
+
 (define (menu-selected-item menu)
         "Return the currently selected item of MENU, or #f when it is empty."
-        (let ((count (menu-count menu)))
-          (if (= count 0)
-            #f
-            (list-ref (menu-items menu)
-                      (min (max 0 (menu-selected-index menu)) (- count 1))))))
+        (list-selected-item (menu->selectable-list menu %menu-max-visible)))
 
 (define (menu-visible-slice menu max-visible)
         "Return (values visible-items offset): the window of at most MAX-VISIBLE
 items of MENU positioned so the selected item stays on screen."
-        (let* ((items (menu-items menu))
-               (count (length items))
-               (cap (max 1 max-visible))
-               (sel (min (max 0 (menu-selected-index menu)) (max 0 (- count 1)))))
-          (if (<= count cap)
-            (values items 0)
-            (let ((start (min (max 0 (- (+ sel 1) cap)) (- count cap))))
-              (values (take (drop items start) cap) start)))))
+        (list-visible-slice (menu->selectable-list menu max-visible) max-visible))
 
 (define (menu-item-label item)
         "Return the label string of menu ITEM."

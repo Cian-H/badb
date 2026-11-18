@@ -158,6 +158,20 @@
         (when (procedure? logger)
           (logger 'warn message)))
 
+(define (%bundle-disabled-in-lockfile? bundle-dir fid)
+        "Return #t if FID is explicitly marked (enabled? . #f) in the store's geasa-lock.scm."
+        (let ((lock-path (string-append (dirname (dirname bundle-dir)) "/geasa-lock.scm")))
+          (and (file-exists? lock-path)
+               (catch #t
+                 (lambda ()
+                   (let* ((data (call-with-input-file lock-path read))
+                          (geasa (and (list? data) (assoc-ref data 'geasa)))
+                          (entry (and (list? geasa) (assoc-ref geasa fid))))
+                     (and (list? entry)
+                          (assoc 'enabled? entry)
+                          (not (assoc-ref entry 'enabled?)))))
+                 (lambda _ #f)))))
+
 (define (%mount-project-bundle! reg bundle-dir sub capability-provider sandbox-runner logger)
         (let* ((manifest-file (string-append bundle-dir "/manifest.scm"))
                (plugin-file (string-append bundle-dir "/plugin.scm")))
@@ -186,6 +200,8 @@
                               (requests (or (manifest-field manifest 'capabilities) '()))
                               (grants (%resolve-capability-grants requests capability-provider)))
                          (cond
+                           ((%bundle-disabled-in-lockfile? bundle-dir fid)
+                             #f)
                            ((and (pair? requests) (not grants))
                              (%warn logger (format #f "Bundle ~a denied: a requested capability has no host grant" fid))
                              #f)

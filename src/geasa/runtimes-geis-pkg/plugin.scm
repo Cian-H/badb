@@ -24,7 +24,8 @@
                           geis-pkg-enabled?
                           geis-pkg-enable!
                           geis-pkg-disable!
-                          geis-pkg-list))
+                          geis-pkg-list
+                          geis-pkg-sync!))
 
 (define %core-protected-geasa
         '("foundation-util"
@@ -444,3 +445,55 @@
 (define* (geis-pkg-list scope #:optional (workspace (getcwd)))
          (let ((lock (geis-pkg-read-lockfile scope workspace)))
            (or (assoc-ref lock 'geasa) '())))
+
+(define (%find-lock-entry-by-source geasa url path)
+        (find (lambda (entry)
+                (let ((src (assoc-ref (cdr entry) 'source)))
+                  (and (list? src)
+                       (equal? (assoc-ref src 'url) url)
+                       (equal? (assoc-ref src 'path) path))))
+              geasa))
+
+(define* (geis-pkg-sync! declared-geasa #:key (scope 'user) (workspace (getcwd)))
+         "Reconcile DECLARED-GEASA entries against the SCOPE lockfile."
+         (let ((installed '())
+               (unchanged '())
+               (failed '()))
+           (for-each
+             (lambda (decl)
+               (let* ((url (assoc-ref decl 'url))
+                      (path (assoc-ref decl 'path))
+                      (ref (or (assoc-ref decl 'ref) "main"))
+                      (pin? (and (assoc-ref decl 'pin) #t))
+                      (enabled? (if (assoc 'enabled decl) (and (assoc-ref decl 'enabled) #t) #t))
+                      (lock (geis-pkg-read-lockfile scope workspace))
+                      (geasa (or (assoc-ref lock 'geasa) '()))
+                      (existing (%find-lock-entry-by-source geasa url path)))
+                 (if existing
+                   (let* ((fid (car existing))
+                          (props (cdr existing))
+                          (cur-pin? (and (assoc-ref props 'pinned?) #t))
+                          (cur-en? (if (assoc 'enabled? props) (and (assoc-ref props 'enabled?) #t) #t)))
+                     (when (not (eq? cur-pin? pin?))
+                       (geis-pkg-pin! fid #:scope scope #:workspace workspace #:pinned? pin?))
+                     (when (not (eq? cur-en? enabled?))
+                       (if enabled?
+                         (geis-pkg-enable! fid #:scope scope #:workspace workspace)
+                         (geis-pkg-disable! fid #:scope scope #:workspace workspace)))
+                     (set! unchanged (cons fid unchanged)))
+                   (let ((res (geis-pkg-install! url path
+                                                 #:ref ref
+                                                 #:scope scope
+                                                 #:workspace workspace
+                                                 #:pin? pin?
+                                                 #:enabled? enabled?)))
+                     (if (assoc-ref res 'ok)
+                       (set! installed (cons (assoc-ref res 'feature-id) installed))
+                       (set! failed (cons `((url . ,url) (path . ,path)
+                                            (reason . ,(assoc-ref res 'reason)))
+                                          failed)))))))
+             declared-geasa)
+           `((ok . ,(null? failed))
+             (installed . ,(reverse installed))
+             (unchanged . ,(reverse unchanged))
+             (failed . ,(reverse failed)))))

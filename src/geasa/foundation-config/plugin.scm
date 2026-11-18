@@ -78,7 +78,17 @@
                  merge-configs
                  load-config
                  save-local-config!
-                 save-global-config!))
+                 save-global-config!
+                 badb-config-geasa
+                 badb-config-geasa-update
+                 badb-config-set-geasa!
+                 badb-config-set-geasa-update!
+                 badb-config-add-geasa!
+                 badb-config-remove-geasa!
+                 badb-config-user-geasa
+                 badb-config-project-geasa
+                 badb-config-user-geasa-update
+                 badb-config-project-geasa-update))
 
 ;;;
 ;;; Configuration Record Definition
@@ -93,7 +103,13 @@
                                        ui-theme
                                        mcp-servers
                                        options
-                                       source-path)
+                                       source-path
+                                       geasa
+                                       geasa-update
+                                       user-geasa
+                                       project-geasa
+                                       user-geasa-update
+                                       project-geasa-update)
                     badb-config?
                     (model-name badb-config-model-name set-badb-config-model-name!)
                     (model-endpoint badb-config-model-endpoint set-badb-config-model-endpoint!)
@@ -104,7 +120,13 @@
                     (ui-theme badb-config-ui-theme set-badb-config-ui-theme!)
                     (mcp-servers badb-config-mcp-servers set-badb-config-mcp-servers!)
                     (options badb-config-options set-badb-config-options!)
-                    (source-path badb-config-source-path set-badb-config-source-path!))
+                    (source-path badb-config-source-path set-badb-config-source-path!)
+                    (geasa badb-config-geasa-raw set-badb-config-geasa!)
+                    (geasa-update badb-config-geasa-update-raw set-badb-config-geasa-update!)
+                    (user-geasa badb-config-user-geasa set-badb-config-user-geasa!)
+                    (project-geasa badb-config-project-geasa set-badb-config-project-geasa!)
+                    (user-geasa-update badb-config-user-geasa-update set-badb-config-user-geasa-update!)
+                    (project-geasa-update badb-config-project-geasa-update set-badb-config-project-geasa-update!))
 
 (define*
   (make-badb-config #:key
@@ -118,7 +140,13 @@
                     (ui-theme #f)
                     (mcp-servers '())
                     (options '())
-                    (source-path #f))
+                    (source-path #f)
+                    (geasa '())
+                    (geasa-update '((mode . notify) (ttl-hours . 24)))
+                    (user-geasa '())
+                    (project-geasa '())
+                    (user-geasa-update #f)
+                    (project-geasa-update #f))
   "Create a new <badb-config> record instance with sensible defaults."
   (%make-badb-config model-name
                      model-endpoint
@@ -129,7 +157,13 @@
                      ui-theme
                      mcp-servers
                      options
-                     source-path))
+                     source-path
+                     geasa
+                     geasa-update
+                     user-geasa
+                     project-geasa
+                     user-geasa-update
+                     project-geasa-update))
 
 (define badb-config-set-model-name! set-badb-config-model-name!)
 (define badb-config-set-model-endpoint! set-badb-config-model-endpoint!)
@@ -141,6 +175,90 @@
 (define badb-config-set-mcp-servers! set-badb-config-mcp-servers!)
 (define badb-config-set-options! set-badb-config-options!)
 (define badb-config-set-source-path! set-badb-config-source-path!)
+(define badb-config-set-geasa! set-badb-config-geasa!)
+(define badb-config-set-geasa-update! set-badb-config-geasa-update!)
+
+(define (default-geasa-update)
+        '((mode . notify) (ttl-hours . 24)))
+
+(define* (badb-config-geasa config #:key (scope #f))
+         "Return declared geasa list for CONFIG, optionally scoped to 'user or 'project."
+         (case scope
+           ((user) (badb-config-user-geasa config))
+           ((project) (badb-config-project-geasa config))
+           (else (badb-config-geasa-raw config))))
+
+(define* (badb-config-geasa-update config #:key (scope #f))
+         "Return geasa-update policy alist for CONFIG, optionally scoped to 'user or 'project."
+         (or (case scope
+               ((user) (badb-config-user-geasa-update config))
+               ((project) (badb-config-project-geasa-update config))
+               (else (badb-config-geasa-update-raw config)))
+             (default-geasa-update)))
+
+(define (normalize-geasa-entry entry)
+        "Normalize a declarative (geasa ...) entry alist with defaults."
+        (let ((url (assoc-ref entry 'url))
+              (path (assoc-ref entry 'path))
+              (ref (or (assoc-ref entry 'ref) "main"))
+              (pin (if (assoc 'pin entry) (and (assoc-ref entry 'pin) #t) #f))
+              (enabled (if (assoc 'enabled entry) (and (assoc-ref entry 'enabled) #t) #t)))
+          (and (string? url) (not (string-null? url))
+               (string? path) (not (string-null? path))
+               `((url . ,url)
+                 (path . ,path)
+                 (ref . ,ref)
+                 (pin . ,pin)
+                 (enabled . ,enabled)))))
+
+(define (merge-geasa-lists base overlay)
+        "Merge two declarative geasa lists, deduplicating by (url . path)."
+        (let loop ((items overlay) (acc (reverse base)))
+                  (if (null? items)
+                    (reverse acc)
+                    (let* ((item (car items))
+                           (u (assoc-ref item 'url))
+                           (p (assoc-ref item 'path))
+                           (filtered (filter (lambda (x)
+                                               (not (and (equal? (assoc-ref x 'url) u)
+                                                         (equal? (assoc-ref x 'path) p))))
+                                             acc)))
+                      (loop (cdr items) (cons item filtered))))))
+
+(define (badb-config-add-geasa! config entry)
+        "Add or update a normalized geasa ENTRY in CONFIG."
+        (let ((norm (normalize-geasa-entry entry)))
+          (when norm
+            (set-badb-config-geasa! config (merge-geasa-lists (badb-config-geasa-raw config) (list norm))))
+          norm))
+
+(define (badb-config-remove-geasa! config url path)
+        "Remove any geasa entry matching URL and PATH from CONFIG."
+        (set-badb-config-geasa!
+          config
+          (filter (lambda (x)
+                    (not (and (equal? (assoc-ref x 'url) url)
+                              (equal? (assoc-ref x 'path) path))))
+                  (badb-config-geasa-raw config))))
+
+(define (apply-geasa-config-form! cfg body)
+        (for-each
+          (lambda (entry)
+            (when (list? entry)
+              (badb-config-add-geasa! cfg entry)))
+          body))
+
+(define (apply-geasa-update-config-form! cfg body)
+        (let* ((cur (or (badb-config-geasa-update-raw cfg) (default-geasa-update)))
+               (mode-pair (assoc 'mode body))
+               (ttl-pair (assoc 'ttl-hours body))
+               (mode (if (and mode-pair (memq (cdr mode-pair) '(auto notify manual)))
+                       (cdr mode-pair)
+                       (assoc-ref cur 'mode)))
+               (ttl (if (and ttl-pair (number? (cdr ttl-pair)) (> (cdr ttl-pair) 0))
+                      (cdr ttl-pair)
+                      (assoc-ref cur 'ttl-hours))))
+          (set-badb-config-geasa-update! cfg `((mode . ,mode) (ttl-hours . ,ttl)))))
 
 (define* (make-mcp-server-spec name command #:optional (args '()) #:key (env '()) (auto-start #f))
          "Construct an MCP server specification alist."
@@ -545,6 +663,8 @@ a positive integer, or #f (the default) for an unlimited loop."
                      ((mcp)        (apply-mcp-config-form! cfg body))
                      ((mcp-server) (let ((parsed (parse-mcp-server-spec form)))
                                      (when parsed (badb-config-add-mcp-server! cfg (car parsed) (cdr parsed)))))
+                     ((geasa)      (apply-geasa-config-form! cfg body))
+                     ((geasa-update) (apply-geasa-update-config-form! cfg body))
                      ((options)    (set-badb-config-options! cfg (append (badb-config-options cfg) body)))))))
              forms)
            cfg))
@@ -582,6 +702,12 @@ a positive integer, or #f (the default) for an unlimited loop."
                                   '())
                               (auto-start ,auto?))))
                  (badb-config-mcp-servers config)))
+           ,@(if (null? (badb-config-geasa-raw config))
+               '()
+               `((geasa ,@(badb-config-geasa-raw config))))
+           ,@(if (badb-config-geasa-update-raw config)
+               `((geasa-update ,@(badb-config-geasa-update-raw config)))
+               '())
            ,@(if (null? (badb-config-options config))
                '()
                `((options ,@(badb-config-options config))))))
@@ -663,7 +789,27 @@ BASE's api-key is not inherited."
                                  #:options
                                  (append (badb-config-options base) (badb-config-options overlay))
                                  #:source-path
-                                 (or (badb-config-source-path overlay) (badb-config-source-path base))))
+                                 (or (badb-config-source-path overlay) (badb-config-source-path base))
+                                 #:geasa
+                                 (merge-geasa-lists (badb-config-geasa-raw base)
+                                                    (badb-config-geasa-raw overlay))
+                                 #:geasa-update
+                                 (or (badb-config-geasa-update-raw overlay)
+                                     (badb-config-geasa-update-raw base))
+                                 #:user-geasa
+                                 (if (null? (badb-config-user-geasa overlay))
+                                   (badb-config-user-geasa base)
+                                   (badb-config-user-geasa overlay))
+                                 #:project-geasa
+                                 (if (null? (badb-config-project-geasa overlay))
+                                   (badb-config-project-geasa base)
+                                   (badb-config-project-geasa overlay))
+                                 #:user-geasa-update
+                                 (or (badb-config-user-geasa-update overlay)
+                                     (badb-config-user-geasa-update base))
+                                 #:project-geasa-update
+                                 (or (badb-config-project-geasa-update overlay)
+                                     (badb-config-project-geasa-update base))))
              ;; Merge MCP servers: overlay servers take precedence over base servers with same name
              (combined-mcp
                (alist-merge (badb-config-mcp-servers base) (badb-config-mcp-servers overlay))))
@@ -678,7 +824,8 @@ BASE's api-key is not inherited."
                           #:model-temperature #f
                           #:model-max-tokens #f
                           #:journal-path #f
-                          #:ui-theme #f))
+                          #:ui-theme #f
+                          #:geasa-update #f))
 
 (define* (load-config #:key
                       (global-path (default-global-config-path))
@@ -690,6 +837,12 @@ Defaults -> Global (~/.config/badb/config.scm) -> Local (.badb/config.scm)."
                 (local-cfg (and local-path (read-config-file local-path (make-unset-overlay-config))))
                 (with-global (if global-cfg (merge-configs cfg global-cfg) cfg))
                 (final-cfg (if local-cfg (merge-configs with-global local-cfg) with-global)))
+           (when global-cfg
+             (set-badb-config-user-geasa! final-cfg (badb-config-geasa-raw global-cfg))
+             (set-badb-config-user-geasa-update! final-cfg (badb-config-geasa-update-raw global-cfg)))
+           (when local-cfg
+             (set-badb-config-project-geasa! final-cfg (badb-config-geasa-raw local-cfg))
+             (set-badb-config-project-geasa-update! final-cfg (badb-config-geasa-update-raw local-cfg)))
            final-cfg))
 
 (define* (save-local-config! config #:optional (path (default-local-config-path)))
