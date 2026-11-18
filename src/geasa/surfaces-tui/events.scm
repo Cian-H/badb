@@ -142,6 +142,96 @@
                  ((safe-idx (max 0 (min (tui-selector-index st) (- (length matches) 1)))))
                (car (list-ref matches safe-idx)))))
 
+(define (dispatch-running-steering-input! st raw urgent? on-cmd!)
+        "Dispatch trimmed mid-run steering input RAW on ST (urgent or queued)."
+        (unless (string-null? raw)
+          (let ((disp (dispatch-mid-run-input raw)))
+            (case (car disp)
+              ((safe-slash)
+                (tui-execute-mid-run-safe-command! st (cadr disp) (caddr disp) on-cmd!))
+              ((blocked-slash)
+                (tui-add-sys-msg! st
+                                  (format #f
+                                          "Command /~a cannot run while the agent is active (safe mid-run: /context, /usage, /theme, /help, /subagents, /stop, /steer)."
+                                          (cadr disp))))
+              ((steer)
+                (if urgent?
+                  (tui-trigger-urgent-steering! st (cdr disp))
+                  (begin
+                    (with-mutex (tui-steering-mutex st)
+                                (steering-push! (tui-steering-queue st) (cdr disp)))
+                    (tui-add-msg! st "steer" (format #f "Steering queued: ~a" (cdr disp))))))
+              (else #f)))))
+
+(define (handle-running-tab! st)
+        "Handle Tab while running: complete mid-run slash command or request interrupt."
+        (if (selector-active? (tui-steering-buffer st))
+          (let*
+              ((matches (matching-mid-run-slash-commands (tui-steering-buffer st)))
+               (safe-idx
+                 (if (null? matches)
+                   0
+                   (max 0 (min (tui-steering-selector-index st) (- (length matches) 1)))))
+               (chosen (and (pair? matches) (car (list-ref matches safe-idx)))))
+            (when chosen
+              (set-tui-steering-buffer! st
+                                        (if (string=? chosen "steer")
+                                          "/steer "
+                                          (string-append "/" chosen)))
+              (set-tui-steering-selector-index! st 0)))
+          (begin (kill-active-subprocess!)
+                 (with-mutex (tui-steering-mutex st)
+                             (steering-push! (tui-steering-queue st) 'interrupt))
+                 (set-tui-interrupt-requested?! st #t)
+                 (set-tui-status-text! st "INTERRUPT REQUESTED")
+                 (tui-add-msg! st
+                               "steer"
+                               "Interrupt requested — halting at the next iteration boundary.")))
+        'render)
+
+(define (handle-running-enter! st on-cmd!)
+        "Handle Enter while running: expand selected mid-run slash or queue steering."
+        (let
+            ((raw
+               (if (selector-active? (tui-steering-buffer st))
+                 (let
+                     ((matches (matching-mid-run-slash-commands (tui-steering-buffer st))))
+                   (if (null? matches)
+                     (string-trim-both (tui-steering-buffer st))
+                     (let*
+                         ((safe-idx (max 0 (min (tui-steering-selector-index st) (- (length matches) 1))))
+                          (chosen (car (list-ref matches safe-idx))))
+                       (if (string=? chosen "steer")
+                         ""
+                         (string-append "/" chosen)))))
+                 (string-trim-both (tui-steering-buffer st)))))
+          (if
+              (and (selector-active? (tui-steering-buffer st))
+                   (string-null? raw)
+                   (pair? (matching-mid-run-slash-commands (tui-steering-buffer st))))
+            (begin (set-tui-steering-buffer! st "/steer ")
+                   (set-tui-steering-selector-index! st 0))
+            (begin (set-tui-steering-buffer! st "")
+                   (set-tui-steering-selector-index! st 0)
+                   (dispatch-running-steering-input! st raw #f on-cmd!))))
+        'render)
+
+(define (handle-running-up-down! st delta)
+        "Step mid-run slash selector or scroll transcript by DELTA (-1 Up, +1 Down)."
+        (if (selector-active? (tui-steering-buffer st))
+          (let
+              ((matches (matching-mid-run-slash-commands (tui-steering-buffer st))))
+            (unless (null? matches)
+              (let*
+                  ((cnt (length matches))
+                   (cur (max 0 (min (tui-steering-selector-index st) (- cnt 1)))))
+                (set-tui-steering-selector-index! st (modulo (+ cur delta) cnt)))))
+          (set-tui-scroll-offset! st
+                                  (if (< delta 0)
+                                    (min (tui-max-scroll-seen st) (+ (tui-scroll-offset st) 1))
+                                    (max 0 (- (tui-scroll-offset st) 1)))))
+        'render)
+
 (define (handle-running-key! st ch hooks)
         "Handle key CH while the agent thread is active. Returns 'continue or 'render."
         (let*
@@ -172,81 +262,11 @@
                   ((trimmed (string-trim-both (tui-steering-buffer st))))
                 (set-tui-steering-buffer! st "")
                 (set-tui-steering-selector-index! st 0)
-                (unless (string-null? trimmed)
-                  (let ((disp (dispatch-mid-run-input trimmed)))
-                    (case (car disp)
-                      ((safe-slash)
-                        (tui-execute-mid-run-safe-command! st (cadr disp) (caddr disp) on-cmd!))
-                      ((blocked-slash)
-                        (tui-add-sys-msg! st
-                                          (format #f
-                                                  "Command /~a cannot run while the agent is active (safe mid-run: /context, /usage, /theme, /help, /subagents, /stop, /steer)."
-                                                  (cadr disp))))
-                      ((steer) (tui-trigger-urgent-steering! st (cdr disp)))
-                      (else #f)))))
+                (dispatch-running-steering-input! st trimmed #t on-cmd!))
               'render)
-            ((eqv? ch 9)
-              (if (selector-active? (tui-steering-buffer st))
-                (let*
-                    ((matches (matching-mid-run-slash-commands (tui-steering-buffer st)))
-                     (safe-idx
-                       (if (null? matches)
-                         0
-                         (max 0 (min (tui-steering-selector-index st) (- (length matches) 1)))))
-                     (chosen (and (pair? matches) (car (list-ref matches safe-idx)))))
-                  (when chosen
-                    (set-tui-steering-buffer! st
-                                              (if (string=? chosen "steer")
-                                                "/steer "
-                                                (string-append "/" chosen)))
-                    (set-tui-steering-selector-index! st 0)))
-                (begin (kill-active-subprocess!)
-                       (with-mutex (tui-steering-mutex st)
-                                   (steering-push! (tui-steering-queue st) 'interrupt))
-                       (set-tui-interrupt-requested?! st #t)
-                       (set-tui-status-text! st "INTERRUPT REQUESTED")
-                       (tui-add-msg! st
-                                     "steer"
-                                     "Interrupt requested — halting at the next iteration boundary.")))
-              'render)
+            ((eqv? ch 9) (handle-running-tab! st))
             ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
-              (let
-                  ((raw
-                     (if (selector-active? (tui-steering-buffer st))
-                       (let
-                           ((matches (matching-mid-run-slash-commands (tui-steering-buffer st))))
-                         (if (null? matches)
-                           (string-trim-both (tui-steering-buffer st))
-                           (let*
-                               ((safe-idx (max 0 (min (tui-steering-selector-index st) (- (length matches) 1))))
-                                (chosen (car (list-ref matches safe-idx))))
-                             (if (string=? chosen "steer")
-                               ""
-                               (string-append "/" chosen)))))
-                       (string-trim-both (tui-steering-buffer st)))))
-                (if
-                    (and (selector-active? (tui-steering-buffer st))
-                         (string-null? raw)
-                         (pair? (matching-mid-run-slash-commands (tui-steering-buffer st))))
-                  (begin (set-tui-steering-buffer! st "/steer ")
-                         (set-tui-steering-selector-index! st 0))
-                  (begin (set-tui-steering-buffer! st "")
-                         (set-tui-steering-selector-index! st 0)
-                         (let ((disp (dispatch-mid-run-input raw)))
-                           (case (car disp)
-                             ((safe-slash)
-                               (tui-execute-mid-run-safe-command! st (cadr disp) (caddr disp) on-cmd!))
-                             ((blocked-slash)
-                               (tui-add-sys-msg! st
-                                                 (format #f
-                                                         "Command /~a cannot run while the agent is active (safe mid-run: /context, /usage, /theme, /help, /subagents, /stop, /steer)."
-                                                         (cadr disp))))
-                             ((steer)
-                               (with-mutex (tui-steering-mutex st)
-                                           (steering-push! (tui-steering-queue st) (cdr disp)))
-                               (tui-add-msg! st "steer" (format #f "Steering queued: ~a" (cdr disp))))
-                             (else #f))))))
-              'render)
+              (handle-running-enter! st on-cmd!))
             ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 8) (eqv? ch 127))
               (let ((sb (tui-steering-buffer st)))
                 (when (> (string-length sb) 0)
@@ -267,32 +287,8 @@
             ((eqv? ch KEY_NPAGE)
               (set-tui-scroll-offset! st (max 0 (- (tui-scroll-offset st) 10)))
               'render)
-            ((eqv? ch KEY_UP)
-              (if (selector-active? (tui-steering-buffer st))
-                (let
-                    ((matches (matching-mid-run-slash-commands (tui-steering-buffer st))))
-                  (unless (null? matches)
-                    (let*
-                        ((cnt (length matches))
-                         (cur (max 0 (min (tui-steering-selector-index st) (- cnt 1)))))
-                      (set-tui-steering-selector-index! st
-                                                        (if (<= cur 0)
-                                                          (- cnt 1)
-                                                          (- cur 1))))))
-                (set-tui-scroll-offset! st
-                                        (min (tui-max-scroll-seen st) (+ (tui-scroll-offset st) 1))))
-              'render)
-            ((eqv? ch KEY_DOWN)
-              (if (selector-active? (tui-steering-buffer st))
-                (let
-                    ((matches (matching-mid-run-slash-commands (tui-steering-buffer st))))
-                  (unless (null? matches)
-                    (let*
-                        ((cnt (length matches))
-                         (cur (max 0 (min (tui-steering-selector-index st) (- cnt 1)))))
-                      (set-tui-steering-selector-index! st (remainder (+ cur 1) cnt)))))
-                (set-tui-scroll-offset! st (max 0 (- (tui-scroll-offset st) 1))))
-              'render)
+            ((eqv? ch KEY_UP) (handle-running-up-down! st -1))
+            ((eqv? ch KEY_DOWN) (handle-running-up-down! st 1))
             ((eqv? ch KEY_RESIZE) 'render)
             ((and (integer? ch) (>= ch 32) (<= ch 126))
               (set-tui-steering-buffer! st
@@ -432,6 +428,150 @@
                                                      (tui-render! st))))))
                       'render)))))))))))
 
+(define (handle-idle-external-editor! st)
+        "Open external editor for the current input buffer on ST."
+        (call-with-values
+          (lambda ()
+            (read-via-external-editor #:initial-text
+                                      (tui-input-buffer st)
+                                      #:suspend-tty!
+                                      (lambda () (tui-suspend-tty! st))
+                                      #:resume-tty!
+                                      (lambda () (tui-resume-tty! st))))
+          (lambda (ok? res)
+            (if ok?
+              (begin
+                (set-tui-input-buffer! st (string-trim-right res #\newline))
+                (set-tui-cursor-pos! st (string-length (tui-input-buffer st)))
+                (tui-clamp-selector-index! st))
+              (tui-add-err-msg! st (format #f "External editor error: ~a" res)))))
+        'render)
+
+(define (handle-idle-tab! st)
+        "Apply slash-command or @-mention completion on Tab."
+        (cond
+          ((selector-active? (tui-input-buffer st) (tui-prompt-mode st))
+            (let*
+                ((matches
+                   (deduplicate-slash-commands (matching-slash-commands (tui-input-buffer st))))
+                 (chosen (selected-command-name st matches)))
+              (when chosen
+                (let
+                    ((needs-arg?
+                       (and
+                         (member chosen
+                                 '("model" "endpoint"
+                                   "provider"
+                                   "mcp"
+                                   "config"
+                                   "sh"
+                                   "eval"
+                                   "steer"
+                                   "edit"
+                                   "todo"
+                                   "diff"))
+                         #t)))
+                  (set-tui-input-buffer! st
+                                         (format-slash-completion chosen (tui-prompt-mode st) needs-arg?))
+                  (set-tui-cursor-pos! st (string-length (tui-input-buffer st)))
+                  (set-tui-selector-index! st 0)))))
+          ((at-selector-active? (tui-input-buffer st)
+                                (tui-cursor-pos st)
+                                (tui-prompt-mode st))
+            (unless (tui-workspace-files-cache st)
+              (set-tui-workspace-files-cache! st (collect-workspace-files)))
+            (let
+                ((cands
+                   (matching-at-candidates (tui-input-buffer st)
+                                           #:cursor-pos
+                                           (tui-cursor-pos st)
+                                           #:candidates
+                                           (tui-workspace-files-cache st)
+                                           #:limit
+                                           25)))
+              (when (pair? cands)
+                (let*
+                    ((safe-i (max 0 (min (tui-at-selector-index st) (- (length cands) 1))))
+                     (chosen (list-ref cands safe-i)))
+                  (call-with-values
+                    (lambda ()
+                      (apply-at-completion (tui-input-buffer st) (tui-cursor-pos st) chosen))
+                    (lambda (nb np)
+                      (set-tui-input-buffer! st nb)
+                      (set-tui-cursor-pos! st np)
+                      (set-tui-at-selector-index! st 0))))))))
+        'render)
+
+(define (handle-idle-escape! st)
+        "Handle Escape while idle: exit prompt mode/selector or clear message selection."
+        (cond
+          ((or
+             (selector-active? (tui-input-buffer st) (tui-prompt-mode st))
+             (not (eq? (tui-prompt-mode st) 'chat)))
+            (call-with-values
+              (lambda ()
+                (prompt-mode-on-escape (tui-prompt-mode st)
+                                       (tui-input-buffer st)
+                                       (tui-cursor-pos st)))
+              (lambda (nm nb np)
+                (set-tui-prompt-mode! st nm)
+                (set-tui-input-buffer! st nb)
+                (set-tui-cursor-pos! st np)
+                (set-tui-selector-index! st 0))))
+          ((and (integer? (tui-msgsel-index st)) (string-null? (tui-input-buffer st)))
+            (set-tui-msgsel-index! st #f)))
+        'render)
+
+(define (handle-idle-up-down! st delta)
+        "Step active selector or input history by DELTA (-1 for Up, +1 for Down)."
+        (cond
+          ((selector-active? (tui-input-buffer st) (tui-prompt-mode st))
+            (let
+                ((matches
+                   (deduplicate-slash-commands (matching-slash-commands (tui-input-buffer st)))))
+              (unless (null? matches)
+                (let*
+                    ((count (length matches))
+                     (cur (max 0 (min (tui-selector-index st) (- count 1)))))
+                  (set-tui-selector-index! st (modulo (+ cur delta) count))))))
+          ((at-selector-active? (tui-input-buffer st)
+                                (tui-cursor-pos st)
+                                (tui-prompt-mode st))
+            (let
+                ((cands
+                   (matching-at-candidates (tui-input-buffer st)
+                                           #:cursor-pos
+                                           (tui-cursor-pos st)
+                                           #:candidates
+                                           (tui-workspace-files-cache st)
+                                           #:limit
+                                           25)))
+              (unless (null? cands)
+                (let*
+                    ((cnt (length cands)) (cur (max 0 (min (tui-at-selector-index st) (- cnt 1)))))
+                  (set-tui-at-selector-index! st (modulo (+ cur delta) cnt))))))
+          ((< delta 0)
+            (unless
+                (history-recall-position (tui-input-history st))
+              (set-tui-history-draft! st (tui-input-buffer st))
+              (set-tui-history-draft-pos! st (tui-cursor-pos st)))
+            (let
+                ((entry (history-recall (tui-input-history st) -1)))
+              (when entry
+                (set-tui-input-buffer! st entry)
+                (set-tui-cursor-pos! st (string-length entry)))))
+          (else
+            (let*
+                ((was-recalling? (history-recall-position (tui-input-history st)))
+                 (entry (history-recall (tui-input-history st) 1)))
+              (if entry
+                (begin (set-tui-input-buffer! st entry)
+                       (set-tui-cursor-pos! st (string-length entry)))
+                (when was-recalling?
+                  (set-tui-input-buffer! st (tui-history-draft st))
+                  (set-tui-cursor-pos! st (tui-history-draft-pos st)))))))
+        'render)
+
 (define
   (handle-idle-key! st ch input-pending? drain-input-burst! hooks)
   "Handle key CH while idle. Returns 'render, 'continue, or 'done."
@@ -489,178 +629,13 @@
                                                       (tui-input-buffer st)
                                                       (tui-cursor-pos st)))
         'render)
-      ((eqv? ch 24)
-        (call-with-values
-          (lambda ()
-            (read-via-external-editor #:initial-text
-                                      (tui-input-buffer st)
-                                      #:suspend-tty!
-                                      (lambda () (tui-suspend-tty! st))
-                                      #:resume-tty!
-                                      (lambda () (tui-resume-tty! st))))
-          (lambda (ok? res)
-            (if ok?
-              (begin
-                (set-tui-input-buffer! st (string-trim-right res #\newline))
-                (set-tui-cursor-pos! st (string-length (tui-input-buffer st)))
-                (tui-clamp-selector-index! st))
-              (tui-add-err-msg! st (format #f "External editor error: ~a" res)))))
-        'render)
+      ((eqv? ch 24) (handle-idle-external-editor! st))
       ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
         (handle-idle-enter! st ch input-pending? drain-input-burst! hooks))
-      ((eqv? ch 9)
-        (cond
-          ((selector-active? (tui-input-buffer st) (tui-prompt-mode st))
-            (let*
-                ((matches
-                   (deduplicate-slash-commands (matching-slash-commands (tui-input-buffer st))))
-                 (chosen (selected-command-name st matches)))
-              (when chosen
-                (let
-                    ((needs-arg?
-                       (and
-                         (member chosen
-                                 '("model" "endpoint"
-                                   "provider"
-                                   "mcp"
-                                   "config"
-                                   "sh"
-                                   "eval"
-                                   "steer"
-                                   "edit"
-                                   "todo"
-                                   "diff"))
-                         #t)))
-                  (set-tui-input-buffer! st
-                                         (format-slash-completion chosen (tui-prompt-mode st) needs-arg?))
-                  (set-tui-cursor-pos! st (string-length (tui-input-buffer st)))
-                  (set-tui-selector-index! st 0)))))
-          ((at-selector-active? (tui-input-buffer st)
-                                (tui-cursor-pos st)
-                                (tui-prompt-mode st))
-            (unless (tui-workspace-files-cache st)
-              (set-tui-workspace-files-cache! st (collect-workspace-files)))
-            (let
-                ((cands
-                   (matching-at-candidates (tui-input-buffer st)
-                                           #:cursor-pos
-                                           (tui-cursor-pos st)
-                                           #:candidates
-                                           (tui-workspace-files-cache st)
-                                           #:limit
-                                           25)))
-              (when (pair? cands)
-                (let*
-                    ((safe-i (max 0 (min (tui-at-selector-index st) (- (length cands) 1))))
-                     (chosen (list-ref cands safe-i)))
-                  (call-with-values
-                    (lambda ()
-                      (apply-at-completion (tui-input-buffer st) (tui-cursor-pos st) chosen))
-                    (lambda (nb np)
-                      (set-tui-input-buffer! st nb)
-                      (set-tui-cursor-pos! st np)
-                      (set-tui-at-selector-index! st 0))))))))
-        'render)
-      ((eqv? ch 27)
-        (cond
-          ((or
-             (selector-active? (tui-input-buffer st) (tui-prompt-mode st))
-             (not (eq? (tui-prompt-mode st) 'chat)))
-            (call-with-values
-              (lambda ()
-                (prompt-mode-on-escape (tui-prompt-mode st)
-                                       (tui-input-buffer st)
-                                       (tui-cursor-pos st)))
-              (lambda (nm nb np)
-                (set-tui-prompt-mode! st nm)
-                (set-tui-input-buffer! st nb)
-                (set-tui-cursor-pos! st np)
-                (set-tui-selector-index! st 0))))
-          ((and (integer? (tui-msgsel-index st)) (string-null? (tui-input-buffer st)))
-            (set-tui-msgsel-index! st #f)))
-        'render)
-      ((eqv? ch KEY_UP)
-        (cond
-          ((selector-active? (tui-input-buffer st) (tui-prompt-mode st))
-            (let
-                ((matches
-                   (deduplicate-slash-commands (matching-slash-commands (tui-input-buffer st)))))
-              (unless (null? matches)
-                (let*
-                    ((count (length matches))
-                     (cur (max 0 (min (tui-selector-index st) (- count 1)))))
-                  (set-tui-selector-index! st
-                                           (if (<= cur 0)
-                                             (- count 1)
-                                             (- cur 1)))))))
-          ((at-selector-active? (tui-input-buffer st)
-                                (tui-cursor-pos st)
-                                (tui-prompt-mode st))
-            (let
-                ((cands
-                   (matching-at-candidates (tui-input-buffer st)
-                                           #:cursor-pos
-                                           (tui-cursor-pos st)
-                                           #:candidates
-                                           (tui-workspace-files-cache st)
-                                           #:limit
-                                           25)))
-              (unless (null? cands)
-                (let*
-                    ((cnt (length cands)) (cur (max 0 (min (tui-at-selector-index st) (- cnt 1)))))
-                  (set-tui-at-selector-index! st
-                                              (if (<= cur 0)
-                                                (- cnt 1)
-                                                (- cur 1)))))))
-          (else
-            (unless
-                (history-recall-position (tui-input-history st))
-              (set-tui-history-draft! st (tui-input-buffer st))
-              (set-tui-history-draft-pos! st (tui-cursor-pos st)))
-            (let
-                ((entry (history-recall (tui-input-history st) -1)))
-              (when entry
-                (set-tui-input-buffer! st entry)
-                (set-tui-cursor-pos! st (string-length entry))))))
-        'render)
-      ((eqv? ch KEY_DOWN)
-        (cond
-          ((selector-active? (tui-input-buffer st) (tui-prompt-mode st))
-            (let
-                ((matches
-                   (deduplicate-slash-commands (matching-slash-commands (tui-input-buffer st)))))
-              (unless (null? matches)
-                (let*
-                    ((count (length matches))
-                     (cur (max 0 (min (tui-selector-index st) (- count 1)))))
-                  (set-tui-selector-index! st (remainder (+ cur 1) count))))))
-          ((at-selector-active? (tui-input-buffer st)
-                                (tui-cursor-pos st)
-                                (tui-prompt-mode st))
-            (let
-                ((cands
-                   (matching-at-candidates (tui-input-buffer st)
-                                           #:cursor-pos
-                                           (tui-cursor-pos st)
-                                           #:candidates
-                                           (tui-workspace-files-cache st)
-                                           #:limit
-                                           25)))
-              (unless (null? cands)
-                (let*
-                    ((cnt (length cands)) (cur (max 0 (min (tui-at-selector-index st) (- cnt 1)))))
-                  (set-tui-at-selector-index! st (remainder (+ cur 1) cnt))))))
-          (else
-            (let*
-                ((was-recalling? (history-recall-position (tui-input-history st)))
-                 (entry (history-recall (tui-input-history st) 1)))
-              (if entry
-                (begin (set-tui-input-buffer! st entry)
-                       (set-tui-cursor-pos! st (string-length entry)))
-                (when was-recalling?
-                  (set-tui-input-buffer! st (tui-history-draft st))
-                  (set-tui-cursor-pos! st (tui-history-draft-pos st)))))))
-        'render)
+      ((eqv? ch 9) (handle-idle-tab! st))
+      ((eqv? ch 27) (handle-idle-escape! st))
+      ((eqv? ch KEY_UP) (handle-idle-up-down! st -1))
+      ((eqv? ch KEY_DOWN) (handle-idle-up-down! st 1))
       ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 127) (eqv? ch 8))
         (call-with-values
           (lambda ()

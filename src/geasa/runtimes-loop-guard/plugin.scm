@@ -225,9 +225,6 @@ IDEMPOTENT? classifies tool names for memoization."
 (define (loop-guard-config-ref guard key)
         (assoc-ref (loop-guard-config guard) key))
 
-(define (loop-guard-turn-of guard)
-        (or (loop-guard-turn guard) 0))
-
 ;;;
 ;;; Signatures & transcript anatomy
 ;;;
@@ -326,9 +323,6 @@ envelopes."
         (map car
              (filter (lambda (m) (> (cdr m) (loop-guard-turn guard)))
                      (loop-guard-masks guard))))
-
-(define (loop-guard-masked? guard name)
-        (member name (loop-guard-active-masks guard)))
 
 (define (guard-mask-extend! guard name until-turn)
         (set-loop-guard-masks!

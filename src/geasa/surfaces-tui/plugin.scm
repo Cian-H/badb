@@ -435,19 +435,6 @@ the output with WP1 format-git-diff-view."
              "No unstaged git diff changes."
              (span-rows->text (format-git-diff-view out width #:title "git diff")))))
 
-(define (safe-write-osc-title! seq)
-        "Write OSC title sequence SEQ to the notcurses tty control port when available."
-        (when (and (string? seq) (not (string-null? seq)))
-          (catch #t
-            (lambda ()
-              (let* ((term-mod (false-if-exception (resolve-module '(notcurses terminal) #f)))
-                     (port-fn (and term-mod (module-ref term-mod 'tty-control-port #f)))
-                     (port (and (procedure? port-fn) (port-fn))))
-                (when (and (output-port? port) (not (port-closed? port)))
-                  (display seq port)
-                  (force-output port))))
-            (lambda _ #f))))
-
 (define (tui-theme-attr-constant attr nref)
         "Resolve theme attribute symbol ATTR using backend NREF."
         (case attr

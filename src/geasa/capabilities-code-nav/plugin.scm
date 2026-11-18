@@ -243,8 +243,7 @@ CLASSIFY-NODE should return (list name type line) or #f. Returns list of symbols
             #f)))
 
 (define (find-ts-node node source symbol-name lang-type)
-        (let ((nc (ts-node-child-count node))
-              (nt (ts-node-type node)))
+        (let ((nc (ts-node-child-count node)))
           (define (is-def? n)
                   (cond
                     ((eq? lang-type 'scheme)

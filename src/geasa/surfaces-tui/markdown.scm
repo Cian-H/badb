@@ -173,26 +173,6 @@
                                   0
                                   (cons (merge-adjacent-segments (reverse cur-line)) lines)))))))))
 
-(define (wrap-plain-line line width)
-        "Wrap a plain string LINE to WIDTH columns on word boundaries when possible."
-        (let ((s (or line "")))
-          (if (or (<= width 0) (<= (string-length s) width))
-            (list s)
-            (let loop ((words (string-split s #\space)) (cur "") (acc '()))
-                      (if (null? words)
-                        (reverse (if (string-null? cur) acc (cons cur acc)))
-                        (let* ((w (car words))
-                               (cand (if (string-null? cur) w (string-append cur " " w))))
-                          (cond
-                            ((<= (string-length cand) width)
-                              (loop (cdr words) cand acc))
-                            ((string-null? cur)
-                              (loop (cons (substring w width) (cdr words))
-                                    ""
-                                    (cons (substring w 0 width) acc)))
-                            (else
-                              (loop words "" (cons cur acc))))))))))
-
 (define (split-segment-words seg)
         "Split a single styled segment SEG into word/space sub-segments preserving style."
         (let* ((txt (car seg))

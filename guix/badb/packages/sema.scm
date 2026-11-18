@@ -60,12 +60,12 @@
                           sema)
                          (invoke "patchelf" "--set-rpath" rpath sema)))))))
                  (inputs
-                   (list glibc `(,gcc "lib") eudev))
+                   (list glibc (list gcc "lib") eudev))
                  (native-inputs
                    (list patchelf))
                  (home-page "https://sema-lang.com")
                  (synopsis
-                   "Lisp with LLM agents as language primitives, compiled to a bytecode VM")
+                   "Lisp with LLM agents as language primitives, compiled to a VM")
                  (description
                    "Sema is a Scheme-like Lisp where prompts are s-expressions,
 conversations are persistent data structures, and LLM calls are just

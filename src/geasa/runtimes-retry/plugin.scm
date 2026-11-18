@@ -142,6 +142,6 @@ is the irritant list of the last underlying failure."
                            (else
                              (let* ((delay (retry-delay-for-attempt policy attempt))
                                     (on-retry (retry-policy-on-retry policy)))
-                               (if on-retry (on-retry attempt delay key args))
+                               (when on-retry (on-retry attempt delay key args))
                                ((retry-policy-sleeper policy) delay)
                                (loop (+ attempt 1))))))))))

@@ -46,20 +46,6 @@
 ;;; invalidates the cached ranges automatically.
 (define %read-file-cache (make-hash-table 64))
 
-(define (read-range-covered? path start end current-hash)
-        (let ((entries (hash-ref %read-file-cache path '())))
-          (any (lambda (e)
-                 (let ((r (car e)) (h (cdr e)))
-                   (and (string=? h current-hash)
-                        (<= (car r) start)
-                        (>= (cdr r) end))))
-               entries)))
-
-(define (read-cache-record! path start end current-hash)
-        (hash-set! %read-file-cache path
-                   (cons (cons (cons start end) current-hash)
-                         (hash-ref %read-file-cache path '()))))
-
 (define (read-cache-invalidate! path)
         (hash-remove! %read-file-cache path))
 

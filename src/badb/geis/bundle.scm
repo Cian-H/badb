@@ -378,21 +378,6 @@ otherwise a non-empty list of human-readable reason strings."
                   (list rel))))
             (or entries '()))))
 
-(define (%find-files dir)
-        "Absolute paths of every file under DIR recursively (all files included)."
-        (let ((result '()))
-          (define (scan! d)
-                  (let ((entries (scandir d (lambda (n) (not (member n '("." "..")))))))
-                    (for-each
-                      (lambda (entry)
-                        (let ((full-path (string-append d "/" entry)))
-                          (if (%directory? full-path)
-                            (scan! full-path)
-                            (set! result (cons full-path result)))))
-                      (or entries '()))))
-          (scan! dir)
-          (reverse result)))
-
 (define (%delete-tree! path)
         "Recursively delete the file or directory tree at PATH (best effort)."
         (let
