@@ -414,12 +414,11 @@ or 'ask, and NOTIFIER receives every session/update notification."
                               name
                               (lambda args
                                 (if (and (= (length args) 1) (list? (car args)))
-                                  (apply orig
-                                         (list
-                                           (%acp-rewrite-alist-key (car args)
-                                                                   '("path" path "file" file)
-                                                                   (lambda (p)
-                                                                     (%acp-resolve-rel-path root p)))))
+                                  (orig
+                                    (%acp-rewrite-alist-key (car args)
+                                                            '("path" path "file" file)
+                                                            (lambda (p)
+                                                              (%acp-resolve-rel-path root p))))
                                   (apply orig
                                          (if (and (pair? args) (string? (car args)))
                                            (cons (%acp-resolve-rel-path root (car args)) (cdr args))

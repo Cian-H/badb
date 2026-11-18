@@ -621,7 +621,7 @@ numbers of earlier ranges remain valid; return the new lines list."
                   (format #f
                           "Error: every edit needs integer 'from'/'to' and string 'from_hash'/'to_hash'/'new_text' - got: ~s"
                           entries))
-                ((%edit-lines-check path parsed lines total))
+                ((%edit-lines-check path parsed lines total) => identity)
                 (else
                   (let*
                       ((new-lines (%edit-lines-apply lines parsed))

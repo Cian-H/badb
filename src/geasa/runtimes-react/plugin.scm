@@ -669,10 +669,9 @@ identity."
         (let* ((name (or (assoc-ref tc 'name) ""))
                (raw-args (or (assoc-ref tc 'arguments) '()))
                (args (if (list? raw-args)
-                       (sort raw-args
-                             (lambda (a b)
-                               (string<=? (format #f "~s" a)
-                                          (format #f "~s" b))))
+                       (map cdr
+                            (sort (map (lambda (x) (cons (format #f "~s" x) x)) raw-args)
+                                  (lambda (a b) (string<=? (car a) (car b)))))
                        raw-args)))
           (format #f "~a|~s" name args)))
 

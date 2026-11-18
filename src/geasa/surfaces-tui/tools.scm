@@ -28,6 +28,8 @@
                #:use-module
                (geasa capabilities-context-index plugin)
                #:use-module
+               (geasa capabilities-context-index bm25)
+               #:use-module
                (geasa capabilities-skills plugin)
                #:use-module
                (geasa agents-subagent plugin)

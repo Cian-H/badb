@@ -550,53 +550,6 @@ remain allowed."
 
 ;;;
 ;;; Mechanism 2 + 4: completion override (reflection, masking, re-rolls)
-(define
-  (guard-completion guard base messages tools)
-  "Completion hook: filter masked tools out of the advertised
-schema, force exactly one tool_choice=\"none\" reflection turn when the
-ladder requests it (persisting the reflection exchange plus a trailing
-user resume prompt as pre-turns so the outbound history never ends on a
-model turn), and apply turn-level rejection sampling."
-  (let*
-      ((eff-tools (eff-tools-for-step guard tools))
-       (reflect-sig (loop-guard-pending-reflect guard))
-       (pre-turns '())
-       (run-msgs messages))
-    (when reflect-sig
-      (set-loop-guard-pending-reflect! guard #f)
-      (let*
-          ((reflect-user `((role . "user") (content . ,(guard-reflect-prompt guard))))
-           (refl-msgs (append messages (list reflect-user))))
-        (receive (r-content _r-reasoning _r-calls)
-                 (base refl-msgs '() #:tool-choice "none")
-                 (let
-                     ((reflect-assistant
-                        `((role . "assistant")
-                          (content .
-                                   ,(if (string? r-content)
-                                      r-content
-                                      ""))))
-                      (reflect-resume
-                        '((role . "user")
-                          (content .
-                           "Tool calling is restored. Now proceed with the different action you just described."))))
-                   (set! pre-turns (list reflect-user reflect-assistant reflect-resume))
-                   (set! run-msgs (append refl-msgs (list reflect-assistant reflect-resume)))))))
-    ;; Turn-level rejection / best-of-N re-roll
-    (let*
-        ((roll-temps (cons #f (loop-guard-config-ref guard 'roll-temperatures)))
-         (roll-budget (max 1 (or (loop-guard-config-ref guard 'roll-attempts) 3))))
-      (let loop
-        ((temps roll-temps) (attempt 1))
-        (receive (content reasoning tool-calls)
-                 (base run-msgs eff-tools #:temperature (car temps))
-                 (if
-                     (and (find-duplicated-signature guard tool-calls)
-                          (> roll-budget attempt)
-                          (pair? (cdr temps)))
-                   (loop (cdr temps) (+ attempt 1))
-                   (values content reasoning tool-calls pre-turns)))))))
-
 (define (find-duplicated-signature guard tool-calls)
         "Return the first signature in TOOL-CALLS that the guard already
 memoized (would block), or #f."

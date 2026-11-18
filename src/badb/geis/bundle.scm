@@ -133,7 +133,7 @@
           (if (and home (not (string-null? home)))
             home
             (let ((pw (catch #t (lambda () (getpwnam "root")) (lambda _ #f))))
-              (and pw (dirname (pw:dir pw)))))))
+              (and pw (dirname (passwd:dir pw)))))))
 
 (define (user-geis-store-dir)
         "Return the user-level geasa store directory.

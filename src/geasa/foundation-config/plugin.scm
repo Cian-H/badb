@@ -261,7 +261,7 @@ which would break badb-config-get-provider on them."
 Defaults to \"chat\" when the provider has no *kind* field or is not found."
         (let
             ((prov (badb-config-get-provider config name)))
-          (or (and prov (get-prop prov 'kind)) "chat")))
+          (or (and prov (get-prop prov 'kind #f)) "chat")))
 
 (define (badb-config-chat-providers config)
         "Return only the \"chat\"-kind provider presets from CONFIG.
@@ -269,7 +269,7 @@ Providers without an explicit *kind* field are treated as \"chat\"."
         (let ((all-provs (badb-config-providers config)))
           (filter
             (lambda (entry)
-              (let ((prov (cdr entry))) (equal? (or (get-prop prov 'kind) "chat") "chat")))
+              (let ((prov (cdr entry))) (equal? (or (get-prop prov 'kind #f) "chat") "chat")))
             all-provs)))
 
 (define

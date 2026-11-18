@@ -15,6 +15,8 @@
                #:use-module
                (ice-9 ftw)
                #:use-module
+               (ice-9 threads)
+               #:use-module
                (json)
                #:use-module
                (fslib)

@@ -14,6 +14,10 @@
 
 (define-module (geasa capabilities-lsp plugin)
                #:use-module (ice-9 popen)
+               #:use-module (ice-9 rdelim)
+               #:use-module (ice-9 textual-ports)
+               #:use-module (badb kernel registry)
+               #:use-module (geasa foundation-util plugin)
                #:use-module (srfi srfi-1)
                #:export (make-lsp-client!
                           lsp-shutdown!
@@ -112,19 +116,20 @@
 ;; ---- JSON writer ---------------------------------------------------------
 
 (define (%json-quote s)
-        (list->string
-          (append (list #\")
-                  (append-map
-                    (lambda (c)
-                      (case c
-                        ((#\") (list #\\ #\"))
-                        ((#\\) (list #\\ #\\))
-                        ((#\newline) (list #\\ #\n))
-                        ((#\tab) (list #\\ #\t))
-                        ((#\return) (list #\\ #\r))
-                        (else (list c))))
-                    (string->list s))
-                  (list #\"))))
+        (call-with-output-string
+          (lambda (port)
+            (write-char #\" port)
+            (string-for-each
+              (lambda (c)
+                (case c
+                  ((#\") (display "\\\"" port))
+                  ((#\\) (display "\\\\" port))
+                  ((#\newline) (display "\\n" port))
+                  ((#\tab) (display "\\t" port))
+                  ((#\return) (display "\\r" port))
+                  (else (write-char c port))))
+              s)
+            (write-char #\" port))))
 
 (define (%json-write x)
         (cond
@@ -266,7 +271,7 @@ server closed the transport first."
 diagnostics as a plain string report (one finding per line)."
          (catch #t
            (lambda ()
-             (let* ((text (call-with-input-file file-path %read-all))
+             (let* ((text (call-with-input-file file-path get-string-all))
                     (client (make-lsp-client! (list "clangd"))))
                (lsp-did-open! client file-path text)
                (let ((diags (lsp-collect-diagnostics! client)))
