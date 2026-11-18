@@ -319,7 +319,12 @@ or 'stdio)."
                        (catch #t
                          (lambda ()
                            (accept sock))
-                         (lambda _
+                         (lambda (key . args)
+                           (unless (ui-daemon-stop? daemon)
+                             (format (current-error-port)
+                                     "warning: daemon accept failed: ~s ~s~%"
+                                     key
+                                     args))
                            #f))))
                   (when (pair? accepted)
                     (let*

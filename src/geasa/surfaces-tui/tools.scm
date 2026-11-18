@@ -289,7 +289,12 @@ FEATURE-ID into the kernel-owned locked spec store."
                                                  (lambda ()
                                                    (discover-and-mount-project-geasa! reg #:workspace (getcwd))
                                                    (mount-bundle-workflows! reg #:workspace (getcwd)))
-                                                 (lambda _ #f))
+                                                 (lambda (key . args)
+                                                   (format (current-error-port)
+                                                           "warning: project geasa mount failed: ~s ~s~%"
+                                                           key
+                                                           args)
+                                                   #f))
                                                rep)
                                              #f)))
                                     (format #f
@@ -816,7 +821,11 @@ unbounded raw search on the next turn."
     (lambda ()
       (discover-and-mount-project-geasa! reg #:workspace workspace)
       (mount-bundle-workflows! reg #:workspace workspace))
-    (lambda _
+    (lambda (key . args)
+      (format (current-error-port)
+              "warning: project geasa mount failed: ~s ~s~%"
+              key
+              args)
       #f))
   ;; Register kernel-owned spec gate tools
   (register-spec-tools! reg))
