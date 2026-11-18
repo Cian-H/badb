@@ -103,6 +103,17 @@
                  handle-todo-command!
                  format-response-widgets-notice))
 
+(define (effective-demarcation-style style width)
+        "Resolve effective input box demarcation STYLE for WIDTH."
+        (let ((s (if (memq style '(rounded-box lines tint)) style 'rounded-box)))
+          (if (and (eq? s 'rounded-box) (< width 24))
+            'lines
+            s)))
+
+(define (mode->badge-label mode)
+        "Format PROMPT-MODE symbol/string as an uppercase badge label."
+        (string-upcase (ensure-string (or mode 'chat))))
+
 (define* (format-input-box-frame input-lines maxx
                                  #:key (prompt-glyph "❯")
                                  (prompt-role 'accent)
