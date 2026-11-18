@@ -330,56 +330,57 @@ each row is a list of (TEXT ROLE BOLD? DIM? [REVERSE?]) tuples sorted by X."
                                      (clip-str txt (rect-width rect))
                                      #:role role #:bold? bold?)))))))
 
-(define* (box-widget child #:key (title #f) (border-role 'dim) (padding 0))
+(define* (box-widget child #:key (title #f) (border-role 'dim) (role #f) (padding 0))
          "Bordered box container around CHILD with optional TITLE."
-         (make-widget
-           'box
-           #:props `((title . ,title) (border-role . ,border-role) (padding . ,padding))
-           #:children (if child (list child) '())
-           #:measure
-           (lambda (_self avail-w avail-h)
-             (let* ((pad (max 0 padding))
-                    (inner-w (max 0 (- avail-w 2 (* 2 pad))))
-                    (inner-h (max 0 (- avail-h 2 (* 2 pad))))
-                    (csz (if child (widget-measure-size child inner-w inner-h) '(0 . 0))))
-               (cons (min avail-w (+ (car csz) 2 (* 2 pad)))
-                     (min avail-h (+ (cdr csz) 2 (* 2 pad))))))
-           #:render
-           (lambda (_self rect)
-             (let ((x (rect-x rect))
-                   (y (rect-y rect))
-                   (w (rect-width rect))
-                   (h (rect-height rect)))
-               (if (or (< w 2) (< h 2))
-                 '()
-                 (let* ((inner-w (- w 2))
-                        (top-bar
-                          (if (and (string? title) (> (string-length title) 0) (>= inner-w 2))
-                            (let* ((tag (clip-str (string-append " " title " ") inner-w))
-                                   (rem (max 0 (- inner-w (string-length tag)))))
-                              (string-append "┌" tag (make-string rem #\─) "┐"))
-                            (string-append "┌" (make-string inner-w #\─) "┐")))
-                        (bot-bar (string-append "└" (make-string inner-w #\─) "┘"))
-                        (side-ops
-                          (let loop ((row 1) (acc '()))
-                                    (if (>= row (- h 1))
-                                      acc
-                                      (loop (+ row 1)
-                                            (cons (make-draw-op x (+ y row) "│" #:role border-role)
-                                                  (cons (make-draw-op (+ x (- w 1)) (+ y row) "│" #:role border-role)
-                                                        acc))))))
-                        (pad (max 0 padding))
-                        (child-rect (make-rect (+ x 1 pad)
-                                               (+ y 1 pad)
-                                               (max 0 (- inner-w (* 2 pad)))
-                                               (max 0 (- h 2 (* 2 pad)))))
-                        (child-ops (if (and child (> (rect-width child-rect) 0) (> (rect-height child-rect) 0))
-                                     (widget-render-rect child child-rect)
-                                     '())))
-                   (append (list (make-draw-op x y top-bar #:role border-role)
-                                 (make-draw-op x (+ y (- h 1)) bot-bar #:role border-role))
-                           side-ops
-                           child-ops)))))))
+         (let ((border-role (or role border-role)))
+           (make-widget
+             'box
+             #:props `((title . ,title) (border-role . ,border-role) (padding . ,padding))
+             #:children (if child (list child) '())
+             #:measure
+             (lambda (_self avail-w avail-h)
+               (let* ((pad (max 0 padding))
+                      (inner-w (max 0 (- avail-w 2 (* 2 pad))))
+                      (inner-h (max 0 (- avail-h 2 (* 2 pad))))
+                      (csz (if child (widget-measure-size child inner-w inner-h) '(0 . 0))))
+                 (cons (min avail-w (+ (car csz) 2 (* 2 pad)))
+                       (min avail-h (+ (cdr csz) 2 (* 2 pad))))))
+             #:render
+             (lambda (_self rect)
+               (let ((x (rect-x rect))
+                     (y (rect-y rect))
+                     (w (rect-width rect))
+                     (h (rect-height rect)))
+                 (if (or (< w 2) (< h 2))
+                   '()
+                   (let* ((inner-w (- w 2))
+                          (top-bar
+                            (if (and (string? title) (> (string-length title) 0) (>= inner-w 2))
+                              (let* ((tag (clip-str (string-append " " title " ") inner-w))
+                                     (rem (max 0 (- inner-w (string-length tag)))))
+                                (string-append "┌" tag (make-string rem #\─) "┐"))
+                              (string-append "┌" (make-string inner-w #\─) "┐")))
+                          (bot-bar (string-append "└" (make-string inner-w #\─) "┘"))
+                          (side-ops
+                            (let loop ((row 1) (acc '()))
+                                      (if (>= row (- h 1))
+                                        acc
+                                        (loop (+ row 1)
+                                              (cons (make-draw-op x (+ y row) "│" #:role border-role)
+                                                    (cons (make-draw-op (+ x (- w 1)) (+ y row) "│" #:role border-role)
+                                                          acc))))))
+                          (pad (max 0 padding))
+                          (child-rect (make-rect (+ x 1 pad)
+                                                 (+ y 1 pad)
+                                                 (max 0 (- inner-w (* 2 pad)))
+                                                 (max 0 (- h 2 (* 2 pad)))))
+                          (child-ops (if (and child (> (rect-width child-rect) 0) (> (rect-height child-rect) 0))
+                                       (widget-render-rect child child-rect)
+                                       '())))
+                     (append (list (make-draw-op x y top-bar #:role border-role)
+                                   (make-draw-op x (+ y (- h 1)) bot-bar #:role border-role))
+                             side-ops
+                             child-ops))))))))
 
 (define* (scroll-view-widget child #:key (offset 0))
          "Scrollable viewport around CHILD starting at vertical line OFFSET."
