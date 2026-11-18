@@ -1101,8 +1101,12 @@ cannot restore the screen; initscr must run again."
                                                                       (< (draw-op-y op) maxy)
                                                                       (>= (draw-op-x op) 0)
                                                                       (< (draw-op-x op) maxx))
-                                                             (move stdscr (draw-op-y op) (draw-op-x op))
-                                                             (addstr stdscr (draw-op-text op))))
+                                                             (tui-safe-addstr st
+                                                                              stdscr
+                                                                              (draw-op-y op)
+                                                                              (draw-op-x op)
+                                                                              (draw-op-text op)
+                                                                              (- maxx (draw-op-x op)))))
                                                          ops)))
                                          (register-click! .
                                                           ,(lambda (y target)

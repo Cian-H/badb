@@ -6,30 +6,53 @@
 (define-module (geasa surfaces-tui overlay)
                #:use-module (geasa surfaces-tui menus)
                #:use-module ((geasa surfaces-overlay plugin)
-                             #:renamer (symbol-prefix-proc 'ov:))
-               #:re-export ((ov:<overlay> . <overlay>)
-                            (ov:make-overlay . make-overlay)
-                            (ov:overlay? . overlay?)
-                            (ov:overlay-kind . overlay-kind)
-                            (ov:overlay-data . overlay-data)
-                            (ov:set-overlay-data! . set-overlay-data!)
-                            (ov:overlay-render . overlay-render)
-                            (ov:overlay-on-key . overlay-on-key)
-                            (ov:overlay-on-click . overlay-on-click)
-                            (ov:menu-overlay? . menu-overlay?)
-                            (ov:menu-overlay-menu . menu-overlay-menu)
-                            (ov:set-menu-overlay-menu! . set-menu-overlay-menu!)
-                            (ov:make-modal-overlay . make-modal-overlay)
-                            (ov:modal-overlay? . modal-overlay?)
-                            (ov:modal-overlay-state . modal-overlay-state)
-                            (ov:set-modal-overlay-state! . set-modal-overlay-state!)
-                            (ov:modal-active-tab . modal-active-tab)
-                            (ov:set-modal-active-tab! . set-modal-active-tab!)
-                            (ov:modal-show-detail? . modal-show-detail?)
-                            (ov:set-modal-show-detail?! . set-modal-show-detail?!)
-                            (ov:modal-extension-slots . modal-extension-slots)
-                            (ov:modal-slot-providers . modal-slot-providers)
-                            (ov:modal-register-slot! . modal-register-slot!))
+                             #:select (<overlay>
+                                        make-overlay
+                                        overlay?
+                                        overlay-kind
+                                        overlay-data
+                                        set-overlay-data!
+                                        overlay-render
+                                        overlay-on-key
+                                        overlay-on-click
+                                        menu-overlay?
+                                        menu-overlay-menu
+                                        set-menu-overlay-menu!
+                                        make-modal-overlay
+                                        modal-overlay?
+                                        modal-overlay-state
+                                        set-modal-overlay-state!
+                                        modal-active-tab
+                                        set-modal-active-tab!
+                                        modal-show-detail?
+                                        set-modal-show-detail?!
+                                        modal-extension-slots
+                                        modal-slot-providers
+                                        modal-register-slot!
+                                        (make-menu-overlay . ov:make-menu-overlay)))
+               #:re-export (<overlay>
+                             make-overlay
+                             overlay?
+                             overlay-kind
+                             overlay-data
+                             set-overlay-data!
+                             overlay-render
+                             overlay-on-key
+                             overlay-on-click
+                             menu-overlay?
+                             menu-overlay-menu
+                             set-menu-overlay-menu!
+                             make-modal-overlay
+                             modal-overlay?
+                             modal-overlay-state
+                             set-modal-overlay-state!
+                             modal-active-tab
+                             set-modal-active-tab!
+                             modal-show-detail?
+                             set-modal-show-detail?!
+                             modal-extension-slots
+                             modal-slot-providers
+                             modal-register-slot!)
                #:export (make-menu-overlay))
 
 (define %tui-menu-ops

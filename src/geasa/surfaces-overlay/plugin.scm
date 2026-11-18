@@ -365,7 +365,8 @@ WIDTH and HEIGHT may be integers or fractions in (0, 1]. ANCHOR may be 'center,
                  (filter-map (lambda (p) (if (procedure? p) (p ov ustate) p))
                              banner-providers))
                (tab-w (if (and (pair? tabs) (not (null? tabs)))
-                        (list (tab-bar-widget tabs #:active active-tab))
+                        (let ((idx (or (list-index (lambda (t) (eq? (car t) active-tab)) tabs) 0)))
+                          (list (tab-bar-widget (map cdr tabs) #:active idx)))
                         '()))
                (footer-base (or (resolve-value footer-hints ustate) '()))
                (footer-extra
