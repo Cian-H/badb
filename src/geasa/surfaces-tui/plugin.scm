@@ -86,9 +86,8 @@
                #:use-module
                (geasa surfaces-tui renderer)
                #:use-module
-               (geasa surfaces-tui events)
-               #:use-module
-               ((geasa surfaces-tui actions) #:select (tui-register-modular-extensions!))
+               ((geasa surfaces-tui events) #:select
+                (tui-run-event-loop! (tui-collect-enter-burst . collect-enter-burst)))
                #:use-module
                (geasa agents-lifecycle plugin)
                #:use-module
@@ -102,304 +101,297 @@
                #:use-module
                (ice-9 rdelim)
                #:use-module
-               (ice-9 optargs)
+               ((geasa surfaces-tui agent-loop) #:select
+                ((tui-format-response-images-notice . format-response-images-notice)))
                #:use-module
                (srfi srfi-1)
                #:use-module
                (ice-9 threads)
                #:export
-               (run-tui collect-enter-burst
-                        nc-shift-held?
-                        format-response-images-notice
+               (run-tui nc-shift-held?
                         render-ncvisual-overlay!
                         show-geis-bindings-uplot!
                         make-tui-semantic-summarizer
-                        format-geis-help-text
-                        tui-theme-attr-constant
-                        tui-theme-color->backend-value)
+                        format-geis-help-text)
                #:re-export
-               (ui-client-send-event ui-client-connected?
-                                     ui-client-notifications
-                                     ui-message-type
-                                     <ui-daemon>
-                                     make-ui-daemon
-                                     ui-daemon?
-                                     ui-daemon-server
-                                     ui-daemon-transport
-                                     ui-daemon-host
-                                     ui-daemon-port
-                                     ui-daemon-socket-path
-                                     ui-daemon-status
-                                     ui-daemon-endpoint
-                                     ui-daemon-client-count
-                                     ui-daemon-start!
-                                     ui-daemon-stop!
-                                     ui-daemon-wait
-                                     <ui-remote-connection>
-                                     ui-remote-connection?
-                                     ui-remote-connection-client
-                                     ui-remote-connection-connected?
-                                     ui-remote-connection-wait
-                                     ui-client-connect-unix!
-                                     ui-client-connect-tcp!
-                                     ui-client-connect-ports!
-                                     ui-client-connect-ssh!
-                                     ui-remote-disconnect!
-                                     parse-ui-listen-spec
-                                     wire-ui-server-handlers!
-                                     run-ui-server!
-                                     run-remote-tui-client
-                                     %mid-run-safe-commands
-                                     %mid-run-slash-command-entries
-                                     mid-run-safe-command?
-                                     parse-steer-argument
-                                     dispatch-mid-run-input
-                                     matching-mid-run-slash-commands
-                                     push-urgent-steering!
-                                     force-stop-agent!
-                                     format-steering-keymap-line
-                                     steering-bar-layout
-                                     format-mid-run-subagents-summary
-                                     span-rows->text
-                                     handle-todo-command!
-                                     format-response-widgets-notice
-                                     format-conversation-transcript
-                                     wrap-line
-                                     wrap-text
-                                     parse-command
-                                     classify-input
-                                     make-repl-mod
-                                     normalize-scheme-expr
-                                     eval-scheme-code
-                                     execute-shell-command
-                                     split-thoughts-and-content
-                                     %slash-commands
-                                     matching-slash-commands
-                                     detect-model-decision
-                                     build-model-menu-items
-                                     selector-active?
-                                     %selector-max-visible
-                                     selector-visible-slice
-                                     prompt-mode-on-char
-                                     prompt-mode-on-backspace
-                                     prompt-mode-on-escape
-                                     prompt-mode-submit-text
-                                     format-slash-completion
-                                     fuzzy-score
-                                     fuzzy-match-history
-                                     <history-search>
-                                     history-search?
-                                     make-history-search
-                                     history-search-active?
-                                     history-search-open
-                                     history-search-handle-key
-                                     history-search-matches
-                                     history-search-selected-index
-                                     extract-at-token
-                                     at-selector-active?
-                                     collect-workspace-files
-                                     matching-at-candidates
-                                     apply-at-completion
-                                     <keymap>
-                                     keymap?
-                                     make-keymap
-                                     make-default-keymap
-                                     keymap-bind!
-                                     keymap-unbind!
-                                     keymap-lookup
-                                     keymap-bindings
-                                     keymap->menu-items
-                                     key-event->spec
-                                     resolve-user-shell
-                                     resolve-external-editor
-                                     open-in-external-editor
-                                     read-via-external-editor
-                                     session-turns->transcript-messages
-                                     session-file-metadata
-                                     recent-session-summaries
-                                     repl-help
-                                     repl-inspect
-                                     repl-geasa
-                                     repl-state
-                                     %menu-max-visible
-                                     make-menu
-                                     menu?
-                                     menu-title
-                                     menu-items
-                                     menu-selected-index
-                                     menu-count
-                                     menu-move
-                                     menu-trigger-highlight!
-                                     menu-push
-                                     menu-pop
-                                     menu-depth
-                                     menu-breadcrumbs
-                                     menu-breadcrumb-title
-                                     menu-selected-item
-                                     menu-visible-slice
-                                     menu-item-label
-                                     menu-item-description
-                                     menu-item-action
-                                     provider-menu-items
-                                     synthesizer-config-menu-items
-                                     synthesizer-provider-menu-items
-                                     synthesizer-model-menu-items
-                                     apply-synthesis-provider-config!
-                                     session-resurrection-menu-items
-                                     make-theme-preview-menu
-                                     %command-categories
-                                     command-category-menu-items
-                                     command-items-for-category
-                                     make-commands-root-menu
-                                     open-command-category-menu
-                                     %command-aliases
-                                     resolve-command-alias
-                                     deduplicate-slash-commands
-                                     execute-context-subcommand!
-                                     format-config-summary
-                                     format-provider-presets
-                                     format-guardrail-status
-                                     sparkline-plot
-                                     format-geis-bindings-graph
-                                     get-prompt-indicator
-                                     format-header-segments
-                                     format-rule-line
-                                     format-keymap-line
-                                     steering-key-handle
-                                     steering-pending-line
-                                     agent-run-active?
-                                     spinner-active-status?
-                                     format-osc-tab-title
-                                     reset-osc-tab-title
-                                     segment-line
-                                     block-row-segments
-                                     message-role-icon
-                                     format-card-header
-                                     format-card-divider
-                                     card-gutter-glyph
-                                     render-markdown
-                                     render-markdown-lines
-                                     segment-input-line
-                                     highlight-scheme-line
-                                     highlight-shell-line
-                                     format-osc8-link
-                                     extract-clickable-links
-                                     find-link-at-column
-                                     nerd-fonts-enabled?
-                                     nerd-icon
-                                     detect-image-protocol
-                                     kitty-graphics-supported?
-                                     render-image-ncvisual
-                                     <widget>
-                                     make-widget
-                                     widget?
-                                     box-widget
-                                     rule-widget
-                                     pill-widget
-                                     scroll-view-widget
-                                     format-input-box-frame
-                                     format-bottom-status-bar
-                                     %crow-banner-frames
-                                     format-startup-banner
-                                     format-startup-banner-text
-                                     format-git-diff-view
-                                     <todo-list>
-                                     make-todo-list
-                                     todo-add
-                                     todo-toggle
-                                     todo-remove
-                                     todo-clear-done
-                                     todo-counts
-                                     format-todo-widget
-                                     render-scheme-response-widget
-                                     extract-response-widgets
-                                     <ui-server>
-                                     <ui-client>
-                                     make-ui-server
-                                     make-ui-client
-                                     ui-client-subagent-events
-                                     ui-server-route-subagent-event!
-                                     pump-ui-pair!
-                                     current-harness-id
-                                     parent-harness-id
-                                     subagent-harness?
-                                     register-subagent-link!
-                                     subagent-hierarchy-tree
-                                     format-subagent-hierarchy
-                                     format-subagent-overview
-                                     clamp-cursor
-                                     insert-at
-                                     backspace-at
-                                     delete-at
-                                     input-visible-window
-                                     input-wrapped-rows
-                                     %max-input-rows
-                                     make-row-cache
-                                     row-cache?
-                                     row-cache-rows
-                                     row-cache-invalidate!
-                                     row-cache-clear!
-                                     row-cache-prune!
-                                     make-history
-                                     input-history?
-                                     %history-max-entries
-                                     history-cap-entries
-                                     history-entries
-                                     history-length
-                                     history-add
-                                     history-recall
-                                     history-recall-position
-                                     history-reset-nav
-                                     history-entry->jsonl-line
-                                     jsonl-line->history-entry
-                                     default-history-file-path
-                                     load-history-file
-                                     append-history-file-entry!
-                                     turn->jsonl-line
-                                     default-sessions-dir
-                                     session-file-path
-                                     persist-session-file!
-                                     load-session-file
-                                     recent-session-files
-                                     message-collapsed?
-                                     make-collapsed-message
-                                     message-with-collapsed
-                                     message-toggle-collapsed
-                                     default-collapsed-role?
-                                     message-collapsible?
-                                     default-collapse-message
-                                     thoughts-preview
-                                     format-collapsed-summary-line
-                                     message-role-label
-                                     message-role->theme-role
-                                     system-message-label
-                                     color-symbol->ncurses-constant
-                                     key->code
-                                     resolve-modified-key
-                                     spec-tool-lock
-                                     spec-tool-verify
-                                     spec-tool-status
-                                     register-spec-tools!
-                                     build-geis-add-prompt
-                                     format-message-entry
-                                     <input-history>
-                                     <row-cache>
-                                     <menu>
-                                     builtin-read-file
-                                     jsonl-line->turn
-                                     truncate-string))
+               (tui-theme-color->backend-value
+                 tui-theme-attr-constant
+                 format-response-images-notice
+                 ui-client-send-event
+                 ui-client-connected?
+                 ui-client-notifications
+                 ui-message-type
+                 <ui-daemon>
+                 make-ui-daemon
+                 ui-daemon?
+                 ui-daemon-server
+                 ui-daemon-transport
+                 ui-daemon-host
+                 ui-daemon-port
+                 ui-daemon-socket-path
+                 ui-daemon-status
+                 ui-daemon-endpoint
+                 ui-daemon-client-count
+                 ui-daemon-start!
+                 ui-daemon-stop!
+                 ui-daemon-wait
+                 <ui-remote-connection>
+                 ui-remote-connection?
+                 ui-remote-connection-client
+                 ui-remote-connection-connected?
+                 ui-remote-connection-wait
+                 ui-client-connect-unix!
+                 ui-client-connect-tcp!
+                 ui-client-connect-ports!
+                 ui-client-connect-ssh!
+                 ui-remote-disconnect!
+                 parse-ui-listen-spec
+                 wire-ui-server-handlers!
+                 run-ui-server!
+                 run-remote-tui-client
+                 %mid-run-safe-commands
+                 %mid-run-slash-command-entries
+                 mid-run-safe-command?
+                 parse-steer-argument
+                 dispatch-mid-run-input
+                 matching-mid-run-slash-commands
+                 push-urgent-steering!
+                 force-stop-agent!
+                 format-steering-keymap-line
+                 steering-bar-layout
+                 format-mid-run-subagents-summary
+                 span-rows->text
+                 handle-todo-command!
+                 format-response-widgets-notice
+                 format-conversation-transcript
+                 wrap-line
+                 wrap-text
+                 parse-command
+                 classify-input
+                 make-repl-mod
+                 normalize-scheme-expr
+                 eval-scheme-code
+                 execute-shell-command
+                 split-thoughts-and-content
+                 %slash-commands
+                 matching-slash-commands
+                 detect-model-decision
+                 build-model-menu-items
+                 selector-active?
+                 %selector-max-visible
+                 selector-visible-slice
+                 prompt-mode-on-char
+                 prompt-mode-on-backspace
+                 prompt-mode-on-escape
+                 prompt-mode-submit-text
+                 format-slash-completion
+                 fuzzy-score
+                 fuzzy-match-history
+                 <history-search>
+                 history-search?
+                 make-history-search
+                 history-search-active?
+                 history-search-open
+                 history-search-handle-key
+                 history-search-matches
+                 history-search-selected-index
+                 extract-at-token
+                 at-selector-active?
+                 collect-workspace-files
+                 matching-at-candidates
+                 apply-at-completion
+                 <keymap>
+                 keymap?
+                 make-keymap
+                 make-default-keymap
+                 keymap-bind!
+                 keymap-unbind!
+                 keymap-lookup
+                 keymap-bindings
+                 keymap->menu-items
+                 key-event->spec
+                 resolve-user-shell
+                 resolve-external-editor
+                 open-in-external-editor
+                 read-via-external-editor
+                 session-turns->transcript-messages
+                 session-file-metadata
+                 recent-session-summaries
+                 repl-help
+                 repl-inspect
+                 repl-geasa
+                 repl-state
+                 %menu-max-visible
+                 make-menu
+                 menu?
+                 menu-title
+                 menu-items
+                 menu-selected-index
+                 menu-count
+                 menu-move
+                 menu-trigger-highlight!
+                 menu-push
+                 menu-pop
+                 menu-depth
+                 menu-breadcrumbs
+                 menu-breadcrumb-title
+                 menu-selected-item
+                 menu-visible-slice
+                 menu-item-label
+                 menu-item-description
+                 menu-item-action
+                 provider-menu-items
+                 synthesizer-config-menu-items
+                 synthesizer-provider-menu-items
+                 synthesizer-model-menu-items
+                 apply-synthesis-provider-config!
+                 session-resurrection-menu-items
+                 make-theme-preview-menu
+                 %command-categories
+                 command-category-menu-items
+                 command-items-for-category
+                 make-commands-root-menu
+                 open-command-category-menu
+                 %command-aliases
+                 resolve-command-alias
+                 deduplicate-slash-commands
+                 execute-context-subcommand!
+                 format-config-summary
+                 format-provider-presets
+                 format-guardrail-status
+                 sparkline-plot
+                 format-geis-bindings-graph
+                 get-prompt-indicator
+                 format-header-segments
+                 format-rule-line
+                 format-keymap-line
+                 steering-key-handle
+                 steering-pending-line
+                 agent-run-active?
+                 spinner-active-status?
+                 format-osc-tab-title
+                 reset-osc-tab-title
+                 segment-line
+                 block-row-segments
+                 message-role-icon
+                 format-card-header
+                 format-card-divider
+                 card-gutter-glyph
+                 render-markdown
+                 render-markdown-lines
+                 segment-input-line
+                 highlight-scheme-line
+                 highlight-shell-line
+                 format-osc8-link
+                 extract-clickable-links
+                 find-link-at-column
+                 nerd-fonts-enabled?
+                 nerd-icon
+                 detect-image-protocol
+                 kitty-graphics-supported?
+                 render-image-ncvisual
+                 <widget>
+                 make-widget
+                 widget?
+                 box-widget
+                 rule-widget
+                 pill-widget
+                 scroll-view-widget
+                 format-input-box-frame
+                 format-bottom-status-bar
+                 %crow-banner-frames
+                 format-startup-banner
+                 format-startup-banner-text
+                 format-git-diff-view
+                 <todo-list>
+                 make-todo-list
+                 todo-add
+                 todo-toggle
+                 todo-remove
+                 todo-clear-done
+                 todo-counts
+                 format-todo-widget
+                 render-scheme-response-widget
+                 extract-response-widgets
+                 <ui-server>
+                 <ui-client>
+                 make-ui-server
+                 make-ui-client
+                 ui-client-subagent-events
+                 ui-server-route-subagent-event!
+                 pump-ui-pair!
+                 current-harness-id
+                 parent-harness-id
+                 subagent-harness?
+                 register-subagent-link!
+                 subagent-hierarchy-tree
+                 format-subagent-hierarchy
+                 format-subagent-overview
+                 clamp-cursor
+                 insert-at
+                 backspace-at
+                 delete-at
+                 input-visible-window
+                 input-wrapped-rows
+                 %max-input-rows
+                 make-row-cache
+                 row-cache?
+                 row-cache-rows
+                 row-cache-invalidate!
+                 row-cache-clear!
+                 row-cache-prune!
+                 make-history
+                 input-history?
+                 %history-max-entries
+                 history-cap-entries
+                 history-entries
+                 history-length
+                 history-add
+                 history-recall
+                 history-recall-position
+                 history-reset-nav
+                 history-entry->jsonl-line
+                 jsonl-line->history-entry
+                 default-history-file-path
+                 load-history-file
+                 append-history-file-entry!
+                 turn->jsonl-line
+                 default-sessions-dir
+                 session-file-path
+                 persist-session-file!
+                 load-session-file
+                 recent-session-files
+                 message-collapsed?
+                 make-collapsed-message
+                 message-with-collapsed
+                 message-toggle-collapsed
+                 default-collapsed-role?
+                 message-collapsible?
+                 default-collapse-message
+                 thoughts-preview
+                 format-collapsed-summary-line
+                 message-role-label
+                 message-role->theme-role
+                 system-message-label
+                 color-symbol->ncurses-constant
+                 key->code
+                 resolve-modified-key
+                 spec-tool-lock
+                 spec-tool-verify
+                 spec-tool-status
+                 register-spec-tools!
+                 build-geis-add-prompt
+                 format-message-entry
+                 <input-history>
+                 <row-cache>
+                 <menu>
+                 collect-enter-burst
+                 jsonl-line->turn
+                 truncate-string))
 
 ;;;
 ;;; Main TUI Controller (run-tui)
 ;;;
-(define
-  (collect-enter-burst ch input-pending? drain-input-burst!)
-  "Return (cons ch burst) when Enter is part of a multiline paste
-(INPUT-PENDING? is true and DRAIN-INPUT-BURST! returns at least one
-payload codepoint), or #f when Enter should submit."
-  (and (input-pending?)
-       (let ((burst (drain-input-burst!))) (and (pair? burst) (cons ch burst)))))
-
 (define*
   (nc-shift-held? #:optional
                   (ncinput
@@ -440,20 +432,6 @@ the output with WP1 format-git-diff-view."
            (if (string-null? (string-trim-both out))
              "No unstaged git diff changes."
              (span-rows->text (format-git-diff-view out width #:title "git diff")))))
-
-(define (tui-theme-attr-constant attr nref)
-        "Resolve theme attribute symbol ATTR using backend NREF."
-        (case attr
-          ((bold) (nref 'A_BOLD))
-          ((dim) (nref 'A_DIM))
-          ((reverse) (nref 'A_REVERSE))
-          (else #f)))
-
-(define (tui-theme-color->backend-value color nref)
-        "Resolve theme COLOR (hex #rrggbb or curses symbol) via backend NREF."
-        (if (string? color)
-          (string->number (substring color 1) 16)
-          (nref (color-symbol->ncurses-constant color))))
 
 (define (format-geis-help-text)
         "Return help text for the /geis slash command."
@@ -502,19 +480,6 @@ the output with WP1 format-git-diff-view."
                     (truncate-to (format #f "[Context Summary of preceding turns]:\n~a" rendered) 3000))))
               (lambda _
                 (truncate-to (format #f "[Context Summary of preceding turns]:\n~a" rendered) 3000))))))
-
-(define* (format-response-images-notice text #:optional (maxx 76))
-         "Extract existing local image paths from Markdown ![alt](path) in TEXT
-and return a notice string with placeholders and /image preview hints, or #f."
-         (let* ((paths (filter file-exists? (extract-markdown-image-paths text))))
-           (if (null? paths)
-             #f
-             (string-join
-               (map (lambda (p)
-                      (string-append (format-image-placeholder p #:width (max 20 (- maxx 18)))
-                                     " — /image " p))
-                    paths)
-               "\n"))))
 
 (define*
   (render-ncvisual-overlay! stdscr
@@ -706,7 +671,7 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
            (api-key #f)
            (journal-path #f)
            (config #f)
-           (clean? (equal? (getenv "BADB_CLEAN") "1")))
+           (clean? #f))
   "Launch the interactive badb curses TUI."
   (unless
       (catch #t
@@ -768,13 +733,7 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
                  (nref 'nodelay))
                (lambda _
                  #f))))
-         (steering-err-val
-           (catch #t
-             (lambda ()
-               (nref 'ERR))
-             (lambda _
-               -1)))
-         (cfg (or config (if clean? (make-badb-config) (load-config))))
+         (cfg (or config (load-config)))
          (ui-theme
            (let ((configured (badb-config-ui-theme cfg)))
              (or (and (string? configured) (lookup-theme configured)) (default-theme))))
@@ -821,17 +780,13 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
                               #:allow-missing-thinking?
                               (badb-config-allow-missing-thinking? cfg cur-endpoint)))
          (ctx-idx (make-bm25-index))
-         (skill-reg (if clean? (make-skill-registry #:roots '()) (make-skill-registry)))
+         (skill-reg (make-skill-registry))
          (banner-tips
            (list "! shell · ( scheme · / commands · /help"
                  "ctrl+r history · @ files · ctrl+x $EDITOR · /todo · /diff"
                  (if (file-exists? ".badb/geasa")
                    "geasa active · /geis list · /geis bindings"
                    "Tip: run /geis onboard to detect toolchain & synthesize geasa")))
-         (ui-server
-           (make-ui-server #:initial-state
-                           (list (cons 'model cur-model) (cons 'status "READY"))))
-         (ui-client (make-ui-client #:id 'local-tui))
          (repl-mod
            (make-repl-mod reg
                           jrn
@@ -849,8 +804,6 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
                            nref
                            #:nodelay-proc
                            nodelay-proc
-                           #:steering-err-val
-                           steering-err-val
                            #:cfg
                            cfg
                            #:initial-api-key
@@ -879,8 +832,6 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
                            compactor
                            #:rollback-mgr
                            rollback-mgr
-                           #:verifier
-                           verifier
                            #:composer
                            composer
                            #:client
@@ -896,26 +847,22 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
                            #:session-file
                            (session-file-path)
                            #:input-history
-                           (make-history (if clean? '() (load-history-file (default-history-file-path))))
-                           #:ui-server
-                           ui-server
-                           #:ui-client
-                           ui-client))
+                           (make-history
+                             (if clean?
+                               '()
+                               (load-history-file (default-history-file-path))))))
          (hooks
            `((format-geis-help-text . ,format-geis-help-text)
              (format-git-diff-output . ,format-git-diff-output)
              (render-ncvisual-overlay! . ,render-ncvisual-overlay!)
-             (show-geis-bindings-uplot! . ,show-geis-bindings-uplot!)
-             (spec-tool-status . ,spec-tool-status)
-             (spec-tool-verify . ,spec-tool-verify))))
-      (unless clean?
-        (catch #t
-          (lambda ()
-            (discover-skills! skill-reg)
-            (discover-and-mount-project-geasa! reg #:workspace (getcwd))
-            (mount-bundle-workflows! reg #:workspace (getcwd)))
-          (lambda _
-            #f)))
+             (show-geis-bindings-uplot! . ,show-geis-bindings-uplot!))))
+      (catch #t
+        (lambda ()
+          (discover-skills! skill-reg)
+          (discover-and-mount-project-geasa! reg #:workspace (getcwd))
+          (mount-bundle-workflows! reg #:workspace (getcwd)))
+        (lambda _
+          #f))
       (register-builtin-tui-tools! reg
                                    rollback-mgr
                                    verifier
@@ -932,8 +879,7 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
                                    cfg
                                    #:policy
                                    policy)
-      (unless clean?
-        (auto-start-mcp-servers! cfg mcp-mgr))
+      (auto-start-mcp-servers! cfg mcp-mgr)
       (set-context-compactor-strategy! compactor
                                        (strategy-cascading #:keep-recent-turns
                                                            6
@@ -948,38 +894,27 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
       (set-tui-llm-history! st (list (tui-make-system-turn st)))
       (set-tui-subagent-bus-sub-id! st
                                     (harness-event-subscribe!
-                                      (lambda (ev)
-                                        (let
-                                            ((src (harness-event-source-id ev))
-                                             (tgt (or (harness-event-target-id ev) (current-harness-id)))
-                                             (kind (harness-event-kind ev))
-                                             (payload (harness-event-payload ev)))
-                                          (catch #t
-                                            (lambda ()
-                                              (ui-server-route-subagent-event! ui-server src tgt kind payload))
-                                            (lambda _
-                                              #f))
-                                          (set-tui-render-dirty?! st #t)))
+                                      (lambda (_ev)
+                                        (set-tui-render-dirty?! st #t))
                                       #:target-id
                                       (current-harness-id)))
       (startup-auto-detect-model! st)
-      (unless clean?
-        (catch #t
-          (lambda ()
-            (register-geis-updater-extensions!)
-            (start-background-geasa-update-check! #:workspace
-                                                  (getcwd)
-                                                  #:config
-                                                  (tui-cfg st)
-                                                  #:on-complete
-                                                  (lambda (results)
-                                                    (let
-                                                        ((notice (geis-updater-startup-notice results)))
-                                                      (when notice
-                                                        (set-tui-status-text! st notice)
-                                                        (set-tui-render-dirty?! st #t))))))
-          (lambda _
-            #f)))
+      (catch #t
+        (lambda ()
+          (register-geis-updater-extensions!)
+          (start-background-geasa-update-check! #:workspace
+                                                (getcwd)
+                                                #:config
+                                                (tui-cfg st)
+                                                #:on-complete
+                                                (lambda (results)
+                                                  (let
+                                                      ((notice (geis-updater-startup-notice results)))
+                                                    (when notice
+                                                      (set-tui-status-text! st notice)
+                                                      (set-tui-render-dirty?! st #t))))))
+        (lambda _
+          #f))
       (let ((stdscr (initscr)))
         (set-tui-stdscr! st stdscr)
         (cbreak!)
@@ -1000,7 +935,6 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
         (tui-safe-curs-set! st 1)
         (set-tui-colors-enabled?! st (has-colors?))
         (when (tui-colors-enabled? st) (start-color!))
-        (tui-register-modular-extensions! st hooks)
         (dynamic-wind
           (lambda ()
             #t)

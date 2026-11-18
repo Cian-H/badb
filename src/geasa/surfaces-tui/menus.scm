@@ -24,6 +24,9 @@
                (srfi srfi-1)
                #:use-module
                (srfi srfi-9)
+               #:use-module
+               ((geasa surfaces-overlay plugin) #:select
+                ((make-menu-overlay . ov:make-menu-overlay)))
                #:export
                (%menu-max-visible <menu>
                                   menu?
@@ -73,7 +76,8 @@
                                   register-menu-category!
                                   register-slash-command!
                                   flatten-command-tree
-                                  open-command-category-menu))
+                                  open-command-category-menu
+                                  make-menu-overlay))
 
 ;;;
 ;;; Interactive Menu Model
@@ -946,4 +950,22 @@ Creates any missing intermediate category nodes automatically."
          (if (pair? path)
            (last path)
            "Commands")))
-    (menu-push parent-menu title (command-items-for-category path))))
+    (menu-push parent-menu title (command-items-for-category path))))(define %tui-menu-ops
+                                                                             `((is-menu? . ,menu?) (count . ,menu-count)
+                                                                               (visible-slice . ,menu-visible-slice)
+                                                                               (item-label . ,menu-item-label)
+                                                                               (item-desc . ,menu-item-description)
+                                                                               (title . ,menu-breadcrumb-title)
+                                                                               (selected-index . ,menu-selected-index)
+                                                                               (move . ,menu-move)
+                                                                               (trigger-highlight! . ,menu-trigger-highlight!)
+                                                                               (pop . ,menu-pop)
+                                                                               (on-cancel . ,menu-on-cancel)
+                                                                               (items . ,menu-items)
+                                                                               (item-action . ,menu-item-action)
+                                                                               (selected-item . ,menu-selected-item)
+                                                                               (max-visible . ,%menu-max-visible)))
+
+(define (make-menu-overlay m)
+        "Wrap a <menu> M in a pluggable <overlay>."
+        (ov:make-menu-overlay m #:menu-ops %tui-menu-ops))

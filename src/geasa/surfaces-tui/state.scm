@@ -31,11 +31,11 @@
                #:use-module
                (geasa surfaces-tui widgets)
                #:use-module
-               (geasa surfaces-tui overlay)
-               #:use-module
                (geasa surfaces-tui commands)
                #:use-module
-               (ice-9 format)
+               ((geasa surfaces-overlay plugin) #:select (menu-overlay-menu))
+               #:use-module
+               ((geasa surfaces-tui menus) #:select (make-menu-overlay))
                #:use-module
                (ice-9 threads)
                #:use-module
@@ -50,7 +50,6 @@
                             tui-colors-enabled?
                             set-tui-colors-enabled?!
                             tui-nodelay-proc
-                            tui-steering-err-val
                             tui-ctrl-up-key
                             set-tui-ctrl-up-key!
                             tui-ctrl-down-key
@@ -76,7 +75,6 @@
                             tui-policy
                             tui-compactor
                             tui-rollback-mgr
-                            tui-verifier
                             tui-composer
                             tui-client
                             set-tui-client!
@@ -158,8 +156,6 @@
                             set-tui-asm-messages!
                             tui-asm-width
                             set-tui-asm-width!
-                            tui-asm-lines
-                            set-tui-asm-lines!
                             tui-asm-counts
                             set-tui-asm-counts!
                             tui-asm-total
@@ -168,8 +164,6 @@
                             set-tui-asm-msg-count!
                             tui-click-targets
                             tui-row-texts
-                            tui-ui-server
-                            tui-ui-client
                             tui-last-tab-title-sig
                             set-tui-last-tab-title-sig!
                             tui-subagent-bus-sub-id
@@ -237,7 +231,6 @@
                             tui-make-system-turn
                             tui-make-startup-notice-msg
                             tui-advance-startup-banner!
-                            tui-reset-history-browse!
                             tui-clamp-selector-index!
                             tui-apply-edit!
                             tui-insert-burst!))
@@ -247,7 +240,6 @@
                                      stdscr
                                      colors-enabled?
                                      nodelay-proc
-                                     steering-err-val
                                      ctrl-up-key
                                      ctrl-down-key
                                      cfg
@@ -264,7 +256,6 @@
                                      policy
                                      compactor
                                      rollback-mgr
-                                     verifier
                                      composer
                                      client
                                      ctx-idx
@@ -307,14 +298,11 @@
                                      row-cache
                                      asm-messages
                                      asm-width
-                                     asm-lines
                                      asm-counts
                                      asm-total
                                      asm-msg-count
                                      click-targets
                                      row-texts
-                                     ui-server
-                                     ui-client
                                      last-tab-title-sig
                                      subagent-bus-sub-id
                                      react-stream-content-chunks
@@ -344,7 +332,6 @@
                     (stdscr tui-stdscr set-tui-stdscr!)
                     (colors-enabled? tui-colors-enabled? set-tui-colors-enabled?!)
                     (nodelay-proc tui-nodelay-proc)
-                    (steering-err-val tui-steering-err-val)
                     (ctrl-up-key tui-ctrl-up-key set-tui-ctrl-up-key!)
                     (ctrl-down-key tui-ctrl-down-key set-tui-ctrl-down-key!)
                     (cfg tui-cfg set-tui-cfg!)
@@ -361,7 +348,6 @@
                     (policy tui-policy)
                     (compactor tui-compactor)
                     (rollback-mgr tui-rollback-mgr)
-                    (verifier tui-verifier)
                     (composer tui-composer)
                     (client tui-client set-tui-client!)
                     (ctx-idx tui-ctx-idx)
@@ -410,14 +396,11 @@
                     (row-cache tui-row-cache)
                     (asm-messages tui-asm-messages set-tui-asm-messages!)
                     (asm-width tui-asm-width set-tui-asm-width!)
-                    (asm-lines tui-asm-lines set-tui-asm-lines!)
                     (asm-counts tui-asm-counts set-tui-asm-counts!)
                     (asm-total tui-asm-total set-tui-asm-total!)
                     (asm-msg-count tui-asm-msg-count set-tui-asm-msg-count!)
                     (click-targets tui-click-targets)
                     (row-texts tui-row-texts)
-                    (ui-server tui-ui-server)
-                    (ui-client tui-ui-client)
                     (last-tab-title-sig tui-last-tab-title-sig set-tui-last-tab-title-sig!)
                     (subagent-bus-sub-id tui-subagent-bus-sub-id set-tui-subagent-bus-sub-id!)
                     (react-stream-content-chunks
@@ -459,7 +442,6 @@
   (make-tui-state #:key
                   nref
                   nodelay-proc
-                  steering-err-val
                   cfg
                   (initial-api-key #f)
                   ui-theme
@@ -474,7 +456,6 @@
                   policy
                   compactor
                   rollback-mgr
-                  verifier
                   composer
                   client
                   ctx-idx
@@ -482,15 +463,12 @@
                   repl-mod
                   banner-tips
                   session-file
-                  input-history
-                  ui-server
-                  ui-client)
+                  input-history)
   "Construct an initialized <tui-state> record."
   (%make-tui-state nref
                    #f
                    #f
                    nodelay-proc
-                   steering-err-val
                    0
                    0
                    cfg
@@ -507,7 +485,6 @@
                    policy
                    compactor
                    rollback-mgr
-                   verifier
                    composer
                    client
                    ctx-idx
@@ -551,13 +528,10 @@
                    #f
                    #f
                    '()
-                   '()
                    0
                    0
                    (make-hash-table 61)
                    (make-hash-table 61)
-                   ui-server
-                   ui-client
                    #f
                    #f
                    '()
@@ -793,12 +767,6 @@ Return #t if a message was expanded, else #f."
                       (set-tui-banner-anim-done?! st #t))
                     #t)
                   #f))))))
-
-(define (tui-reset-history-browse! st)
-        "Reset ST's input-history browsing cursor."
-        (history-reset-nav (tui-input-history st))
-        (set-tui-history-draft! st "")
-        (set-tui-history-draft-pos! st 0))
 
 (define (tui-clamp-selector-index! st)
         "Clamp ST's slash and @-mention selector indices to current match counts."

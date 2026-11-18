@@ -28,7 +28,8 @@
                #:use-module
                (geasa surfaces-drawer plugin)
                #:use-module
-               ((geasa surfaces-widgets plugin) #:select (clip-str make-rect widget-render-rect))
+               ((geasa surfaces-widgets plugin) #:select
+                (clip-str make-rect widget-render-rect))
                #:use-module
                (geasa surfaces-tui editor)
                #:use-module
@@ -42,7 +43,7 @@
                #:use-module
                (geasa surfaces-tui widgets)
                #:use-module
-               (geasa surfaces-tui overlay)
+               (geasa surfaces-overlay plugin)
                #:use-module
                (geasa surfaces-tui state)
                #:use-module

@@ -24,7 +24,7 @@
                #:use-module
                (geasa surfaces-tui steering)
                #:use-module
-               (geasa surfaces-tui overlay)
+               (geasa surfaces-overlay plugin)
                #:use-module
                (geasa surfaces-tui state)
                #:use-module
@@ -200,26 +200,24 @@
                  ((safe-idx (max 0 (min (tui-selector-index st) (- (length matches) 1)))))
                (car (list-ref matches safe-idx)))))
 
-(define (dispatch-running-steering-input! st raw urgent? on-cmd!)
-        "Dispatch trimmed mid-run steering input RAW on ST (urgent or queued)."
-        (unless (string-null? raw)
-          (let ((disp (dispatch-mid-run-input raw)))
-            (case (car disp)
-              ((safe-slash)
-                (tui-execute-mid-run-safe-command! st (cadr disp) (caddr disp) on-cmd!))
-              ((blocked-slash)
-                (tui-add-sys-msg! st
-                                  (format #f
-                                          "Command /~a cannot run while the agent is active (safe mid-run: /context, /usage, /theme, /help, /subagents, /stop, /steer)."
-                                          (cadr disp))))
-              ((steer)
-                (if urgent?
-                  (tui-trigger-urgent-steering! st (cdr disp))
-                  (begin
-                    (with-mutex (tui-steering-mutex st)
-                                (steering-push! (tui-steering-queue st) (cdr disp)))
-                    (tui-add-msg! st "steer" (format #f "Steering queued: ~a" (cdr disp))))))
-              (else #f)))))
+(define
+  (dispatch-running-steering-input! st raw urgent? on-cmd!)
+  "Dispatch trimmed mid-run steering input RAW on ST (urgent or queued)."
+  (unless (string-null? raw)
+    (let ((disp (dispatch-mid-run-input raw)))
+      (case (car disp)
+        ((safe-slash)
+          (tui-execute-mid-run-safe-command! st (cadr disp) (caddr disp) on-cmd!))
+        ((blocked-slash)
+          (tui-add-sys-msg! st
+                            (format #f
+                                    "Command /~a cannot run while the agent is active (safe mid-run: /context, /usage, /theme, /help, /subagents, /stop, /steer)."
+                                    (cadr disp))))
+        ((steer)
+          (if urgent?
+            (tui-trigger-urgent-steering! st (cdr disp))
+            (tui-queue-steering! st (cdr disp) #t)))
+        (else #f)))))
 
 (define (handle-running-tab! st)
         "Handle Tab while running: complete mid-run slash command or request interrupt."
@@ -237,14 +235,7 @@
                                           "/steer "
                                           (string-append "/" chosen)))
               (set-tui-steering-selector-index! st 0)))
-          (begin (kill-active-subprocess!)
-                 (with-mutex (tui-steering-mutex st)
-                             (steering-push! (tui-steering-queue st) 'interrupt))
-                 (set-tui-interrupt-requested?! st #t)
-                 (set-tui-status-text! st "INTERRUPT REQUESTED")
-                 (tui-add-msg! st
-                               "steer"
-                               "Interrupt requested — halting at the next iteration boundary.")))
+          (tui-queue-interrupt! st #t))
         'render)
 
 (define (handle-running-enter! st on-cmd!)

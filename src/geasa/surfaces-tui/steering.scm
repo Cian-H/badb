@@ -5,27 +5,36 @@
 ;;; layout, and subagent hierarchy formatting.
 
 (define-module (geasa surfaces-tui steering)
-               #:use-module (badb kernel registry)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (geasa runtimes-react plugin)
-               #:use-module (geasa agents-lifecycle plugin)
-               #:use-module (geasa agents-coordination plugin)
-               #:use-module (geasa agents-subagent plugin)
-               #:use-module (geasa surfaces-tui session)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 threads)
-               #:use-module (srfi srfi-1)
-               #:export (%mid-run-safe-commands
-                          %mid-run-slash-command-entries
-                          mid-run-safe-command?
-                          parse-steer-argument
-                          dispatch-mid-run-input
-                          matching-mid-run-slash-commands
-                          push-urgent-steering!
-                          force-stop-agent!
-                          format-steering-keymap-line
-                          steering-bar-layout
-                          format-mid-run-subagents-summary))
+               #:use-module
+               (badb kernel registry)
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (geasa runtimes-react plugin)
+               #:use-module
+               (geasa agents-lifecycle plugin)
+               #:use-module
+               (geasa agents-coordination plugin)
+               #:use-module
+               (geasa agents-subagent plugin)
+               #:use-module
+               (geasa surfaces-tui session)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 threads)
+               #:export
+               (%mid-run-safe-commands
+                 %mid-run-slash-command-entries
+                 mid-run-safe-command?
+                 parse-steer-argument
+                 dispatch-mid-run-input
+                 matching-mid-run-slash-commands
+                 push-urgent-steering!
+                 force-stop-agent!
+                 format-steering-keymap-line
+                 steering-bar-layout
+                 format-mid-run-subagents-summary))
 
 (define %steering-op-mutex (make-mutex))
 
@@ -98,59 +107,89 @@ Returns one of:
               (lambda (entry) (string-contains (string-downcase (car entry)) q))
               %mid-run-slash-command-entries))))
 
-(define* (push-urgent-steering! queue text
-                                #:key
-                                (on-urgent #f)
-                                (kill-subprocess! #f))
-         "Immediately push TEXT to the front of STEERING-QUEUE ahead of any
+(define*
+  (push-urgent-steering! queue
+                         text
+                         #:key
+                         (on-urgent #f)
+                         (kill-subprocess! #f)
+                         (mutex %steering-op-mutex))
+  "Immediately push TEXT to the front of STEERING-QUEUE ahead of any
 already queued steering entries. Optionally invokes KILL-SUBPROCESS! and
 (ON-URGENT clean-text). Returns #t if pushed, #f otherwise."
-         (let ((clean (and (string? text) (string-trim-both text))))
-           (if (or (not (steering-queue? queue)) (not clean) (string-null? clean))
-             #f
-             (begin
-               (with-mutex %steering-op-mutex
-                           (let ((existing (steering-drain! queue)))
-                             (steering-push! queue clean)
-                             (for-each (lambda (entry) (steering-push! queue entry)) existing)))
-               (when (procedure? kill-subprocess!)
-                 (catch #t (lambda () (kill-subprocess!)) (lambda _ #f)))
-               (when (procedure? on-urgent)
-                 (catch #t (lambda () (on-urgent clean)) (lambda _ #f)))
-               #t))))
+  (let
+      ((clean (and (string? text) (string-trim-both text))))
+    (if
+        (or (not (steering-queue? queue)) (not clean) (string-null? clean))
+      #f
+      (begin
+        (with-mutex (or mutex %steering-op-mutex)
+                    (let ((existing (steering-drain! queue)))
+                      (steering-push! queue clean)
+                      (for-each
+                        (lambda (entry)
+                          (steering-push! queue entry))
+                        existing)))
+        (when (procedure? kill-subprocess!)
+          (catch #t
+            (lambda ()
+              (kill-subprocess!))
+            (lambda _
+              #f)))
+        (when (procedure? on-urgent)
+          (catch #t
+            (lambda ()
+              (on-urgent clean))
+            (lambda _
+              #f)))
+        #t))))
 
-(define* (force-stop-agent! thread
-                            #:key
-                            (steering-queue #f)
-                            (kill-subprocess! kill-active-subprocess!)
-                            (on-stop #f))
-         "Immediately force-stop a running agent THREAD by killing any active
+(define*
+  (force-stop-agent! thread
+                     #:key
+                     (steering-queue #f)
+                     (kill-subprocess! kill-active-subprocess!)
+                     (on-stop #f)
+                     (mutex %steering-op-mutex))
+  "Immediately force-stop a running agent THREAD by killing any active
 subprocess, pushing 'interrupt onto STEERING-QUEUE, and calling cancel-thread.
 Returns an alist: ((stopped? . BOOL) (thread-cancelled? . BOOL) (subprocess-killed? . BOOL))."
-         (let ((subproc-killed? #f) (thread-cancelled? #f))
-           (when (procedure? kill-subprocess!)
-             (let ((had-pid?
-                     (catch #t
-                       (lambda ()
-                         (let ((pid (active-subprocess-pid)))
-                           (and (number? pid) (> pid 0))))
-                       (lambda _ #f))))
-               (catch #t (lambda () (kill-subprocess!)) (lambda _ #f))
-               (set! subproc-killed? (and had-pid? #t))))
-           (when (steering-queue? steering-queue)
-             (with-mutex %steering-op-mutex
-                         (steering-push! steering-queue 'interrupt)))
-           (when (and (thread? thread) (not (thread-exited? thread)))
+  (let
+      ((subproc-killed? #f) (thread-cancelled? #f))
+    (when (procedure? kill-subprocess!)
+      (let
+          ((had-pid?
              (catch #t
                (lambda ()
-                 (cancel-thread thread)
-                 (set! thread-cancelled? #t))
-               (lambda _ #f)))
-           (when (procedure? on-stop)
-             (catch #t (lambda () (on-stop)) (lambda _ #f)))
-           `((stopped? . ,(or thread-cancelled? subproc-killed?))
-             (thread-cancelled? . ,thread-cancelled?)
-             (subprocess-killed? . ,subproc-killed?))))
+                 (let ((pid (active-subprocess-pid))) (and (number? pid) (> pid 0))))
+               (lambda _
+                 #f))))
+        (catch #t
+          (lambda ()
+            (kill-subprocess!))
+          (lambda _
+            #f))
+        (set! subproc-killed? (and had-pid? #t))))
+    (when (steering-queue? steering-queue)
+      (with-mutex (or mutex %steering-op-mutex)
+                  (steering-push! steering-queue 'interrupt)))
+    (when
+        (and (thread? thread) (not (thread-exited? thread)))
+      (catch #t
+        (lambda ()
+          (cancel-thread thread)
+          (set! thread-cancelled? #t))
+        (lambda _
+          #f)))
+    (when (procedure? on-stop)
+      (catch #t
+        (lambda ()
+          (on-stop))
+        (lambda _
+          #f)))
+    `((stopped? . ,(or thread-cancelled? subproc-killed?))
+      (thread-cancelled? . ,thread-cancelled?)
+      (subprocess-killed? . ,subproc-killed?))))
 
 (define* (format-steering-keymap-line #:optional (slash-mode? #f))
          "Return the dim bottom keymap hint for the redesigned mid-run steering bar."

@@ -5,65 +5,73 @@
 ;;; SSH/pipes and cleanly routes subagent ReAct progress events.
 
 (define-module (geasa surfaces-tui protocol)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (geasa surfaces-tui widgets)
-               #:use-module (ice-9 format)
-               #:use-module (ice-9 rdelim)
-               #:use-module (ice-9 threads)
-               #:use-module (json)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-9)
-               #:use-module (srfi srfi-43)
-               #:export (%ui-protocol-version
-                          %ui-client-message-types
-                          %ui-server-message-types
-                          <ui-message>
-                          make-ui-message
-                          ui-message?
-                          ui-message-version
-                          ui-message-type
-                          ui-message-seq
-                          ui-message-source
-                          ui-message-payload
-                          ui-message-timestamp
-                          ui-message->alist
-                          alist->ui-message
-                          encode-ui-message
-                          decode-ui-message
-                          write-ui-frame!
-                          read-ui-frame
-                          draw-op->alist
-                          alist->draw-op
-                          <ui-server>
-                          make-ui-server
-                          ui-server?
-                          ui-server-state
-                          ui-server-seq
-                          ui-server-clients
-                          ui-server-pending-frames
-                          ui-server-connect!
-                          ui-server-disconnect!
-                          ui-server-on-event!
-                          ui-server-emit!
-                          ui-server-handle-event!
-                          ui-server-drain-frames!
-                          ui-server-route-subagent-event!
-                          <ui-client>
-                          make-ui-client
-                          ui-client?
-                          ui-client-id
-                          ui-client-cols
-                          ui-client-rows
-                          ui-client-last-frame
-                          ui-client-status
-                          ui-client-subagent-events
-                          ui-client-notifications
-                          ui-client-connected?
-                          ui-client-attach-port!
-                          ui-client-send-event
-                          ui-client-apply-frame!
-                          ui-client-render-snapshot
-                          pump-ui-pair!))
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (geasa surfaces-tui widgets)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
+               (ice-9 threads)
+               #:use-module
+               (json)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-9)
+               #:use-module
+               (srfi srfi-43)
+               #:export
+               (%ui-protocol-version %ui-client-message-types
+                                     %ui-server-message-types
+                                     <ui-message>
+                                     make-ui-message
+                                     ui-message?
+                                     ui-message-version
+                                     ui-message-type
+                                     ui-message-seq
+                                     ui-message-source
+                                     ui-message-payload
+                                     ui-message-timestamp
+                                     ui-message->alist
+                                     alist->ui-message
+                                     encode-ui-message
+                                     decode-ui-message
+                                     write-ui-frame!
+                                     read-ui-frame
+                                     draw-op->alist
+                                     <ui-server>
+                                     make-ui-server
+                                     ui-server?
+                                     ui-server-state
+                                     ui-server-seq
+                                     ui-server-clients
+                                     ui-server-pending-frames
+                                     ui-server-connect!
+                                     ui-server-disconnect!
+                                     ui-server-on-event!
+                                     ui-server-emit!
+                                     ui-server-handle-event!
+                                     ui-server-drain-frames!
+                                     ui-server-route-subagent-event!
+                                     <ui-client>
+                                     make-ui-client
+                                     ui-client?
+                                     ui-client-id
+                                     ui-client-cols
+                                     ui-client-rows
+                                     ui-client-last-frame
+                                     ui-client-status
+                                     ui-client-subagent-events
+                                     ui-client-notifications
+                                     ui-client-connected?
+                                     ui-client-attach-port!
+                                     ui-client-send-event
+                                     ui-client-apply-frame!
+                                     ui-client-render-snapshot
+                                     pump-ui-pair!))
 
 ;;;
 ;;; Protocol Constants & Message Envelope
@@ -110,16 +118,6 @@
           (bold? . ,(draw-op-bold? op))
           (dim? . ,(draw-op-dim? op))
           (reverse? . ,(draw-op-reverse? op))))
-
-(define (alist->draw-op alist)
-        "Reconstruct a <draw-op> record from ALIST."
-        (make-draw-op (or (prop-ref alist 'x) 0)
-                      (or (prop-ref alist 'y) 0)
-                      (or (prop-ref alist 'text) "")
-                      #:role (ensure-symbol (or (prop-ref alist 'role) 'default))
-                      #:bold? (and (prop-ref alist 'bold?) #t)
-                      #:dim? (and (prop-ref alist 'dim?) #t)
-                      #:reverse? (and (prop-ref alist 'reverse?) #t)))
 
 (define (alist-structure? val)
         "Return #t when VAL is a non-empty proper list of (key . value) pairs with

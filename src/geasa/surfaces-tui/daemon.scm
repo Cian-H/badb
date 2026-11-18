@@ -20,8 +20,6 @@
                #:use-module
                (ice-9 threads)
                #:use-module
-               (srfi srfi-1)
-               #:use-module
                (srfi srfi-9)
                #:export
                (<ui-daemon> make-ui-daemon

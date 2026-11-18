@@ -39,6 +39,8 @@
                (srfi srfi-1)
                #:use-module
                (srfi srfi-19)
+               #:use-module
+               ((geasa surfaces-tui transcript) #:select (split-thoughts-and-content))
                #:export
                (classify-input normalize-scheme-expr
                                make-repl-mod
@@ -904,97 +906,43 @@ resume menu."
               "~Y-~m-~d ~H:~M"))
           (lambda _ "unknown")))
 
-(define (%extract-think-blocks text)
-        "Lightweight <think>/<thought> tag splitter for resumed assistant turns."
-        (let loop
-          ((rem (or text "")) (th '()) (ct '()))
-          (let*
-              ((p1 (string-contains rem "<think>"))
-               (p2 (string-contains rem "<thought>"))
-               (hit
-                 (cond
-                   ((and p1 p2)
-                     (if (< p1 p2)
-                       (cons p1 "<think>")
-                       (cons p2 "<thought>")))
-                   (p1 (cons p1 "<think>"))
-                   (p2 (cons p2 "<thought>"))
-                   (else #f))))
-            (if hit
-              (let*
-                  ((pos (car hit)) (tag (cdr hit))
-                   (end-tag
-                     (if (string=? tag "<think>")
-                       "</think>"
-                       "</thought>"))
-                   (before (string-trim-both (substring rem 0 pos)))
-                   (after (substring rem (+ pos (string-length tag))))
-                   (end-pos (string-contains after end-tag))
-                   (next-ct
-                     (if (string-null? before)
-                       ct
-                       (cons before ct))))
-                (if end-pos
-                  (loop
-                    (substring after (+ end-pos (string-length end-tag)))
-                    (cons (string-trim-both (substring after 0 end-pos)) th) next-ct)
-                  (let
-                      ((final-th
-                         (string-trim-both
-                           (string-join (reverse (cons (string-trim-both after) th)) "\n\n")))
-                       (final-ct (string-trim-both (string-join (reverse next-ct) "\n"))))
-                    (values
-                      (if (string-null? final-th)
-                        #f
-                        final-th)
-                      final-ct))))
-              (let
-                  ((final-ct
-                     (string-trim-both
-                       (string-join
-                         (reverse
-                           (if (string-null? (string-trim-both rem))
-                             ct
-                             (cons (string-trim-both rem) ct)))
-                         "\n")))
-                   (final-th (string-trim-both (string-join (reverse th) "\n\n"))))
-                (values
-                  (if (string-null? final-th)
-                    #f
-                    final-th)
-                  final-ct))))))
-
 (define (%assistant-turn->cards turn)
         "Convert a single assistant TURN from llm-history into TUI transcript card(s)."
-        (let* ((raw-ct (message-content turn))
-               (explicit-th (message-thoughts turn))
-               (tcs-raw (prop-ref turn 'tool_calls))
-               (tcs (cond
-                      ((vector? tcs-raw) (vector->list tcs-raw))
-                      ((list? tcs-raw) tcs-raw)
-                      (else '()))))
+        (let*
+            ((raw-ct (message-content turn))
+             (explicit-th (message-thoughts turn))
+             (tcs-raw (prop-ref turn 'tool_calls))
+             (tcs
+               (cond
+                 ((vector? tcs-raw) (vector->list tcs-raw))
+                 ((list? tcs-raw) tcs-raw)
+                 (else '()))))
           (call-with-values
             (lambda ()
               (if explicit-th
                 (values explicit-th raw-ct)
-                (%extract-think-blocks raw-ct)))
+                (split-thoughts-and-content (or raw-ct ""))))
             (lambda (th ct)
-              (let* ((main-card
-                       (if (or (non-empty-string? ct) (non-empty-string? th) (null? tcs))
-                         (list `((role . "assistant")
-                                 ,@(if (non-empty-string? th)
-                                     `((thoughts . ,th) (collapsed? . #t))
-                                     '())
-                                 (content . ,ct)))
-                         '()))
-                     (tc-cards
-                       (map (lambda (tc)
-                              (let* ((fn (or (prop-ref tc 'function) tc))
-                                     (nm (or (prop-ref fn 'name) "tool"))
-                                     (args (or (prop-ref fn 'arguments) "{}")))
-                                `((role . "tool-call")
-                                  (content . ,(format #f "Invoking tool: ~a (~a)" nm args)))))
-                            tcs)))
+              (let*
+                  ((main-card
+                     (if
+                         (or (non-empty-string? ct) (non-empty-string? th) (null? tcs))
+                       (list
+                         `((role . "assistant")
+                           ,@(if (non-empty-string? th)
+                               `((thoughts . ,th) (collapsed? . #t))
+                               '())
+                           (content . ,ct)))
+                       '()))
+                   (tc-cards
+                     (map
+                       (lambda (tc)
+                         (let*
+                             ((fn (or (prop-ref tc 'function) tc))
+                              (nm (or (prop-ref fn 'name) "tool"))
+                              (args (or (prop-ref fn 'arguments) "{}")))
+                           `((role . "tool-call") (content . ,(format #f "Invoking tool: ~a (~a)" nm args)))))
+                       tcs)))
                 (append main-card tc-cards))))))
 
 (define* (session-turns->transcript-messages turns #:key (include-system? #f) (tool-preview-chars 140))

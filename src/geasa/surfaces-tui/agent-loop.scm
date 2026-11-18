@@ -58,7 +58,9 @@
                  tui-trigger-urgent-steering!
                  tui-force-stop-run!
                  tui-execute-mid-run-safe-command!
-                 tui-execute-chat-stream!))
+                 tui-execute-chat-stream!
+                 tui-queue-steering!
+                 tui-queue-interrupt!))
 
 (define*
   (tui-format-response-images-notice text #:optional (maxx 76))
@@ -200,8 +202,34 @@ and return a notice string with placeholders and /image preview hints, or #f."
             (set-tui-react-stream-last-render! st now)
             (tui-request-render! st))))
 
+(define*
+  (tui-queue-steering! st text #:optional (running? (tui-agent-running? st)))
+  "Queue TEXT onto ST's steering queue and record a steer notice."
+  (with-mutex (tui-steering-mutex st)
+              (steering-push! (tui-steering-queue st) text))
+  (tui-add-msg! st
+                "steer"
+                (if running?
+                  (format #f "Steering queued for the running agent: ~a" text)
+                  (format #f "Steering queued for the next agent run: ~a" text))))
+
+(define*
+  (tui-queue-interrupt! st #:optional (running? (tui-agent-running? st)))
+  "Kill any active subprocess, queue an 'interrupt sentinel, and mark ST."
+  (kill-active-subprocess!)
+  (with-mutex (tui-steering-mutex st)
+              (steering-push! (tui-steering-queue st) 'interrupt))
+  (set-tui-interrupt-requested?! st #t)
+  (when running? (set-tui-status-text! st "INTERRUPT REQUESTED"))
+  (tui-add-msg! st
+                "steer"
+                (if running?
+                  "Interrupt requested — halting at the next iteration boundary."
+                  "Interrupt queued — the next agent run halts before its first LLM call.")))
+
 (define (tui-trigger-urgent-steering! st text)
-        "Push TEXT to the front of ST's steering queue and preempt any running stream."
+        "Push TEXT to the front of ST's steering queue, abort any running tool,
+and set urgent-steer-requested?."
         (let
             ((clean
                (string-trim-both
@@ -211,8 +239,10 @@ and return a notice string with placeholders and /image preview hints, or #f."
           (if (string-null? clean)
             (tui-add-sys-msg! st "Usage: /steer ! <message> (or Ctrl+U with steering text)")
             (begin
-              (with-mutex (tui-steering-mutex st)
-                          (push-urgent-steering! (tui-steering-queue st) clean))
+              (push-urgent-steering! (tui-steering-queue st)
+                                     clean
+                                     #:mutex
+                                     (tui-steering-mutex st))
               (when (tui-agent-running? st)
                 (set-tui-urgent-steer-requested?! st #t)
                 (kill-active-subprocess!))
@@ -234,7 +264,9 @@ and return a notice string with placeholders and /image preview hints, or #f."
                              #:steering-queue
                              (tui-steering-queue st)
                              #:kill-subprocess!
-                             kill-active-subprocess!)
+                             kill-active-subprocess!
+                             #:mutex
+                             (tui-steering-mutex st))
           (with-mutex (tui-steering-mutex st)
                       (let
                           ((entries (steering-drain! (tui-steering-queue st))))
@@ -257,15 +289,7 @@ and return a notice string with placeholders and /image preview hints, or #f."
   "Execute safe mid-run slash command CMD with ARG on ST."
   (cond
     ((string=? cmd "stop") (tui-force-stop-run! st))
-    ((string=? cmd "interrupt")
-      (kill-active-subprocess!)
-      (with-mutex (tui-steering-mutex st)
-                  (steering-push! (tui-steering-queue st) 'interrupt))
-      (set-tui-interrupt-requested?! st #t)
-      (set-tui-status-text! st "INTERRUPT REQUESTED")
-      (tui-add-msg! st
-                    "steer"
-                    "Interrupt requested — halting at the next iteration boundary."))
+    ((string=? cmd "interrupt") (tui-queue-interrupt! st #t))
     ((string=? cmd "steer")
       (call-with-values
         (lambda ()
@@ -275,12 +299,7 @@ and return a notice string with placeholders and /image preview hints, or #f."
             (tui-add-sys-msg! st "Usage: /steer [--urgent|!] <message>")
             (if urgent?
               (tui-trigger-urgent-steering! st text)
-              (begin
-                (with-mutex (tui-steering-mutex st)
-                            (steering-push! (tui-steering-queue st) text))
-                (tui-add-msg! st
-                              "steer"
-                              (format #f "Steering queued for the running agent: ~a" text))))))))
+              (tui-queue-steering! st text #t))))))
     (else (on-command! (cons cmd arg)))))
 
 (define (steering-has-text? queue)

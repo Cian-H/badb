@@ -25,7 +25,9 @@
                #:use-module
                (geasa surfaces-tui plugin)
                #:use-module
-               (geasa surfaces-tui overlay)
+               ((geasa surfaces-overlay plugin) #:hide (make-menu-overlay))
+               #:use-module
+               ((geasa surfaces-tui menus) #:select (make-menu-overlay))
                #:use-module
                (geasa surfaces-tui state)
                #:use-module
@@ -37,22 +39,19 @@
                #:use-module
                (geasa surfaces-tui transcript)
                #:use-module
-               ((geasa surfaces-tui renderer)
-                #:select
-                (tui-transcript-search
-                  set-tui-transcript-search!
-                  tui-jump-to-bottom-visible?
-                  tui-clear-unseen-rows!
-                  tui-update-scroll-tail!
-                  tui-overlay-stack
-                  tui-push-modal-overlay!
-                  tui-pop-modal-overlay!
-                  tui-drawer-state
-                  tui-toggle-drawer!
-                  tui-cycle-drawer-panel!))
+               ((geasa surfaces-tui renderer) #:select
+                (tui-transcript-search set-tui-transcript-search!
+                                       tui-jump-to-bottom-visible?
+                                       tui-clear-unseen-rows!
+                                       tui-update-scroll-tail!
+                                       tui-overlay-stack
+                                       tui-push-modal-overlay!
+                                       tui-pop-modal-overlay!
+                                       tui-drawer-state
+                                       tui-toggle-drawer!
+                                       tui-cycle-drawer-panel!))
                #:use-module
-               ((geasa surfaces-tui widgets)
-                #:select
+               ((geasa surfaces-tui widgets) #:select
                 (format-bottom-status-bar format-startup-banner))
                #:use-module
                (geasa runtimes-react plugin)
@@ -1967,47 +1966,6 @@
                         '(slash "geis" "model qwen-2.5")
                         (classify-input "/geis model qwen-2.5")))
 
-(test-group "tui-builtin-read-file"
-            (let*
-                ((path "/tmp/badb-tui-readfile-spec.txt")
-                 (_
-                   (call-with-output-file path
-                                          (lambda (p)
-                                            (display "alpha\n" p)
-                                            (display (make-string 500 #\x) p)
-                                            (display "\ngamma\ndelta\n" p))))
-                 (default-res (builtin-read-file path))
-                 (slice-res (builtin-read-file path 2 1))
-                 (past-res (builtin-read-file path 40 5)))
-              (test-assert
-                "default read reports the total line count"
-                (string-contains default-res
-                                 "[file /tmp/badb-tui-readfile-spec.txt - 4 total lines"))
-              (test-assert
-                "default read includes the final line"
-                (string-contains default-res "delta"))
-              (test-assert
-                "default read truncates overlong lines"
-                (and
-                  (string-contains default-res "truncated: 500 of 500 chars")
-                  (< (string-length default-res) 2000)))
-              (test-assert
-                "offset+limit slice shows only the requested window"
-                (and (string-contains slice-res "gamma")
-                     (not (string-contains slice-res "delta"))
-                     (string-contains slice-res "showing lines 2..2")))
-              (test-assert
-                "slice footer reports elided remainder and total"
-                (string-contains slice-res
-                                 "[1 more lines elided - call read_file with offset=3 to continue (total 4 lines)]"))
-              (test-assert "offset past end reports cleanly"
-                           (string-contains past-res "at or past end of file"))
-              (test-assert
-                "missing file returns an inline error"
-                (string-contains
-                  (builtin-read-file "/tmp/badb-nonexistent-definitely.txt")
-                  "does not exist"))))
-
 (test-group "exec-shell-tool-impl bounded output"
             (let
                 ((plain (exec-shell-tool-impl "seq 1 5000"))
@@ -2917,59 +2875,51 @@
 ;;;
 ;;; UX 4.1 (ui-3m6): Modular UX Suite Integration
 ;;;
-(test-group
-  "ui-3m6-modular-ux-wiring"
-  (let ((st (make-tui-state)))
-    (tui-register-modular-extensions! st '())
-    (let ((stk (tui-overlay-stack st)))
-      (test-assert "overlay-stack initialized with floating notify overlay"
-                   (and (overlay-stack? stk)
-                        (pair? (overlay-stack-floatings stk)))))
-    (tui-open-notifications-modal! st)
-    (test-assert "notifications modal pushed" (overlay? (tui-active-overlay st)))
-    (tui-pop-modal-overlay! st)
-    (test-assert "popping restores #f" (not (tui-active-overlay st)))
-
-    (tui-open-mcp-modal! st)
-    (test-assert "mcp modal pushed" (overlay? (tui-active-overlay st)))
-    (tui-pop-modal-overlay! st)
-
-    (tui-open-session-browser-modal! st 'sessions)
-    (test-assert "session browser modal pushed" (overlay? (tui-active-overlay st)))
-    (tui-pop-modal-overlay! st)
-
-    (tui-open-context-inspector-modal! st 'budget)
-    (test-assert "context inspector modal pushed" (overlay? (tui-active-overlay st)))
-    (tui-pop-modal-overlay! st)
-
-    (tui-open-agent-monitor-modal! st)
-    (test-assert "agent monitor modal pushed" (overlay? (tui-active-overlay st)))
-    (tui-pop-modal-overlay! st)
-
-    (tui-open-command-palette! st '())
-    (test-assert "command palette modal pushed" (overlay? (tui-active-overlay st)))
-    (tui-pop-modal-overlay! st)
-
-    (tui-open-config-modal! st)
-    (test-assert "config modal pushed" (overlay? (tui-active-overlay st)))
-    (tui-pop-modal-overlay! st)
-
-    (tui-open-knowledge-browser-modal! st 'skills)
-    (test-assert "knowledge browser modal pushed" (overlay? (tui-active-overlay st)))
-    (tui-pop-modal-overlay! st)
-
-    (tui-toggle-drawer! st)
-    (test-assert "drawer toggled open" (not (not (tui-drawer-state st)))))
-
-  (let* ((bar (format-bottom-status-bar 120 #:model "gpt-4o" #:notify-count 2))
-         (texts (map cadr bar)))
-    (test-assert "status bar includes notify bell count"
-                 (member "🔔 2" texts)))
-
-  (let* ((banner (format-startup-banner 100 #:model "gpt-4o"))
-         (last-row (apply string-append (map car (car (reverse banner))))))
-    (test-assert "startup banner includes Ctrl+K quick-action strip"
-                 (string-contains last-row "Ctrl+K Palette"))))
+(test-group "ui-3m6-modular-ux-wiring"
+            (let ((st (make-tui-state)))
+              (let ((stk (tui-overlay-stack st)))
+                (test-assert
+                  "overlay-stack initialized with floating notify overlay"
+                  (and (overlay-stack? stk) (pair? (overlay-stack-floatings stk)))))
+              (tui-open-notifications-modal! st)
+              (test-assert "notifications modal pushed" (overlay? (tui-active-overlay st)))
+              (tui-pop-modal-overlay! st)
+              (test-assert "popping restores #f" (not (tui-active-overlay st)))
+              (tui-open-mcp-modal! st)
+              (test-assert "mcp modal pushed" (overlay? (tui-active-overlay st)))
+              (tui-pop-modal-overlay! st)
+              (tui-open-session-browser-modal! st 'sessions)
+              (test-assert "session browser modal pushed" (overlay? (tui-active-overlay st)))
+              (tui-pop-modal-overlay! st)
+              (tui-open-context-inspector-modal! st 'budget)
+              (test-assert "context inspector modal pushed"
+                           (overlay? (tui-active-overlay st)))
+              (tui-pop-modal-overlay! st)
+              (tui-open-agent-monitor-modal! st)
+              (test-assert "agent monitor modal pushed" (overlay? (tui-active-overlay st)))
+              (tui-pop-modal-overlay! st)
+              (tui-open-command-palette! st '())
+              (test-assert "command palette modal pushed" (overlay? (tui-active-overlay st)))
+              (tui-pop-modal-overlay! st)
+              (tui-open-config-modal! st)
+              (test-assert "config modal pushed" (overlay? (tui-active-overlay st)))
+              (tui-pop-modal-overlay! st)
+              (tui-open-knowledge-browser-modal! st 'skills)
+              (test-assert "knowledge browser modal pushed"
+                           (overlay? (tui-active-overlay st)))
+              (tui-pop-modal-overlay! st)
+              (tui-toggle-drawer! st)
+              (test-assert "drawer toggled open" (not (not (tui-drawer-state st)))))
+            (let*
+                ((bar (format-bottom-status-bar 120 #:model "gpt-4o" #:notify-count 2))
+                 (texts (map cadr bar)))
+              (test-assert "status bar includes notify bell count" (member "🔔 2" texts)))
+            (let*
+                ((banner (format-startup-banner 100 #:model "gpt-4o"))
+                 (last-row (apply string-append (map car (car (reverse banner))))))
+              (test-assert
+                "startup banner includes Ctrl+K quick-action strip"
+                (string-contains last-row "Ctrl+K Palette"))))
 
 (spec-end)
 

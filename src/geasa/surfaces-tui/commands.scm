@@ -4,44 +4,58 @@
 ;;; (/mcp, /config, /rules, /context, /usage, /features, /journal, /help).
 
 (define-module (geasa surfaces-tui commands)
-               #:use-module (geasa surfaces-tui menus)
-               #:use-module (geasa foundation-config plugin)
-               #:use-module (geasa capabilities-mcp plugin)
-               #:use-module (geasa capabilities-context-index plugin)
-               #:use-module (geasa capabilities-skills plugin)
-               #:use-module (geasa capabilities-code-nav plugin)
-               #:use-module (geasa runtimes-workflows plugin)
-               #:use-module (geasa foundation-util plugin)
-               #:use-module (geasa runtimes-prompt plugin)
-               #:use-module (geasa runtimes-context plugin)
-               #:use-module (geasa policies-guardrail plugin)
-               #:use-module (badb kernel registry)
-               #:use-module (badb kernel journal)
-               #:use-module (ice-9 format)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-13)
-               #:export (execute-mcp-subcommand!
-                          execute-ctx-subcommand!
-                          execute-context-subcommand!
-                          execute-skills-subcommand!
-                          execute-memories-subcommand!
-                          execute-geis-bootstrap!
-                          execute-geis-onboard!
-                          execute-geis-distill!
-                          %command-aliases
-                          resolve-command-alias
-                          deduplicate-slash-commands
-                          format-config-summary
-                          format-provider-presets
-                          format-guardrail-status
-                          format-rules-and-tree
-                          format-context-metrics
-                          sparkline-plot
-                          format-geis-bindings-graph
-                          format-usage-report
-                          format-features-list
-                          format-journal-recent
-                          %tui-help-message))
+               #:use-module
+               (geasa surfaces-tui menus)
+               #:use-module
+               (geasa foundation-config plugin)
+               #:use-module
+               (geasa capabilities-mcp plugin)
+               #:use-module
+               (geasa capabilities-context-index plugin)
+               #:use-module
+               (geasa capabilities-skills plugin)
+               #:use-module
+               (geasa capabilities-code-nav plugin)
+               #:use-module
+               (geasa runtimes-workflows plugin)
+               #:use-module
+               (geasa foundation-util plugin)
+               #:use-module
+               (geasa runtimes-prompt plugin)
+               #:use-module
+               (geasa runtimes-context plugin)
+               #:use-module
+               (geasa policies-guardrail plugin)
+               #:use-module
+               (badb kernel registry)
+               #:use-module
+               (badb kernel journal)
+               #:use-module
+               (ice-9 format)
+               #:use-module
+               (srfi srfi-1)
+               #:export
+               (execute-mcp-subcommand!
+                 execute-context-subcommand!
+                 execute-skills-subcommand!
+                 execute-memories-subcommand!
+                 execute-geis-bootstrap!
+                 execute-geis-onboard!
+                 execute-geis-distill!
+                 %command-aliases
+                 resolve-command-alias
+                 deduplicate-slash-commands
+                 format-config-summary
+                 format-provider-presets
+                 format-guardrail-status
+                 format-rules-and-tree
+                 format-context-metrics
+                 sparkline-plot
+                 format-geis-bindings-graph
+                 format-usage-report
+                 format-features-list
+                 format-journal-recent
+                 %tui-help-message))
 
 (define (execute-mcp-subcommand! mcp-mgr arg add-sys-msg! add-err-msg!)
         "Dispatch /mcp subcommands (list, start, stop, restart, add, remove, tools)."
@@ -169,7 +183,7 @@
 ;;; Command Aliasing & Palette Deduplication
 ;;;
 (define %command-aliases
-        '(("ctx" . "context")
+        '(("ctx" . "context") ("geasa" . "geis")
           ("exit" . "quit")
           ("shell" . "sh")
           ("scheme" . "eval")
@@ -604,15 +618,6 @@ from journal JRN (and optional active registry REG)."
                            (format #f "Active Bindings  : ~a feature(s) attached in registry" (length reg-ids))
                            (format #f "Total Journal Tx : ~a entries on disk" (length entries)))
                          (string-join bar-lines "\n")))))))
-
-(define (execute-ctx-subcommand! ctx-idx arg add-sys-msg! add-err-msg!)
-        "Dispatch /ctx subcommands: stats or search query."
-        (let ((trimmed (string-trim-both arg)))
-          (cond
-            ((or (string-null? trimmed) (string=? trimmed "stats"))
-              (add-sys-msg! (format-ctx-stats ctx-idx)))
-            (else
-              (add-sys-msg! (ctx-search ctx-idx trimmed))))))
 
 (define* (execute-context-subcommand! compactor llm-history messages ctx-idx arg
                                       add-sys-msg! add-err-msg!
