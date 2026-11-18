@@ -88,6 +88,8 @@
                #:use-module
                (geasa surfaces-tui events)
                #:use-module
+               ((geasa surfaces-tui actions) #:select (tui-register-modular-extensions!))
+               #:use-module
                (geasa agents-lifecycle plugin)
                #:use-module
                (geasa agents-coordination plugin)
@@ -703,7 +705,8 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
            (model #f)
            (api-key #f)
            (journal-path #f)
-           (config #f))
+           (config #f)
+           (clean? (equal? (getenv "BADB_CLEAN") "1")))
   "Launch the interactive badb curses TUI."
   (unless
       (catch #t
@@ -771,7 +774,7 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
                (nref 'ERR))
              (lambda _
                -1)))
-         (cfg (or config (load-config)))
+         (cfg (or config (if clean? (make-badb-config) (load-config))))
          (ui-theme
            (let ((configured (badb-config-ui-theme cfg)))
              (or (and (string? configured) (lookup-theme configured)) (default-theme))))
@@ -818,7 +821,7 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
                               #:allow-missing-thinking?
                               (badb-config-allow-missing-thinking? cfg cur-endpoint)))
          (ctx-idx (make-bm25-index))
-         (skill-reg (make-skill-registry))
+         (skill-reg (if clean? (make-skill-registry #:roots '()) (make-skill-registry)))
          (banner-tips
            (list "! shell · ( scheme · / commands · /help"
                  "ctrl+r history · @ files · ctrl+x $EDITOR · /todo · /diff"
@@ -893,7 +896,7 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
                            #:session-file
                            (session-file-path)
                            #:input-history
-                           (make-history (load-history-file (default-history-file-path)))
+                           (make-history (if clean? '() (load-history-file (default-history-file-path))))
                            #:ui-server
                            ui-server
                            #:ui-client
@@ -905,13 +908,14 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
              (show-geis-bindings-uplot! . ,show-geis-bindings-uplot!)
              (spec-tool-status . ,spec-tool-status)
              (spec-tool-verify . ,spec-tool-verify))))
-      (catch #t
-        (lambda ()
-          (discover-skills! skill-reg)
-          (discover-and-mount-project-geasa! reg #:workspace (getcwd))
-          (mount-bundle-workflows! reg #:workspace (getcwd)))
-        (lambda _
-          #f))
+      (unless clean?
+        (catch #t
+          (lambda ()
+            (discover-skills! skill-reg)
+            (discover-and-mount-project-geasa! reg #:workspace (getcwd))
+            (mount-bundle-workflows! reg #:workspace (getcwd)))
+          (lambda _
+            #f)))
       (register-builtin-tui-tools! reg
                                    rollback-mgr
                                    verifier
@@ -928,7 +932,8 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
                                    cfg
                                    #:policy
                                    policy)
-      (auto-start-mcp-servers! cfg mcp-mgr)
+      (unless clean?
+        (auto-start-mcp-servers! cfg mcp-mgr))
       (set-context-compactor-strategy! compactor
                                        (strategy-cascading #:keep-recent-turns
                                                            6
@@ -958,22 +963,23 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
                                       #:target-id
                                       (current-harness-id)))
       (startup-auto-detect-model! st)
-      (catch #t
-        (lambda ()
-          (register-geis-updater-extensions!)
-          (start-background-geasa-update-check! #:workspace
-                                                (getcwd)
-                                                #:config
-                                                (tui-cfg st)
-                                                #:on-complete
-                                                (lambda (results)
-                                                  (let
-                                                      ((notice (geis-updater-startup-notice results)))
-                                                    (when notice
-                                                      (set-tui-status-text! st notice)
-                                                      (set-tui-render-dirty?! st #t))))))
-        (lambda _
-          #f))
+      (unless clean?
+        (catch #t
+          (lambda ()
+            (register-geis-updater-extensions!)
+            (start-background-geasa-update-check! #:workspace
+                                                  (getcwd)
+                                                  #:config
+                                                  (tui-cfg st)
+                                                  #:on-complete
+                                                  (lambda (results)
+                                                    (let
+                                                        ((notice (geis-updater-startup-notice results)))
+                                                      (when notice
+                                                        (set-tui-status-text! st notice)
+                                                        (set-tui-render-dirty?! st #t))))))
+          (lambda _
+            #f)))
       (let ((stdscr (initscr)))
         (set-tui-stdscr! st stdscr)
         (cbreak!)
@@ -994,6 +1000,7 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
         (tui-safe-curs-set! st 1)
         (set-tui-colors-enabled?! st (has-colors?))
         (when (tui-colors-enabled? st) (start-color!))
+        (tui-register-modular-extensions! st hooks)
         (dynamic-wind
           (lambda ()
             #t)

@@ -102,36 +102,92 @@
                      (eq? (car target) 'palette-item))
                     (set-tui-selector-index! st (cdr target))
                     #t)
+                  ((eq? target 'jump-to-bottom)
+                    (set-tui-scroll-offset! st 0)
+                    (tui-clear-unseen-rows! st)
+                    #t)
+                  ((and (pair? target) (eq? (car target) 'status-bar-pills))
+                    (let* ((col (or x 0))
+                           (hit (find (lambda (sp)
+                                        (and (>= col (car sp)) (< col (cadr sp))))
+                                      (cdr target))))
+                      (when hit
+                        (case (caddr hit)
+                          ((config) (tui-open-config-modal! st))
+                          ((context) (tui-open-context-inspector-modal! st 'budget))
+                          ((geasa) (tui-handle-command! st '("geis" . "") hooks))
+                          ((agents) (tui-open-agent-monitor-modal! st))
+                          ((notifications) (tui-open-notifications-modal! st))))
+                      (and hit #t)))
+                  ((eq? target 'quick-action-strip)
+                    (let* ((row-txt (or (hashq-ref (tui-row-texts st) y) ""))
+                           (col (max 0 (- (or x 2) 2)))
+                           (hit-token
+                             (find (lambda (tok)
+                                     (let ((p (string-contains row-txt tok)))
+                                       (and p (>= col p) (< col (+ p (string-length tok))))))
+                                   '("Ctrl+K Palette" "/geis" "/mcp" "/sessions" "@file"))))
+                      (cond
+                        ((equal? hit-token "Ctrl+K Palette") (tui-open-command-palette! st hooks))
+                        ((equal? hit-token "/geis") (tui-handle-command! st '("geis" . "") hooks))
+                        ((equal? hit-token "/mcp") (tui-open-mcp-modal! st))
+                        ((equal? hit-token "/sessions") (tui-open-session-browser-modal! st 'sessions))
+                        ((equal? hit-token "@file") (tui-apply-edit! st "@" 1)))
+                      (and hit-token #t)))
                   ((integer? target)
                     (let*
                         ((row-txt (hashq-ref (tui-row-texts st) y))
+                         (copy-pos (and (string? row-txt) (string-contains row-txt "[copy]")))
+                         (col (and (integer? x) (- x 2)))
                          (link
                            (and (string? row-txt)
                                 (integer? x)
                                 (>= x 2)
                                 (find-link-at-column row-txt (- x 2)))))
-                      (when link
-                        (let
-                            ((kind (assoc-ref link 'kind))
-                             (dest (assoc-ref link 'target))
-                             (line-num (assoc-ref link 'line)))
-                          (cond
-                            ((and (eq? kind 'file) (string? dest) (file-exists? dest))
-                              (open-in-external-editor dest
-                                                       #:line
-                                                       line-num
-                                                       #:suspend-tty!
-                                                       (lambda () (tui-suspend-tty! st))
-                                                       #:resume-tty!
-                                                       (lambda () (tui-resume-tty! st))))
-                            ((and (eq? kind 'url) (string? dest))
-                              (catch #t
-                                (lambda ()
-                                  (let ((p (open-pipe* OPEN_READ "xdg-open" dest))) (close-pipe p)))
-                                (lambda _
-                                  #f))))))
-                      (set-tui-msgsel-index! st target)
-                      #t))
+                      (if (and copy-pos col (>= col copy-pos) (< col (+ copy-pos 6)))
+                        (let* ((msg (list-ref (tui-messages st) target))
+                               (blocks (extract-fenced-code-blocks (or (prop-ref msg 'content) ""))))
+                          (when (pair? blocks)
+                            (let* ((seen-headers
+                                     (let hloop ((ry 0) (cnt 0))
+                                                (if (> ry y)
+                                                  cnt
+                                                  (let ((rt (hashq-ref (tui-row-texts st) ry))
+                                                        (tg (hashq-ref (tui-click-targets st) ry)))
+                                                    (hloop (+ ry 1)
+                                                           (if (and (eqv? tg target)
+                                                                    (string? rt)
+                                                                    (string-prefix? "╭─ " rt))
+                                                             (+ cnt 1)
+                                                             cnt))))))
+                                   (b-idx (max 0 (min (- (length blocks) 1) (- seen-headers 1))))
+                                   (code (list-ref blocks b-idx)))
+                              (clipboard-copy! code)
+                              (set-tui-status-text! st (format #f "COPIED CODE (~a chars)" (string-length code)))))
+                          #t)
+                        (begin
+                          (when link
+                            (let
+                                ((kind (assoc-ref link 'kind))
+                                 (dest (assoc-ref link 'target))
+                                 (line-num (assoc-ref link 'line)))
+                              (cond
+                                ((and (eq? kind 'file) (string? dest) (file-exists? dest))
+                                  (open-in-external-editor dest
+                                                           #:line
+                                                           line-num
+                                                           #:suspend-tty!
+                                                           (lambda () (tui-suspend-tty! st))
+                                                           #:resume-tty!
+                                                           (lambda () (tui-resume-tty! st))))
+                                ((and (eq? kind 'url) (string? dest))
+                                  (catch #t
+                                    (lambda ()
+                                      (let ((p (open-pipe* OPEN_READ "xdg-open" dest))) (close-pipe p)))
+                                    (lambda _
+                                      #f))))))
+                          (set-tui-msgsel-index! st target)
+                          #t))))
                   (else
                     (if (tui-msgsel-index st)
                       (begin (set-tui-msgsel-index! st #f) #t)
@@ -363,6 +419,7 @@
                        (set-tui-cursor-pos! st 0)
                        (set-tui-selector-index! st 0)
                        (when (eq? (tui-prompt-mode st) 'slash) (set-tui-prompt-mode! st 'chat))
+                       (tui-record-history! st (string-append "/" chosen) 'slash)
                        (let
                            ((res (tui-handle-command! st (cons chosen "") hooks)))
                          (if (eq? res 'exit)
@@ -378,7 +435,7 @@
           (cond
             ((string-null? trimmed) 'render)
             ((eq? cur-mode 'shell)
-              (tui-record-history! st trimmed 'shell)
+              (tui-record-history! st (if (string-prefix? "!" trimmed) trimmed (string-append "!" trimmed)) 'shell)
               (tui-add-cmd-msg! st trimmed)
               (tui-execute-shell! st trimmed)
               'render)
@@ -393,14 +450,23 @@
                    (action (classify-input canonical)))
                 (case (car action)
                   ((slash)
-                    (let
-                        ((res (tui-handle-command! st (cons (cadr action) (caddr action)) hooks)))
-                      (if (eq? res 'exit)
-                        'done
-                        'render)))
+                    (let* ((scmd (cadr action))
+                           (sarg (caddr action))
+                           (hist-str (if (string-null? (string-trim-both sarg))
+                                       (string-append "/" scmd)
+                                       (string-append "/" scmd " " sarg))))
+                      (tui-record-history! st hist-str 'slash)
+                      (let ((res (catch #t
+                                   (lambda () (tui-handle-command! st (cons scmd sarg) hooks))
+                                   (lambda (k . args)
+                                     (tui-add-err-msg! st (format #f "Command error (~a): ~s" k args))
+                                     'render))))
+                        (if (eq? res 'exit)
+                          'done
+                          'render))))
                   ((shell)
                     (let ((shell-cmd (cdr action)))
-                      (tui-record-history! st shell-cmd 'shell)
+                      (tui-record-history! st (if (string-prefix? "!" shell-cmd) shell-cmd (string-append "!" shell-cmd)) 'shell)
                       (tui-add-cmd-msg! st shell-cmd)
                       (tui-execute-shell! st shell-cmd)
                       'render))
@@ -452,7 +518,8 @@
 (define (handle-idle-tab! st)
         "Apply slash-command or @-mention completion on Tab."
         (cond
-          ((selector-active? (tui-input-buffer st) (tui-prompt-mode st))
+          ((and (not (history-recall-position (tui-input-history st)))
+                (selector-active? (tui-input-buffer st) (tui-prompt-mode st)))
             (let*
                 ((matches
                    (deduplicate-slash-commands (matching-slash-commands (tui-input-buffer st))))
@@ -524,10 +591,33 @@
             (set-tui-msgsel-index! st #f)))
         'render)
 
+(define (apply-recalled-history-entry! st entry)
+        "Apply recalled history ENTRY to ST, updating prompt mode and buffer."
+        (cond
+          ((string-prefix? "!" entry)
+            (let ((body (substring entry 1)))
+              (set-tui-prompt-mode! st 'shell)
+              (set-tui-input-buffer! st body)
+              (set-tui-cursor-pos! st (string-length body))))
+          ((string-prefix? "/" entry)
+            (let ((body (substring entry 1)))
+              (set-tui-prompt-mode! st 'slash)
+              (set-tui-input-buffer! st body)
+              (set-tui-cursor-pos! st (string-length body))))
+          ((string-prefix? "(" entry)
+            (set-tui-prompt-mode! st 'scheme)
+            (set-tui-input-buffer! st entry)
+            (set-tui-cursor-pos! st (string-length entry)))
+          (else
+            (set-tui-prompt-mode! st 'chat)
+            (set-tui-input-buffer! st entry)
+            (set-tui-cursor-pos! st (string-length entry)))))
+
 (define (handle-idle-up-down! st delta)
         "Step active selector or input history by DELTA (-1 for Up, +1 for Down)."
         (cond
-          ((selector-active? (tui-input-buffer st) (tui-prompt-mode st))
+          ((and (not (history-recall-position (tui-input-history st)))
+                (selector-active? (tui-input-buffer st) (tui-prompt-mode st)))
             (let
                 ((matches
                    (deduplicate-slash-commands (matching-slash-commands (tui-input-buffer st)))))
@@ -560,19 +650,78 @@
             (let
                 ((entry (history-recall (tui-input-history st) -1)))
               (when entry
-                (set-tui-input-buffer! st entry)
-                (set-tui-cursor-pos! st (string-length entry)))))
+                (apply-recalled-history-entry! st entry))))
           (else
             (let*
                 ((was-recalling? (history-recall-position (tui-input-history st)))
                  (entry (history-recall (tui-input-history st) 1)))
               (if entry
-                (begin (set-tui-input-buffer! st entry)
-                       (set-tui-cursor-pos! st (string-length entry)))
+                (apply-recalled-history-entry! st entry)
                 (when was-recalling?
+                  (set-tui-prompt-mode! st 'chat)
                   (set-tui-input-buffer! st (tui-history-draft st))
                   (set-tui-cursor-pos! st (tui-history-draft-pos st)))))))
         'render)
+
+(define (apply-transcript-search-scroll! st ts)
+        (let ((scroll (transcript-search-scroll-offset
+                        ts
+                        (tui-asm-total st)
+                        (tui-last-view-height st))))
+          (when scroll
+            (set-tui-scroll-offset! st scroll))))
+
+(define (handle-transcript-search-key! st ch KEY_ENTER KEY_BACKSPACE)
+        (let ((ts (tui-transcript-search st)))
+          (cond
+            ((eqv? ch 27)
+              (set-tui-transcript-search! st (transcript-search-close ts))
+              'render)
+            ((transcript-search-input-active? ts)
+              (cond
+                ((or (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
+                  (let ((next (transcript-search-with-input-active ts #f)))
+                    (set-tui-transcript-search! st next)
+                    (apply-transcript-search-scroll! st next))
+                  'render)
+                ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 127) (eqv? ch 8))
+                  (let* ((q (transcript-search-query ts))
+                         (nq (if (> (string-length q) 0)
+                               (substring q 0 (- (string-length q) 1))
+                               ""))
+                         (next (transcript-search-update ts
+                                                         nq
+                                                         (tui-messages st)
+                                                         (tui-last-content-width st)
+                                                         (tui-row-cache st))))
+                    (set-tui-transcript-search! st next)
+                    (apply-transcript-search-scroll! st next))
+                  'render)
+                ((and (integer? ch) (>= ch 32) (<= ch 126))
+                  (let* ((nq (string-append (transcript-search-query ts) (string (integer->char ch))))
+                         (next (transcript-search-update ts
+                                                         nq
+                                                         (tui-messages st)
+                                                         (tui-last-content-width st)
+                                                         (tui-row-cache st))))
+                    (set-tui-transcript-search! st next)
+                    (apply-transcript-search-scroll! st next))
+                  'render)
+                (else 'render)))
+            ((or (eqv? ch 110) (eqv? ch KEY_ENTER) (eqv? ch 10) (eqv? ch 13))
+              (let ((next (transcript-search-step ts 1)))
+                (set-tui-transcript-search! st next)
+                (apply-transcript-search-scroll! st next))
+              'render)
+            ((eqv? ch 78)
+              (let ((next (transcript-search-step ts -1)))
+                (set-tui-transcript-search! st next)
+                (apply-transcript-search-scroll! st next))
+              'render)
+            ((or (eqv? ch 47) (eqv? ch 6))
+              (set-tui-transcript-search! st (transcript-search-with-input-active ts #t))
+              'render)
+            (else #f))))
 
 (define
   (handle-idle-key! st ch input-pending? drain-input-burst! hooks)
@@ -609,21 +758,84 @@
                    'render
                    'continue))))
       ((and ov (not (or (eqv? ch 3) (eqv? ch 4))))
-        (let
-            ((res ((overlay-on-key ov) ov ch (make-overlay-key-ctx st hooks))))
-          (when (eq? res 'close) (tui-clear-overlay! st))
-          'render))
+        (let* ((stk (tui-overlay-stack st))
+               (stk-top (overlay-stack-top-modal stk))
+               (ctx (make-overlay-key-ctx st hooks)))
+          (if (eq? ov stk-top)
+            (let ((res (catch #t
+                         (lambda () (overlay-stack-handle-key stk ch ctx))
+                         (lambda (k . args)
+                           (tui-add-err-msg! st (format #f "Overlay key error (~a): ~s" k args))
+                           'handled))))
+              (when (and (eq? res 'pass) (eqv? ch 121))
+                (let ((data (overlay-data ov)))
+                  (when data
+                    (clipboard-copy! (format #f "~a" data)))))
+              (when (eq? (tui-active-overlay st) ov)
+                (set-tui-active-overlay! st (overlay-stack-top-modal stk))))
+            (let ((res ((overlay-on-key ov) ov ch ctx)))
+              (when (eq? res 'close) (tui-clear-overlay! st)))))
+        'render)
+      ((eqv? ch 11)
+        (tui-open-command-palette! st hooks)
+        'render)
       ((and (history-search-active? hs) (not (or (eqv? ch 3) (eqv? ch 4))))
+        (let ((norm-ch (cond
+                         ((eqv? ch KEY_DOWN) 'up)
+                         ((eqv? ch KEY_UP) 'down)
+                         ((eqv? ch KEY_ENTER) 10)
+                         ((eqv? ch KEY_BACKSPACE) 'backspace)
+                         (else ch))))
+          (call-with-values
+            (lambda ()
+              (history-search-handle-key hs (tui-input-history st) norm-ch))
+            (lambda (action new-st res-buf res-pos)
+              (set-tui-history-search! st new-st)
+              (case action
+                ((accept)
+                  (if (and (string? res-buf) (string-prefix? "/" res-buf))
+                    (let ((body (substring res-buf 1)))
+                      (set-tui-prompt-mode! st 'slash)
+                      (set-tui-input-buffer! st body)
+                      (set-tui-cursor-pos! st (string-length body)))
+                    (begin
+                      (set-tui-input-buffer! st res-buf)
+                      (set-tui-cursor-pos! st res-pos)))
+                  (tui-clamp-selector-index! st))
+                ((cancel)
+                  (set-tui-input-buffer! st res-buf)
+                  (set-tui-cursor-pos! st res-pos)
+                  (tui-clamp-selector-index! st))))))
+        'render)
+      ((and (transcript-search-active? (tui-transcript-search st))
+            (not (or (eqv? ch 3) (eqv? ch 4)))
+            (handle-transcript-search-key! st ch KEY_ENTER KEY_BACKSPACE))
+        => identity)
+      ((eqv? ch 6)
+        (set-tui-transcript-search! st (transcript-search-open (tui-transcript-search st)))
+        'render)
+      ((or (eqv? ch 26) (eqv? ch 31))
+        (let ((snap (editor-undo-pop! st)))
+          (when snap
+            (set-tui-input-buffer! st (car snap))
+            (set-tui-cursor-pos! st (cdr snap))
+            (tui-clamp-selector-index! st)))
+        'render)
+      ((eqv? ch 21)
+        (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
         (call-with-values
-          (lambda ()
-            (history-search-handle-key hs (tui-input-history st) ch))
-          (lambda (action new-st res-buf res-pos)
-            (set-tui-history-search! st new-st)
-            (case action
-              ((accept cancel)
-                (set-tui-input-buffer! st res-buf)
-                (set-tui-cursor-pos! st res-pos)
-                (tui-clamp-selector-index! st)))))
+          (lambda () (kill-to-line-start (tui-input-buffer st) (tui-cursor-pos st)))
+          (lambda (nb np)
+            (tui-apply-edit! st nb np)
+            (tui-clamp-selector-index! st)))
+        'render)
+      ((eqv? ch 23)
+        (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
+        (call-with-values
+          (lambda () (kill-word-backward (tui-input-buffer st) (tui-cursor-pos st)))
+          (lambda (nb np)
+            (tui-apply-edit! st nb np)
+            (tui-clamp-selector-index! st)))
         'render)
       ((eqv? ch 18)
         (set-tui-history-search! st
@@ -639,6 +851,7 @@
       ((eqv? ch KEY_UP) (handle-idle-up-down! st -1))
       ((eqv? ch KEY_DOWN) (handle-idle-up-down! st 1))
       ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 127) (eqv? ch 8))
+        (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
         (call-with-values
           (lambda ()
             (prompt-mode-on-backspace (tui-prompt-mode st)
@@ -688,14 +901,30 @@
         'render)
       ((or (eqv? ch KEY_HOME) (eqv? ch 1)) (set-tui-cursor-pos! st 0) 'render)
       ((eqv? ch KEY_END)
-        (set-tui-cursor-pos! st (string-length (tui-input-buffer st)))
+        (if (and (> (tui-scroll-offset st) 0)
+                 (or (string-null? (tui-input-buffer st))
+                     (= (tui-cursor-pos st) (string-length (tui-input-buffer st)))))
+          (begin
+            (set-tui-scroll-offset! st 0)
+            (tui-clear-unseen-rows! st))
+          (set-tui-cursor-pos! st (string-length (tui-input-buffer st))))
         'render)
       ((eqv? ch 15)
-        (when
-            (and (integer? (tui-msgsel-index st))
+        (if (and (integer? (tui-msgsel-index st))
                  (pair? (tui-messages st))
                  (< (tui-msgsel-index st) (length (tui-messages st))))
-          (tui-toggle-selected-collapse! st))
+          (tui-toggle-selected-collapse! st)
+          (call-with-values
+            (lambda () (transcript-fold-all! (tui-messages st) 'toggle))
+            (lambda (next-msgs collapsed? changed)
+              (set-tui-messages! st next-msgs)
+              (row-cache-clear! (tui-row-cache st))
+              (set-tui-status-text!
+                st
+                (format #f "~a ~a card~a"
+                        (if collapsed? "Folded" "Unfolded")
+                        changed
+                        (if (= changed 1) "" "s"))))))
         'render)
       ((eqv? ch 5)
         (if
@@ -707,6 +936,7 @@
             (set-tui-cursor-pos! st (string-length (tui-input-buffer st)))))
         'render)
       ((eqv? ch KEY_DC)
+        (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
         (call-with-values
           (lambda ()
             (delete-at (tui-input-buffer st) (tui-cursor-pos st)))
@@ -717,6 +947,7 @@
       ((or (eqv? ch 3) (eqv? ch 4)) 'done)
       ((eqv? ch KEY_RESIZE) 'render)
       ((and (integer? ch) (>= ch 32))
+        (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
         (let
             ((burst
                (if (input-pending?)

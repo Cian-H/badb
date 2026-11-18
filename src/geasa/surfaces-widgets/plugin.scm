@@ -71,7 +71,24 @@
                          status-badge-widget
                          toggle-widget
                          key-hints-widget
-                         table-widget))
+                         table-widget
+                         <filter-state>
+                         make-filter-state
+                         filter-state?
+                         filter-state-query
+                         filter-state-cursor
+                         filter-state-active?
+                         set-filter-state-active!
+                         filter-state-placeholder
+                         filter-handle-key
+                         fuzzy-subsequence-score
+                         filter-selectable-list
+                         filter-input-widget
+                         %braille-spinner-frames
+                         %ascii-spinner-frames
+                         spinner-widget
+                         progress-bar-widget
+                         meter-widget))
 
 ;;;
 ;;; String & Geometry Helpers
@@ -1229,3 +1246,290 @@ or (header . width) pairs. ROWS is a list of cell lists (strings or <widget>s)."
                                                       sel?
                                                       #f)))
                                      (loop (cdr rest) (+ idx 1) (+ dy 1) (append acc row-ops)))))))))))))))
+
+;;;
+;;; Filter Input & Fuzzy Matcher
+;;;
+(define-record-type <filter-state>
+                    (%make-filter-state query cursor active? placeholder)
+                    filter-state?
+                    (query filter-state-query)
+                    (cursor filter-state-cursor)
+                    (active? filter-state-active? set-filter-state-active!)
+                    (placeholder filter-state-placeholder))
+
+(define* (make-filter-state #:key
+                            (query "")
+                            (cursor #f)
+                            (active? #f)
+                            (placeholder "Type to filter..."))
+         "Construct a <filter-state> for interactive list filtering."
+         (let* ((q (ensure-string (or query "")))
+                (len (string-length q))
+                (cur (if (integer? cursor)
+                       (max 0 (min len cursor))
+                       len)))
+           (%make-filter-state q cur (and active? #t) (ensure-string (or placeholder "")))))
+
+(define (filter-insert-char fs ch-char)
+        (let* ((q (filter-state-query fs))
+               (cur (filter-state-cursor fs))
+               (new-q (string-append (substring q 0 cur)
+                                     (string ch-char)
+                                     (substring q cur))))
+          (%make-filter-state new-q (+ cur 1) #t (filter-state-placeholder fs))))
+
+(define* (filter-handle-key fs ch #:key (key-ctx '()))
+         "Handle key CH on <filter-state> FS.
+Returns a new <filter-state>, or #f if CH is not a filter-input key."
+         (let* ((q (filter-state-query fs))
+                (cur (filter-state-cursor fs))
+                (len (string-length q))
+                (ph (filter-state-placeholder fs))
+                (k-bs (assq-ref key-ctx 'key-backspace))
+                (k-ent (assq-ref key-ctx 'key-enter))
+                (k-left (assq-ref key-ctx 'key-left))
+                (k-right (assq-ref key-ctx 'key-right)))
+           (cond
+             ((or (eq? ch 'esc) (eqv? ch #\esc) (eqv? ch #\escape) (eqv? ch 27))
+               (%make-filter-state "" 0 #f ph))
+             ((or (eq? ch 'enter) (eqv? ch #\newline) (eqv? ch #\return)
+                  (eqv? ch 10) (eqv? ch 13) (and k-ent (eqv? ch k-ent)))
+               (%make-filter-state q cur #f ph))
+             ((or (eq? ch 'backspace) (eqv? ch #\backspace) (eqv? ch #\del)
+                  (eqv? ch 8) (eqv? ch 127) (and k-bs (eqv? ch k-bs)))
+               (if (> cur 0)
+                 (let ((new-q (string-append (substring q 0 (- cur 1)) (substring q cur))))
+                   (%make-filter-state new-q (- cur 1) (filter-state-active? fs) ph))
+                 fs))
+             ((or (eq? ch 'left) (and k-left (eqv? ch k-left)))
+               (%make-filter-state q (max 0 (- cur 1)) (filter-state-active? fs) ph))
+             ((or (eq? ch 'right) (and k-right (eqv? ch k-right)))
+               (%make-filter-state q (min len (+ cur 1)) (filter-state-active? fs) ph))
+             ((and (char? ch) (char>=? ch #\space) (not (char=? ch #\del)))
+               (filter-insert-char fs ch))
+             ((and (integer? ch) (>= ch 32) (not (= ch 127)) (<= ch #x10FFFF))
+               (filter-insert-char fs (integer->char ch)))
+             (else #f))))
+
+(define (word-boundary-char? c)
+        (or (char=? c #\-) (char=? c #\_) (char=? c #\space)
+            (char=? c #\/) (char=? c #\.) (char=? c #\:)))
+
+(define (fuzzy-subsequence-score query text)
+        "Score case-insensitive subsequence match of QUERY in TEXT.
+Returns an integer score (higher is better), or #f if QUERY is not a subsequence."
+        (let ((q (ensure-string (or query "")))
+              (t (ensure-string (or text ""))))
+          (cond
+            ((string-null? q) 0)
+            ((string-null? t) #f)
+            (else
+              (let ((ql (string-downcase q))
+                    (tl (string-downcase t))
+                    (qlen (string-length q))
+                    (tlen (string-length t)))
+                (let loop ((qi 0) (ti 0) (prev-ti -2) (score 0))
+                          (cond
+                            ((>= qi qlen)
+                              (max 1 (- score (quotient tlen 4))))
+                            ((>= ti tlen) #f)
+                            ((char=? (string-ref ql qi) (string-ref tl ti))
+                              (let* ((contig-bonus (if (= ti (+ prev-ti 1)) 15 0))
+                                     (boundary-bonus (if (or (= ti 0)
+                                                             (word-boundary-char? (string-ref tl (- ti 1))))
+                                                       12
+                                                       0))
+                                     (prefix-bonus (if (and (= qi 0) (= ti 0)) 10 0))
+                                     (case-bonus (if (char=? (string-ref q qi) (string-ref t ti)) 2 0)))
+                                (loop (+ qi 1)
+                                      (+ ti 1)
+                                      ti
+                                      (+ score 10 contig-bonus boundary-bonus prefix-bonus case-bonus))))
+                            (else
+                              (loop qi (+ ti 1) prev-ti score)))))))))
+
+(define* (filter-selectable-list slist query #:optional (key-fn ensure-string))
+         "Return a new <selectable-list> containing items matching QUERY sorted by score.
+Preserves original order when QUERY is empty, and clamps selection safely."
+         (let* ((items (if (selectable-list? slist) (selectable-list-items slist) '()))
+                (cap (if (selectable-list? slist) (selectable-list-max-visible slist) 10))
+                (hook (if (selectable-list? slist) (selectable-list-on-highlight slist) #f))
+                (q (ensure-string (or query "")))
+                (kfn (or key-fn ensure-string)))
+           (if (string-null? q)
+             (let ((idx (if (selectable-list? slist) (selectable-list-selected-index slist) 0)))
+               (make-selectable-list items #:selected-index idx #:max-visible cap #:on-highlight hook))
+             (let* ((scored (filter-map
+                              (lambda (item)
+                                (let ((s (fuzzy-subsequence-score q (ensure-string (kfn item)))))
+                                  (and s (cons s item))))
+                              items))
+                    (sorted (stable-sort scored (lambda (a b) (> (car a) (car b))))))
+               (make-selectable-list (map cdr sorted)
+                                     #:selected-index 0
+                                     #:max-visible cap
+                                     #:on-highlight hook)))))
+
+(define* (filter-input-widget fs #:key (width #f) (prefix "/ "))
+         "Renderable widget for <filter-state> FS showing '/ <query>▏' or dimmed placeholder."
+         (let* ((pfx (ensure-string (or prefix "/ ")))
+                (q (if (filter-state? fs) (filter-state-query fs) ""))
+                (cur (if (filter-state? fs) (filter-state-cursor fs) (string-length q)))
+                (active? (and (filter-state? fs) (filter-state-active? fs)))
+                (ph (if (filter-state? fs) (filter-state-placeholder fs) ""))
+                (body-txt (cond
+                            (active?
+                              (string-append (substring q 0 cur) "▏" (substring q cur)))
+                            ((not (string-null? q)) q)
+                            (else ph)))
+                (total-len (+ (string-length pfx) (string-length body-txt)))
+                (dim-body? (and (not active?) (string-null? q))))
+           (make-widget
+             'filter-input
+             #:props `((query . ,q) (active? . ,active?) (cursor . ,cur))
+             #:measure
+             (lambda (_self avail-w _avail-h)
+               (cons (min avail-w (or width total-len)) 1))
+             #:render
+             (lambda (_self rect)
+               (let* ((x (rect-x rect))
+                      (y (rect-y rect))
+                      (w (min (rect-width rect) (or width (rect-width rect))))
+                      (h (rect-height rect)))
+                 (if (or (<= w 0) (<= h 0))
+                   '()
+                   (let* ((pfx-clip (clip-str pfx w))
+                          (rem (max 0 (- w (string-length pfx-clip))))
+                          (body-clip (clip-str body-txt rem))
+                          (op1 (make-draw-op x y pfx-clip
+                                             #:role (if active? 'accent 'dim)
+                                             #:bold? active?
+                                             #:dim? (not active?))))
+                     (if (> (string-length body-clip) 0)
+                       (list op1
+                             (make-draw-op (+ x (string-length pfx-clip)) y body-clip
+                                           #:role (if dim-body? 'dim 'default)
+                                           #:dim? dim-body?))
+                       (list op1)))))))))
+
+;;;
+;;; Spinner, Progress Bar & Meter
+;;;
+(define %braille-spinner-frames
+        '("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"))
+
+(define %ascii-spinner-frames
+        '("|" "/" "-" "\\"))
+
+(define* (spinner-widget frame-index #:key (label #f) (ascii? #f) (role 'accent))
+         "Animated spinner widget selecting frame FRAME-INDEX from braille or ASCII frames."
+         (let* ((frames (if ascii? %ascii-spinner-frames %braille-spinner-frames))
+                (idx (modulo (max 0 (if (integer? frame-index) frame-index 0)) (length frames)))
+                (glyph (list-ref frames idx))
+                (lbl (and label (ensure-string label)))
+                (txt (if (and lbl (not (string-null? lbl)))
+                       (string-append glyph " " lbl)
+                       glyph)))
+           (make-widget
+             'spinner
+             #:props `((frame-index . ,idx) (ascii? . ,(and ascii? #t)) (role . ,role))
+             #:measure
+             (lambda (_self avail-w _avail-h)
+               (cons (min avail-w (string-length txt)) 1))
+             #:render
+             (lambda (_self rect)
+               (if (or (<= (rect-width rect) 0) (<= (rect-height rect) 0))
+                 '()
+                 (list (make-draw-op (rect-x rect) (rect-y rect)
+                                     (clip-str txt (rect-width rect))
+                                     #:role role #:bold? #t)))))))
+
+(define (clamp-ratio r)
+        (if (number? r)
+          (max 0.0 (min 1.0 (exact->inexact r)))
+          0.0))
+
+(define (repeat-str s n)
+        (if (<= n 0)
+          ""
+          (let loop ((i 0) (acc '()))
+                    (if (>= i n)
+                      (apply string-append acc)
+                      (loop (+ i 1) (cons s acc))))))
+
+(define* (progress-bar-widget ratio
+                              #:key
+                              (width 20)
+                              (label #f)
+                              (filled-char "█")
+                              (empty-char "░")
+                              (role 'accent))
+         "Horizontal progress bar clamping RATIO to [0.0, 1.0]."
+         (let* ((r (clamp-ratio ratio))
+                (bar-w (max 1 width))
+                (lbl (and label (ensure-string label)))
+                (lbl-part (if (and lbl (not (string-null? lbl)))
+                            (string-append " " lbl)
+                            "")))
+           (make-widget
+             'progress-bar
+             #:props `((ratio . ,r) (width . ,bar-w) (role . ,role))
+             #:measure
+             (lambda (_self avail-w _avail-h)
+               (cons (min avail-w (+ bar-w (string-length lbl-part))) 1))
+             #:render
+             (lambda (_self rect)
+               (let ((x (rect-x rect))
+                     (y (rect-y rect))
+                     (w (rect-width rect))
+                     (h (rect-height rect)))
+                 (if (or (<= w 0) (<= h 0))
+                   '()
+                   (let* ((actual-bar-w (min bar-w w))
+                          (filled-n (inexact->exact (round (* r actual-bar-w))))
+                          (empty-n (max 0 (- actual-bar-w filled-n)))
+                          (filled-str (repeat-str filled-char filled-n))
+                          (empty-str (repeat-str empty-char empty-n))
+                          (rem (max 0 (- w actual-bar-w)))
+                          (lbl-clip (clip-str lbl-part rem))
+                          (ops '()))
+                     (when (> filled-n 0)
+                       (set! ops (cons (make-draw-op x y filled-str #:role role) ops)))
+                     (when (> empty-n 0)
+                       (set! ops (cons (make-draw-op (+ x filled-n) y empty-str #:role 'dim #:dim? #t) ops)))
+                     (when (> (string-length lbl-clip) 0)
+                       (set! ops (cons (make-draw-op (+ x actual-bar-w) y lbl-clip #:role 'default) ops)))
+                     (reverse ops))))))))
+
+(define* (meter-widget used
+                       total
+                       #:key
+                       (label #f)
+                       (width 20)
+                       (warn-ratio 0.75)
+                       (danger-ratio 0.90)
+                       (show-percent? #t)
+                       (unit #f))
+         "Resource meter bar choosing 'ok, 'warn, or 'error role automatically."
+         (let* ((ratio (if (and (number? total) (> total 0) (number? used))
+                         (clamp-ratio (/ used total))
+                         0.0))
+                (role (cond
+                        ((>= ratio danger-ratio) 'error)
+                        ((>= ratio warn-ratio) 'warn)
+                        (else 'ok)))
+                (pct (inexact->exact (round (* ratio 100))))
+                (parts (filter
+                         identity
+                         (list (and show-percent? (format #f "~a%" pct))
+                               (and unit (format #f "(~a/~a ~a)" used total unit))
+                               (and label (ensure-string label)))))
+                (suffix (if (null? parts) #f (string-join parts " ")))
+                (bar (progress-bar-widget ratio #:width width #:label suffix #:role role)))
+           (make-widget
+             'meter
+             #:props `((ratio . ,ratio) (role . ,role) (used . ,used) (total . ,total))
+             #:children (list bar)
+             #:measure (lambda (_self avail-w avail-h) (widget-measure-size bar avail-w avail-h))
+             #:render (lambda (_self rect) (widget-render-rect bar rect)))))

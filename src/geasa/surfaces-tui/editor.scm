@@ -94,7 +94,22 @@
                           keymap-lookup-entry
                           keymap-bindings
                           keymap-action-key
-                          keymap->menu-items))
+                          keymap->menu-items
+                          %undo-stack-max-entries
+                          <undo-stack>
+                          make-undo-stack
+                          undo-stack?
+                          undo-stack-entries
+                          undo-stack-empty?
+                          undo-stack-length
+                          undo-stack-push
+                          undo-stack-pop
+                          editor-undo-stack
+                          editor-undo-push!
+                          editor-undo-pop!
+                          editor-undo-clear!
+                          kill-to-line-start
+                          kill-word-backward))
 
 ;;;
 ;;; Text Formatting & Word Wrapping Helpers
@@ -146,11 +161,18 @@ breaking on whitespace when possible."
           (if (null? items)
             (let*
                 ((res (reverse acc))
-                 (with-exit
-                   (if (member "exit" seen)
-                     res
-                     (append res '(("exit" . "Exit badb microharness"))))))
-              (sort with-exit
+                 (extra-cmds '(("exit" . "Exit badb microharness")
+                               ("copy" . "Copy last reply or code block (/copy [code])")
+                               ("fold" . "Fold or unfold all tool & thinking cards")
+                               ("find" . "Search transcript (/find <query>)")))
+                 (with-extras
+                   (fold (lambda (entry cur)
+                           (if (member (car entry) seen)
+                             cur
+                             (append cur (list entry))))
+                         res
+                         extra-cmds)))
+              (sort with-extras
                     (lambda (a b)
                       (string<? (car a) (car b)))))
             (let*
@@ -737,7 +759,7 @@ Return (values action new-state result-buffer result-pos) where ACTION is one of
                    (new-q (if (string-null? q) q (substring q 0 (- (string-length q) 1)))))
               (values 'update (history-search-update state hist new-q) #f #f)))
           ((let ((c (%coerce-input-char ch)))
-             (and c (>= (char->integer c) 32) (not (= (char->integer c) 127)) c))
+             (and c (>= (char->integer c) 32) (<= (char->integer c) 126) c))
             => (lambda (c)
                  (values 'update
                          (history-search-update state hist (string-append (history-search-query state) (string c)))
@@ -1362,4 +1384,132 @@ rebindable."
                         'global
                         #:description
                         "Insert newline without submitting")
+          (keymap-bind! km
+                        'ctrl-z
+                        'undo
+                        #:context
+                        'global
+                        #:description
+                        "Undo last input buffer edit")
+          (keymap-bind! km
+                        'ctrl-f
+                        'transcript-search
+                        #:context
+                        'global
+                        #:description
+                        "Search transcript")
+          (keymap-bind! km
+                        'ctrl-u
+                        'kill-line-start
+                        #:context
+                        'global
+                        #:description
+                        "Delete from start of input to cursor")
+          (keymap-bind! km
+                        'ctrl-w
+                        'kill-word-backward
+                        #:context
+                        'global
+                        #:description
+                        "Delete word before cursor")
           km))
+
+;;;
+;;; Bounded Input Buffer Undo Stack & Kill Helpers
+;;;
+(define %undo-stack-max-entries 20)
+
+(define-record-type <undo-stack>
+                    (%make-undo-stack entries)
+                    undo-stack?
+                    (entries undo-stack-entries))
+
+(define (make-undo-stack)
+        "Create an empty bounded <undo-stack>."
+        (%make-undo-stack '()))
+
+(define (undo-stack-empty? stack)
+        "Return #t if STACK has no saved snapshots."
+        (null? (undo-stack-entries stack)))
+
+(define (undo-stack-length stack)
+        "Return the number of snapshots stored in STACK."
+        (length (undo-stack-entries stack)))
+
+(define (undo-stack-push stack buf pos)
+        "Push (BUF . POS) onto STACK, skipping consecutive duplicates and capping at
+%undo-stack-max-entries."
+        (let* ((safe-buf (if (string? buf) buf ""))
+               (safe-pos (clamp-cursor pos safe-buf))
+               (snap (cons safe-buf safe-pos))
+               (entries (undo-stack-entries stack)))
+          (if (and (pair? entries) (equal? (car entries) snap))
+            stack
+            (let ((next (cons snap entries)))
+              (%make-undo-stack
+                (if (> (length next) %undo-stack-max-entries)
+                  (take next %undo-stack-max-entries)
+                  next))))))
+
+(define (undo-stack-pop stack)
+        "Pop the most recent snapshot from STACK.
+Returns (values new-stack buf pos), or (values stack #f #f) when empty."
+        (let ((entries (undo-stack-entries stack)))
+          (if (null? entries)
+            (values stack #f #f)
+            (values (%make-undo-stack (cdr entries))
+                    (caar entries)
+                    (cdar entries)))))
+
+(define %editor-undo-stacks (make-weak-key-hash-table 31))
+
+(define (editor-undo-stack key)
+        "Return the <undo-stack> associated with KEY (e.g. a <tui-state>)."
+        (or (hashq-ref %editor-undo-stacks key)
+            (let ((st (make-undo-stack)))
+              (hashq-set! %editor-undo-stacks key st)
+              st)))
+
+(define (editor-undo-push! key buf pos)
+        "Push (BUF . POS) onto KEY's undo stack."
+        (let ((next (undo-stack-push (editor-undo-stack key) buf pos)))
+          (hashq-set! %editor-undo-stacks key next)
+          next))
+
+(define (editor-undo-pop! key)
+        "Pop the most recent (buf . pos) snapshot from KEY's undo stack, or #f."
+        (call-with-values
+          (lambda () (undo-stack-pop (editor-undo-stack key)))
+          (lambda (next buf pos)
+            (hashq-set! %editor-undo-stacks key next)
+            (and buf (cons buf pos)))))
+
+(define (editor-undo-clear! key)
+        "Reset KEY's undo stack to empty."
+        (hashq-set! %editor-undo-stacks key (make-undo-stack)))
+
+(define (kill-to-line-start buf pos)
+        "Delete text from index 0 up to POS in BUF. Returns (values new-buf new-pos)."
+        (let* ((safe-buf (if (string? buf) buf ""))
+               (safe-pos (clamp-cursor pos safe-buf)))
+          (values (substring safe-buf safe-pos) 0)))
+
+(define (kill-word-backward buf pos)
+        "Delete the word immediately before POS in BUF. Returns (values new-buf new-pos)."
+        (let* ((safe-buf (if (string? buf) buf ""))
+               (safe-pos (clamp-cursor pos safe-buf)))
+          (if (<= safe-pos 0)
+            (values safe-buf 0)
+            (let* ((skip-ws
+                     (let loop ((i (- safe-pos 1)))
+                               (if (and (>= i 0) (char-whitespace? (string-ref safe-buf i)))
+                                 (loop (- i 1))
+                                 (+ i 1))))
+                   (word-start
+                     (let loop ((i (- skip-ws 1)))
+                               (if (and (>= i 0) (not (char-whitespace? (string-ref safe-buf i))))
+                                 (loop (- i 1))
+                                 (+ i 1)))))
+              (values (string-append (substring safe-buf 0 word-start)
+                                     (substring safe-buf safe-pos))
+                      word-start)))))

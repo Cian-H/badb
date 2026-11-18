@@ -18,6 +18,10 @@
                #:use-module
                (geasa capabilities-mcp plugin)
                #:use-module
+               (geasa capabilities-skills plugin)
+               #:use-module
+               (geasa agents-lifecycle plugin)
+               #:use-module
                (geasa policies-guardrail plugin)
                #:use-module
                (geasa runtimes-context plugin)
@@ -33,6 +37,26 @@
                (geasa surfaces-geis-manager plugin)
                #:use-module
                (geasa surfaces-geis-updater plugin)
+               #:use-module
+               (geasa surfaces-notify plugin)
+               #:use-module
+               (geasa surfaces-mcp-manager plugin)
+               #:use-module
+               (geasa surfaces-session-browser plugin)
+               #:use-module
+               (geasa surfaces-context-inspector plugin)
+               #:use-module
+               (geasa surfaces-agent-monitor plugin)
+               #:use-module
+               (geasa surfaces-command-palette plugin)
+               #:use-module
+               (geasa surfaces-config-modal plugin)
+               #:use-module
+               (geasa surfaces-diff-review plugin)
+               #:use-module
+               (geasa surfaces-knowledge-browser plugin)
+               #:use-module
+               (geasa surfaces-drawer plugin)
                #:use-module
                (geasa surfaces-tui editor)
                #:use-module
@@ -62,7 +86,15 @@
                #:use-module
                (ice-9 format)
                #:use-module
+               (ice-9 ftw)
+               #:use-module
+               (ice-9 popen)
+               #:use-module
+               (ice-9 rdelim)
+               #:use-module
                (ice-9 threads)
+               #:use-module
+               (pfds hamts)
                #:use-module
                (srfi srfi-1)
                #:use-module
@@ -75,7 +107,17 @@
                                           tui-apply-live-theme!
                                           tui-open-theme-picker!
                                           tui-apply-menu-selection!
-                                          tui-handle-command!))
+                                          tui-handle-command!
+                                          tui-open-notifications-modal!
+                                          tui-open-mcp-modal!
+                                          tui-open-session-browser-modal!
+                                          tui-open-context-inspector-modal!
+                                          tui-open-agent-monitor-modal!
+                                          tui-open-command-palette!
+                                          tui-open-config-modal!
+                                          tui-open-diff-review-modal!
+                                          tui-open-knowledge-browser-modal!
+                                          tui-register-modular-extensions!))
 
 (define (tui-prompt-password-modal st prompt-str)
         "Masked password prompt modal for safe sudo execution (never echoes or logs)."
@@ -513,13 +555,17 @@
           (unless (save-checkpoint-conversation! st chkpt)
             (tui-add-err-msg! st
                               "Checkpoint created, but the conversation snapshot could not be saved."))
-          (tui-add-sys-msg! st
-                            (format #f
-                                    "Created checkpoint '~a' (~a).\nFiles recorded: ~a, Registry entries: ~a."
-                                    (checkpoint-id chkpt)
-                                    (checkpoint-description chkpt)
-                                    (length (checkpoint-files chkpt))
-                                    (length (checkpoint-registry-state chkpt))))))
+          (let* ((f-data (checkpoint-files chkpt))
+                 (r-data (checkpoint-registry-state chkpt))
+                 (f-cnt (if (hamt? f-data) (hamt-size f-data) (length f-data)))
+                 (r-cnt (if (hamt? r-data) (hamt-size r-data) (length r-data))))
+            (tui-add-sys-msg! st
+                              (format #f
+                                      "Created checkpoint '~a' (~a).\nFiles recorded: ~a, Registry entries: ~a."
+                                      (checkpoint-id chkpt)
+                                      (checkpoint-description chkpt)
+                                      f-cnt
+                                      r-cnt)))))
 
 (define (handle-rollback-cmd! st arg)
         (let*
@@ -564,7 +610,7 @@
              (reg (tui-reg st))
              (nref (tui-nref st))
              (stdscr (tui-stdscr st))
-             (getch (nref 'getch))
+             (getch (and nref (nref 'getch)))
              (beep (nref 'beep))
              (trimmed (string-trim-both arg))
              (space-pos (string-index trimmed #\space))
@@ -860,8 +906,422 @@
                  'project
                  'user)))
           (register-geis-updater-extensions!)
-          (set-tui-active-overlay! st
+          (tui-push-modal-overlay! st
                                    (make-geis-manager-overlay #:scope scope #:workspace (getcwd)))))
+
+(define (tui-open-notifications-modal! st)
+        "Open the /notifications modal overlay."
+        (tui-push-modal-overlay! st (make-notifications-modal-overlay)))
+
+(define (tui-open-mcp-modal! st)
+        "Open the /mcp manager modal overlay."
+        (let ((mgr (tui-mcp-mgr st)))
+          (tui-push-modal-overlay!
+            st
+            (make-mcp-manager-overlay
+              #:list-servers (lambda (_scope _ws) (if mgr (mcp-manager-list-servers mgr) '()))
+              #:reconnect-server! (lambda (_scope name _ws)
+                                    (when mgr
+                                      (mcp-manager-stop-server! mgr name)
+                                      (mcp-manager-start-server! mgr name)))))))
+
+(define* (tui-open-session-browser-modal! st #:optional (active-tab 'sessions))
+         "Open the /sessions & /journal modal overlay."
+         (tui-push-modal-overlay!
+           st
+           (make-session-browser-overlay
+             #:active-tab active-tab
+             #:sessions-provider (lambda () (recent-session-summaries))
+             #:journal (tui-jrn st)
+             #:rollback-manager (tui-rollback-mgr st)
+             #:on-resume (lambda (sess)
+                           (let ((p (assoc-ref sess 'path)))
+                             (when (and (string? p) (file-exists? p))
+                               (let ((loaded (load-session-file p)))
+                                 (when loaded
+                                   (set-tui-messages! st (or (assoc-ref loaded 'messages) '()))
+                                   (set-tui-llm-history! st (or (assoc-ref loaded 'llm-history) '()))))))))))
+
+(define (collect-memory-entries)
+        "Scan project (.badb/memories/) and user (~/.config/badb/memories/) markdown files."
+        (let* ((clean? (equal? (getenv "BADB_CLEAN") "1"))
+               (home (or (getenv "HOME") ""))
+               (xdg (getenv "XDG_CONFIG_HOME"))
+               (user-dir (if (and xdg (not (string-null? xdg)))
+                           (string-append xdg "/badb/memories")
+                           (string-append home "/.config/badb/memories")))
+               (dirs (if clean?
+                       '()
+                       (list (cons "project" (string-append (getcwd) "/.badb/memories"))
+                             (cons "user" user-dir))))
+               (read-dir
+                 (lambda (scope dir)
+                   (if (not (file-exists? dir))
+                     '()
+                     (let ((files (sort (or (scandir dir (lambda (f) (string-suffix? ".md" f))) '()) string<?)))
+                       (filter-map
+                         (lambda (f)
+                           (let ((p (string-append dir "/" f)))
+                             (catch #t
+                               (lambda ()
+                                 `((name . ,(if (string-suffix? ".md" f)
+                                              (substring f 0 (- (string-length f) 3))
+                                              f))
+                                   (scope . ,scope)
+                                   (path . ,p)
+                                   (content . ,(file->string p))))
+                               (lambda _ #f))))
+                         files))))))
+          (append-map (lambda (pair) (read-dir (car pair) (cdr pair))) dirs)))
+
+(define (collect-skill-entries reg)
+        "Convert <skill> records in REG to knowledge-browser/context-inspector alists."
+        (if (not reg)
+          '()
+          (let ((active-ids (map skill-id (skill-registry-active-skills reg))))
+            (map (lambda (sk)
+                   (let ((sid (skill-id sk)))
+                     `((id . ,sid)
+                       (name . ,(or (skill-name sk) sid))
+                       (description . ,(or (skill-description sk) ""))
+                       (content . ,(or (skill-body sk) (skill-description sk) ""))
+                       (path . ,(or (skill-path sk) ""))
+                       (enabled? . ,(and (member sid active-ids) #t)))))
+                 (skill-registry-list reg)))))
+
+(define* (tui-open-context-inspector-modal! st #:optional (active-tab 'budget))
+         "Open the /context & /usage modal overlay."
+         (let* ((comp (tui-compactor st))
+                (hist (tui-llm-history st))
+                (used (estimate-conversation-tokens hist))
+                (total (if comp (context-compactor-effective-ceiling comp) 128000))
+                (skill-items
+                  (map (lambda (sk)
+                         `((kind . skill)
+                           (name . ,(assoc-ref sk 'name))
+                           (tokens . ,(quotient (string-length (or (assoc-ref sk 'content) "")) 4))
+                           (detail . ,(or (assoc-ref sk 'description) (assoc-ref sk 'path) ""))))
+                       (collect-skill-entries (tui-skill-reg st))))
+                (mem-items
+                  (map (lambda (m)
+                         `((kind . memory)
+                           (name . ,(assoc-ref m 'name))
+                           (tokens . ,(quotient (string-length (or (assoc-ref m 'content) "")) 4))
+                           (detail . ,(or (assoc-ref m 'content) ""))))
+                       (collect-memory-entries))))
+           (tui-push-modal-overlay!
+             st
+             (make-context-inspector-overlay
+               #:active-tab active-tab
+               #:budget `((total . ,total)
+                          (used . ,used)
+                          (breakdown . (("history" . ,used))))
+               #:items (append skill-items mem-items)
+               #:usage `((prompt-tokens . ,(tui-session-prompt-tokens st))
+                         (completion-tokens . ,(tui-session-completion-tokens st))
+                         (cached-tokens . 0)
+                         (turns . ,(tui-session-turns st)))
+               #:on-compact (lambda () (handle-compact-cmd! st ""))))))
+
+(define (tui-open-agent-monitor-modal! st)
+        "Open the /agents live subagent mission control overlay."
+        (tui-push-modal-overlay!
+          st
+          (make-agent-monitor-overlay
+            #:list-agents (lambda ()
+                            (map (lambda (lnk)
+                                   `((id . ,(subagent-link-child-id lnk))
+                                     (role . ,(or (subagent-link-label lnk) "subagent"))
+                                     (status . ,(subagent-link-status lnk))
+                                     (iterations . ,(subagent-link-turn-count lnk))))
+                                 (all-subagent-links))))))
+
+(define* (tui-open-command-palette! st #:optional (hooks '()) (active-tab 'commands))
+         "Open the Ctrl+K / /keys fuzzy command palette overlay."
+         (let ((km (tui-active-keymap st)))
+           (tui-push-modal-overlay!
+             st
+             (make-command-palette-overlay
+               #:active-tab active-tab
+               #:commands (map (lambda (p)
+                                 `((label . ,(string-append "/" (car p)))
+                                   (description . ,(cdr p))
+                                   (command . ,(car p))))
+                               %slash-commands)
+               #:keybindings (map (lambda (b)
+                                    (let ((act (symbol->string (assoc-ref b 'action)))
+                                          (ctx (symbol->string (assoc-ref b 'context))))
+                                      `((id . ,(string-append ctx ":" act))
+                                        (key . ,(format-key-spec (assoc-ref b 'key)))
+                                        (label . ,(format #f "~a (~a)" act ctx))
+                                        (action . ,act)
+                                        (context . ,ctx)
+                                        (description . ,(assoc-ref b 'description)))))
+                                  (keymap-bindings km))
+               #:on-execute (lambda (cmd-entry)
+                              (let ((c (or (assoc-ref cmd-entry 'command)
+                                           (assoc-ref cmd-entry 'label))))
+                                (when (string? c)
+                                  (tui-pop-modal-overlay! st)
+                                  (tui-handle-command!
+                                    st
+                                    (parse-command (if (string-prefix? "/" c) c (string-append "/" c)))
+                                    hooks))))
+               #:on-rebind (lambda (old-b new-key)
+                             (let ((act (string->symbol (or (assoc-ref old-b 'action) "noop")))
+                                   (ctx (string->symbol (or (assoc-ref old-b 'context) "global"))))
+                               (keymap-bind! km (parse-key-spec new-key) act #:context ctx)))))))
+
+(define (tui-open-config-modal! st)
+        "Open the /config tabbed workbench overlay."
+        (let*
+            ((cfg (tui-cfg st)) (pol (tui-policy st))
+             (cur-theme
+               (or
+                 (and (tui-ui-theme st) (theme-name (tui-ui-theme st)))
+                 (and cfg (badb-config-ui-theme cfg))
+                 "badb-dark"))
+             (cur-ep (tui-cur-endpoint st))
+             (cur-model (ensure-string (or (tui-cur-model st) "")))
+             (allow-missing? (and cfg (badb-config-allow-missing-thinking? cfg cur-ep)))
+             (synth-model (or (and cfg (badb-config-synthesis-model cfg)) "auto"))
+             (recorded-models
+               (if cfg
+                 (config-recorded-models cfg)
+                 '()))
+             (synth-choices
+               (delete-duplicates
+                 (cons synth-model (append '("auto" "local") recorded-models))
+                 equal?)))
+          (tui-push-modal-overlay! st
+                                   (make-config-modal-overlay #:providers
+                                                              (let*
+                                                                  ((raw-provs
+                                                                     (if cfg
+                                                                       (badb-config-providers cfg)
+                                                                       '()))
+                                                                   (preset-entries
+                                                                     (map
+                                                                       (lambda (p)
+                                                                         (let*
+                                                                             ((pname (ensure-string (car p)))
+                                                                              (plist
+                                                                                (if (list? (cdr p))
+                                                                                  (cdr p)
+                                                                                  '()))
+                                                                              (raw-ep (get-prop plist 'endpoint ""))
+                                                                              (ep (ensure-string (or raw-ep "")))
+                                                                              (raw-mdl
+                                                                                (or (get-prop plist 'model #f)
+                                                                                    (let ((ms (get-prop plist 'models #f))) (and (pair? ms) (car ms)))
+                                                                                    ""))
+                                                                              (mdl (ensure-string raw-mdl))
+                                                                              (summary
+                                                                                (if (string-null? mdl)
+                                                                                  ep
+                                                                                  (format #f "~a @ ~a" mdl ep)))
+                                                                              (active? (and (string? cur-ep) (string? ep) (string=? ep cur-ep))))
+                                                                           `((key . ,pname) (label . ,pname)
+                                                                             (summary . ,summary)
+                                                                             (active? . ,active?)
+                                                                             (value .
+                                                                                    ,(if active?
+                                                                                       (string-append "★ " summary)
+                                                                                       summary))
+                                                                             (description .
+                                                                                          ,(format #f "Endpoint: ~a | Model: ~a (Space/Enter to activate)" ep mdl)))))
+                                                                       raw-provs))
+                                                                   (base-entries
+                                                                     (list
+                                                                       `((key . "change-model") (label . "Model")
+                                                                         (action . open-model-menu)
+                                                                         (value .
+                                                                                ,(if (string-null? cur-model)
+                                                                                   "(none)"
+                                                                                   cur-model))
+                                                                         (description .
+                                                                                      "Space/Enter to pick from live/recorded models or set a custom model"))
+                                                                       `((key . "change-endpoint") (label . "Endpoint")
+                                                                         (action . open-endpoint-menu)
+                                                                         (value .
+                                                                                ,(if (string-null? (ensure-string (or cur-ep "")))
+                                                                                   "(none)"
+                                                                                   cur-ep))
+                                                                         (description . "Space/Enter to pick an endpoint preset or set a custom URL")))))
+                                                                (append base-entries preset-entries))
+                                                              #:guardrails
+                                                              (list
+                                                                `((key . "level") (label . "Guardrail level")
+                                                                  (value .
+                                                                         ,(if pol
+                                                                            (symbol->string (guardrail-policy-level pol))
+                                                                            "cautious"))
+                                                                  (choices . ("strict" "cautious" "permissive"))
+                                                                  (description . "Space/Enter to cycle: strict / cautious / permissive"))
+                                                                `((key . "allow-missing-thinking")
+                                                                  (label . "Allow missing thinking")
+                                                                  (type . boolean)
+                                                                  (value . ,(and allow-missing? #t))
+                                                                  (description . "Space/Enter to toggle whether thinking field may be omitted")))
+                                                              #:themes
+                                                              (map
+                                                                (lambda (tname)
+                                                                  (let ((tstr (ensure-string tname)))
+                                                                    `((key . ,tstr) (label . ,tstr)
+                                                                      (value .
+                                                                             ,(if (string-ci=? tstr (ensure-string cur-theme))
+                                                                                "active"
+                                                                                ""))
+                                                                      (description .
+                                                                                   ,(format #f "Highlight to preview ~a; Space/Enter to apply" tstr)))))
+                                                                (all-theme-names))
+                                                              #:synthesizer
+                                                              (list
+                                                                `((key . "synthesis-model")
+                                                                  (label . "Synthesis model")
+                                                                  (value . ,synth-model)
+                                                                  (choices . ,synth-choices)
+                                                                  (description . "Space/Enter to cycle synthesis model"))
+                                                                `((key . "choose-synth-model")
+                                                                  (label . "Choose/Set synthesis model")
+                                                                  (action . open-synth-model-menu)
+                                                                  (value . ,synth-model)
+                                                                  (description .
+                                                                               "Space/Enter to pick from recorded models or enter a custom model"))
+                                                                `((key . "choose-synth-provider")
+                                                                  (label . "Synthesis provider")
+                                                                  (action . open-synth-provider-menu)
+                                                                  (value . "configure")
+                                                                  (description .
+                                                                               "Space/Enter to pick synthesis provider or inherit chat provider")))
+                                                              #:on-highlight
+                                                              (lambda (item)
+                                                                (when (pair? item)
+                                                                  (cond
+                                                                    ((eq? (assq-ref item 'tab) 'action)
+                                                                      (let ((act (assq-ref item 'action)))
+                                                                        (when (symbol? act)
+                                                                          (tui-pop-modal-overlay! st)
+                                                                          (tui-apply-menu-selection! st (cons (cons "" "") act) #f))))
+                                                                    ((eq? (assq-ref item 'tab) 'providers)
+                                                                      (let ((pname (assq-ref item 'key)))
+                                                                        (when
+                                                                            (and (string? pname) (not (string=? pname "active")))
+                                                                          (handle-provider-cmd! st pname))))
+                                                                    (else
+                                                                      (let ((tname (assq-ref item 'key)))
+                                                                        (when (string? tname)
+                                                                          (tui-apply-live-theme! st tname)
+                                                                          (set-tui-render-dirty?! st #t)))))))
+                                                              #:on-save
+                                                              (lambda (scope snapshot)
+                                                                (let*
+                                                                    ((themes-list (or (assq-ref snapshot 'theme) '()))
+                                                                     (active-th
+                                                                       (find
+                                                                         (lambda (it)
+                                                                           (equal? (assq-ref it 'value) "active"))
+                                                                         themes-list))
+                                                                     (guard-list (or (assq-ref snapshot 'guardrails) '()))
+                                                                     (lvl-entry
+                                                                       (find
+                                                                         (lambda (it)
+                                                                           (equal? (assq-ref it 'key) "level"))
+                                                                         guard-list))
+                                                                     (lvl-str (and lvl-entry (assq-ref lvl-entry 'value)))
+                                                                     (synth-list (or (assq-ref snapshot 'synthesizer) '()))
+                                                                     (synth-entry
+                                                                       (find
+                                                                         (lambda (it)
+                                                                           (equal? (assq-ref it 'key) "synthesis-model"))
+                                                                         synth-list))
+                                                                     (synth-val (and synth-entry (assq-ref synth-entry 'value))))
+                                                                  (when active-th
+                                                                    (let ((tname (assq-ref active-th 'key)))
+                                                                      (tui-apply-live-theme! st tname)
+                                                                      (when cfg (badb-config-set-ui-theme! cfg tname))))
+                                                                  (when (and pol (string? lvl-str))
+                                                                    (set-guardrail-policy-level! pol (string->symbol lvl-str)))
+                                                                  (when (and cfg (string? synth-val))
+                                                                    (badb-config-set-synthesis-model! cfg synth-val))
+                                                                  (unless (equal? (getenv "BADB_CLEAN") "1")
+                                                                    (if (eq? scope 'user)
+                                                                      (catch #t
+                                                                        (lambda ()
+                                                                          (save-global-config! cfg))
+                                                                        (lambda _
+                                                                          #f))
+                                                                      (tui-try-save-config! st)))))))))
+
+(define (%run-git-capture args)
+        (catch #t
+          (lambda ()
+            (let* ((p (apply open-pipe* OPEN_READ "git" args))
+                   (out (let loop ((acc '()))
+                                  (let ((ln (read-line p)))
+                                    (if (eof-object? ln)
+                                      (string-join (reverse acc) "\n")
+                                      (loop (cons ln acc)))))))
+              (close-pipe p)
+              out))
+          (lambda _ "")))
+
+(define (tui-open-diff-review-modal! st)
+        "Open the /diff workspace hunk browser overlay."
+        (let* ((status-out (%run-git-capture '("status" "--porcelain")))
+               (files (filter-map
+                        (lambda (ln)
+                          (and (> (string-length ln) 3)
+                               `((path . ,(string-trim-both (substring ln 3)))
+                                 (status . ,(string-trim-both (substring ln 0 2))))))
+                        (string-split status-out #\newline))))
+          (tui-push-modal-overlay!
+            st
+            (make-diff-review-overlay
+              #:files files
+              #:diff-fn (lambda (entry)
+                          (let ((p (and (pair? entry) (assoc-ref entry 'path))))
+                            (if (string? p)
+                              (%run-git-capture (list "diff" "--" p))
+                              "")))))))
+
+(define* (tui-open-knowledge-browser-modal! st #:optional (active-tab 'skills))
+         "Open the /skills & /memories tabbed browser overlay."
+         (let ((sreg (tui-skill-reg st)))
+           (tui-push-modal-overlay!
+             st
+             (make-knowledge-browser-overlay
+               #:active-tab active-tab
+               #:skills (collect-skill-entries sreg)
+               #:memories (collect-memory-entries)
+               #:on-toggle-skill (lambda (sk new-val)
+                                   (when sreg
+                                     (let ((sid (or (assq-ref sk 'id) (assq-ref sk 'name))))
+                                       (when sid
+                                         (if new-val
+                                           (skill-registry-enable! sreg sid)
+                                           (skill-registry-disable! sreg sid))))))
+               #:on-delete-memory (lambda (mem)
+                                    (let ((p (assq-ref mem 'path)))
+                                      (when (and (string? p) (file-exists? p))
+                                        (catch #t (lambda () (delete-file p)) (lambda _ #f)))))))))
+
+(define (tui-register-modular-extensions! st hooks)
+        "Invoke all modular register-*-tui! hooks against ST's TUI registry."
+        (let ((reg-cat (lambda (_p _d) #t))
+              (reg-cmd (lambda (_n _d _a . _r) #t))
+              (open-ov (lambda (ov) (tui-push-modal-overlay! st ov))))
+          (register-notifications-tui! #:register-category! reg-cat #:register-command! reg-cmd #:open-overlay! open-ov)
+          (register-mcp-manager-tui! #:register-category! reg-cat #:register-command! reg-cmd #:open-overlay! open-ov)
+          (register-session-browser-tui! #:register-category! reg-cat #:register-command! reg-cmd #:open-overlay! open-ov)
+          (register-context-inspector-tui! #:register-command! reg-cmd #:push-overlay! open-ov)
+          (register-agent-monitor-tui! #:register-category! reg-cat #:register-command! reg-cmd #:open-overlay! open-ov)
+          (register-command-palette-tui! #:register-command! reg-cmd #:push-overlay! open-ov)
+          (register-config-modal-tui! #:register-category! reg-cat #:register-command! reg-cmd #:open-overlay! open-ov)
+          (register-diff-review-tui! #:register-category! reg-cat #:register-command! reg-cmd #:open-overlay! open-ov)
+          (register-knowledge-browser-tui! #:register-category! reg-cat #:register-command! reg-cmd #:open-overlay! open-ov)
+          (register-drawer-tui! #:register-category! reg-cat #:register-command! reg-cmd
+                                #:on-toggle-drawer! (lambda () (tui-toggle-drawer! st)))))
 
 (define (tui-handle-command! st cmd-pair hooks)
         "Dispatch parsed slash command CMD-PAIR on ST."
@@ -873,7 +1333,7 @@
              (jrn (tui-jrn st))
              (nref (tui-nref st))
              (stdscr (tui-stdscr st))
-             (getch (nref 'getch))
+             (getch (and nref (nref 'getch)))
              (add-sys!
                (lambda (m)
                  (tui-add-sys-msg! st m)))
@@ -887,11 +1347,18 @@
             ((or (string=? cmd "commands") (string=? cmd "menu"))
               (tui-set-active-menu! st (make-commands-root-menu)))
             ((string=? cmd "keys")
-              (tui-set-active-menu! st
-                                    (make-menu "Keybindings"
-                                               (keymap->menu-items (tui-active-keymap st))
-                                               #:back-action
-                                               'back-to-slash)))
+              (tui-open-command-palette! st hooks 'keybindings))
+            ((string=? cmd "notifications")
+              (tui-open-notifications-modal! st))
+            ((string=? cmd "sessions")
+              (tui-open-session-browser-modal! st 'sessions))
+            ((string=? cmd "agents")
+              (tui-open-agent-monitor-modal! st))
+            ((string=? cmd "drawer")
+              (let ((sub (string-downcase (string-trim-both (or arg "")))))
+                (if (member sub '("next" "cycle"))
+                  (tui-cycle-drawer-panel! st)
+                  (tui-toggle-drawer! st))))
             ((string=? cmd "todo")
               (call-with-values
                 (lambda ()
@@ -900,10 +1367,12 @@
                   (set-tui-active-todo-list! st updated)
                   (tui-add-sys-msg! st txt))))
             ((string=? cmd "diff")
-              (tui-add-sys-msg! st
-                                (if format-git-diff-output
-                                  (format-git-diff-output arg)
-                                  "")))
+              (if (string-null? (string-trim-both (or arg "")))
+                (tui-open-diff-review-modal! st)
+                (tui-add-sys-msg! st
+                                  (if format-git-diff-output
+                                    (format-git-diff-output arg)
+                                    ""))))
             ((string=? cmd "edit")
               (let*
                   ((parts (split-words arg))
@@ -925,6 +1394,70 @@
                       (unless ok? (tui-add-err-msg! st (format #f "Editor error: ~a" res)))))
                   (tui-add-sys-msg! st "Usage: /edit <file> [line]"))))
             ((string=? cmd "guardrail") (handle-guardrail-cmd! st arg))
+            ((string=? cmd "copy")
+              (let* ((sub (string-downcase (string-trim-both (or arg ""))))
+                     (msgs (tui-messages st))
+                     (assistant-msgs
+                       (filter (lambda (m)
+                                 (let ((r (prop-ref m 'role "")))
+                                   (and (string? r) (string=? r "assistant"))))
+                               msgs)))
+                (cond
+                  ((null? assistant-msgs)
+                    (tui-add-sys-msg! st "Nothing to copy — no assistant reply yet."))
+                  ((or (string=? sub "code") (string=? sub "block"))
+                    (let loop ((rest (reverse assistant-msgs)))
+                              (if (null? rest)
+                                (tui-add-sys-msg! st "Nothing to copy — no fenced code block found.")
+                                (let ((blocks (extract-fenced-code-blocks (or (prop-ref (car rest) 'content) ""))))
+                                  (if (pair? blocks)
+                                    (let ((code (car (reverse blocks))))
+                                      (clipboard-copy! code)
+                                      (set-tui-status-text! st (format #f "COPIED CODE (~a chars)" (string-length code)))
+                                      (tui-add-sys-msg! st (format #f "Copied code block to clipboard (~a chars)." (string-length code))))
+                                    (loop (cdr rest)))))))
+                  (else
+                    (let* ((last-msg (car (reverse assistant-msgs)))
+                           (txt (ensure-string (or (prop-ref last-msg 'content) ""))))
+                      (if (string-null? txt)
+                        (tui-add-sys-msg! st "Nothing to copy — last assistant reply is empty.")
+                        (begin
+                          (clipboard-copy! txt)
+                          (set-tui-status-text! st (format #f "COPIED (~a chars)" (string-length txt)))
+                          (tui-add-sys-msg! st (format #f "Copied last reply to clipboard (~a chars)." (string-length txt))))))))))
+            ((string=? cmd "fold")
+              (let* ((sub (string-downcase (string-trim-both (or arg ""))))
+                     (target (cond
+                               ((member sub '("collapse" "on" "all" "close")) #t)
+                               ((member sub '("expand" "off" "open" "unfold")) #f)
+                               (else 'toggle))))
+                (call-with-values
+                  (lambda () (transcript-fold-all! (tui-messages st) target))
+                  (lambda (next-msgs collapsed? changed)
+                    (set-tui-messages! st next-msgs)
+                    (row-cache-clear! (tui-row-cache st))
+                    (let ((verb (if collapsed? "Folded" "Unfolded")))
+                      (set-tui-status-text! st (format #f "~a ~a card~a" verb changed (if (= changed 1) "" "s")))
+                      (tui-add-sys-msg! st (format #f "~a ~a tool/thinking card~a." verb changed (if (= changed 1) "" "s"))))))))
+            ((string=? cmd "find")
+              (let* ((q (string-trim-both (or arg "")))
+                     (ts0 (transcript-search-open (tui-transcript-search st)))
+                     (ts1 (if (string-null? q)
+                            ts0
+                            (transcript-search-with-input-active
+                              (transcript-search-update ts0
+                                                        q
+                                                        (tui-messages st)
+                                                        (tui-last-content-width st)
+                                                        (tui-row-cache st))
+                              #f))))
+                (set-tui-transcript-search! st ts1)
+                (let ((scroll (transcript-search-scroll-offset
+                                ts1
+                                (tui-asm-total st)
+                                (tui-last-view-height st))))
+                  (when scroll
+                    (set-tui-scroll-offset! st scroll)))))
             ((string=? cmd "compact") (handle-compact-cmd! st arg))
             ((string=? cmd "resume") (handle-resume-cmd! st arg))
             ((string=? cmd "checkpoint") (handle-checkpoint-cmd! st arg))
@@ -935,32 +1468,43 @@
             ((string=? cmd "geis") (handle-geis-cmd! st arg hooks))
             ((string=? cmd "geasa") (handle-geis-cmd! st arg hooks))
             ((string=? cmd "context")
-              (unless (tui-agent-running? st) (tui-sync-context-limit! st))
-              (execute-context-subcommand! (tui-compactor st)
-                                           (tui-llm-history st)
-                                           (tui-messages st)
-                                           (tui-ctx-idx st)
-                                           arg
-                                           add-sys!
-                                           add-err!
-                                           #:jrn
-                                           jrn
-                                           #:reg
-                                           reg))
+              (if (string-null? (string-trim-both (or arg "")))
+                (tui-open-context-inspector-modal! st 'budget)
+                (begin
+                  (unless (tui-agent-running? st) (tui-sync-context-limit! st))
+                  (execute-context-subcommand! (tui-compactor st)
+                                               (tui-llm-history st)
+                                               (tui-messages st)
+                                               (tui-ctx-idx st)
+                                               arg
+                                               add-sys!
+                                               add-err!
+                                               #:jrn
+                                               jrn
+                                               #:reg
+                                               reg))))
             ((string=? cmd "skills")
-              (execute-skills-subcommand! (tui-skill-reg st) arg add-sys! add-err!))
-            ((string=? cmd "memories") (execute-memories-subcommand! arg add-sys! add-err!))
+              (if (string-null? (string-trim-both (or arg "")))
+                (tui-open-knowledge-browser-modal! st 'skills)
+                (execute-skills-subcommand! (tui-skill-reg st) arg add-sys! add-err!)))
+            ((string=? cmd "memories")
+              (if (string-null? (string-trim-both (or arg "")))
+                (tui-open-knowledge-browser-modal! st 'memories)
+                (execute-memories-subcommand! arg add-sys! add-err!)))
             ((string=? cmd "usage")
-              (unless (tui-agent-running? st) (tui-sync-context-limit! st))
-              (tui-add-sys-msg! st
-                                (format-usage-report (tui-compactor st)
-                                                     (tui-llm-history st)
-                                                     (tui-session-prompt-tokens st)
-                                                     (tui-session-completion-tokens st)
-                                                     (tui-session-estimated-tokens st)
-                                                     (tui-session-turns st)
-                                                     #:ctx-idx
-                                                     (tui-ctx-idx st))))
+              (if (string-null? (string-trim-both (or arg "")))
+                (tui-open-context-inspector-modal! st 'usage)
+                (begin
+                  (unless (tui-agent-running? st) (tui-sync-context-limit! st))
+                  (tui-add-sys-msg! st
+                                    (format-usage-report (tui-compactor st)
+                                                         (tui-llm-history st)
+                                                         (tui-session-prompt-tokens st)
+                                                         (tui-session-completion-tokens st)
+                                                         (tui-session-estimated-tokens st)
+                                                         (tui-session-turns st)
+                                                         #:ctx-idx
+                                                         (tui-ctx-idx st))))))
             ((string=? cmd "models") (handle-models-cmd! st))
             ((string=? cmd "model")
               (if (string-null? arg)
@@ -984,8 +1528,13 @@
                 (tui-set-endpoint-url! st arg "Endpoint updated to: ~a (saved to config)")))
             ((string=? cmd "provider") (handle-provider-cmd! st arg))
             ((string=? cmd "mcp")
-              (execute-mcp-subcommand! (tui-mcp-mgr st) arg add-sys! add-err!))
-            ((string=? cmd "config") (handle-config-cmd! st arg))
+              (if (string-null? (string-trim-both (or arg "")))
+                (tui-open-mcp-modal! st)
+                (execute-mcp-subcommand! (tui-mcp-mgr st) arg add-sys! add-err!)))
+            ((string=? cmd "config")
+              (if (string-null? (string-trim-both (or arg "")))
+                (tui-open-config-modal! st)
+                (handle-config-cmd! st arg)))
             ((string=? cmd "theme") (handle-theme-cmd! st arg))
             ((string=? cmd "sh")
               (if (string-null? arg)
@@ -997,7 +1546,10 @@
                                   "Usage: /eval <scheme-code> (or ,<scheme-code> or (<scheme-code>))")
                 (begin (tui-add-scm-msg! st arg) (tui-execute-scheme! st arg))))
             ((string=? cmd "features") (tui-add-sys-msg! st (format-features-list reg)))
-            ((string=? cmd "journal") (tui-add-sys-msg! st (format-journal-recent jrn)))
+            ((string=? cmd "journal")
+              (if (string-null? (string-trim-both (or arg "")))
+                (tui-open-session-browser-modal! st 'checkpoints)
+                (tui-add-sys-msg! st (format-journal-recent jrn))))
             ((string=? cmd "test")
               (set-tui-status-text! st "TESTING...")
               (tui-render! st)
@@ -1027,7 +1579,9 @@
                   (tui-add-err-msg! st (format #f "Test error: ~a ~s" k a))))
               (set-tui-status-text! st "READY"))
             ((string=? cmd "subagents")
-              (tui-add-sys-msg! st (format-mid-run-subagents-summary reg)))
+              (if (string-null? (string-trim-both (or arg "")))
+                (tui-open-agent-monitor-modal! st)
+                (tui-add-sys-msg! st (format-mid-run-subagents-summary reg))))
             ((string=? cmd "stop")
               (if (tui-agent-running? st)
                 (tui-force-stop-run! st)

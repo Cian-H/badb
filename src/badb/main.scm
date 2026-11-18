@@ -64,6 +64,7 @@
                     ("geis"          . "inspect, verify, or distill contract specifications (geasa)")
                     ("ctx"           . "show BM25 context index token statistics")
                     ("acp"           . "serve the Agent Client Protocol over stdio (editor surface)")
+                    ("--clean"       . "start TUI with stock defaults (no user/project config or geasa)")
                     ("-h, --help"    . "display this help and exit")
                     ("-V, --version" . "output version information and exit"))
                   #:width 16)))
@@ -617,9 +618,11 @@
 
 (define (run-tui-command args)
         (let loop
-          ((rest args) (serve #f) (attach #f) (ssh-target #f))
+          ((rest args) (serve #f) (attach #f) (ssh-target #f) (clean? #f))
           (cond
             ((null? rest)
+              (when clean?
+                (setenv "BADB_CLEAN" "1"))
               (cond
                 (serve
                   (let ((spec (parse-ui-listen-spec serve)))
@@ -650,13 +653,15 @@
                                            #:socket-path
                                            (assoc-ref spec 'socket-path))))
                 (ssh-target (run-remote-tui-client #:transport 'ssh #:ssh-target ssh-target))
-                (else (run-tui))))
+                (else (run-tui #:clean? clean?))))
+            ((equal? (car rest) "--clean")
+              (loop (cdr rest) serve attach ssh-target #t))
             ((and (equal? (car rest) "--serve") (pair? (cdr rest)))
-              (loop (cddr rest) (cadr rest) attach ssh-target))
+              (loop (cddr rest) (cadr rest) attach ssh-target clean?))
             ((and (equal? (car rest) "--attach") (pair? (cdr rest)))
-              (loop (cddr rest) serve (cadr rest) ssh-target))
+              (loop (cddr rest) serve (cadr rest) ssh-target clean?))
             ((and (equal? (car rest) "--ssh") (pair? (cdr rest)))
-              (loop (cddr rest) serve attach (cadr rest)))
+              (loop (cddr rest) serve attach (cadr rest) clean?))
             (else
               (format (current-error-port) "Error: unrecognized tui option '~a'\n" (car rest))
               (exit 1)))))
@@ -669,6 +674,8 @@
                 (if (null? options)
                   '()
                   (cdr options))))
+            ((equal? (car options) "--clean")
+              (run-tui-command options))
             ((equal? (car options) "init") (run-init-command))
             ((equal? (car options) "bootstrap") (run-bootstrap-command options))
             ((equal? (car options) "ctx") (run-ctx-command options))

@@ -26,6 +26,22 @@
 (define (entry-fid entry)
         (if (pair? entry) (car entry) ""))
 
+(define (notify-mod-proc sym)
+        (let ((mod (resolve-module '(geasa surfaces-notify plugin) #f #:ensure #f)))
+          (and mod
+               (module-defined? mod sym)
+               (module-ref mod sym))))
+
+(define (notify-updater-progress! id msg)
+        (let ((fn (notify-mod-proc 'notify-progress!)))
+          (when (procedure? fn)
+            (fn id msg #:title "Geasa Updater" #:source "surfaces-geis-updater"))))
+
+(define* (notify-updater-resolve! id msg #:key (level 'info))
+         (let ((fn (notify-mod-proc 'notify-resolve!)))
+           (when (procedure? fn)
+             (fn id msg #:level level #:title "Geasa Updater" #:source "surfaces-geis-updater"))))
+
 (define (entry-alist entry)
         (if (pair? entry) (cdr entry) '()))
 
@@ -196,8 +212,10 @@
              (ws
                (if st
                  (geis-manager-workspace st)
-                 (getcwd))))
+                 (getcwd)))
+             (nid (format #f "geis-updater:check:~a" scope)))
           (clear-local-mod-cache!)
+          (notify-updater-progress! nid (format #f "Checking ~a geasa updates..." scope))
           (catch #t
             (lambda ()
               (let
@@ -208,11 +226,15 @@
                        (lambda _
                          #f))))
                 (geis-updater-check-scope! scope #:workspace ws #:force? #t #:config cfg))
-              (when st
-                (geis-manager-refresh! st)
-                (set-geis-manager-status-message! st (format #f "Checked ~a updates" scope))))
+              (let ((msg (format #f "Checked ~a updates" scope)))
+                (notify-updater-resolve! nid msg #:level 'info)
+                (when st
+                  (geis-manager-refresh! st)
+                  (set-geis-manager-status-message! st msg))))
             (lambda (k . _args)
-              (when st (set-geis-manager-status-message! st (format #f "Check failed: ~a" k)))))))
+              (let ((msg (format #f "Check failed: ~a" k)))
+                (notify-updater-resolve! nid msg #:level 'error)
+                (when st (set-geis-manager-status-message! st msg)))))))
 
 (define
   (handle-updater-update-one! scope entry ctx)
@@ -223,17 +245,26 @@
            (geis-manager-workspace st)
            (getcwd))))
     (when entry
-      (catch #t
-        (lambda ()
-          (if (update-single-entry! scope entry ws)
-            (when st
-              (geis-manager-refresh! st)
-              (set-geis-manager-status-message! st (format #f "Updated ~a" (entry-fid entry))))
-            (when st
-              (set-geis-manager-status-message! st "No remote source for selected geis"))))
-        (lambda (k . _args)
-          (when st
-            (set-geis-manager-status-message! st (format #f "Update failed: ~a" k))))))))
+      (let* ((fid (entry-fid entry))
+             (nid (format #f "geis-updater:update:~a:~a" scope fid)))
+        (notify-updater-progress! nid (format #f "Updating ~a..." fid))
+        (catch #t
+          (lambda ()
+            (if (update-single-entry! scope entry ws)
+              (let ((msg (format #f "Updated ~a" fid)))
+                (notify-updater-resolve! nid msg #:level 'info)
+                (when st
+                  (geis-manager-refresh! st)
+                  (set-geis-manager-status-message! st msg)))
+              (let ((msg "No remote source for selected geis"))
+                (notify-updater-resolve! nid msg #:level 'warn)
+                (when st
+                  (set-geis-manager-status-message! st msg)))))
+          (lambda (k . _args)
+            (let ((msg (format #f "Update failed: ~a" k)))
+              (notify-updater-resolve! nid msg #:level 'error)
+              (when st
+                (set-geis-manager-status-message! st msg)))))))))
 
 (define (handle-updater-update-all! scope ctx)
         (let*
@@ -246,7 +277,9 @@
                (if st
                  (geis-manager-entries st)
                  '()))
-             (count-ok 0))
+             (count-ok 0)
+             (nid (format #f "geis-updater:update-all:~a" scope)))
+          (notify-updater-progress! nid (format #f "Updating ~a geasa..." scope))
           (for-each
             (lambda (e)
               (let*
@@ -260,9 +293,11 @@
                     (lambda _
                       #f)))))
             entries)
-          (when st
-            (geis-manager-refresh! st)
-            (set-geis-manager-status-message! st (format #f "Updated ~a geasa" count-ok)))))
+          (let ((msg (format #f "Updated ~a geasa" count-ok)))
+            (notify-updater-resolve! nid msg #:level 'info)
+            (when st
+              (geis-manager-refresh! st)
+              (set-geis-manager-status-message! st msg)))))
 
 (define (handle-updater-sync! scope ctx)
         (let*
@@ -270,18 +305,24 @@
              (ws
                (if st
                  (geis-manager-workspace st)
-                 (getcwd))))
+                 (getcwd)))
+             (nid (format #f "geis-updater:sync:~a" scope)))
+          (notify-updater-progress! nid (format #f "Syncing ~a geasa config..." scope))
           (catch #t
             (lambda ()
               (let*
                   ((cfg (load-scope-config scope ws))
                    (declared (badb-config-geasa cfg #:scope scope)))
                 (geis-pkg-sync! declared #:scope scope #:workspace ws)
-                (when st
-                  (geis-manager-refresh! st)
-                  (set-geis-manager-status-message! st (format #f "Synced ~a config" scope)))))
+                (let ((msg (format #f "Synced ~a config" scope)))
+                  (notify-updater-resolve! nid msg #:level 'info)
+                  (when st
+                    (geis-manager-refresh! st)
+                    (set-geis-manager-status-message! st msg)))))
             (lambda (k . _args)
-              (when st (set-geis-manager-status-message! st (format #f "Sync failed: ~a" k)))))))
+              (let ((msg (format #f "Sync failed: ~a" k)))
+                (notify-updater-resolve! nid msg #:level 'error)
+                (when st (set-geis-manager-status-message! st msg)))))))
 
 (define (handle-updater-cycle-mode! scope ctx)
         (let*

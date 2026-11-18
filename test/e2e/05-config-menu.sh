@@ -7,10 +7,10 @@ expect_visible "badb microharness" 20000
 type_text "/config"
 expect_visible "↑↓:choose · tab:complete · enter:run · esc:dismiss" 5000
 submit_line ""
-expect_visible "↑↓:move · enter:apply · esc:close" 5000
+expect_visible "Configuration (/config)" 5000
 
 press Escape
-expect_hidden "↑↓:move · enter:apply · esc:close" 3000
+expect_hidden "Configuration (/config)" 3000
 
 # Clear the /config text left in the buffer.
 press Backspace Backspace Backspace Backspace Backspace Backspace Backspace

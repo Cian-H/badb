@@ -34,8 +34,26 @@
                           modal-extension-slots
                           modal-slot-providers
                           modal-register-slot!
+                          modal-filter-state
+                          modal-filter-query
+                          set-modal-filter-state!
                           compute-modal-rect
-                          make-modal-overlay))
+                          make-modal-overlay
+                          <overlay-stack>
+                          make-overlay-stack
+                          overlay-stack?
+                          overlay-stack-modals
+                          overlay-stack-floatings
+                          overlay-stack-push-modal!
+                          overlay-stack-pop-modal!
+                          overlay-stack-top-modal
+                          overlay-stack-add-floating!
+                          overlay-stack-remove-floating!
+                          overlay-stack-render
+                          overlay-stack-handle-key
+                          overlay-stack-handle-click
+                          make-confirm-dialog
+                          make-input-dialog))
 
 ;;;
 ;;; Core <overlay> Protocol
@@ -243,13 +261,14 @@ otherwise defaults to <selectable-list> operations."
 ;;; Modular Modal Overlay Framework
 ;;;
 (define-record-type <modal-state>
-                    (%make-modal-state user-state active-tab show-detail? extension-slots last-rect)
+                    (%make-modal-state user-state active-tab show-detail? extension-slots last-rect filter-state)
                     modal-state?
                     (user-state modal-state-user set-modal-state-user!)
                     (active-tab modal-state-active-tab set-modal-state-active-tab!)
                     (show-detail? modal-state-show-detail? set-modal-state-show-detail?!)
                     (extension-slots modal-state-extension-slots set-modal-state-extension-slots!)
-                    (last-rect modal-state-last-rect set-modal-state-last-rect!))
+                    (last-rect modal-state-last-rect set-modal-state-last-rect!)
+                    (filter-state modal-state-filter set-modal-state-filter!))
 
 (define (modal-overlay? ov)
         "Return #t if OV is a modal overlay."
@@ -301,6 +320,20 @@ otherwise defaults to <selectable-list> operations."
                  (updated (cons (cons slot-name (append existing (list provider)))
                                 (alist-delete slot-name slots eq?))))
             (set-modal-state-extension-slots! ms updated))))
+
+(define (modal-filter-state ov)
+        "Return the <filter-state> of modal overlay OV, or #f."
+        (and (modal-overlay? ov) (modal-state-filter (overlay-data ov))))
+
+(define (modal-filter-query ov)
+        "Return the current filter query string of modal overlay OV (\"\" if none)."
+        (let ((fs (modal-filter-state ov)))
+          (if (filter-state? fs) (filter-state-query fs) "")))
+
+(define (set-modal-filter-state! ov fs)
+        "Set the <filter-state> of modal overlay OV."
+        (when (modal-overlay? ov)
+          (set-modal-state-filter! (overlay-data ov) fs)))
 
 (define* (compute-modal-rect maxy maxx #:key (anchor 'center) (width 0.8) (height 0.75) (anchor-y #f))
          "Compute a <rect> for a modal overlay within MAXY x MAXX.
@@ -408,8 +441,11 @@ WIDTH and HEIGHT may be integers or fractions in (0, 1]. ANCHOR may be 'center,
          (if (null? footer-w)
            0
            1))
+       (fs (modal-state-filter ms))
+       (show-filter? (and fs (or (filter-state-active? fs) (not (string-null? (filter-state-query fs))))))
+       (filter-w (if show-filter? (list (filter-input-widget fs)) '()))
        (overhead
-         (+ (length tab-w) (length banner-widgets) (length footer-w) footer-gap))
+         (+ (length tab-w) (length banner-widgets) (length filter-w) (length footer-w) footer-gap))
        (avail-h (max 1 (- inner-h overhead)))
        (detail-h
          (if (and show-detail? detail-renderer)
@@ -417,17 +453,28 @@ WIDTH and HEIGHT may be integers or fractions in (0, 1]. ANCHOR may be 'center,
            0))
        (body-h (max 1 (- avail-h detail-h)))
        (body-rect (make-rect 0 0 inner-w body-h))
-       (body-w
+       (raw-body-w
          (if body-renderer
            (body-renderer ov ustate body-rect)
            (text-widget "")))
+       (body-w
+         (if (and fs
+                  (not (string-null? (filter-state-query fs)))
+                  (widget? raw-body-w)
+                  (eq? (widget-kind raw-body-w) 'selectable-list))
+           (let* ((sl (assq-ref (widget-props raw-body-w) 'list))
+                  (filtered (filter-selectable-list sl (filter-state-query fs)
+                                                    (or (assq-ref (modal-state-extension-slots ms) 'filter-key-fn)
+                                                        ensure-string))))
+             (selectable-list-widget filtered))
+           raw-body-w))
        (detail-w
          (if
              (and show-detail? detail-renderer (> detail-h 0))
            (list (rule-widget)
                  (detail-renderer ov ustate (make-rect 0 0 inner-w (max 1 (- detail-h 1)))))
            '()))
-       (top-children (append tab-w banner-widgets (list body-w) detail-w))
+       (top-children (append tab-w banner-widgets filter-w (list body-w) detail-w))
        (top-stack (vstack-widget top-children))
        (top-h (cdr (widget-measure-size top-stack inner-w avail-h)))
        (spacer-h
@@ -462,11 +509,19 @@ WIDTH and HEIGHT may be integers or fractions in (0, 1]. ANCHOR may be 'center,
                              (key-bindings '())
                              (footer-hints '())
                              (extension-slots '())
+                             (filterable? #f)
+                             (filter-key-fn #f)
+                             (filter-placeholder "Type to filter...")
                              (on-tab-change #f)
-                             (on-close #f))
+                             (on-close #f)
+                             (on-unhandled-key #f))
          "Create a modular modal <overlay> built over surfaces-widgets."
          (let* ((init-tab (or active-tab (and (pair? tabs) (caar tabs))))
-                (ms (%make-modal-state state init-tab (and show-detail? #t) extension-slots #f)))
+                (init-slots (if filter-key-fn
+                              (cons (cons 'filter-key-fn filter-key-fn) extension-slots)
+                              extension-slots))
+                (init-filter (and filterable? (make-filter-state #:placeholder filter-placeholder)))
+                (ms (%make-modal-state state init-tab (and show-detail? #t) init-slots #f init-filter)))
            (make-overlay
              #:kind 'modal
              #:data ms
@@ -494,36 +549,288 @@ WIDTH and HEIGHT may be integers or fractions in (0, 1]. ANCHOR may be 'center,
                  #t))
              #:on-key
              (lambda (ov ch key-ctx)
-               (let ((on-close! (assq-ref key-ctx 'on-close!)))
-                 (let loop ((bindings key-bindings))
-                           (cond
-                             ((null? bindings)
+               (let ((on-close! (assq-ref key-ctx 'on-close!))
+                     (fs (modal-state-filter ms)))
+                 (cond
+                   ((and filterable? fs (filter-state-active? fs)
+                         (filter-handle-key fs ch #:key-ctx key-ctx))
+                     => (lambda (next-fs)
+                          (set-modal-state-filter! ms next-fs)
+                          'handled))
+                   ((and filterable? fs (not (filter-state-active? fs))
+                         (key-matches? #\/ ch key-ctx))
+                     (set-modal-state-filter!
+                       ms
+                       (make-filter-state #:query (filter-state-query fs)
+                                          #:active? #t
+                                          #:placeholder filter-placeholder))
+                     'handled)
+                   ((and filterable? fs (not (filter-state-active? fs))
+                         (not (string-null? (filter-state-query fs)))
+                         (key-matches? 'esc ch key-ctx))
+                     (set-modal-state-filter!
+                       ms
+                       (make-filter-state #:query "" #:active? #f #:placeholder filter-placeholder))
+                     'handled)
+                   (else
+                     (let loop ((bindings key-bindings))
                                (cond
-                                 ((key-matches? 'esc ch key-ctx)
-                                   (when on-close (on-close ov (modal-state-user ms)))
-                                   (when on-close! (on-close!))
-                                   'close)
-                                 ((and (pair? tabs) (key-matches? 'tab ch key-ctx))
-                                   (let* ((ids (map car tabs))
-                                          (cur (modal-state-active-tab ms))
-                                          (tail (memq cur ids))
-                                          (next-id (if (and tail (pair? (cdr tail)))
-                                                     (cadr tail)
-                                                     (car ids))))
-                                     (set-modal-state-active-tab! ms next-id)
-                                     (when on-tab-change
-                                       (set-modal-state-user! ms (on-tab-change ov (modal-state-user ms) next-id)))
-                                     'handled))
-                                 (else 'pass)))
-                             ((key-matches? (caar bindings) ch key-ctx)
-                               (let ((res ((cdar bindings) ov (modal-state-user ms) key-ctx)))
-                                 (when (eq? res 'close)
-                                   (when on-close (on-close ov (modal-state-user ms)))
-                                   (when on-close! (on-close!)))
-                                 (or res 'handled)))
-                             (else (loop (cdr bindings)))))))
+                                 ((null? bindings)
+                                   (cond
+                                     ((key-matches? 'esc ch key-ctx)
+                                       (when on-close (on-close ov (modal-state-user ms)))
+                                       (when on-close! (on-close!))
+                                       'close)
+                                     ((and (pair? tabs) (key-matches? 'tab ch key-ctx))
+                                       (let* ((ids (map car tabs))
+                                              (cur (modal-state-active-tab ms))
+                                              (tail (memq cur ids))
+                                              (next-id (if (and tail (pair? (cdr tail)))
+                                                         (cadr tail)
+                                                         (car ids))))
+                                         (set-modal-state-active-tab! ms next-id)
+                                         (when on-tab-change
+                                           (set-modal-state-user! ms (on-tab-change ov (modal-state-user ms) next-id)))
+                                         'handled))
+                                     ((procedure? on-unhandled-key)
+                                       (let ((res (on-unhandled-key ov (modal-state-user ms) ch key-ctx)))
+                                         (when (eq? res 'close)
+                                           (when on-close (on-close ov (modal-state-user ms)))
+                                           (when on-close! (on-close!)))
+                                         (or res 'pass)))
+                                     (else 'pass)))
+                                 ((key-matches? (caar bindings) ch key-ctx)
+                                   (let ((res ((cdar bindings) ov (modal-state-user ms) key-ctx)))
+                                     (when (eq? res 'close)
+                                       (when on-close (on-close ov (modal-state-user ms)))
+                                       (when on-close! (on-close!)))
+                                     (or res 'handled)))
+                                 (else (loop (cdr bindings)))))))))
              #:on-click
              (lambda (ov target _click-ctx)
                (if (and (pair? target) (eq? (car target) 'modal-row))
                  #t
                  #f)))))
+
+;;;
+;;; Layered Overlay Stack (<overlay-stack>)
+;;;
+(define-record-type <overlay-stack>
+                    (%make-overlay-stack modals floatings)
+                    overlay-stack?
+                    (modals overlay-stack-modals set-overlay-stack-modals!)
+                    (floatings overlay-stack-floatings set-overlay-stack-floatings!))
+
+(define (make-overlay-stack)
+        "Create an empty <overlay-stack> with LIFO 'modal stack and passive 'floating list."
+        (%make-overlay-stack '() '()))
+
+(define (overlay-stack-push-modal! stack ov)
+        "Push modal overlay OV onto the top of STACK's modal stack."
+        (when (and (overlay-stack? stack) (overlay? ov))
+          (set-overlay-stack-modals! stack (cons ov (overlay-stack-modals stack)))))
+
+(define (overlay-stack-pop-modal! stack)
+        "Pop and return the top modal overlay from STACK, or #f if empty."
+        (if (and (overlay-stack? stack) (pair? (overlay-stack-modals stack)))
+          (let ((top (car (overlay-stack-modals stack))))
+            (set-overlay-stack-modals! stack (cdr (overlay-stack-modals stack)))
+            top)
+          #f))
+
+(define (overlay-stack-top-modal stack)
+        "Return the top modal overlay on STACK, or #f if empty."
+        (and (overlay-stack? stack)
+             (pair? (overlay-stack-modals stack))
+             (car (overlay-stack-modals stack))))
+
+(define (overlay-stack-add-floating! stack ov)
+        "Add passive floating overlay OV to STACK (no-op if already present)."
+        (when (and (overlay-stack? stack) (overlay? ov)
+                   (not (memq ov (overlay-stack-floatings stack))))
+          (set-overlay-stack-floatings! stack (append (overlay-stack-floatings stack) (list ov)))))
+
+(define (overlay-stack-remove-floating! stack ov)
+        "Remove passive floating overlay OV from STACK."
+        (when (overlay-stack? stack)
+          (set-overlay-stack-floatings! stack (delq ov (overlay-stack-floatings stack)))))
+
+(define (overlay-stack-render stack draw-ctx maxy maxx anchor-y)
+        "Render all modals (bottom-to-top) and then all floating overlays (on top)."
+        (if (not (overlay-stack? stack))
+          #f
+          (let ((rendered? #f))
+            (for-each
+              (lambda (ov)
+                (when ((overlay-render ov) ov draw-ctx maxy maxx anchor-y)
+                  (set! rendered? #t)))
+              (reverse (overlay-stack-modals stack)))
+            (for-each
+              (lambda (ov)
+                (when ((overlay-render ov) ov draw-ctx maxy maxx anchor-y)
+                  (set! rendered? #t)))
+              (overlay-stack-floatings stack))
+            rendered?)))
+
+(define (overlay-stack-handle-key stack ch key-ctx)
+        "Dispatch key CH to the top modal on STACK. Floatings never capture keyboard input.
+Automatically pops the top modal when its handler returns 'close."
+        (let ((top (overlay-stack-top-modal stack)))
+          (if (not top)
+            'pass
+            (let* ((ctx (if (assq 'overlay-stack key-ctx)
+                          key-ctx
+                          (append (list (cons 'overlay-stack stack)
+                                        (cons 'push-modal! (lambda (m) (overlay-stack-push-modal! stack m))))
+                                  key-ctx)))
+                   (res ((overlay-on-key top) top ch ctx)))
+              (when (and (eq? res 'close) (eq? (overlay-stack-top-modal stack) top))
+                (overlay-stack-pop-modal! stack))
+              res))))
+
+(define (overlay-stack-handle-click stack target click-ctx)
+        "Dispatch click TARGET to the top modal on STACK. Returns #f if no modal is active."
+        (let ((top (overlay-stack-top-modal stack)))
+          (if top
+            ((overlay-on-click top) top target click-ctx)
+            #f)))
+
+;;;
+;;; Reusable Micro-Dialogs
+;;;
+(define* (make-confirm-dialog #:key
+                              (title "Confirm")
+                              (message "")
+                              (confirm-label "Confirm")
+                              (cancel-label "Cancel")
+                              (danger? #f)
+                              (on-confirm #f)
+                              (on-cancel #f))
+         "Create a centered confirmation modal <overlay>.
+y/Enter confirms & closes; n/Esc cancels & closes."
+         (let ((resolved? #f))
+           (make-modal-overlay
+             #:title title
+             #:width 0.5
+             #:height 0.3
+             #:body-renderer
+             (lambda (_ov _st _rect)
+               (vstack-widget
+                 (list (text-widget (ensure-string (or message "")) #:wrap? #t)
+                       (hstack-widget
+                         (list (pill-widget (string-append "y/Enter: " confirm-label)
+                                            #:role (if danger? 'error 'accent))
+                               (pill-widget (string-append "n/Esc: " cancel-label)
+                                            #:role 'dim))
+                         #:gap 2))
+                 #:gap 1))
+             #:footer-hints `(("y/Enter" . ,confirm-label) ("n/Esc" . ,cancel-label))
+             #:key-bindings
+             `(((#\y #\Y enter)
+                . ,(lambda (_ov _st _ctx)
+                     (unless resolved?
+                       (set! resolved? #t)
+                       (when (procedure? on-confirm) (on-confirm)))
+                     'close))
+               ((#\n #\N esc)
+                . ,(lambda (_ov _st _ctx)
+                     (unless resolved?
+                       (set! resolved? #t)
+                       (when (procedure? on-cancel) (on-cancel)))
+                     'close)))
+             #:on-close
+             (lambda (_ov _st)
+               (unless resolved?
+                 (set! resolved? #t)
+                 (when (procedure? on-cancel) (on-cancel)))))))
+
+(define* (make-input-dialog #:key
+                            (title "Input")
+                            (prompt #f)
+                            (initial "")
+                            (placeholder "")
+                            (validator #f)
+                            (on-submit #f)
+                            (on-cancel #f))
+         "Create a centered single-line input modal <overlay> with optional VALIDATOR.
+Enter validates & submits; Esc cancels."
+         (let* ((init-str (ensure-string (or initial "")))
+                (init-state (list (cons 'buffer init-str)
+                                  (cons 'cursor (string-length init-str))
+                                  (cons 'error #f)))
+                (resolved? #f))
+           (make-modal-overlay
+             #:title title
+             #:width 0.6
+             #:height 0.35
+             #:state init-state
+             #:body-renderer
+             (lambda (_ov st _rect)
+               (let* ((buf (or (assq-ref st 'buffer) ""))
+                      (cur (or (assq-ref st 'cursor) (string-length buf)))
+                      (err (assq-ref st 'error))
+                      (input-w
+                        (if (and (string-null? buf) (not (string-null? placeholder)))
+                          (hstack-widget
+                            (list (text-widget "> ▏" #:role 'accent #:bold? #t)
+                                  (text-widget placeholder #:role 'dim #:dim? #t))
+                            #:gap 0)
+                          (text-widget
+                            (string-append "> " (substring buf 0 cur) "▏" (substring buf cur))
+                            #:bold? #t)))
+                      (children
+                        (filter identity
+                                (list (and prompt (text-widget (ensure-string prompt) #:wrap? #t))
+                                      input-w
+                                      (and err (text-widget err #:role 'error))))))
+                 (vstack-widget children #:gap 1)))
+             #:footer-hints '(("Enter" . "submit") ("Esc" . "cancel"))
+             #:on-unhandled-key
+             (lambda (ov st ch key-ctx)
+               (let ((buf (or (assq-ref st 'buffer) ""))
+                     (cur (or (assq-ref st 'cursor) 0)))
+                 (cond
+                   ((key-matches? 'enter ch key-ctx)
+                     (let ((err (and (procedure? validator) (validator buf))))
+                       (if (string? err)
+                         (begin
+                           (set-modal-overlay-state!
+                             ov
+                             (list (cons 'buffer buf) (cons 'cursor cur) (cons 'error err)))
+                           'handled)
+                         (begin
+                           (unless resolved?
+                             (set! resolved? #t)
+                             (when (procedure? on-submit) (on-submit buf)))
+                           'close))))
+                   ((key-matches? 'backspace ch key-ctx)
+                     (when (> cur 0)
+                       (let ((next-buf (string-append (substring buf 0 (- cur 1)) (substring buf cur))))
+                         (set-modal-overlay-state!
+                           ov
+                           (list (cons 'buffer next-buf) (cons 'cursor (- cur 1)) (cons 'error #f)))))
+                     'handled)
+                   ((key-matches? 'left ch key-ctx)
+                     (set-modal-overlay-state!
+                       ov
+                       (list (cons 'buffer buf) (cons 'cursor (max 0 (- cur 1))) (cons 'error #f)))
+                     'handled)
+                   ((key-matches? 'right ch key-ctx)
+                     (set-modal-overlay-state!
+                       ov
+                       (list (cons 'buffer buf) (cons 'cursor (min (string-length buf) (+ cur 1))) (cons 'error #f)))
+                     'handled)
+                   ((or (and (char? ch) (char>=? ch #\space) (not (char=? ch #\del)))
+                        (and (integer? ch) (>= ch 32) (not (= ch 127)) (<= ch #x10FFFF)))
+                     (let* ((c (if (char? ch) ch (integer->char ch)))
+                            (next-buf (string-append (substring buf 0 cur) (string c) (substring buf cur))))
+                       (set-modal-overlay-state!
+                         ov
+                         (list (cons 'buffer next-buf) (cons 'cursor (+ cur 1)) (cons 'error #f)))
+                       'handled))
+                   (else 'handled))))
+             #:on-close
+             (lambda (_ov _st)
+               (unless resolved?
+                 (set! resolved? #t)
+                 (when (procedure? on-cancel) (on-cancel)))))))

@@ -19,6 +19,7 @@ E2E_ROOT="${E2E_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 SESSION="badb-e2e-$(basename "$0" .sh)"
 E2E_SCRATCH="$(mktemp -d /tmp/badb-e2e-XXXXXX)"
 E2E_TUI_ENV_ARGS=""
+E2E_TUI_CLEAN_FLAG="${E2E_TUI_CLEAN_FLAG:---clean}"
 E2E_FAILURES=0
 
 tui() { tui-test --session "$SESSION" "$@"; }
@@ -30,7 +31,7 @@ launch_tui() {
   tui-test run --session "$SESSION" --cols 120 --rows 40 \
     --cwd "$E2E_SCRATCH" \
     --env GUILE_AUTO_COMPILE=0 $E2E_TUI_ENV_ARGS \
-    -- "$E2E_ROOT/scripts/badb" tui >/dev/null
+    -- "$E2E_ROOT/scripts/badb" tui $E2E_TUI_CLEAN_FLAG >/dev/null
 }
 
 pass() { echo "    ok: $1"; }

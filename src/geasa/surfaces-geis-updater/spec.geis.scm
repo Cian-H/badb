@@ -10,6 +10,8 @@
                #:use-module
                (geasa surfaces-geis-updater plugin)
                #:use-module
+               (geasa surfaces-notify plugin)
+               #:use-module
                (geasa surfaces-widgets plugin))
 
 (spec-begin "surfaces-geis-updater")
@@ -100,6 +102,30 @@
                             'project
                             (geis-manager-scope (modal-overlay-state ov))))
               (unregister-geis-updater-extensions!)
+              (system* "rm" "-rf" ws)))
+
+(test-group "notify-integration"
+            (clear-notifications!)
+            (clear-geis-manager-extensions!)
+            (register-geis-updater-extensions!)
+            (let* ((ws (mkdtemp "/tmp/badb-updater-notify-XXXXXX")))
+              (mkdir (string-append ws "/.badb"))
+              (let ((ov (make-geis-manager-overlay #:scope 'project #:workspace ws)))
+                ((overlay-on-key ov) ov (char->integer #\s) '())
+                (let ((hist (notify-history)))
+                  (test-assert "sync action emits notification" (pair? hist))
+                  (let ((latest (car hist)))
+                    (test-equal "notification id is geis-updater:sync:project"
+                                "geis-updater:sync:project"
+                                (notification-id latest))
+                    (test-equal "resolved level is info"
+                                'info
+                                (notification-level latest))
+                    (test-equal "source is surfaces-geis-updater"
+                                "surfaces-geis-updater"
+                                (notification-source latest)))))
+              (unregister-geis-updater-extensions!)
+              (clear-notifications!)
               (system* "rm" "-rf" ws)))
 
 (spec-end)

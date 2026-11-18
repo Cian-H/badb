@@ -72,9 +72,12 @@ NEXT_VER=$(guile -c "(display (assoc-ref (call-with-input-file \"$REMOTE_REPO/$B
 )
 
 E2E_TUI_ENV_ARGS="--env BADB_REPO_CACHE_DIR=$E2E_SCRATCH/repo-cache --env BADB_USER_GEIS_DIR=$E2E_SCRATCH/user-geasa --env XDG_CONFIG_HOME=$E2E_SCRATCH/xdg-config"
+E2E_TUI_CLEAN_FLAG=""
 
 launch_tui
 expect_visible "badb microharness" 20000
+# Wait for background startup update check to finish so manual 'c' never races repo-cache.
+expect_visible "update(s) available" 10000
 
 type_text "/geis"
 expect_visible "↑↓:choose · tab:complete · enter:run · esc:dismiss" 5000
@@ -88,22 +91,21 @@ expect_visible "Project" 5000
 # Switch to Project scope tab where capabilities-demo is installed.
 press Tab
 expect_visible "capabilities-demo" 5000
-
-# Trigger force check against local file:// git fixture.
-press c
-expect_visible "Checked project updates" 10000
 expect_visible "$NEXT_VER" 5000
+tui wait idle --timeout 2000 >/dev/null 2>&1 || true
 
 # Cycle update policy (notify -> auto).
-press m
+type_text m
 expect_visible "Update policy: auto" 5000
+tui wait idle --timeout 2000 >/dev/null 2>&1 || true
 
 # Toggle non-core geis inactive.
 press Space
 expect_visible "Disabled capabilities-demo" 5000
+tui wait idle --timeout 2000 >/dev/null 2>&1 || true
 
 # Close modal cleanly.
-press q
+type_text q
 expect_hidden "Geis Manager" 3000
 
 finish

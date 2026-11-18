@@ -29,6 +29,21 @@
                                         modal-extension-slots
                                         modal-slot-providers
                                         modal-register-slot!
+                                        <overlay-stack>
+                                        make-overlay-stack
+                                        overlay-stack?
+                                        overlay-stack-modals
+                                        overlay-stack-floatings
+                                        overlay-stack-push-modal!
+                                        overlay-stack-pop-modal!
+                                        overlay-stack-top-modal
+                                        overlay-stack-add-floating!
+                                        overlay-stack-remove-floating!
+                                        overlay-stack-render
+                                        overlay-stack-handle-key
+                                        overlay-stack-handle-click
+                                        make-confirm-dialog
+                                        make-input-dialog
                                         (make-menu-overlay . ov:make-menu-overlay)))
                #:re-export (<overlay>
                              make-overlay
@@ -52,7 +67,22 @@
                              set-modal-show-detail?!
                              modal-extension-slots
                              modal-slot-providers
-                             modal-register-slot!)
+                             modal-register-slot!
+                             <overlay-stack>
+                             make-overlay-stack
+                             overlay-stack?
+                             overlay-stack-modals
+                             overlay-stack-floatings
+                             overlay-stack-push-modal!
+                             overlay-stack-pop-modal!
+                             overlay-stack-top-modal
+                             overlay-stack-add-floating!
+                             overlay-stack-remove-floating!
+                             overlay-stack-render
+                             overlay-stack-handle-key
+                             overlay-stack-handle-click
+                             make-confirm-dialog
+                             make-input-dialog)
                #:export (make-menu-overlay))
 
 (define %tui-menu-ops

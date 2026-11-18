@@ -24,6 +24,12 @@
                #:use-module
                (geasa surfaces-theme plugin)
                #:use-module
+               (geasa surfaces-notify plugin)
+               #:use-module
+               (geasa surfaces-drawer plugin)
+               #:use-module
+               ((geasa surfaces-widgets plugin) #:select (clip-str make-rect widget-render-rect))
+               #:use-module
                (geasa surfaces-tui editor)
                #:use-module
                (geasa surfaces-tui commands)
@@ -45,6 +51,8 @@
                (ice-9 threads)
                #:use-module
                (srfi srfi-1)
+               #:use-module
+               (srfi srfi-11)
                #:export
                (tui-theme-attr-constant
                  tui-theme-color->backend-value
@@ -58,9 +66,22 @@
                  tui-journal-count-cached
                  tui-context-gauge-info
                  tui-render!
-                 tui-request-render!))
+                 tui-request-render!
+                 tui-transcript-search
+                 set-tui-transcript-search!
+                 tui-jump-to-bottom-visible?
+                 tui-clear-unseen-rows!
+                 tui-update-scroll-tail!
+                 tui-last-view-height
+                 tui-last-content-width
+                 tui-overlay-stack
+                 tui-push-modal-overlay!
+                 tui-pop-modal-overlay!
+                 tui-drawer-state
+                 tui-toggle-drawer!
+                 tui-cycle-drawer-panel!))
 
-(define %max-color-pairs 64)
+(define %max-color-pairs 512)
 
 (define (tui-theme-attr-constant attr nref)
         "Resolve theme attribute symbol ATTR using backend NREF."
@@ -152,15 +173,23 @@ cannot restore the screen; initscr must run again."
                      next-id))
               0)))
 
+(define (normalize-theme-role role)
+        (case (ensure-symbol role)
+          ((ok) 'success)
+          ((warn) 'warning)
+          ((info) 'notice)
+          (else role)))
+
 (define (tui-draw-role! st role on?)
         "Enable or disable theme ROLE attributes and color pair on ST's stdscr."
         (let*
             ((nref (tui-nref st)) (stdscr (tui-stdscr st))
+             (norm-role (normalize-theme-role role))
              (attr-on! (nref 'attr-on!))
              (attr-off! (nref 'attr-off!))
              (color-pair (nref 'color-pair))
-             (spec (theme-ref (tui-ui-theme st) role))
-             (attrs (role-attrs st role))
+             (spec (theme-ref (tui-ui-theme st) norm-role))
+             (attrs (role-attrs st norm-role))
              (pair-off?
                (and (tui-colors-enabled? st)
                     (not (and (eq? (car spec) 'default) (eq? (cadr spec) 'default))))))
@@ -419,12 +448,13 @@ cannot restore the screen; initscr must run again."
                    (tui-safe-addstr st stdscr row-y start-x "│ " 2)
                    (tui-draw-role! st 'accent #f)
                    (tui-draw-role! st 'default #t)
-                   (tui-safe-addstr st
-                                    stdscr
-                                    row-y
-                                    (+ start-x 2)
-                                    (string-append cursor label label-pad)
-                                    (+ 2 (string-length cursor) (string-length label) (string-length label-pad)))
+                   (let* ((lbl-budget (max 0 (- inner-w (string-length cursor))))
+                          (lbl-clipped (if (> (string-length label) lbl-budget)
+                                         (substring label 0 lbl-budget)
+                                         label))
+                          (lbl-pad (make-string (max 0 (- (min label-w lbl-budget) (string-length lbl-clipped))) #\space))
+                          (lbl-text (string-append cursor lbl-clipped lbl-pad)))
+                     (tui-safe-addstr st stdscr row-y (+ start-x 2) lbl-text (min inner-w (string-length lbl-text))))
                    (tui-draw-role! st 'default #f)
                    (tui-draw-role! st 'dim #t)
                    (let*
@@ -489,8 +519,151 @@ cannot restore the screen; initscr must run again."
               (format #f "ctx ~a/~a" (format-token-kilo used) (format-token-kilo ceiling))
               #f))))
 
+(define %tui-overlay-stacks (make-weak-key-hash-table 31))
+(define %tui-drawer-states (make-weak-key-hash-table 31))
+
+(define (tui-overlay-stack st)
+        "Return the <overlay-stack> associated with ST (with floating notifications)."
+        (or (hashq-ref %tui-overlay-stacks st)
+            (let ((stk (make-overlay-stack)))
+              (overlay-stack-add-floating! stk (make-notify-floating-overlay))
+              (hashq-set! %tui-overlay-stacks st stk)
+              stk)))
+
+(define (tui-push-modal-overlay! st ov)
+        "Push modal overlay OV onto ST's <overlay-stack> and sync tui-active-overlay."
+        (let ((stk (tui-overlay-stack st)))
+          (overlay-stack-push-modal! stk ov)
+          (set-tui-active-overlay! st (overlay-stack-top-modal stk))
+          ov))
+
+(define (tui-pop-modal-overlay! st)
+        "Pop the top modal overlay from ST's <overlay-stack> and sync tui-active-overlay."
+        (let* ((stk (tui-overlay-stack st))
+               (popped (overlay-stack-pop-modal! stk)))
+          (set-tui-active-overlay! st (overlay-stack-top-modal stk))
+          popped))
+
+(define (tui-drawer-state st)
+        "Return the <drawer-state> associated with ST."
+        (or (hashq-ref %tui-drawer-states st)
+            (let ((ds (make-drawer-state #:open? #f)))
+              (register-builtin-drawer-panels!)
+              (hashq-set! %tui-drawer-states st ds)
+              ds)))
+
+(define (tui-toggle-drawer! st)
+        "Toggle the side drawer open/closed on ST."
+        (toggle-drawer! (tui-drawer-state st)))
+
+(define (tui-cycle-drawer-panel! st)
+        "Cycle to the next panel in ST's side drawer."
+        (cycle-drawer-panel! (tui-drawer-state st)))
+
+(define %tui-transcript-searches (make-weak-key-hash-table 31))
+(define %tui-scroll-tail-states (make-weak-key-hash-table 31))
+(define %tui-viewport-dims (make-weak-key-hash-table 31))
+
+(define (tui-transcript-search st)
+        "Return the <transcript-search> state associated with ST."
+        (or (hashq-ref %tui-transcript-searches st)
+            (let ((ts (make-transcript-search)))
+              (hashq-set! %tui-transcript-searches st ts)
+              ts)))
+
+(define (set-tui-transcript-search! st ts)
+        "Set the <transcript-search> state associated with ST."
+        (hashq-set! %tui-transcript-searches st ts)
+        ts)
+
+(define (tui-last-view-height st)
+        "Return the most recently rendered transcript view height for ST."
+        (let ((dims (hashq-ref %tui-viewport-dims st)))
+          (if (pair? dims) (car dims) 20)))
+
+(define (tui-last-content-width st)
+        "Return the most recently rendered transcript content width for ST."
+        (let ((dims (hashq-ref %tui-viewport-dims st)))
+          (if (pair? dims) (cdr dims) 76)))
+
+(define (%scroll-tail-vec st)
+        (or (hashq-ref %tui-scroll-tail-states st)
+            (let ((v (vector 0 #f)))
+              (hashq-set! %tui-scroll-tail-states st v)
+              v)))
+
+(define (tui-update-scroll-tail! st total-lines)
+        "Track unseen rows arriving while scrolled up (scroll-offset > 0)."
+        (let* ((v (%scroll-tail-vec st))
+               (prev-total (vector-ref v 0))
+               (scrolled-up? (> (tui-scroll-offset st) 0)))
+          (if (not scrolled-up?)
+            (vector-set! v 1 #f)
+            (when (and (> prev-total 0) (> total-lines prev-total))
+              (vector-set! v 1 #t)))
+          (vector-set! v 0 total-lines)
+          (vector-ref v 1)))
+
+(define (tui-clear-unseen-rows! st)
+        "Clear the unseen-rows flag for ST (e.g. when jumping to bottom)."
+        (vector-set! (%scroll-tail-vec st) 1 #f))
+
+(define (tui-jump-to-bottom-visible? st)
+        "Return #t when ST is scrolled up and unseen rows have arrived."
+        (and (> (tui-scroll-offset st) 0)
+             (vector-ref (%scroll-tail-vec st) 1)))
+
+(define (render-transcript-search-bar! st view-top content-width ts)
+        "Render the floating in-transcript search bar at the top-right of the transcript."
+        (let* ((nref (tui-nref st))
+               (stdscr (tui-stdscr st))
+               (attr-on! (nref 'attr-on!))
+               (attr-off! (nref 'attr-off!))
+               (A_BOLD (nref 'A_BOLD))
+               (q (transcript-search-query ts))
+               (matches (transcript-search-matches ts))
+               (total (length matches))
+               (cur-idx (transcript-search-current-idx ts))
+               (count-str (if (and (integer? cur-idx) (> total 0))
+                            (format #f "~a/~a" (+ cur-idx 1) total)
+                            (format #f "0/~a" total)))
+               (cursor-ch (if (transcript-search-input-active? ts) "▏" ""))
+               (bar-text (format #f " Find: ~a~a [~a] (n/N, Esc) " q cursor-ch count-str))
+               (max-w (max 16 (+ content-width 2)))
+               (clipped (if (> (string-length bar-text) max-w)
+                          (substring bar-text 0 max-w)
+                          bar-text))
+               (bar-x (max 2 (- max-w (string-length clipped)))))
+          (tui-draw-role! st (if (and (not (string-null? q)) (zero? total)) 'warning 'accent) #t)
+          (attr-on! stdscr A_BOLD)
+          (tui-safe-addstr st stdscr view-top bar-x clipped (string-length clipped))
+          (attr-off! stdscr A_BOLD)
+          (tui-draw-role! st (if (and (not (string-null? q)) (zero? total)) 'warning 'accent) #f)))
+
+(define (render-jump-to-bottom-pill! st view-bottom content-width)
+        "Render the passive floating '↓ New output — End' pill at bottom-right."
+        (let* ((nref (tui-nref st))
+               (stdscr (tui-stdscr st))
+               (attr-on! (nref 'attr-on!))
+               (attr-off! (nref 'attr-off!))
+               (A_BOLD (nref 'A_BOLD))
+               (A_REVERSE (nref 'A_REVERSE))
+               (pill " ↓ New output — End ")
+               (pill-len (string-length pill))
+               (pill-y (max 0 (- view-bottom 1)))
+               (pill-x (max 2 (- (+ content-width 2) pill-len))))
+          (tui-draw-role! st 'accent #t)
+          (attr-on! stdscr A_BOLD)
+          (attr-on! stdscr A_REVERSE)
+          (tui-safe-addstr st stdscr pill-y pill-x pill pill-len)
+          (attr-off! stdscr A_REVERSE)
+          (attr-off! stdscr A_BOLD)
+          (tui-draw-role! st 'accent #f)
+          (hashq-set! (tui-click-targets st) pill-y 'jump-to-bottom)))
+
 (define
   (render-transcript! st view-top view-bottom view-height content-width)
+  (hashq-set! %tui-viewport-dims st (cons view-height content-width))
   (let*
       ((messages (tui-messages st))
        (row-cache (tui-row-cache st))
@@ -521,9 +694,14 @@ cannot restore the screen; initscr must run again."
         (set-tui-asm-width! st content-width)))
     (let*
         ((total-lines (tui-asm-total st))
-         (max-scroll (max 0 (- total-lines view-height))))
+         (max-scroll (max 0 (- total-lines view-height)))
+         (ts (tui-transcript-search st))
+         (ts-active? (transcript-search-active? ts))
+         (ts-cur-row (and ts-active? (transcript-search-current-row ts)))
+         (ts-match-rows (if ts-active? (map car (transcript-search-matches ts)) '())))
       (set-tui-scroll-offset! st (max 0 (min (tui-scroll-offset st) max-scroll)))
       (set-tui-max-scroll-seen! st max-scroll)
+      (tui-update-scroll-tail! st total-lines)
       (when
           (and (integer? sel-idx) (>= sel-idx 0) (< sel-idx (length (tui-asm-counts st))))
         (let*
@@ -570,18 +748,39 @@ cannot restore the screen; initscr must run again."
                               sliced)))
                        (loop (cdr msgs) (cdr counts) (+ idx 1) next-pos (append (reverse tagged) acc)))))))))
         (let loop
-          ((lines visible-lines) (y view-top))
+          ((lines visible-lines) (y view-top) (g-row start-line))
           (unless (or (null? lines) (>= y view-bottom))
             (let ((tagged (car lines)))
-              (unless
-                  (assoc-ref (list-ref messages (car tagged)) 'startup-banner?)
+              (if (assoc-ref (list-ref messages (car tagged)) 'startup-banner?)
+                (let ((row (cdr tagged)))
+                  (when (and (pair? row)
+                             (string=? (car row) "block-body")
+                             (string? (caddr row))
+                             (string-contains (caddr row) "Ctrl+K Palette"))
+                    (hashq-set! (tui-click-targets st) y 'quick-action-strip)))
                 (hashq-set! (tui-click-targets st) y (car tagged)))
               (draw-block-line st
                                y
                                (cdr tagged)
                                content-width
-                               (and sel-idx (= (car tagged) sel-idx))))
-            (loop (cdr lines) (+ y 1))))))))
+                               (and sel-idx (= (car tagged) sel-idx)))
+              (when (and ts-active? (memv g-row ts-match-rows))
+                (let* ((nref (tui-nref st))
+                       (stdscr (tui-stdscr st))
+                       (attr-on! (nref 'attr-on!))
+                       (attr-off! (nref 'attr-off!))
+                       (A_BOLD (nref 'A_BOLD))
+                       (is-cur? (eqv? g-row ts-cur-row)))
+                  (tui-draw-role! st (if is-cur? 'accent 'warning) #t)
+                  (attr-on! stdscr A_BOLD)
+                  (tui-safe-addstr st stdscr y 0 (if is-cur? "▶ " "• ") 2)
+                  (attr-off! stdscr A_BOLD)
+                  (tui-draw-role! st (if is-cur? 'accent 'warning) #f))))
+            (loop (cdr lines) (+ y 1) (+ g-row 1))))
+        (when ts-active?
+          (render-transcript-search-bar! st view-top content-width ts))
+        (when (tui-jump-to-bottom-visible? st)
+          (render-jump-to-bottom-pill! st view-bottom content-width))))))
 
 (define
   (render-running-steering-bar! st
@@ -694,7 +893,9 @@ cannot restore the screen; initscr must run again."
        (pm (tui-prompt-mode st))
        (cpos (tui-cursor-pos st)))
     (when
-        (and (not (history-search-active? hs)) (selector-active? buf pm))
+        (and (not (history-search-active? hs))
+             (not (history-recall-position (tui-input-history st)))
+             (selector-active? buf pm))
       (let*
           ((matches (deduplicate-slash-commands (matching-slash-commands buf)))
            (box-w (min 62 (max 20 (- maxx 4)))))
@@ -768,9 +969,10 @@ cannot restore the screen; initscr must run again."
                      (map
                        (lambda (s)
                          (cons s ""))
-                       vis-items)))
+                       (reverse vis-items)))
+                   (bot-sel (max 0 (- vis-count 1 sel-pos))))
                 (when (>= start-y 2)
-                  (tui-draw-popup! st title rows sel-pos box-w start-y 2 above-count below-count))))))))
+                  (tui-draw-popup! st title rows bot-sel box-w start-y 2 below-count above-count))))))))
     (when
         (and (not (history-search-active? hs))
              (not (selector-active? buf pm))
@@ -950,49 +1152,68 @@ cannot restore the screen; initscr must run again."
              (mcp-manager-list-servers (tui-mcp-mgr st)))))
        (total-mcp (length (badb-config-mcp-servers (tui-cfg st))))
        (mcp-info (and (> total-mcp 0) (format #f "~a/~a" active-mcp total-mcp))))
-    (for-each
-      (lambda (seg)
-        (let
-            ((x (car seg)) (txt (cadr seg))
-             (role (caddr seg))
-             (b? (cadddr seg))
-             (d? (car (cddddr seg))))
-          (tui-draw-role! st role #t)
-          (when b? (attr-on! stdscr A_BOLD))
-          (when d? (attr-on! stdscr A_DIM))
-          (tui-safe-addstr st stdscr (- maxy 1) x txt (max 0 (- maxx x)))
-          (when d? (attr-off! stdscr A_DIM))
-          (when b? (attr-off! stdscr A_BOLD))
-          (tui-draw-role! st role #f)))
-      (format-bottom-status-bar maxx
-                                #:mode
-                                (if running?
-                                  'steering
-                                  (tui-prompt-mode st))
-                                #:model
-                                (or (tui-cur-model st) "")
-                                #:status
-                                (tui-status-text st)
-                                #:cwd
-                                (getcwd)
-                                #:tokens-used
-                                (if (number? used-tok)
-                                  used-tok
-                                  0)
-                                #:tokens-limit
-                                (if (number? lim-tok)
-                                  lim-tok
-                                  0)
-                                #:subagent-count
-                                sub-cnt
-                                #:todo-summary
-                                todo-sum
-                                #:feat-count
-                                (registry-count (tui-reg st))
-                                #:journal-count
-                                (tui-journal-count-cached st)
-                                #:mcp-info
-                                mcp-info))))
+    (let ((pill-spans '()))
+      (for-each
+        (lambda (seg)
+          (let*
+              ((x (car seg)) (txt (cadr seg))
+               (role (caddr seg))
+               (b? (cadddr seg))
+               (d? (car (cddddr seg)))
+               (x1 (+ x (string-length txt)))
+               (cur-model (or (tui-cur-model st) "")))
+            (cond
+              ((and (not (string-null? cur-model))
+                    (string-prefix? (clip-str cur-model 12) txt))
+                (set! pill-spans (cons (list x x1 'config) pill-spans)))
+              ((or (string-prefix? "ctx " txt) (string-suffix? " tok" txt))
+                (set! pill-spans (cons (list x x1 'context) pill-spans)))
+              ((string-suffix? " feats" txt)
+                (set! pill-spans (cons (list x x1 'geasa) pill-spans)))
+              ((string-prefix? "⑂ " txt)
+                (set! pill-spans (cons (list x x1 'agents) pill-spans)))
+              ((string-prefix? "🔔" txt)
+                (set! pill-spans (cons (list x x1 'notifications) pill-spans))))
+            (tui-draw-role! st role #t)
+            (when b? (attr-on! stdscr A_BOLD))
+            (when d? (attr-on! stdscr A_DIM))
+            (tui-safe-addstr st stdscr (- maxy 1) x txt (max 0 (- maxx x)))
+            (when d? (attr-off! stdscr A_DIM))
+            (when b? (attr-off! stdscr A_BOLD))
+            (tui-draw-role! st role #f)))
+        (format-bottom-status-bar maxx
+                                  #:mode
+                                  (if running?
+                                    'steering
+                                    (tui-prompt-mode st))
+                                  #:model
+                                  (or (tui-cur-model st) "")
+                                  #:status
+                                  (tui-status-text st)
+                                  #:cwd
+                                  (getcwd)
+                                  #:tokens-used
+                                  (if (number? used-tok)
+                                    used-tok
+                                    0)
+                                  #:tokens-limit
+                                  (if (number? lim-tok)
+                                    lim-tok
+                                    0)
+                                  #:subagent-count
+                                  sub-cnt
+                                  #:todo-summary
+                                  todo-sum
+                                  #:feat-count
+                                  (registry-count (tui-reg st))
+                                  #:journal-count
+                                  (tui-journal-count-cached st)
+                                  #:mcp-info
+                                  mcp-info
+                                  #:notify-count
+                                  (length (notify-active))))
+      (when (pair? pill-spans)
+        (hashq-set! (tui-click-targets st) (- maxy 1) (cons 'status-bar-pills (reverse pill-spans)))))))
 
 (define (tui-render! st)
         "Render the full TUI frame for ST."
@@ -1063,8 +1284,43 @@ cannot restore the screen; initscr must run again."
                                 (set-tui-last-tab-title-sig! st tab-sig)
                                 (tui-safe-write-osc-title!
                                   (format-osc-tab-title (tui-status-text st) #:model (tui-cur-model st)))))
+                            (notify-tick!)
                             (erase stdscr)
-                            (render-transcript! st view-top view-bottom view-height content-width)
+                            (let-values (((main-rect drawer-rect)
+                                          (compute-drawer-layout
+                                            (make-rect 0 view-top maxx view-height)
+                                            #:open? (drawer-open? (tui-drawer-state st)))))
+                                        (let ((tx-width (max 10 (- (rect-width main-rect) 3))))
+                                          (render-transcript! st view-top view-bottom view-height tx-width))
+                                        (when drawer-rect
+                                          (let* ((d-widget
+                                                   (render-drawer-widget
+                                                     (tui-drawer-state st)
+                                                     drawer-rect
+                                                     #:context `((todos . ,(let ((tl (tui-active-todo-list st)))
+                                                                             (if (todo-list? tl)
+                                                                               (todo-list-items tl)
+                                                                               '())))
+                                                                 (files . ,(or (tui-workspace-files-cache st) '())))))
+                                                 (d-ops (if d-widget (widget-render-rect d-widget drawer-rect) '())))
+                                            (for-each
+                                              (lambda (op)
+                                                (let ((ox (draw-op-x op)) (oy (draw-op-y op))
+                                                      (role (draw-op-role op))
+                                                      (bold? (draw-op-bold? op))
+                                                      (dim? (draw-op-dim? op))
+                                                      (rev? (draw-op-reverse? op)))
+                                                  (when (and (>= oy 0) (< oy maxy) (>= ox 0) (< ox maxx))
+                                                    (when (and role (not (eq? role 'default))) (tui-draw-role! st role #t))
+                                                    (when bold? ((nref 'attr-on!) stdscr (nref 'A_BOLD)))
+                                                    (when dim? ((nref 'attr-on!) stdscr (nref 'A_DIM)))
+                                                    (when rev? ((nref 'attr-on!) stdscr (nref 'A_REVERSE)))
+                                                    (tui-safe-addstr st stdscr oy ox (draw-op-text op) (- maxx ox))
+                                                    (when rev? ((nref 'attr-off!) stdscr (nref 'A_REVERSE)))
+                                                    (when dim? ((nref 'attr-off!) stdscr (nref 'A_DIM)))
+                                                    (when bold? ((nref 'attr-off!) stdscr (nref 'A_BOLD)))
+                                                    (when (and role (not (eq? role 'default))) (tui-draw-role! st role #f)))))
+                                              d-ops))))
                             (if running?
                               (render-running-steering-bar! st
                                                             maxy
@@ -1084,58 +1340,60 @@ cannot restore the screen; initscr must run again."
                                                   input-cur-col
                                                   popup-anchor-y))
                             (render-bottom-status-bar! st maxy maxx running?)
-                            (let ((ov (tui-active-overlay st)))
-                              (when ov
-                                (let*
-                                    ((attr-on! (nref 'attr-on!))
-                                     (attr-off! (nref 'attr-off!))
-                                     (A_BOLD (nref 'A_BOLD))
-                                     (A_DIM (nref 'A_DIM))
-                                     (A_REVERSE (nref 'A_REVERSE))
-                                     (draw-ctx
-                                       `((draw-popup! .
-                                                      ,(lambda
-                                                           (title rows sel-pos box-w start-y start-x above below)
-                                                         (tui-draw-popup! st title rows sel-pos box-w start-y start-x above below)))
-                                         (draw-ops! .
-                                                    ,(lambda (ops rect)
-                                                       (when (rect? rect)
+                            (let* ((ov (tui-active-overlay st))
+                                   (stk (tui-overlay-stack st))
+                                   (stk-top (overlay-stack-top-modal stk))
+                                   (attr-on! (nref 'attr-on!))
+                                   (attr-off! (nref 'attr-off!))
+                                   (A_BOLD (nref 'A_BOLD))
+                                   (A_DIM (nref 'A_DIM))
+                                   (A_REVERSE (nref 'A_REVERSE))
+                                   (draw-ctx
+                                     `((draw-popup! .
+                                                    ,(lambda
+                                                         (title rows sel-pos box-w start-y start-x above below)
+                                                       (tui-draw-popup! st title rows sel-pos box-w start-y start-x above below)))
+                                       (draw-ops! .
+                                                  ,(lambda (ops rect)
+                                                     (when (rect? rect)
+                                                       (let
+                                                           ((rx (max 0 (rect-x rect)))
+                                                            (ry (max 0 (rect-y rect)))
+                                                            (rw (max 0 (min (rect-width rect) (- maxx (max 0 (rect-x rect))))))
+                                                            (rh (rect-height rect)))
+                                                         (when (> rw 0)
+                                                           (let ((blank (make-string rw #\space)))
+                                                             (let clear
+                                                               ((i 0))
+                                                               (when (and (< i rh) (< (+ ry i) maxy))
+                                                                 (tui-safe-addstr st stdscr (+ ry i) rx blank rw)
+                                                                 (clear (+ i 1))))))))
+                                                     (for-each
+                                                       (lambda (op)
                                                          (let
-                                                             ((rx (max 0 (rect-x rect)))
-                                                              (ry (max 0 (rect-y rect)))
-                                                              (rw (max 0 (min (rect-width rect) (- maxx (max 0 (rect-x rect))))))
-                                                              (rh (rect-height rect)))
-                                                           (when (> rw 0)
-                                                             (let ((blank (make-string rw #\space)))
-                                                               (let clear
-                                                                 ((i 0))
-                                                                 (when (and (< i rh) (< (+ ry i) maxy))
-                                                                   (tui-safe-addstr st stdscr (+ ry i) rx blank rw)
-                                                                   (clear (+ i 1))))))))
-                                                       (for-each
-                                                         (lambda (op)
-                                                           (let
-                                                               ((ox (draw-op-x op)) (oy (draw-op-y op))
-                                                                (role (draw-op-role op))
-                                                                (bold? (draw-op-bold? op))
-                                                                (dim? (draw-op-dim? op))
-                                                                (rev? (draw-op-reverse? op)))
-                                                             (when
-                                                                 (and (>= oy 0) (< oy maxy) (>= ox 0) (< ox maxx))
-                                                               (when (and role (not (eq? role 'default))) (tui-draw-role! st role #t))
-                                                               (when bold? (attr-on! stdscr A_BOLD))
-                                                               (when dim? (attr-on! stdscr A_DIM))
-                                                               (when rev? (attr-on! stdscr A_REVERSE))
-                                                               (tui-safe-addstr st stdscr oy ox (draw-op-text op) (- maxx ox))
-                                                               (when rev? (attr-off! stdscr A_REVERSE))
-                                                               (when dim? (attr-off! stdscr A_DIM))
-                                                               (when bold? (attr-off! stdscr A_BOLD))
-                                                               (when (and role (not (eq? role 'default))) (tui-draw-role! st role #f)))))
-                                                         ops)))
-                                         (register-click! .
-                                                          ,(lambda (y target)
-                                                             (hashq-set! (tui-click-targets st) y target))))))
-                                  ((overlay-render ov) ov draw-ctx maxy maxx popup-anchor-y))))
+                                                             ((ox (draw-op-x op)) (oy (draw-op-y op))
+                                                              (role (draw-op-role op))
+                                                              (bold? (draw-op-bold? op))
+                                                              (dim? (draw-op-dim? op))
+                                                              (rev? (draw-op-reverse? op)))
+                                                           (when
+                                                               (and (>= oy 0) (< oy maxy) (>= ox 0) (< ox maxx))
+                                                             (when (and role (not (eq? role 'default))) (tui-draw-role! st role #t))
+                                                             (when bold? (attr-on! stdscr A_BOLD))
+                                                             (when dim? (attr-on! stdscr A_DIM))
+                                                             (when rev? (attr-on! stdscr A_REVERSE))
+                                                             (tui-safe-addstr st stdscr oy ox (draw-op-text op) (- maxx ox))
+                                                             (when rev? (attr-off! stdscr A_REVERSE))
+                                                             (when dim? (attr-off! stdscr A_DIM))
+                                                             (when bold? (attr-off! stdscr A_BOLD))
+                                                             (when (and role (not (eq? role 'default))) (tui-draw-role! st role #f)))))
+                                                       ops)))
+                                       (register-click! .
+                                                        ,(lambda (y target)
+                                                           (hashq-set! (tui-click-targets st) y target))))))
+                              (when (and ov (not (eq? ov stk-top)))
+                                ((overlay-render ov) ov draw-ctx maxy maxx popup-anchor-y))
+                              (overlay-stack-render stk draw-ctx maxy maxx popup-anchor-y))
                             (unless running?
                               (move stdscr (+ prompt-top input-cur-row) (+ 2 input-cur-col))
                               (cond

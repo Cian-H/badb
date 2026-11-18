@@ -356,7 +356,8 @@
                                    (todo-summary #f)
                                    (feat-count 0)
                                    (journal-count 0)
-                                   (mcp-info #f))
+                                   (mcp-info #f)
+                                   (notify-count 0))
          "Build a single-line bottom status bar as positioned segments
 ((x text role bold? dim?) ...) fitting within MAXX columns. Drops lower-priority
 middle items gracefully on narrow terminals."
@@ -404,6 +405,9 @@ middle items gracefully on narrow terminals."
                            (list (format #f "~a chkpts" journal-count) 'dim #f #t))
                       (and tok-str
                            (list tok-str 'dim #f #t))
+                      (if (> notify-count 0)
+                        (list (format #f "🔔 ~a" notify-count) 'accent #t #f)
+                        (list "🔔" 'dim #f #t))
                       (and (string? status) (not (string-null? status))
                            (list status (status-word->role status) #t #f)))))
                 (items-width
@@ -686,32 +690,47 @@ where each line is a list of (text role bold? dim?) spans fitting within MAXX."
                                 (pair? (cddr default-tips))
                                 (list (list (clip-str (caddr default-tips) info-w) 'accent #f #f))))))
        (compact? (< w 52))
+       (quick-strip
+         (clip-spans
+           (list (list "  " 'default #f #f)
+                 (list "Ctrl+K Palette" 'dim #f #t)
+                 (list " · " 'dim #f #t)
+                 (list "/geis" 'dim #f #t)
+                 (list " · " 'dim #f #t)
+                 (list "/mcp" 'dim #f #t)
+                 (list " · " 'dim #f #t)
+                 (list "/sessions" 'dim #f #t)
+                 (list " · " 'dim #f #t)
+                 (list "@file" 'dim #f #t))
+           w))
        (row-count (max (length art) (length info-lines))))
-    (if compact?
-      (map
-        (lambda (line)
-          (clip-spans line w))
-        (filter
-          (lambda (ln)
-            (not (and (pair? ln) (null? (cdr ln)) (string-null? (caar ln)))))
-          info-lines))
-      (let loop
-        ((i 0) (acc '()))
-        (if (>= i row-count)
-          (reverse acc)
-          (let*
-              ((art-spans
-                 (if (< i (length art))
-                   (list-ref art i)
-                   '()))
-               (info-spans
-                 (if (< i (length info-lines))
-                   (list-ref info-lines i)
-                   '()))
-               (cur-w (spans-plain-length art-spans))
-               (gap-spans
-                 (list (list (make-string (max 1 (- art-col-w cur-w)) #\space) 'default #f #f))))
-            (loop (+ i 1) (cons (clip-spans (append art-spans gap-spans info-spans) w) acc))))))))
+    (append
+      (if compact?
+        (map
+          (lambda (line)
+            (clip-spans line w))
+          (filter
+            (lambda (ln)
+              (not (and (pair? ln) (null? (cdr ln)) (string-null? (caar ln)))))
+            info-lines))
+        (let loop
+          ((i 0) (acc '()))
+          (if (>= i row-count)
+            (reverse acc)
+            (let*
+                ((art-spans
+                   (if (< i (length art))
+                     (list-ref art i)
+                     '()))
+                 (info-spans
+                   (if (< i (length info-lines))
+                     (list-ref info-lines i)
+                     '()))
+                 (cur-w (spans-plain-length art-spans))
+                 (gap-spans
+                   (list (list (make-string (max 1 (- art-col-w cur-w)) #\space) 'default #f #f))))
+              (loop (+ i 1) (cons (clip-spans (append art-spans gap-spans info-spans) w) acc))))))
+      (list quick-strip))))
 
 (define*
   (format-startup-banner-text maxx

@@ -379,7 +379,8 @@ the trailing manual entry item."
                                          "recorded in config"))
                                (cons 'set-model m)))
                        known)
-                  (list (cons (cons "Set model..." "Type a model name manually") 'prefill-model))))))))
+                  (list (cons (cons "Set model..." "Type a model name manually") 'prefill-model)
+                        (cons (cons "Switch endpoint / provider..." "Pick or enter an endpoint") 'open-endpoint-menu))))))))
 
 (define (endpoint-menu-items-for-config cfg)
         "Build the endpoint menu items: configured provider presets in CFG plus
@@ -714,8 +715,29 @@ menu-pop restores CURRENT-THEME-NAME and invokes ON-CANCEL if provided."
             ("interrupt"
              "Halt the running agent at its next boundary"
              (run-command . "interrupt"))))
-          ("Navigation & Help" "Help manual and exit"
-           (("help"
+          ("Navigation & Help" "Help manual, modals, and exit"
+           (("notifications"
+             "Open notification history modal"
+             (run-command . "notifications"))
+            ("sessions"
+             "Browse & resume chat sessions"
+             (run-command . "sessions"))
+            ("agents"
+             "Live subagent mission control"
+             (run-command . "agents"))
+            ("keys"
+             "Open command palette & keybindings (Ctrl+K)"
+             (run-command . "keys"))
+            ("diff"
+             "Review workspace git diff"
+             (run-command . "diff"))
+            ("drawer"
+             "Toggle right-hand side drawer"
+             (run-command . "drawer"))
+            ("usage"
+             "Show token usage & context breakdown"
+             (run-command . "usage"))
+            ("help"
              "Show categorized help manual & shortcuts (alias: /?)"
              (run-command . "help"))
             ("quit" "Exit badb microharness (alias: /exit)" (run-command . "quit"))))))

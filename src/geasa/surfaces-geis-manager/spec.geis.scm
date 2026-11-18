@@ -1,4 +1,5 @@
 (define-module (test surfaces-geis-manager-spec)
+               #:use-module (srfi srfi-1)
                #:use-module (srfi srfi-64)
                #:use-module (badb spec)
                #:use-module (geasa surfaces-geis-manager plugin)
@@ -77,6 +78,55 @@
                             ((overlay-on-key ov) ov (char->integer #\newline) '()))
                 (test-assert "detail is shown" (modal-show-detail? ov))
                 (test-equal "q closes" 'close ((overlay-on-key ov) ov (char->integer #\q) '())))
+              (system* "rm" "-rf" tmp)))
+
+(test-group "dogfood-filter-and-dialogs"
+            (let*
+                ((tmp (mkdtemp "/tmp/badb-gm-df-XXXXXX"))
+                 (ws (string-append tmp "/ws"))
+                 (lock-dir (string-append ws "/.badb")))
+              (mkdir ws)
+              (mkdir lock-dir)
+              (geis-pkg-write-lockfile! 'project
+                                        `((lock-version . 1) (last-check . #f)
+                                          (repos . ())
+                                          (geasa
+                                            ("surfaces-tui" (version . "2026.11.18.0") (pinned? . #f) (enabled? . #t))
+                                            ("capabilities-rtk" (version . "2026.11.18.1") (pinned? . #f) (enabled? . #t))))
+                                        ws)
+              (let*
+                  ((stack (make-overlay-stack))
+                   (ov (make-geis-manager-overlay #:scope 'project #:workspace ws))
+                   (st (modal-overlay-state ov))
+                   (lines '()))
+                (overlay-stack-push-modal! stack ov)
+                ;; Test / filter
+                (test-equal "/ activates filter" 'handled (overlay-stack-handle-key stack (char->integer #\/) '()))
+                (overlay-stack-handle-key stack (char->integer #\r) '())
+                (overlay-stack-handle-key stack (char->integer #\t) '())
+                (overlay-stack-handle-key stack (char->integer #\k) '())
+                (overlay-stack-render stack
+                                      `((draw-ops! . ,(lambda (ops _r)
+                                                        (set! lines (render-ops->lines ops 80 24)))))
+                                      24 80 0)
+                (test-assert "filtered to capabilities-rtk"
+                             (any (lambda (l) (string-contains l "capabilities-rtk")) lines))
+                (test-assert "surfaces-tui filtered out"
+                             (not (any (lambda (l) (string-contains l "surfaces-tui")) lines)))
+                ;; Esc deactivates/clears filter without closing manager
+                (overlay-stack-handle-key stack 27 '())
+                (test-equal "manager still on stack" ov (overlay-stack-top-modal stack))
+                ;; Test 'a' pushes input dialog; Esc cancels back to manager
+                (overlay-stack-handle-key stack (char->integer #\a) '())
+                (test-assert "input dialog pushed" (not (eq? ov (overlay-stack-top-modal stack))))
+                (overlay-stack-handle-key stack 27 '())
+                (test-equal "esc returns to manager" ov (overlay-stack-top-modal stack))
+                ;; Test 'd' on capabilities-rtk (index 0) pushes confirm dialog; 'y' removes & pops
+                (overlay-stack-handle-key stack (char->integer #\d) '())
+                (test-assert "confirm dialog pushed" (not (eq? ov (overlay-stack-top-modal stack))))
+                (overlay-stack-handle-key stack (char->integer #\y) '())
+                (test-equal "confirm popped back to manager" ov (overlay-stack-top-modal stack))
+                (test-equal "capabilities-rtk removed" 1 (length (geis-manager-entries st))))
               (system* "rm" "-rf" tmp)))
 
 (test-group "tui-registration"

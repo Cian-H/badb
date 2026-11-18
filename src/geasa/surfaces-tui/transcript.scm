@@ -8,7 +8,9 @@
                #:use-module (geasa surfaces-tui markdown)
                #:use-module (geasa foundation-util plugin)
                #:use-module (ice-9 format)
+               #:use-module (ice-9 popen)
                #:use-module (ice-9 regex)
+               #:use-module (rnrs bytevectors)
                #:use-module (srfi srfi-1)
                #:use-module (srfi srfi-9)
                #:re-export (process-fenced-code-blocks)
@@ -60,7 +62,31 @@
                           row-cache-clear!
                           row-cache-prune!
                           key->code
-                          resolve-modified-key))
+                          resolve-modified-key
+                          base64-encode-string
+                          osc52-copy-sequence
+                          %clipboard-fallback-enabled?
+                          clipboard-copy!
+                          extract-fenced-code-blocks
+                          annotate-code-block-copy-pills
+                          foldable-card-message?
+                          transcript-fold-all!
+                          <transcript-search>
+                          make-transcript-search
+                          transcript-search?
+                          transcript-search-active?
+                          transcript-search-input-active?
+                          transcript-search-query
+                          transcript-search-matches
+                          transcript-search-current-idx
+                          transcript-find-matching-rows
+                          transcript-search-open
+                          transcript-search-close
+                          transcript-search-with-input-active
+                          transcript-search-update
+                          transcript-search-step
+                          transcript-search-current-row
+                          transcript-search-scroll-offset))
 
 ;;;
 ;;; Model Thoughts & Reasoning Separation Helper
@@ -744,7 +770,8 @@ pre-computed segments as the 4th element when non-trivial."
           (make-block-entry "assistant" 'assistant (wrap-text content content-width))
           (make-styled-block-entry "assistant"
                                    'assistant
-                                   (render-markdown content #:width content-width))))
+                                   (annotate-code-block-copy-pills
+                                     (render-markdown content #:width content-width)))))
 
 (define (format-highlighted-role-block label theme-role text content-width highlighter)
         (let* ((wrapped (wrap-text text content-width))
@@ -958,3 +985,304 @@ streaming messages are formatted directly without caching."
                                (hashq-set! kept k v)))
                            (row-cache-table cache))
             (set-row-cache-table! cache kept))))
+
+;;;
+;;; Pure-Scheme Base64 & OSC 52 Clipboard Copy
+;;;
+(define %base64-alphabet
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+
+(define (base64-encode-string str)
+        "Encode UTF-8 string STR as RFC 4648 Base64 in pure Scheme."
+        (let* ((bv (string->utf8 (ensure-string str)))
+               (len (bytevector-length bv)))
+          (let loop ((i 0) (acc '()))
+                    (if (>= i len)
+                      (string-concatenate (reverse acc))
+                      (let* ((b0 (bytevector-u8-ref bv i))
+                             (has1 (< (+ i 1) len))
+                             (has2 (< (+ i 2) len))
+                             (b1 (if has1 (bytevector-u8-ref bv (+ i 1)) 0))
+                             (b2 (if has2 (bytevector-u8-ref bv (+ i 2)) 0))
+                             (n (+ (ash b0 16) (ash b1 8) b2))
+                             (c0 (string-ref %base64-alphabet (logand (ash n -18) #x3f)))
+                             (c1 (string-ref %base64-alphabet (logand (ash n -12) #x3f)))
+                             (c2 (if has1 (string-ref %base64-alphabet (logand (ash n -6) #x3f)) #\=))
+                             (c3 (if has2 (string-ref %base64-alphabet (logand n #x3f)) #\=)))
+                        (loop (+ i 3) (cons (string c0 c1 c2 c3) acc)))))))
+
+(define* (osc52-copy-sequence text #:optional (target "c"))
+         "Return the OSC 52 terminal escape sequence copying TEXT to clipboard TARGET."
+         (string-append "\x1b]52;" target ";" (base64-encode-string (ensure-string text)) "\x07"))
+
+(define (%tty-control-port)
+        (catch #t
+          (lambda ()
+            (let* ((term-mod (false-if-exception (resolve-module '(notcurses terminal) #f)))
+                   (port-fn (and term-mod (module-ref term-mod 'tty-control-port #f))))
+              (and (procedure? port-fn)
+                   (let ((p (port-fn)))
+                     (and (output-port? p) (not (port-closed? p)) p)))))
+          (lambda _ #f)))
+
+(define (%try-local-clipboard-cmd! cmd args text)
+        (catch #t
+          (lambda ()
+            (let ((p (apply open-pipe* OPEN_WRITE cmd args)))
+              (display text p)
+              (force-output p)
+              (zero? (status:exit-val (close-pipe p)))))
+          (lambda _ #f)))
+
+(define (%try-local-clipboard-fallback! text)
+        (and (not (getenv "SSH_TTY"))
+             (not (getenv "SSH_CONNECTION"))
+             (cond
+               ((getenv "WAYLAND_DISPLAY")
+                 (or (%try-local-clipboard-cmd! "wl-copy" '() text)
+                     (%try-local-clipboard-cmd! "xclip" '("-selection" "clipboard") text)))
+               ((getenv "DISPLAY")
+                 (%try-local-clipboard-cmd! "xclip" '("-selection" "clipboard") text))
+               (else
+                 (%try-local-clipboard-cmd! "pbcopy" '() text)))))
+
+(define (%emit-copied-toast! char-count)
+        (catch #t
+          (lambda ()
+            (let ((iface (false-if-exception (resolve-interface '(geasa surfaces-notify plugin)))))
+              (when iface
+                (let ((fn (module-ref iface 'notify-info! #f)))
+                  (when (procedure? fn)
+                    (fn (format #f "Copied to clipboard (~a chars)" char-count)
+                        #:title "Clipboard"
+                        #:source "surfaces-tui"))))))
+          (lambda _ #f)))
+
+(define %clipboard-fallback-enabled? (make-parameter #t))
+
+(define* (clipboard-copy! text #:key (port #f) (write-osc! #f) (fallback? (%clipboard-fallback-enabled?)) (notify? #t))
+         "Copy TEXT to the system clipboard via OSC 52 (and optional local
+wl-copy/xclip/pbcopy fallback when not over SSH). Emits a surfaces-notify
+\"Copied to clipboard\" toast when NOTIFY? is #t and surfaces-notify is loaded."
+         (let* ((s (ensure-string (or text "")))
+                (seq (osc52-copy-sequence s)))
+           (cond
+             ((procedure? write-osc!)
+               (write-osc! seq))
+             ((and (output-port? port) (not (port-closed? port)))
+               (display seq port)
+               (force-output port))
+             (else
+               (let ((tty (%tty-control-port)))
+                 (when tty
+                   (display seq tty)
+                   (force-output tty)))))
+           (when fallback?
+             (%try-local-clipboard-fallback! s))
+           (when notify?
+             (%emit-copied-toast! (string-length s)))
+           #t))
+
+;;;
+;;; Fenced Code Block Extraction & Clickable [copy] Pill
+;;;
+(define (extract-fenced-code-blocks text)
+        "Extract the body string of each fenced code block (``` or ~~~) in TEXT."
+        (let ((lines (string-split (ensure-string (or text "")) #\newline)))
+          (let loop ((rest lines) (in-fence #f) (buf '()) (acc '()))
+                    (if (null? rest)
+                      (reverse (if in-fence
+                                 (cons (string-join (reverse buf) "\n") acc)
+                                 acc))
+                      (let* ((ln (car rest))
+                             (trimmed (string-trim ln)))
+                        (if in-fence
+                          (if (string-prefix? in-fence trimmed)
+                            (loop (cdr rest) #f '() (cons (string-join (reverse buf) "\n") acc))
+                            (loop (cdr rest) in-fence (cons ln buf) acc))
+                          (cond
+                            ((string-prefix? "```" trimmed)
+                              (loop (cdr rest) "```" '() acc))
+                            ((string-prefix? "~~~" trimmed)
+                              (loop (cdr rest) "~~~" '() acc))
+                            (else
+                              (loop (cdr rest) #f '() acc)))))))))
+
+(define (annotate-code-block-copy-pills row-pairs)
+        "Append a clickable [copy] pill to fenced code block header rows in ROW-PAIRS."
+        (map (lambda (pair)
+               (let ((plain (car pair)))
+                 (if (and (string? plain)
+                          (>= (string-length plain) 16)
+                          (string-prefix? "╭─ " plain)
+                          (string-suffix? "───" plain))
+                   (let* ((prefix (substring plain 0 (- (string-length plain) 8)))
+                          (new-plain (string-append prefix " [copy]─"))
+                          (segs (list (list (string-append prefix " ") 'dim #f #t)
+                                      (list "[copy]" 'accent #t #f)
+                                      (list "─" 'dim #f #t))))
+                     (cons new-plain segs))
+                   pair)))
+             row-pairs))
+
+;;;
+;;; Fold / Unfold All Tool & Thinking Cards
+;;;
+(define %foldable-card-roles
+        '("tool" "tool-call" "tool-result" "thought" "thinking" "shell-out" "scheme-out"))
+
+(define (foldable-card-message? msg)
+        "Return #t when MSG is a tool or thinking card that participates in /fold."
+        (and (pair? msg)
+             (message-collapsible? msg)
+             (let* ((raw-role (prop-ref msg 'role ""))
+                    (role (cond
+                            ((string? raw-role) raw-role)
+                            ((symbol? raw-role) (symbol->string raw-role))
+                            (else ""))))
+               (or (member role %foldable-card-roles)
+                   (and (string=? role "assistant")
+                        (non-empty-string? (extract-msg-thoughts msg)))))))
+
+(define* (transcript-fold-all! messages #:optional (target-collapsed? 'toggle))
+         "Fold or unfold all tool & thinking cards in MESSAGES.
+TARGET-COLLAPSED? may be 'toggle (collapse all if any foldable card is open,
+else expand all), #t (collapse all), or #f (expand all).
+Returns (values new-messages collapsed? changed-count)."
+         (let* ((want-collapsed?
+                  (if (eq? target-collapsed? 'toggle)
+                    (any (lambda (m)
+                           (and (foldable-card-message? m)
+                                (not (message-collapsed? m))))
+                         messages)
+                    (and target-collapsed? #t)))
+                (changed 0)
+                (next (map (lambda (m)
+                             (if (and (foldable-card-message? m)
+                                      (not (eq? (message-collapsed? m) want-collapsed?)))
+                               (begin
+                                 (set! changed (+ changed 1))
+                                 (message-with-collapsed m want-collapsed?))
+                               m))
+                           messages)))
+           (values next want-collapsed? changed)))
+
+;;;
+;;; In-Transcript Search (<transcript-search>)
+;;;
+(define-record-type <transcript-search>
+                    (%make-transcript-search active? input-active? query matches current-idx)
+                    transcript-search?
+                    (active? transcript-search-active?)
+                    (input-active? transcript-search-input-active?)
+                    (query transcript-search-query)
+                    (matches transcript-search-matches)
+                    (current-idx transcript-search-current-idx))
+
+(define* (make-transcript-search #:key
+                                 (active? #f)
+                                 (input-active? #f)
+                                 (query "")
+                                 (matches '())
+                                 (current-idx #f))
+         "Create a <transcript-search> state record."
+         (%make-transcript-search active? input-active? query matches current-idx))
+
+(define (transcript-row-plain-text row)
+        (let ((kind (car row)))
+          (cond
+            ((string=? kind "block-label") (or (cadr row) ""))
+            ((or (string=? kind "block-body") (string=? kind "block-summary"))
+              (or (caddr row) ""))
+            (else ""))))
+
+(define (transcript-find-matching-rows messages content-width row-cache query)
+        "Return a list of (global-row-idx . msg-idx) pairs for rows matching QUERY."
+        (let ((q (string-trim-both (ensure-string (or query "")))))
+          (if (string-null? q)
+            '()
+            (let loop ((msgs messages) (m-idx 0) (r-idx 0) (acc '()))
+                      (if (null? msgs)
+                        (reverse acc)
+                        (let* ((rows (if row-cache
+                                       (row-cache-rows row-cache (car msgs) content-width)
+                                       (format-message-entry (car msgs) content-width)))
+                               (next-acc
+                                 (let rloop ((rs rows) (cur-r r-idx) (a acc))
+                                            (if (null? rs)
+                                              a
+                                              (let ((txt (transcript-row-plain-text (car rs))))
+                                                (rloop (cdr rs)
+                                                       (+ cur-r 1)
+                                                       (if (string-contains-ci txt q)
+                                                         (cons (cons cur-r m-idx) a)
+                                                         a)))))))
+                          (loop (cdr msgs) (+ m-idx 1) (+ r-idx (length rows)) next-acc)))))))
+
+(define (transcript-search-open ts)
+        "Activate TS with input focus enabled."
+        (%make-transcript-search #t
+                                 #t
+                                 (transcript-search-query ts)
+                                 (transcript-search-matches ts)
+                                 (transcript-search-current-idx ts)))
+
+(define (transcript-search-close ts)
+        "Deactivate TS while preserving its last query."
+        (%make-transcript-search #f
+                                 #f
+                                 (transcript-search-query ts)
+                                 '()
+                                 #f))
+
+(define (transcript-search-with-input-active ts input-active?)
+        "Return a copy of TS with INPUT-ACTIVE? updated."
+        (%make-transcript-search (transcript-search-active? ts)
+                                 input-active?
+                                 (transcript-search-query ts)
+                                 (transcript-search-matches ts)
+                                 (transcript-search-current-idx ts)))
+
+(define* (transcript-search-update ts query messages content-width #:optional (row-cache #f))
+         "Update TS's QUERY and recompute matching transcript rows."
+         (let* ((q (ensure-string (or query "")))
+                (matches (transcript-find-matching-rows messages content-width row-cache q))
+                (idx (if (null? matches) #f (- (length matches) 1))))
+           (%make-transcript-search (transcript-search-active? ts)
+                                    (transcript-search-input-active? ts)
+                                    q
+                                    matches
+                                    idx)))
+
+(define (transcript-search-step ts delta)
+        "Move TS's current match index by DELTA (wrapping around)."
+        (let ((matches (transcript-search-matches ts)))
+          (if (null? matches)
+            ts
+            (let* ((n (length matches))
+                   (cur (or (transcript-search-current-idx ts) 0))
+                   (next (modulo (+ cur delta) n)))
+              (%make-transcript-search (transcript-search-active? ts)
+                                       (transcript-search-input-active? ts)
+                                       (transcript-search-query ts)
+                                       matches
+                                       next)))))
+
+(define (transcript-search-current-row ts)
+        "Return the global row index of the active match in TS, or #f."
+        (let ((matches (transcript-search-matches ts))
+              (idx (transcript-search-current-idx ts)))
+          (and (pair? matches)
+               (integer? idx)
+               (>= idx 0)
+               (< idx (length matches))
+               (car (list-ref matches idx)))))
+
+(define (transcript-search-scroll-offset ts total-lines view-height)
+        "Compute the scroll-offset needed to center TS's current match in VIEW-HEIGHT."
+        (let ((row (transcript-search-current-row ts)))
+          (and row
+               (let* ((max-scroll (max 0 (- total-lines view-height)))
+                      (desired-start
+                        (max 0 (min max-scroll (- row (quotient view-height 2))))))
+                 (max 0 (- total-lines view-height desired-start))))))

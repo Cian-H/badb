@@ -95,18 +95,27 @@
 (define current-geis-manager-workspace (make-parameter #f))
 
 (define-record-type <geis-manager-state>
-                    (%make-geis-manager-state scope workspace entries list status-message input-mode input-buffer)
+                    (%make-geis-manager-state scope workspace entries list status-message filter-query filtered-list)
                     geis-manager-state?
                     (scope geis-manager-scope set-geis-manager-scope!)
                     (workspace geis-manager-workspace)
                     (entries geis-manager-entries set-geis-manager-entries!)
                     (list geis-manager-list set-geis-manager-list!)
                     (status-message geis-manager-status-message set-geis-manager-status-message!)
-                    (input-mode geis-manager-input-mode set-geis-manager-input-mode!)
-                    (input-buffer geis-manager-input-buffer set-geis-manager-input-buffer!))
+                    (filter-query geis-manager-filter-query set-geis-manager-filter-query!)
+                    (filtered-list geis-manager-filtered-list set-geis-manager-filtered-list!))
+
+(define (geis-manager-effective-list ov st)
+        (let ((q (if (and ov (modal-overlay? ov)) (modal-filter-query ov) "")))
+          (if (equal? q (geis-manager-filter-query st))
+            (geis-manager-filtered-list st)
+            (let ((fl (filter-selectable-list (geis-manager-list st) q entry-fid)))
+              (set-geis-manager-filter-query! st q)
+              (set-geis-manager-filtered-list! st fl)
+              fl))))
 
 (define (geis-manager-selected-entry st)
-        (list-selected-item (geis-manager-list st)))
+        (list-selected-item (or (geis-manager-filtered-list st) (geis-manager-list st))))
 
 (define (geis-manager-refresh! st)
         (let*
@@ -126,10 +135,13 @@
              (new-idx
                (if (null? entries)
                  0
-                 (min old-idx (- (length entries) 1)))))
+                 (min old-idx (- (length entries) 1))))
+             (sl (make-selectable-list entries #:selected-index new-idx #:max-visible 12)))
           (set-geis-manager-entries! st entries)
-          (set-geis-manager-list! st
-                                  (make-selectable-list entries #:selected-index new-idx #:max-visible 12))
+          (set-geis-manager-list! st sl)
+          (set-geis-manager-filtered-list!
+            st
+            (filter-selectable-list sl (geis-manager-filter-query st) entry-fid))
           st))
 
 ;;;
@@ -172,7 +184,7 @@
         (let*
             ((scope (geis-manager-scope st))
              (ws (geis-manager-workspace st))
-             (sl (geis-manager-list st)))
+             (sl (geis-manager-effective-list ov st)))
           (parameterize
             ((current-geis-manager-workspace ws))
             (let*
@@ -223,20 +235,14 @@
                                  "No geasa installed in this scope."))
                  (status-w
                    (and (geis-manager-status-message st)
-                        (text-widget (geis-manager-status-message st) #:role 'warn)))
-                 (input-w
-                   (and (eq? (geis-manager-input-mode st) 'add)
-                        (text-widget
-                          (string-append "Add (url#subpath[@ref]): " (geis-manager-input-buffer st) "█")
-                          #:bold?
-                          #t))))
+                        (text-widget (geis-manager-status-message st) #:role 'warn))))
               (vstack-widget
-                (filter identity (append banners (list table-w status-w input-w)))
+                (filter identity (append banners (list table-w status-w)))
                 #:gap
                 1)))))
 
 (define (render-geis-detail ov st rect)
-        (let ((entry (geis-manager-selected-entry st)))
+        (let ((entry (list-selected-item (geis-manager-effective-list ov st))))
           (if (not entry)
             (text-widget "No geis selected." #:dim? #t)
             (let* ((fid (entry-fid entry))
@@ -272,58 +278,30 @@
                         (substring rest (+ at-idx 1)))
                 (values url rest "main"))))))
 
-(define (handle-add-mode-key st ch)
-        (cond
-          ((or (eqv? ch #\esc) (eqv? ch #\escape))
-            (set-geis-manager-input-mode! st #f)
-            (set-geis-manager-input-buffer! st "")
-            'handled)
-          ((or (eqv? ch #\newline) (eqv? ch #\return))
-            (let ((spec (string-trim-both (geis-manager-input-buffer st))))
-              (set-geis-manager-input-mode! st #f)
-              (set-geis-manager-input-buffer! st "")
-              (when (> (string-length spec) 0)
-                (call-with-values (lambda () (parse-add-spec spec))
-                                  (lambda (url subpath ref)
-                                    (catch #t
-                                      (lambda ()
-                                        (geis-pkg-install! url subpath
-                                                           #:ref ref
-                                                           #:scope (geis-manager-scope st)
-                                                           #:workspace (geis-manager-workspace st))
-                                        (geis-manager-refresh! st)
-                                        (set-geis-manager-status-message! st (format #f "Installed ~a" spec)))
-                                      (lambda (k . args)
-                                        (set-geis-manager-status-message!
-                                          st
-                                          (format #f "Install failed: ~a ~s" k args))))))))
-            'handled)
-          ((or (eqv? ch #\backspace) (eqv? ch #\del))
-            (let ((buf (geis-manager-input-buffer st)))
-              (when (> (string-length buf) 0)
-                (set-geis-manager-input-buffer!
-                  st
-                  (substring buf 0 (- (string-length buf) 1)))))
-            'handled)
-          ((and (char? ch) (char>=? ch #\space))
-            (set-geis-manager-input-buffer!
-              st
-              (string-append (geis-manager-input-buffer st) (string ch)))
-            'handled)
-          (else 'handled)))
+(define (push-child-modal! key-ctx dlg)
+        (let ((push-fn (assq-ref key-ctx 'push-modal!))
+              (stack (assq-ref key-ctx 'overlay-stack)))
+          (cond
+            ((procedure? push-fn) (push-fn dlg) #t)
+            ((overlay-stack? stack) (overlay-stack-push-modal! stack dlg) #t)
+            (else #f))))
 
-(define (handle-geis-action ov st ch)
-        (let
-            ((scope (geis-manager-scope st))
+(define (handle-geis-action ov st ch key-ctx)
+        (let*
+            ((_ (geis-manager-effective-list ov st))
+             (scope (geis-manager-scope st))
              (ws (geis-manager-workspace st))
              (entry (geis-manager-selected-entry st)))
           (cond
-            ((eq? (geis-manager-input-mode st) 'add) (handle-add-mode-key st ch))
             ((or (eqv? ch #\j) (eq? ch 'down))
-              (set-geis-manager-list! st (list-move (geis-manager-list st) 1))
+              (set-geis-manager-filtered-list!
+                st
+                (list-move (geis-manager-effective-list ov st) 1))
               'handled)
             ((or (eqv? ch #\k) (eq? ch 'up))
-              (set-geis-manager-list! st (list-move (geis-manager-list st) -1))
+              (set-geis-manager-filtered-list!
+                st
+                (list-move (geis-manager-effective-list ov st) -1))
               'handled)
             ((or (eqv? ch #\space) (eqv? ch #\t))
               (when entry
@@ -396,21 +374,55 @@
                       (set-geis-manager-status-message! st (format #f "Verify failed: ~a" k))))))
               'handled)
             ((eqv? ch #\a)
-              (set-geis-manager-input-mode! st 'add)
-              (set-geis-manager-input-buffer! st "")
+              (let ((dlg (make-input-dialog
+                           #:title "Add Remote Geis"
+                           #:prompt "Spec (url#subpath[@ref]):"
+                           #:placeholder "https://github.com/..."
+                           #:validator (lambda (raw)
+                                         (if (string-null? (string-trim-both raw))
+                                           "Spec cannot be empty"
+                                           #f))
+                           #:on-submit
+                           (lambda (raw)
+                             (let ((spec (string-trim-both raw)))
+                               (call-with-values
+                                 (lambda () (parse-add-spec spec))
+                                 (lambda (url subpath ref)
+                                   (catch #t
+                                     (lambda ()
+                                       (geis-pkg-install! url subpath
+                                                          #:ref ref
+                                                          #:scope scope
+                                                          #:workspace ws)
+                                       (geis-manager-refresh! st)
+                                       (set-geis-manager-status-message! st (format #f "Installed ~a" spec)))
+                                     (lambda (k . args)
+                                       (set-geis-manager-status-message!
+                                         st
+                                         (format #f "Install failed: ~a ~s" k args)))))))))))
+                (push-child-modal! key-ctx dlg))
               'handled)
             ((eqv? ch #\d)
               (when entry
                 (let ((fid (entry-fid entry)))
                   (if (member fid %core-protected-geasa)
                     (set-geis-manager-status-message! st "Core geis cannot be removed")
-                    (catch #t
-                      (lambda ()
-                        (geis-pkg-remove! fid #:scope scope #:workspace ws)
-                        (geis-manager-refresh! st)
-                        (set-geis-manager-status-message! st (format #f "Removed ~a" fid)))
-                      (lambda (k . _args)
-                        (set-geis-manager-status-message! st (format #f "Remove failed: ~a" k)))))))
+                    (let ((dlg (make-confirm-dialog
+                                 #:title "Remove Geis"
+                                 #:message (format #f "Remove ~a from ~a scope?" fid scope)
+                                 #:confirm-label "Remove"
+                                 #:cancel-label "Cancel"
+                                 #:danger? #t
+                                 #:on-confirm
+                                 (lambda ()
+                                   (catch #t
+                                     (lambda ()
+                                       (geis-pkg-remove! fid #:scope scope #:workspace ws)
+                                       (geis-manager-refresh! st)
+                                       (set-geis-manager-status-message! st (format #f "Removed ~a" fid)))
+                                     (lambda (k . _args)
+                                       (set-geis-manager-status-message! st (format #f "Remove failed: ~a" k))))))))
+                      (push-child-modal! key-ctx dlg)))))
               'handled)
             ((or (eqv? ch #\newline) (eqv? ch #\return) (eq? ch 'enter))
               (set-modal-show-detail?! ov (not (modal-show-detail? ov)))
@@ -432,17 +444,19 @@
   (make-geis-manager-overlay #:key (scope 'user) (workspace (getcwd)))
   "Create the lazy.nvim-style /geasa modal <overlay>."
   (let*
-      ((st
+      ((init-sl (make-selectable-list '() #:max-visible 12))
+       (st
          (%make-geis-manager-state scope
                                    workspace
                                    '()
-                                   (make-selectable-list '() #:max-visible 12)
+                                   init-sl
                                    #f
-                                   #f
-                                   ""))
+                                   ""
+                                   init-sl))
        (_ (geis-manager-refresh! st))
        (base-hints
          '(("j/k" . "nav") ("Tab" . "scope")
+           ("/" . "filter")
            ("Space" . "toggle")
            ("p" . "pin")
            ("r" . "rollback")
@@ -472,6 +486,10 @@
                         0.85
                         #:height
                         0.8
+                        #:filterable?
+                        #t
+                        #:filter-key-fn
+                        entry-fid
                         #:body-renderer
                         render-geis-body
                         #:detail-renderer
@@ -485,8 +503,8 @@
                           (map
                             (lambda (k)
                               (cons k
-                                    (lambda (ov s _ctx)
-                                      (handle-geis-action ov s k))))
+                                    (lambda (ov s ctx)
+                                      (handle-geis-action ov s k ctx))))
                             (list #\j
                                   'down
                                   #\k
@@ -509,8 +527,8 @@
                             (lambda (act)
                               (let ((k (car act)))
                                 (cons k
-                                      (lambda (ov s _ctx)
-                                        (handle-geis-action ov s k)))))
+                                      (lambda (ov s ctx)
+                                        (handle-geis-action ov s k ctx)))))
                             %geis-manager-actions))
                         #:on-tab-change
                         (lambda (_ov s new-tab)

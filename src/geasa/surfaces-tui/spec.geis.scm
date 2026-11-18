@@ -33,6 +33,28 @@
                #:use-module
                (geasa surfaces-tui actions)
                #:use-module
+               (geasa surfaces-tui editor)
+               #:use-module
+               (geasa surfaces-tui transcript)
+               #:use-module
+               ((geasa surfaces-tui renderer)
+                #:select
+                (tui-transcript-search
+                  set-tui-transcript-search!
+                  tui-jump-to-bottom-visible?
+                  tui-clear-unseen-rows!
+                  tui-update-scroll-tail!
+                  tui-overlay-stack
+                  tui-push-modal-overlay!
+                  tui-pop-modal-overlay!
+                  tui-drawer-state
+                  tui-toggle-drawer!
+                  tui-cycle-drawer-panel!))
+               #:use-module
+               ((geasa surfaces-tui widgets)
+                #:select
+                (format-bottom-status-bar format-startup-banner))
+               #:use-module
                (geasa runtimes-react plugin)
                #:use-module
                (geasa agents-lifecycle plugin)
@@ -2785,6 +2807,194 @@
             (rmdir dir))
           (lambda _
             #f))))))
+
+;;;
+;;; UX 1.4 (ui-bs3): OSC 52 Clipboard, Input Undo, Fold-All, Transcript Search & Jump-to-Bottom Pill
+;;;
+(test-group
+  "ui-bs3-qol-polish"
+  ;; 1. Pure-Scheme Base64 & OSC 52 clipboard
+  (test-equal "base64-encode-string ASCII" "aGVsbG8=" (base64-encode-string "hello"))
+  (test-equal "base64-encode-string empty" "" (base64-encode-string ""))
+  (test-equal "osc52-copy-sequence format"
+              "\x1b]52;c;aGVsbG8=\x07"
+              (osc52-copy-sequence "hello"))
+  (let ((captured #f))
+    (test-assert "clipboard-copy! invokes write-osc!"
+                 (clipboard-copy! "hello"
+                                  #:write-osc! (lambda (s) (set! captured s))
+                                  #:fallback? #f
+                                  #:notify? #f))
+    (test-equal "clipboard-copy! emitted OSC 52 sequence"
+                "\x1b]52;c;aGVsbG8=\x07"
+                captured))
+  (let ((blocks (extract-fenced-code-blocks
+                  "Intro\n```scheme\n(+ 1 2)\n```\nMid\n~~~bash\necho ok\n~~~\n")))
+    (test-equal "extract-fenced-code-blocks extracts both blocks"
+                '("(+ 1 2)" "echo ok")
+                blocks))
+  (let* ((hdr "╭─ scheme ──────────────────────────")
+         (annotated (annotate-code-block-copy-pills
+                      (list (cons hdr (list (list hdr 'dim #f #t))))))
+         (new-plain (caar annotated)))
+    (test-assert "annotate-code-block-copy-pills adds [copy] pill"
+                 (and (string-contains new-plain "[copy]")
+                      (= (string-length new-plain) (string-length hdr)))))
+
+  ;; /copy command integration on <tui-state>
+  (parameterize ((%clipboard-fallback-enabled? #f))
+                (let ((st (make-tui-state)))
+                  (tui-add-msg! st "assistant" "Here is code:\n```python\nprint(42)\n```\n")
+                  (tui-handle-command! st (parse-command "/copy code") '())
+                  (test-assert "/copy code updates status text"
+                               (string-contains (tui-status-text st) "COPIED CODE"))))
+
+  ;; 2. Input-buffer undo stack (bounded 20 entries) & kill helpers
+  (let loop ((i 0) (stk (make-undo-stack)))
+            (if (= i 25)
+              (begin
+                (test-equal "undo-stack capped at 20 entries" 20 (undo-stack-length stk))
+                (call-with-values
+                  (lambda () (undo-stack-pop stk))
+                  (lambda (stk2 buf pos)
+                    (test-equal "undo-stack-pop returns latest buffer" "buf-24" buf)
+                    (test-equal "undo-stack-pop returns latest cursor" 6 pos)
+                    (test-equal "undo-stack-pop decrements length" 19 (undo-stack-length stk2)))))
+              (loop (+ i 1)
+                    (undo-stack-push stk (format #f "buf-~a" i) i))))
+  (let ((stk (undo-stack-push (undo-stack-push (make-undo-stack) "abc" 3) "abc" 3)))
+    (test-equal "undo-stack-push skips consecutive duplicate" 1 (undo-stack-length stk)))
+  (call-with-values
+    (lambda () (kill-to-line-start "hello world" 6))
+    (lambda (nb np)
+      (test-equal "kill-to-line-start buffer" "world" nb)
+      (test-equal "kill-to-line-start pos" 0 np)))
+  (call-with-values
+    (lambda () (kill-word-backward "hello world" 11))
+    (lambda (nb np)
+      (test-equal "kill-word-backward buffer" "hello " nb)
+      (test-equal "kill-word-backward pos" 6 np)))
+  (let ((km (make-default-keymap)))
+    (test-equal "default keymap binds ctrl-z to undo" 'undo (keymap-lookup km 'ctrl-z))
+    (test-equal "default keymap binds ctrl-f to transcript-search"
+                'transcript-search
+                (keymap-lookup km 'ctrl-f)))
+
+  ;; 3. Fold/unfold-all tool & thinking cards
+  (let* ((u-msg '((role . "user") (content . "hi")))
+         (t-msg '((role . "tool") (content . "tool output")))
+         (th-msg '((role . "thought") (content . "thinking...")))
+         (msgs (list u-msg t-msg th-msg)))
+    (test-assert "user message is not foldable card" (not (foldable-card-message? u-msg)))
+    (test-assert "tool message is foldable card" (foldable-card-message? t-msg))
+    (test-assert "thought message is foldable card" (foldable-card-message? th-msg))
+    (call-with-values
+      (lambda () (transcript-fold-all! msgs 'toggle))
+      (lambda (folded collapsed? changed)
+        (test-assert "transcript-fold-all! collapses when open" collapsed?)
+        (test-equal "transcript-fold-all! changed 2 cards" 2 changed)
+        (test-assert "tool card collapsed" (message-collapsed? (list-ref folded 1)))
+        (test-assert "thought card collapsed" (message-collapsed? (list-ref folded 2)))
+        (call-with-values
+          (lambda () (transcript-fold-all! folded 'toggle))
+          (lambda (unfolded collapsed2? changed2)
+            (test-assert "second toggle unfolds all" (not collapsed2?))
+            (test-equal "second toggle changed 2 cards" 2 changed2)
+            (test-assert "tool card unfolded" (not (message-collapsed? (list-ref unfolded 1)))))))))
+
+  ;; 4. In-transcript search & jump-to-bottom pill
+  (let* ((msgs '(((role . "user") (content . "alpha beta"))
+                 ((role . "assistant") (content . "gamma alpha delta"))))
+         (ts0 (transcript-search-open (make-transcript-search)))
+         (ts1 (transcript-search-update ts0 "alpha" msgs 60 #f)))
+    (test-equal "transcript-search finds 2 matching rows"
+                2
+                (length (transcript-search-matches ts1)))
+    (test-equal "transcript-search starts at last match"
+                1
+                (transcript-search-current-idx ts1))
+    (let ((ts2 (transcript-search-step ts1 1)))
+      (test-equal "transcript-search-step wraps to 0"
+                  0
+                  (transcript-search-current-idx ts2)))
+    (let ((ts3 (transcript-search-step ts1 -1)))
+      (test-equal "transcript-search-step -1 moves to 0"
+                  0
+                  (transcript-search-current-idx ts3)))
+    (test-assert "transcript-search-scroll-offset returns integer"
+                 (integer? (transcript-search-scroll-offset ts1 20 10)))
+    (test-assert "transcript-search-close deactivates"
+                 (not (transcript-search-active? (transcript-search-close ts1)))))
+
+  (let ((st (make-tui-state)))
+    (tui-update-scroll-tail! st 10)
+    (test-assert "jump-to-bottom hidden when scroll-offset is 0"
+                 (not (tui-jump-to-bottom-visible? st)))
+    (set-tui-scroll-offset! st 4)
+    (tui-update-scroll-tail! st 15)
+    (test-assert "jump-to-bottom visible when scroll-offset > 0 and unseen rows arrive"
+                 (tui-jump-to-bottom-visible? st))
+    (set-tui-scroll-offset! st 0)
+    (tui-update-scroll-tail! st 15)
+    (test-assert "jump-to-bottom clears when snapped back to 0"
+                 (not (tui-jump-to-bottom-visible? st)))))
+
+;;;
+;;; UX 4.1 (ui-3m6): Modular UX Suite Integration
+;;;
+(test-group
+  "ui-3m6-modular-ux-wiring"
+  (let ((st (make-tui-state)))
+    (tui-register-modular-extensions! st '())
+    (let ((stk (tui-overlay-stack st)))
+      (test-assert "overlay-stack initialized with floating notify overlay"
+                   (and (overlay-stack? stk)
+                        (pair? (overlay-stack-floatings stk)))))
+    (tui-open-notifications-modal! st)
+    (test-assert "notifications modal pushed" (overlay? (tui-active-overlay st)))
+    (tui-pop-modal-overlay! st)
+    (test-assert "popping restores #f" (not (tui-active-overlay st)))
+
+    (tui-open-mcp-modal! st)
+    (test-assert "mcp modal pushed" (overlay? (tui-active-overlay st)))
+    (tui-pop-modal-overlay! st)
+
+    (tui-open-session-browser-modal! st 'sessions)
+    (test-assert "session browser modal pushed" (overlay? (tui-active-overlay st)))
+    (tui-pop-modal-overlay! st)
+
+    (tui-open-context-inspector-modal! st 'budget)
+    (test-assert "context inspector modal pushed" (overlay? (tui-active-overlay st)))
+    (tui-pop-modal-overlay! st)
+
+    (tui-open-agent-monitor-modal! st)
+    (test-assert "agent monitor modal pushed" (overlay? (tui-active-overlay st)))
+    (tui-pop-modal-overlay! st)
+
+    (tui-open-command-palette! st '())
+    (test-assert "command palette modal pushed" (overlay? (tui-active-overlay st)))
+    (tui-pop-modal-overlay! st)
+
+    (tui-open-config-modal! st)
+    (test-assert "config modal pushed" (overlay? (tui-active-overlay st)))
+    (tui-pop-modal-overlay! st)
+
+    (tui-open-knowledge-browser-modal! st 'skills)
+    (test-assert "knowledge browser modal pushed" (overlay? (tui-active-overlay st)))
+    (tui-pop-modal-overlay! st)
+
+    (tui-toggle-drawer! st)
+    (test-assert "drawer toggled open" (not (not (tui-drawer-state st)))))
+
+  (let* ((bar (format-bottom-status-bar 120 #:model "gpt-4o" #:notify-count 2))
+         (texts (map cadr bar)))
+    (test-assert "status bar includes notify bell count"
+                 (member "🔔 2" texts)))
+
+  (let* ((banner (format-startup-banner 100 #:model "gpt-4o"))
+         (last-row (apply string-append (map car (car (reverse banner))))))
+    (test-assert "startup banner includes Ctrl+K quick-action strip"
+                 (string-contains last-row "Ctrl+K Palette"))))
 
 (spec-end)
 

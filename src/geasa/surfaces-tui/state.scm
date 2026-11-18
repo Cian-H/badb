@@ -667,12 +667,13 @@ Return #t if a message was expanded, else #f."
             (append-history-file-entry! (default-history-file-path) trimmed mode))))
 
 (define (tui-try-save-config! st)
-        "Best-effort save of ST's configuration."
-        (catch #t
-          (lambda ()
-            (save-local-config! (tui-cfg st)))
-          (lambda _
-            #f)))
+        "Best-effort save of ST's configuration (no-op in --clean mode)."
+        (unless (equal? (getenv "BADB_CLEAN") "1")
+          (catch #t
+            (lambda ()
+              (save-local-config! (tui-cfg st)))
+            (lambda _
+              #f))))
 
 (define (tui-sync-context-limit! st)
         "Update compactor max-tokens from explicit config or live server metadata."
