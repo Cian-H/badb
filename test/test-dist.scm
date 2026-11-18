@@ -20,6 +20,9 @@
             ;; version + architecture so artifacts are unambiguous in CI caches.
             (test-equal "badb-0.1.0-x86_64-linux.tar.gz"
                         (pack-file-name "0.1.0" "x86_64-linux"))
+            (test-equal "CalVer pack file name"
+                        "badb-2026.11.18.0-x86_64-linux.tar.gz"
+                        (pack-file-name "2026.11.18.0" "x86_64-linux"))
             (test-assert "pack names are lowercase"
                          (string=? (string-downcase (pack-file-name "0.1.0" "X86_64-Linux"))
                                    (pack-file-name "0.1.0" "x86_64-linux")))
