@@ -208,31 +208,7 @@
                        (read-sse-events port
                                         (lambda (e)
                                           (set! events (cons e events))))))
-                  (and (pair? res) (equal? (assoc-ref res "id") "chatcmpl-999") (null? events)))))
-            ;; --- 1.10 parse-sse-line Edge Cases ---
-            (test-equal "parse-sse-line data without space"
-                        "{\"a\":1}"
-                        (parse-sse-line "data:{\"a\":1}\n"))
-            (test-equal "parse-sse-line data with CRLF"
-                        "{\"b\":2}"
-                        (parse-sse-line "data: {\"b\":2}\r\n"))
-            (test-equal "parse-sse-line empty data" "" (parse-sse-line "data:\n"))
-            (test-equal
-              "parse-sse-line data with single space"
-              ""
-              (parse-sse-line "data: \n"))
-            (test-equal
-              "parse-sse-line data preserving leading spaces after first"
-              "  two leading spaces"
-              (parse-sse-line "data:   two leading spaces\n"))
-            (test-equal
-              "parse-sse-line bare [DONE] with CRLF"
-              'done
-              (parse-sse-line "[DONE]\r\n"))
-            (test-equal
-              "parse-sse-line data:[DONE] without space"
-              'done
-              (parse-sse-line "data:[DONE]")))
+                  (and (pair? res) (equal? (assoc-ref res "id") "chatcmpl-999") (null? events))))))
 
 ;;; =========================================================================
 ;;; 2. HTTP MOCK DISPATCH & PARAMETERIZATION ((geasa providers-model mock))

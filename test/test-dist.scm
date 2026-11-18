@@ -31,29 +31,28 @@
                         (pack-file-name "0.1.0-rc1" "aarch64-linux")))
 
 (test-group "argument-parsing"
-            (test-equal "defaults: no args -> output dir + no -o override"
-                        (list "dist" #f)
-                        (match (parse-dist-args '())
-                               ((out-dir extra) (list out-dir extra))
-                               (_ 'parse-error)))
+            (test-equal
+              "defaults: no args -> output dir + no -o override"
+              (list "dist" #f)
+              (match (parse-dist-args '())
+                     ((out-dir extra) (list out-dir extra))
+                     (_ 'parse-error)))
             (test-equal "--output-dir is honored"
                         (list "/tmp/packs" #f)
-                        (match (parse-dist-args '("--output-dir" "/tmp/packs"))
-                               ((out-dir extra) (list out-dir extra))
-                               (_ 'parse-error)))
-            (test-equal "-o forwards a raw pack output override"
-                        (list "dist" "/tmp/x.tar.gz")
-                        (match (parse-dist-args '("-o" "/tmp/x.tar.gz"))
-                               ((out-dir extra) (list out-dir extra))
-                               (_ 'parse-error)))
-            (test-equal "--single-file returns single-file tag"
-                        (list "dist" #f 'single-file)
-                        (parse-dist-args '("--single-file")))
-            (test-assert "unknown option is rejected"
-                         (match (parse-dist-args '("--bogus"))
-                                ('error #t)
-                                (_ #f)))
-
+                        (match
+                          (parse-dist-args '("--output-dir" "/tmp/packs"))
+                          ((out-dir extra) (list out-dir extra))
+                          (_ 'parse-error)))
+            (test-equal
+              "-o forwards a raw pack output override"
+              (list "dist" "/tmp/x.tar.gz")
+              (match (parse-dist-args '("-o" "/tmp/x.tar.gz"))
+                     ((out-dir extra) (list out-dir extra))
+                     (_ 'parse-error)))
+            (test-equal
+              "--single-file returns single-file tag"
+              (list "dist" #f 'single-file)
+              (parse-dist-args '("--single-file")))
             (test-equal "unknown option reports error"
                         'error
                         (parse-dist-args '("--bogus"))))

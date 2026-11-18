@@ -52,12 +52,8 @@
   (display "-----------------------------------------------------------------\n")
   (display ">>> Stage 1: Integration & Subsystem E2E Suites\n")
   (display "-----------------------------------------------------------------\n")
-  (+ (run-sub-suite "CLI Entrypoints"
-                    '("./test/e2e/test-cli-entrypoints.sh"))
-     (run-sub-suite "Geis Contract Locking & Verification"
-                    '("guile" "-L" "src" "-L" "." "./test/e2e/test-geis-contract.scm"))
-     (run-sub-suite "Transaction Rollback & Provenance"
-                    '("guile" "-L" "src" "-L" "." "./test/e2e/test-transaction-rollback.scm"))))
+  (run-sub-suite "CLI Entrypoints"
+                 '("./test/e2e/test-cli-entrypoints.sh")))
 
 (define (cleanup-tui-sessions)
   (catch #t

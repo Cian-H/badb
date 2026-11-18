@@ -55,15 +55,17 @@ echo "=== E2E Test Suite: CLI and Script Entrypoints ==="
 # -----------------------------------------------------------------------------
 echo "[1/4] Testing scripts/badb entrypoint..."
 
+expected_ver="badb $( [ -f VERSION ] && tr -d '[:space:]' < VERSION || echo "0.1.0" )"
+
 # Test --version
 out_ver=$(./scripts/badb --version 2>&1)
 rc_ver=$?
 assert_eq "scripts/badb --version exits 0" "0" "$rc_ver"
-assert_contains "scripts/badb --version outputs program name and version" "badb 0.1.0" "$out_ver"
+assert_contains "scripts/badb --version outputs program name and version" "$expected_ver" "$out_ver"
 
 # Test -V
 out_short_v=$(./scripts/badb -V 2>&1)
-assert_contains "scripts/badb -V outputs program name and version" "badb 0.1.0" "$out_short_v"
+assert_contains "scripts/badb -V outputs program name and version" "$expected_ver" "$out_short_v"
 
 # Test --help
 out_help=$(./scripts/badb --help 2>&1)
