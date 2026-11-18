@@ -24,7 +24,6 @@
             "guile-pfds"
             "guile-pipe"
             "guile-quickcheck"
-            "guile-semver"
             "guile-sqlite3"
             "guile-srfi-158"
             "guile-srfi-197"

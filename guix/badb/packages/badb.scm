@@ -216,7 +216,6 @@ exec ~a/bin/guile --no-auto-compile -L ~a -L ~a -L ~a -L ~a \\
                          guile-libyaml
                          guile-pfds
                          guile-pipe
-                         guile-semver
                          guile-sqlite3
                          guile-srfi-158
                          guile-srfi-197

@@ -463,6 +463,80 @@ entries appended.  Returns the bundle directory."
                                   (string= (sha256-hex "test spec") (lookup "spec.geis.scm")))))))
 
 ;;;
+;;; CalVer comparator, manifest source validation, and auto-bump on pin
+;;;
+(test-equal "calver-parse valid" '(2026 11 18 0) (calver-parse "2026.11.18.0"))
+(test-assert "calver-parse invalid month" (not (calver-parse "2026.13.18.0")))
+(test-assert "calver-parse invalid 3-part" (not (calver-parse "1.0.0")))
+(test-assert "calver-valid? true" (calver-valid? "2026.11.18.2"))
+(test-assert "calver-valid? false" (not (calver-valid? "1.0.0")))
+(test-equal "calver-format" "2026.01.05.3" (calver-format 2026 1 5 3))
+;; 1795017600 = 2026-11-18T16:00:00Z
+(test-equal "calver-today UTC" '(2026 11 18) (calver-today 1795017600))
+(test-equal "calver-bump new day" "2026.11.18.0" (calver-bump "2026.11.17.4" 1795017600))
+(test-equal "calver-bump same day" "2026.11.18.3" (calver-bump "2026.11.18.2" 1795017600))
+(test-equal "calver-bump from #f" "2026.11.18.0" (calver-bump #f 1795017600))
+(test-equal "calver-compare <" -1 (calver-compare "2026.11.18.0" "2026.11.18.1"))
+(test-equal "calver-compare =" 0 (calver-compare "2026.11.18.0" "2026.11.18.0"))
+(test-equal "calver-compare >" 1 (calver-compare "2026.11.19.0" "2026.11.18.9"))
+(test-equal "calver-compare legacy 3-part" -1 (calver-compare "1.0.0" "2026.11.18.0"))
+(test-assert "calver-match? exact" (calver-match? "2026.11.18.1" "2026.11.18.1"))
+(test-assert "calver-match? =" (calver-match? "2026.11.18.1" "=2026.11.18.1"))
+(test-assert "calver-match? >=" (calver-match? "2026.11.18.2" ">=2026.11.18.1"))
+(test-assert "calver-match? <=" (calver-match? "2026.11.18.1" "<=2026.11.18.1"))
+(test-assert "calver-match? >" (calver-match? "2026.11.19.0" ">2026.11.18.9"))
+(test-assert "calver-match? <" (calver-match? "2026.11.18.0" "<2026.11.18.1"))
+(test-assert "calver-match? range" (calver-match? "2026.11.18.0" ">=2026.11.01.0 <2027.01.01.0"))
+(test-assert "calver-match? range fail" (not (calver-match? "2027.01.01.0" ">=2026.11.01.0 <2027.01.01.0")))
+
+(let ((src-dir (string-append (mkdtemp "/tmp/badb-calver-XXXXXX") "/test-src-bundle")))
+  (mkdir src-dir)
+  (call-with-output-file (string-append src-dir "/spec.geis.scm")
+                         (lambda (p) (display "(define-module (test test-src-bundle))\n" p)))
+  (call-with-output-file (string-append src-dir "/manifest.scm")
+                         (lambda (p)
+                           (write `((bundle-version . 1)
+                                    (feature-id . "test-src-bundle")
+                                    (version . "2026.11.17.0")
+                                    (spec . "spec.geis.scm")
+                                    (source (type . git)
+                                            (url . "https://github.com/Cian-H/badb")
+                                            (ref . "main")
+                                            (path . "src/geasa/test-src-bundle")))
+                                  p)))
+  (test-equal "valid manifest with source" '() (geis-manifest-valid? src-dir))
+  ;; Pin with bump?: sha256 changes from #f -> pins, so version bumps to 2026.11.18.0
+  (geis-bundle-pin! src-dir #:now 1795017600)
+  (test-equal "geis-bundle-pin! auto-bumps on pin change"
+              "2026.11.18.0"
+              (manifest-field (read-geis-manifest (string-append src-dir "/manifest.scm")) 'version))
+  ;; Re-pinning without file changes is idempotent
+  (geis-bundle-pin! src-dir #:now 1795017600)
+  (test-equal "geis-bundle-pin! idempotent when pins unchanged"
+              "2026.11.18.0"
+              (manifest-field (read-geis-manifest (string-append src-dir "/manifest.scm")) 'version))
+  ;; Modify spec and pin with #:bump? #f
+  (call-with-output-file (string-append src-dir "/spec.geis.scm")
+                         (lambda (p) (display "(define-module (test test-src-bundle))\n;; changed\n" p)))
+  (geis-bundle-pin! src-dir #:bump? #f #:now 1795017600)
+  (test-equal "geis-bundle-pin! respects #:bump? #f"
+              "2026.11.18.0"
+              (manifest-field (read-geis-manifest (string-append src-dir "/manifest.scm")) 'version))
+  ;; Invalid source path (..)
+  (call-with-output-file (string-append src-dir "/manifest.scm")
+                         (lambda (p)
+                           (write `((bundle-version . 1)
+                                    (feature-id . "test-src-bundle")
+                                    (version . "2026.11.18.0")
+                                    (spec . "spec.geis.scm")
+                                    (source (type . git)
+                                            (url . "https://github.com/Cian-H/badb")
+                                            (ref . "main")
+                                            (path . "../escape")))
+                                  p)))
+  (test-assert "invalid source path rejected" (not (null? (geis-manifest-valid? src-dir)))))
+
+;;;
 ;;; Teardown: restore environment before the suite exits
 ;;;
 (if %saved-geis-path

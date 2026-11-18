@@ -22,10 +22,6 @@
                #:use-module
                (srfi srfi-11)
                #:use-module
-               (semver)
-               #:use-module
-               (semver ranges)
-               #:use-module
                (json)
                #:use-module
                (badb kernel geis-gate)
@@ -50,7 +46,14 @@
                  geis-bundle-pin!
                  geis-bundle-ccache-dir
                  geis-compile-bundle!
-                 geis-bootstrap-base!))
+                 geis-bootstrap-base!
+                 calver-parse
+                 calver-valid?
+                 calver-format
+                 calver-today
+                 calver-bump
+                 calver-compare
+                 calver-match?))
 
 (define (%string-split-char s delim)
         "Split S on single-character DELIM into a list of substrings."
@@ -294,6 +297,26 @@ missing file, unreadable content, or a non-list result.  Never evaluates."
                           tools))))
           (add! "tools field must be a list of tool names or specifications")))
 
+(define (%validate-source-field! add! src)
+        "Validate optional (source (type . git) (url . ...) (ref . ...) (path . ...)) metadata."
+        (if (not (list? src))
+          (add! "source field must be an association list")
+          (let ((type (manifest-field src 'type))
+                (url (manifest-field src 'url))
+                (ref (manifest-field src 'ref))
+                (path (manifest-field src 'path)))
+            (unless (eq? type 'git)
+              (add! "source type must be 'git"))
+            (unless (and (string? url) (not (string-null? url)))
+              (add! "source url must be a non-empty string"))
+            (unless (and (string? ref) (not (string-null? ref)))
+              (add! "source ref must be a non-empty string"))
+            (unless (and (string? path)
+                         (not (string-null? path))
+                         (not (string-prefix? "/" path))
+                         (not (member ".." (%string-split-char path #\/))))
+              (add! "source path must be a safe relative path")))))
+
 (define (geis-manifest-valid? bundle-dir)
         "Validate the bundle at BUNDLE-DIR.  Return '() when the manifest is valid,
 otherwise a non-empty list of human-readable reason strings."
@@ -354,6 +377,9 @@ otherwise a non-empty list of human-readable reason strings."
               (let ((precompile (assoc 'precompile manifest)))
                 (when (and precompile (not (boolean? (cdr precompile))))
                   (add! "precompile field must be a boolean")))
+              (let ((src (manifest-field manifest 'source)))
+                (when src
+                  (%validate-source-field! add! src)))
               (let ((pins (manifest-field manifest 'sha256)))
                 (when pins
                   (if (list? pins)
@@ -468,31 +494,123 @@ version and bundle hash; throw 'geis-bundle-error otherwise."
             (let
                 ((have-ver (manifest-field dep-manifest 'version)))
               (unless
-                  (and (string? want-ver) (string? have-ver) (%semver-match? have-ver want-ver))
+                  (and (string? want-ver) (string? have-ver) (calver-match? have-ver want-ver))
                 (throw 'geis-bundle-error
                        (format #f
                                "version mismatch for dependency '~a': want ~s have ~s"
                                dep-fid
                                want-ver
                                have-ver)))))
-          (let ((actual-hash (geis-bundle-hash dep-dir)))
-            (unless
-                (and (string? want-hash) (string= actual-hash want-hash))
-              (throw 'geis-bundle-error
-                     (format #f "bundle-sha256 mismatch for dependency '~a'" dep-fid))))))
+          (when want-hash
+            (let ((actual-hash (geis-bundle-hash dep-dir)))
+              (unless
+                  (and (string? want-hash) (string= actual-hash want-hash))
+                (throw 'geis-bundle-error
+                       (format #f "bundle-sha256 mismatch for dependency '~a'" dep-fid)))))))
 
-(define (%semver-match? have want)
-        "Return #t if version HAVE satisfies version constraint WANT using semver."
-        (catch #t
-          (lambda ()
-            (let ((have-sv (string->semver have)))
-              (or (and (semver? have-sv)
-                       (let ((want-sv (catch #t (lambda () (string->semver want)) (lambda _ #f))))
-                         (and want-sv (semver=? have-sv want-sv))))
-                  (let ((range (string->semver-range want)))
-                    (semver-range-contains? range have-sv)))))
-          (lambda _
-            (and (string? have) (string? want) (string= have want)))))
+(define (%ascii-digits? s)
+        "Return #t if S is a non-empty string of ASCII digits 0-9."
+        (and (string? s)
+             (not (string-null? s))
+             (every (lambda (c) (and (char>=? c #\0) (char<=? c #\9)))
+                    (string->list s))))
+
+(define (calver-parse str)
+        "Parse STR as strict 4-part CalVer YYYY.MM.DD.N into (year month day patch) or #f."
+        (and (string? str)
+             (let ((parts (%string-split-char str #\.)))
+               (and (= (length parts) 4)
+                    (every %ascii-digits? parts)
+                    (let ((y (string->number (car parts)))
+                          (m (string->number (cadr parts)))
+                          (d (string->number (caddr parts)))
+                          (p (string->number (cadddr parts))))
+                      (and y m d p
+                           (>= y 0)
+                           (<= 1 m 12)
+                           (<= 1 d 31)
+                           (>= p 0)
+                           (list y m d p)))))))
+
+(define (calver-valid? str)
+        "Return #t if STR is a valid 4-part CalVer YYYY.MM.DD.N string."
+        (if (calver-parse str) #t #f))
+
+(define (calver-format year month day patch)
+        "Format YEAR MONTH DAY PATCH as zero-padded CalVer string YYYY.MM.DD.N."
+        (format #f "~4,'0d.~2,'0d.~2,'0d.~d" year month day patch))
+
+(define* (calver-today #:optional now-seconds)
+         "Return today's UTC (year month day) list using NOW-SECONDS or (current-time)."
+         (let ((tm (gmtime (or now-seconds (current-time)))))
+           (list (+ 1900 (tm:year tm))
+                 (+ 1 (tm:mon tm))
+                 (tm:mday tm))))
+
+(define* (calver-bump current-str #:optional now-seconds)
+         "Bump CURRENT-STR to today's UTC YYYY.MM.DD.0 or increment patch if already today."
+         (let* ((today (calver-today now-seconds))
+                (parsed (and (string? current-str) (calver-parse current-str))))
+           (if (and parsed (equal? (take parsed 3) today))
+             (calver-format (car today) (cadr today) (caddr today) (+ 1 (cadddr parsed)))
+             (calver-format (car today) (cadr today) (caddr today) 0))))
+
+(define (%dotted-tuple-parse str)
+        "Parse STR as a dotted numeric tuple for legacy version fallback, or #f."
+        (and (string? str)
+             (let ((parts (%string-split-char str #\.)))
+               (and (not (null? parts))
+                    (every %ascii-digits? parts)
+                    (map string->number parts)))))
+
+(define (%compare-tuples a b)
+        "Compare two integer lists lexicographically, returning -1, 0, or 1."
+        (cond
+          ((and (null? a) (null? b)) 0)
+          (else
+            (let ((av (if (null? a) 0 (car a)))
+                  (bv (if (null? b) 0 (car b))))
+              (cond
+                ((< av bv) -1)
+                ((> av bv) 1)
+                (else (%compare-tuples (if (null? a) '() (cdr a))
+                                       (if (null? b) '() (cdr b)))))))))
+
+(define (calver-compare a b)
+        "Compare CalVer (or legacy dotted numeric) strings A and B, returning -1, 0, or 1."
+        (let ((pa (or (calver-parse a) (%dotted-tuple-parse a)))
+              (pb (or (calver-parse b) (%dotted-tuple-parse b))))
+          (if (and pa pb)
+            (%compare-tuples pa pb)
+            (cond
+              ((string<? a b) -1)
+              ((string>? a b) 1)
+              (else 0)))))
+
+(define (%calver-match-clause? have clause)
+        "Return #t if version HAVE satisfies a single constraint CLAUSE."
+        (cond
+          ((string-prefix? ">=" clause)
+            (>= (calver-compare have (substring clause 2)) 0))
+          ((string-prefix? "<=" clause)
+            (<= (calver-compare have (substring clause 2)) 0))
+          ((string-prefix? ">" clause)
+            (> (calver-compare have (substring clause 1)) 0))
+          ((string-prefix? "<" clause)
+            (< (calver-compare have (substring clause 1)) 0))
+          ((string-prefix? "=" clause)
+            (= (calver-compare have (substring clause 1)) 0))
+          (else
+            (= (calver-compare have clause) 0))))
+
+(define (calver-match? have constraint)
+        "Return #t if version HAVE satisfies CalVer CONSTRAINT (exact, >=, <=, >, <, =, or space-separated)."
+        (and (string? have)
+             (string? constraint)
+             (let ((clauses (filter (negate string-null?)
+                                    (%string-split-char constraint #\space))))
+               (and (not (null? clauses))
+                    (every (lambda (c) (%calver-match-clause? have c)) clauses)))))
 
 (define (resolve-geis-load-path feature-id)
         "Return the absolute bundle directories FEATURE-ID needs, dependencies
@@ -1033,7 +1151,7 @@ throws 'geis-bundle-error on validation failure."
              (or (read-geis-manifest manifest-path)
                  (list (cons 'bundle-version 1)
                        (cons 'feature-id fid)
-                       (cons 'version "1.0.0")
+                       (cons 'version (calver-bump #f))
                        (cons 'spec "spec.geis.scm"))))
            (m1
              (if wf-captured?
@@ -1203,22 +1321,28 @@ modified by the replay (cassette mode re-runs the edits)."
       (throw 'geis-bundle-error
              (format #f "bundle not found for feature-id '~a'" fid)))))
 
-(define (geis-bundle-pin! bundle-dir)
-        "Recompute sha256 pins for BUNDLE-DIR, update its manifest.scm, and validate."
-        (let ((manifest-path (string-append bundle-dir "/manifest.scm")))
-          (unless (file-exists? manifest-path)
-            (throw 'geis-bundle-error (format #f "manifest not found at '~a'" manifest-path)))
-          (let ((manifest (read-geis-manifest manifest-path)))
-            (unless manifest
-              (throw 'geis-bundle-error (format #f "failed to read manifest at '~a'" manifest-path)))
-            (let* ((pins (compute-geis-sha256-pins bundle-dir))
-                   (updated (%manifest-with manifest 'sha256 pins)))
-              (call-with-output-file manifest-path
-                                     (lambda (port)
-                                       (write updated port)
-                                       (newline port)))
-              (let ((errors (geis-manifest-valid? bundle-dir)))
-                (unless (null? errors)
-                  (throw 'geis-bundle-error
-                         (format #f "manifest invalid after re-pinning '~a': ~s" bundle-dir errors)))
-                pins)))))
+(define* (geis-bundle-pin! bundle-dir #:key (bump? #t) (now #f))
+         "Recompute sha256 pins for BUNDLE-DIR, update its manifest.scm (auto-bumping CalVer when pins change if BUMP? is #t), and validate."
+         (let ((manifest-path (string-append bundle-dir "/manifest.scm")))
+           (unless (file-exists? manifest-path)
+             (throw 'geis-bundle-error (format #f "manifest not found at '~a'" manifest-path)))
+           (let ((manifest (read-geis-manifest manifest-path)))
+             (unless manifest
+               (throw 'geis-bundle-error (format #f "failed to read manifest at '~a'" manifest-path)))
+             (let* ((old-pins (manifest-field manifest 'sha256))
+                    (pins (compute-geis-sha256-pins bundle-dir))
+                    (pins-changed? (not (equal? old-pins pins)))
+                    (updated-pins (%manifest-with manifest 'sha256 pins))
+                    (updated (if (and bump? pins-changed?)
+                               (%manifest-with updated-pins 'version
+                                               (calver-bump (manifest-field manifest 'version) now))
+                               updated-pins)))
+               (call-with-output-file manifest-path
+                                      (lambda (port)
+                                        (write updated port)
+                                        (newline port)))
+               (let ((errors (geis-manifest-valid? bundle-dir)))
+                 (unless (null? errors)
+                   (throw 'geis-bundle-error
+                          (format #f "manifest invalid after re-pinning '~a': ~s" bundle-dir errors)))
+                 pins)))))

@@ -54,7 +54,7 @@
                  (manifest-data
                    `((bundle-version . 1)
                      (feature-id . ,fid)
-                     (version . "1.0.0")
+                     (version . ,(calver-bump #f))
                      (spec . "spec.geis.scm")
                      (plugin . ((module . ,module-name)
                                 (file . ,plugin-file)))
