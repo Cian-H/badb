@@ -46,6 +46,9 @@
 
 (define (main args)
         (chdir %root-dir)
+        (let ((m (resolve-module '(srfi srfi-64))))
+          (when (module-bound? m 'test-log-to-file)
+            (module-set! m 'test-log-to-file #f)))
         (let* ((files (find-adversarial-files "test"))
                (total-fails (apply + (map run-one files))))
           (format #t "~%=== Adversarial Run Complete: ~a failure(s) ===~%" total-fails)

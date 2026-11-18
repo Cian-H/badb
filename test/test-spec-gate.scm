@@ -22,7 +22,6 @@
 ;;;
 ;;; Helpers: temp workspace and fixture spec authoring
 ;;;
-
 (define %temp-dir #f)
 (define %root #f)
 (define %saved-root #f)
@@ -35,6 +34,7 @@
 
 (define %pass-spec-text
         "(use-modules (srfi srfi-64) (json))
+(test-runner-current (test-runner-null))
 (test-begin \"fixture-pass\")
 (test-assert \"addition holds\" (= 4 (+ 2 2)))
 (test-assert \"identity holds\" (= 42 (* 1 42)))
@@ -50,6 +50,7 @@
 
 (define %fail-spec-text
         "(use-modules (srfi srfi-64) (json))
+(test-runner-current (test-runner-null))
 (test-begin \"fixture-fail\")
 (test-assert \"always fails\" #f)
 (test-end \"fixture-fail\")
@@ -69,6 +70,7 @@
 
 (define %mismatch-spec-text
         "(use-modules (srfi srfi-64) (json))
+(test-runner-current (test-runner-null))
 (test-begin \"fixture-mismatch\")
 (test-assert \"locally fine\" (= 2 (+ 1 1)))
 (test-end \"fixture-mismatch\")
@@ -83,6 +85,7 @@
 
 (define %timeout-spec-text
         "(use-modules (srfi srfi-64) (json))
+(test-runner-current (test-runner-null))
 (test-begin \"fixture-timeout\")
 (test-assert \"slow assertion\" (begin (sleep 120) #t))
 (test-end \"fixture-timeout\")

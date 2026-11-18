@@ -62,11 +62,32 @@
 (define (passing-spec-text)
         (string-append
           "(use-modules (srfi srfi-64) (json))\n"
-          "(test-begin " Q "capture-fixture" Q ")\n"
-          "(test-assert " Q "ok" Q " #t)\n"
-          "(test-end " Q "capture-fixture" Q ")\n"
+          "(test-runner-current (test-runner-null))\n"
+          "(test-begin "
+          Q
+          "capture-fixture"
+          Q
+          ")\n"
+          "(test-assert "
+          Q
+          "ok"
+          Q
+          " #t)\n"
+          "(test-end "
+          Q
+          "capture-fixture"
+          Q
+          ")\n"
           "(display (scm->json-string '((summary . ((total . 1) (passed . 1) (failed . 0)))"
-          " (verdict . " Q "pass" Q ") (seed . " Q "capture" Q ") (failures . ()))))\n"
+          " (verdict . "
+          Q
+          "pass"
+          Q
+          ") (seed . "
+          Q
+          "capture"
+          Q
+          ") (failures . ()))))\n"
           "(newline)\n"))
 
 ;;;

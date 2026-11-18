@@ -2143,149 +2143,210 @@
           (module-set! nc-mod '%mouse-queue saved-mouse)
           (ncinput-copy! ncinput saved-ncinput))))))
 
-(test-group "tui-wp6-mid-run-steering-and-force-stop"
+(test-group "mid-run-steering-and-force-stop"
             ;; Mid-run safe slash command predicate
             (for-each
               (lambda (cmd)
-                (test-assert (format #f "mid-run safe command ~a accepted" cmd)
-                             (mid-run-safe-command? cmd)))
-              '("context" "/context" "usage" "/theme nord" "help" "?" "/subagents" "/stop" "/steer" "interrupt"))
+                (test-assert
+                  (format #f "mid-run safe command ~a accepted" cmd)
+                  (mid-run-safe-command? cmd)))
+              '("context" "/context"
+                "usage"
+                "/theme nord"
+                "help"
+                "?"
+                "/subagents"
+                "/stop"
+                "/steer"
+                "interrupt"))
             (for-each
               (lambda (cmd)
-                (test-assert (format #f "unsafe mid-run command ~s rejected" cmd)
-                             (not (mid-run-safe-command? cmd))))
+                (test-assert
+                  (format #f "unsafe mid-run command ~s rejected" cmd)
+                  (not (mid-run-safe-command? cmd))))
               '("clear" "/clear" "/compact" "/rollback" "/model" "/reset" "" "   " #f))
-
             ;; /steer urgency argument parsing
-            (call-with-values (lambda () (parse-steer-argument "--urgent switch to sqlite"))
-                              (lambda (urgent? text)
-                                (test-assert "--urgent sets urgent?" urgent?)
-                                (test-equal "--urgent strips prefix" "switch to sqlite" text)))
-            (call-with-values (lambda () (parse-steer-argument "! focus on tests"))
-                              (lambda (urgent? text)
-                                (test-assert "! sets urgent?" urgent?)
-                                (test-equal "! strips prefix" "focus on tests" text)))
-            (call-with-values (lambda () (parse-steer-argument "keep going"))
-                              (lambda (urgent? text)
-                                (test-assert "plain steer is not urgent" (not urgent?))
-                                (test-equal "plain steer preserves text" "keep going" text)))
-
+            (call-with-values
+              (lambda ()
+                (parse-steer-argument "--urgent switch to sqlite"))
+              (lambda (urgent? text)
+                (test-assert "--urgent sets urgent?" urgent?)
+                (test-equal "--urgent strips prefix" "switch to sqlite" text)))
+            (call-with-values
+              (lambda ()
+                (parse-steer-argument "! focus on tests"))
+              (lambda (urgent? text)
+                (test-assert "! sets urgent?" urgent?)
+                (test-equal "! strips prefix" "focus on tests" text)))
+            (call-with-values
+              (lambda ()
+                (parse-steer-argument "keep going"))
+              (lambda (urgent? text)
+                (test-assert "plain steer is not urgent" (not urgent?))
+                (test-equal "plain steer preserves text" "keep going" text)))
             ;; dispatch-mid-run-input classification
             (test-equal "blank input yields noop" '(noop) (dispatch-mid-run-input "   "))
             (test-equal "safe slash /context dispatches"
                         '(safe-slash "context" "")
                         (dispatch-mid-run-input "/context"))
-            (test-equal "safe slash /theme nord dispatches with arg"
-                        '(safe-slash "theme" "nord")
-                        (dispatch-mid-run-input "/theme nord"))
+            (test-equal
+              "safe slash /theme nord dispatches with arg"
+              '(safe-slash "theme" "nord")
+              (dispatch-mid-run-input "/theme nord"))
             (test-equal "safe slash /stop dispatches"
                         '(safe-slash "stop" "")
                         (dispatch-mid-run-input "/stop"))
-            (test-equal "unsafe slash /clear is blocked mid-run"
-                        '(blocked-slash "clear" "")
-                        (dispatch-mid-run-input "/clear"))
+            (test-equal
+              "unsafe slash /clear is blocked mid-run"
+              '(blocked-slash "clear" "")
+              (dispatch-mid-run-input "/clear"))
             (test-equal "plain text dispatches as steer"
                         '(steer . "check edge cases")
                         (dispatch-mid-run-input "  check edge cases  "))
-
             ;; Mid-run slash autocomplete matching
-            (test-assert "matching-mid-run-slash-commands /st includes stop and steer"
-                         (let ((names (map car (matching-mid-run-slash-commands "/st"))))
-                           (and (member "stop" names) (member "steer" names))))
-            (test-assert "matching-mid-run-slash-commands / returns full safe palette"
-                         (>= (length (matching-mid-run-slash-commands "/")) 7))
-
+            (test-assert
+              "matching-mid-run-slash-commands /st includes stop and steer"
+              (let
+                  ((names (map car (matching-mid-run-slash-commands "/st"))))
+                (and (member "stop" names) (member "steer" names))))
+            (test-assert
+              "matching-mid-run-slash-commands / returns full safe palette"
+              (>= (length (matching-mid-run-slash-commands "/")) 7))
             ;; push-urgent-steering! front-loads steering-queue ahead of queued entries
-            (let* ((q (make-steering-queue))
-                   (killed? #f)
-                   (cb-msg #f))
+            (let*
+                ((q (make-steering-queue)) (killed? #f) (cb-msg #f))
               (steering-push! q "first queued")
               (steering-push! q "second queued")
-              (test-assert "push-urgent-steering! returns #t on valid input"
-                           (push-urgent-steering! q "  urgent override  "
-                                                  #:kill-subprocess! (lambda () (set! killed? #t))
-                                                  #:on-urgent (lambda (m) (set! cb-msg m))))
+              (test-assert
+                "push-urgent-steering! returns #t on valid input"
+                (push-urgent-steering! q
+                                       "  urgent override  "
+                                       #:kill-subprocess!
+                                       (lambda ()
+                                         (set! killed? #t))
+                                       #:on-urgent
+                                       (lambda (m)
+                                         (set! cb-msg m))))
               (test-assert "urgent push invokes subprocess killer" killed?)
-              (test-equal "urgent push passes trimmed message to callback" "urgent override" cb-msg)
-              (test-equal "urgent entry drains first ahead of previously queued entries"
-                          '("urgent override" "first queued" "second queued")
-                          (steering-drain! q))
-              (test-assert "push-urgent-steering! rejects blank text"
-                           (not (push-urgent-steering! q "   ")))
-              (test-assert "push-urgent-steering! rejects non-queue"
-                           (not (push-urgent-steering! #f "hi"))))
-
+              (test-equal
+                "urgent push passes trimmed message to callback"
+                "urgent override"
+                cb-msg)
+              (test-equal
+                "urgent entry drains first ahead of previously queued entries"
+                '("urgent override" "first queued" "second queued")
+                (steering-drain! q))
+              (test-assert
+                "push-urgent-steering! rejects blank text"
+                (not (push-urgent-steering! q "   ")))
+              (test-assert
+                "push-urgent-steering! rejects non-queue"
+                (not (push-urgent-steering! #f "hi"))))
             ;; force-stop-agent! cancels live thread, pushes 'interrupt, kills subprocess
-            (let* ((q (make-steering-queue))
-                   (sub-killed? #f)
-                   (on-stop-called? #f)
-                   (ready-m (make-mutex))
-                   (ready-cv (make-condition-variable))
-                   (started? #f)
-                   (worker
-                     (call-with-new-thread
-                       (lambda ()
-                         (with-mutex ready-m
-                                     (set! started? #t)
-                                     (signal-condition-variable ready-cv))
-                         (let loop () (usleep 50000) (loop))))))
+            (let*
+                ((q (make-steering-queue)) (sub-killed? #f)
+                 (on-stop-called? #f)
+                 (ready-m (make-mutex))
+                 (ready-cv (make-condition-variable))
+                 (started? #f)
+                 (worker
+                   (call-with-new-thread
+                     (lambda ()
+                       (with-mutex ready-m (set! started? #t) (signal-condition-variable ready-cv))
+                       (let loop
+                         ()
+                         (usleep 50000)
+                         (loop))))))
               (with-mutex ready-m
-                          (while (not started?)
-                                 (wait-condition-variable ready-cv ready-m)))
-              (let ((res (force-stop-agent! worker
-                                            #:steering-queue q
-                                            #:kill-subprocess! (lambda () (set! sub-killed? #t))
-                                            #:on-stop (lambda () (set! on-stop-called? #t)))))
+                          (while (not started?) (wait-condition-variable ready-cv ready-m)))
+              (let
+                  ((res
+                     (force-stop-agent! worker
+                                        #:steering-queue
+                                        q
+                                        #:kill-subprocess!
+                                        (lambda ()
+                                          (set! sub-killed? #t))
+                                        #:on-stop
+                                        (lambda ()
+                                          (set! on-stop-called? #t)))))
                 (join-thread worker (+ (current-time) 2))
                 (test-assert "force-stop-agent! reports stopped?" (assoc-ref res 'stopped?))
-                (test-assert "force-stop-agent! reports thread-cancelled?" (assoc-ref res 'thread-cancelled?))
+                (test-assert
+                  "force-stop-agent! reports thread-cancelled?"
+                  (assoc-ref res 'thread-cancelled?))
                 (test-assert "worker thread exited after cancel" (thread-exited? worker))
                 (test-assert "kill-subprocess! callback ran" sub-killed?)
                 (test-assert "on-stop callback ran" on-stop-called?)
                 (test-assert "interrupt pushed onto steering queue" (steering-has-interrupt? q)))
               ;; Idempotent when thread is #f or already exited
-              (let ((res2 (force-stop-agent! #f #:kill-subprocess! #f)))
-                (test-assert "force-stop-agent! on #f returns stopped? #f"
-                             (not (assoc-ref res2 'stopped?)))))
-
+              (let
+                  ((res2 (force-stop-agent! #f #:kill-subprocess! #f)))
+                (test-assert
+                  "force-stop-agent! on #f returns stopped? #f"
+                  (not (assoc-ref res2 'stopped?)))))
             ;; Redesigned steering bar layout
-            (let ((idle-bar (steering-bar-layout "" 0 80 #:status-text "REACT [2/15]")))
-              (test-equal "empty steering bar mode is steer" 'steer (assoc-ref idle-bar 'mode))
+            (let
+                ((idle-bar (steering-bar-layout "" 0 80 #:status-text "REACT [2/15]")))
+              (test-equal "empty steering bar mode is steer"
+                          'steer
+                          (assoc-ref idle-bar 'mode))
               (test-equal "empty steering bar badge" "[STEER]" (assoc-ref idle-bar 'badge))
-              (test-assert "empty steering bar shows placeholder" (assoc-ref idle-bar 'placeholder?))
+              (test-assert
+                "empty steering bar shows placeholder"
+                (assoc-ref idle-bar 'placeholder?))
               (test-equal "empty steering bar cursor at 0" 0 (assoc-ref idle-bar 'cursor-col))
-              (test-assert "steering bar hint mentions ^u:urgent"
-                           (string-contains (assoc-ref idle-bar 'hint) "^u:urgent"))
-              (test-assert "steering bar hint mentions ^c/esc:force-stop"
-                           (string-contains (assoc-ref idle-bar 'hint) "^c/esc:force-stop")))
-            (let ((cmd-bar (steering-bar-layout "/con" 2 80 #:status-text "REACT [1/15]")))
+              (test-assert
+                "steering bar hint mentions ^u:urgent"
+                (string-contains (assoc-ref idle-bar 'hint) "^u:urgent"))
+              (test-assert
+                "steering bar hint mentions ^c/esc:force-stop"
+                (string-contains (assoc-ref idle-bar 'hint) "^c/esc:force-stop")))
+            (let
+                ((cmd-bar (steering-bar-layout "/con" 2 80 #:status-text "REACT [1/15]")))
               (test-equal "slash prefix sets mode to slash" 'slash (assoc-ref cmd-bar 'mode))
               (test-equal "slash mode badge is [CMD]" "[CMD]" (assoc-ref cmd-bar 'badge))
-              (test-equal "slash mode cursor col matches length" 4 (assoc-ref cmd-bar 'cursor-col))
-              (test-equal "queue summary formats count" "+2 queued" (assoc-ref cmd-bar 'queue-summary))
+              (test-equal
+                "slash mode cursor col matches length"
+                4
+                (assoc-ref cmd-bar 'cursor-col))
+              (test-equal "queue summary formats count"
+                          "+2 queued"
+                          (assoc-ref cmd-bar 'queue-summary))
               (test-assert "slash hint mentions enter:run cmd"
                            (string-contains (assoc-ref cmd-bar 'hint) "enter:run cmd")))
-            (let ((urg-bar (steering-bar-layout "now" 1 80 #:urgent-pending? #t))
-                  (int-bar (steering-bar-layout "" 0 80 #:interrupt-requested? #t))
-                  (narrow-bar (steering-bar-layout "abcdefghijklmnopqrstuvwxyz" 0 16)))
-              (test-equal "urgent pending sets [URGENT] badge" "[URGENT]" (assoc-ref urg-bar 'badge))
-              (test-equal "urgent badge role is warning" 'warning (assoc-ref urg-bar 'badge-role))
-              (test-equal "interrupt sets [INTERRUPT] badge" "[INTERRUPT]" (assoc-ref int-bar 'badge))
-              (test-equal "interrupt badge role is error" 'error (assoc-ref int-bar 'badge-role))
-              (test-assert "narrow steering bar tail-clips without overflow"
-                           (<= (string-length (assoc-ref narrow-bar 'input-text)) 13)))
-
+            (let
+                ((urg-bar (steering-bar-layout "now" 1 80 #:urgent-pending? #t))
+                 (int-bar (steering-bar-layout "" 0 80 #:interrupt-requested? #t))
+                 (narrow-bar (steering-bar-layout "abcdefghijklmnopqrstuvwxyz" 0 16)))
+              (test-equal "urgent pending sets [URGENT] badge"
+                          "[URGENT]"
+                          (assoc-ref urg-bar 'badge))
+              (test-equal "urgent badge role is warning"
+                          'warning
+                          (assoc-ref urg-bar 'badge-role))
+              (test-equal "interrupt sets [INTERRUPT] badge"
+                          "[INTERRUPT]"
+                          (assoc-ref int-bar 'badge))
+              (test-equal "interrupt badge role is error"
+                          'error
+                          (assoc-ref int-bar 'badge-role))
+              (test-assert
+                "narrow steering bar tail-clips without overflow"
+                (<= (string-length (assoc-ref narrow-bar 'input-text)) 13)))
             ;; /subagents mid-run summary helper
             (let ((reg (make-registry)))
-              (test-assert "format-mid-run-subagents-summary returns string"
-                           (string? (format-mid-run-subagents-summary reg)))))
+              (test-assert
+                "format-mid-run-subagents-summary returns string"
+                (string? (format-mid-run-subagents-summary reg)))))
 
-(test-group "tui-wp6-integrated-ui"
+(test-group "integrated-ui"
             ;; WP1-WP5 re-exports available through (geasa surfaces-tui plugin)
             (for-each
               (lambda (sym-val)
-                (test-assert (format #f "integrated export ~a is bound" (car sym-val))
-                             (cdr sym-val)))
+                (test-assert
+                  (format #f "integrated export ~a is bound" (car sym-val))
+                  (cdr sym-val)))
               `((format-input-box-frame . ,(procedure? format-input-box-frame))
                 (format-bottom-status-bar . ,(procedure? format-bottom-status-bar))
                 (format-startup-banner-text . ,(procedure? format-startup-banner-text))
@@ -2301,12 +2362,14 @@
                 (history-search-open . ,(procedure? history-search-open))
                 (matching-at-candidates . ,(procedure? matching-at-candidates))
                 (make-default-keymap . ,(procedure? make-default-keymap))
-                (session-turns->transcript-messages . ,(procedure? session-turns->transcript-messages))
+                (session-turns->transcript-messages .
+                                                    ,(procedure? session-turns->transcript-messages))
                 (menu-push . ,(procedure? menu-push))
                 (make-theme-preview-menu . ,(procedure? make-theme-preview-menu))
                 (provider-menu-items . ,(procedure? provider-menu-items))
                 (synthesizer-config-menu-items . ,(procedure? synthesizer-config-menu-items))
-                (session-resurrection-menu-items . ,(procedure? session-resurrection-menu-items))
+                (session-resurrection-menu-items .
+                                                 ,(procedure? session-resurrection-menu-items))
                 (resolve-command-alias . ,(procedure? resolve-command-alias))
                 (deduplicate-slash-commands . ,(procedure? deduplicate-slash-commands))
                 (format-geis-bindings-graph . ,(procedure? format-geis-bindings-graph))
@@ -2319,82 +2382,110 @@
                 (format-response-images-notice . ,(procedure? format-response-images-notice))
                 (tui-theme-attr-constant . ,(procedure? tui-theme-attr-constant))
                 (tui-theme-color->backend-value . ,(procedure? tui-theme-color->backend-value))))
-
-            (test-assert "/geis help text mentions /geis bindings"
-                         (string-contains (format-geis-help-text) "/geis bindings"))
-            (test-assert "render-ncvisual-overlay! returns #f when headless"
-                         (not (render-ncvisual-overlay! #f "/nonexistent.png" #f)))
-            (test-assert "show-geis-bindings-uplot! returns #f when headless"
-                         (not (show-geis-bindings-uplot! #f #f #f)))
-            (test-equal "tui-theme-color->backend-value parses hex color"
-                        #x112233
-                        (tui-theme-color->backend-value "#112233" (lambda (s) s)))
-
+            (test-assert
+              "/geis help text mentions /geis bindings"
+              (string-contains (format-geis-help-text) "/geis bindings"))
+            (test-assert
+              "render-ncvisual-overlay! returns #f when headless"
+              (not (render-ncvisual-overlay! #f "/nonexistent.png" #f)))
+            (test-assert
+              "show-geis-bindings-uplot! returns #f when headless"
+              (not (show-geis-bindings-uplot! #f #f #f)))
+            (test-equal
+              "tui-theme-color->backend-value parses hex color"
+              #x112233
+              (tui-theme-color->backend-value "#112233"
+                                              (lambda (s)
+                                                s)))
             ;; /todo controller helper round-trip
             (let ((tl0 (make-todo-list #:title "Tasks")))
               (call-with-values
-                (lambda () (handle-todo-command! tl0 "add Verify WP6 integration"))
+                (lambda ()
+                  (handle-todo-command! tl0 "add Verify WP6 integration"))
                 (lambda (tl1 txt1)
                   (test-assert "/todo add includes new task text"
                                (string-contains txt1 "Verify WP6 integration"))
                   (call-with-values
-                    (lambda () (handle-todo-command! tl1 "toggle 1"))
+                    (lambda ()
+                      (handle-todo-command! tl1 "toggle 1"))
                     (lambda (tl2 txt2)
-                      (test-assert "/todo toggle marks task done"
-                                   (string-contains txt2 "[✓]"))
+                      (test-assert "/todo toggle marks task done" (string-contains txt2 "[✓]"))
                       (call-with-values
-                        (lambda () (handle-todo-command! tl2 "clear"))
+                        (lambda ()
+                          (handle-todo-command! tl2 "clear"))
                         (lambda (tl3 txt3)
                           (test-assert "/todo clear removes completed task"
                                        (not (string-contains txt3 "Verify WP6 integration"))))))))))
-
             ;; Response Scheme widget extraction & rendering
-            (test-equal "plain response without widget returns #f"
-                        #f
-                        (format-response-widgets-notice "Just regular prose." 60))
-            (let ((w-txt (format-response-widgets-notice
-                           "Here is status:\n```scheme-widget\n(pill \"PASS\" #:role 'success)\n```\n"
-                           60)))
-              (test-assert "fenced scheme-widget renders cleanly"
-                           (and (string? w-txt) (string-contains w-txt "PASS"))))
-
+            (test-equal
+              "plain response without widget returns #f"
+              #f
+              (format-response-widgets-notice "Just regular prose." 60))
+            (let
+                ((w-txt
+                   (format-response-widgets-notice
+                     "Here is status:\n```scheme-widget\n(pill \"PASS\" #:role 'success)\n```\n"
+                     60)))
+              (test-assert
+                "fenced scheme-widget renders cleanly"
+                (and (string? w-txt) (string-contains w-txt "PASS"))))
             ;; WP5 subagent overview integration via /subagents helper
-            (let ((reg (make-registry))
-                  (cid "wp6-spec-subagent-1"))
+            (let
+                ((reg (make-registry)) (cid "wp6-spec-subagent-1"))
               (dynamic-wind
                 (lambda ()
-                  (register-subagent-link! cid (current-harness-id)
-                                           #:kind 'local
-                                           #:status 'running
-                                           #:label "spec check"))
+                  (register-subagent-link! cid
+                                           (current-harness-id)
+                                           #:kind
+                                           'local
+                                           #:status
+                                           'running
+                                           #:label
+                                           "spec check"))
                 (lambda ()
-                  (let ((summary (format-mid-run-subagents-summary reg)))
-                    (test-assert "subagents summary displays registered child id"
-                                 (string-contains summary cid))))
+                  (let
+                      ((summary (format-mid-run-subagents-summary reg)))
+                    (test-assert
+                      "subagents summary displays registered child id"
+                      (string-contains summary cid))))
                 (lambda ()
                   (unregister-subagent-link! cid))))
-
             ;; WP1 UI server/client subagent routing round-trip
-            (let ((srv (make-ui-server))
-                  (cli (make-ui-client #:id 'wp6-spec)))
-              (ui-server-route-subagent-event! srv "sub-1" (current-harness-id) 'tool-call '((tool . "read_file")))
+            (let
+                ((srv (make-ui-server)) (cli (make-ui-client #:id 'wp6-spec)))
+              (ui-server-route-subagent-event! srv
+                                               "sub-1"
+                                               (current-harness-id)
+                                               'tool-call
+                                               '((tool . "read_file")))
               (pump-ui-pair! srv cli '())
-              (test-assert "ui-client receives routed subagent event"
-                           (pair? (ui-client-subagent-events cli))))
-
+              (test-assert
+                "ui-client receives routed subagent event"
+                (pair? (ui-client-subagent-events cli))))
             ;; WP4 command deduplication preserves canonical commands and drops aliases
-            (let ((deduped (deduplicate-slash-commands %slash-commands)))
-              (test-assert "deduplicated slash palette keeps context" (assoc "context" deduped))
-              (test-assert "deduplicated slash palette drops ctx alias" (not (assoc "ctx" deduped)))
-              (test-assert "deduplicated slash palette drops exit alias" (not (assoc "exit" deduped))))
-
+            (let
+                ((deduped (deduplicate-slash-commands %slash-commands)))
+              (test-assert
+                "deduplicated slash palette keeps context"
+                (assoc "context" deduped))
+              (test-assert
+                "deduplicated slash palette drops ctx alias"
+                (not (assoc "ctx" deduped)))
+              (test-assert
+                "deduplicated slash palette drops exit alias"
+                (not (assoc "exit" deduped))))
             ;; WP1 + WP2 + WP3 integrated input box & live segmenter
-            (let ((frame (format-input-box-frame '("(+ 1 2)") 60 #:style 'lines))
-                  (segs (segment-input-line "(+ 1 2)" #:prompt-mode 'scheme)))
-              (test-equal "lines input box height is 3 for 1 line" 3 (assoc-ref frame 'height))
-              (test-equal "live segment-input-line preserves text verbatim"
-                          "(+ 1 2)"
-                          (string-concatenate (map car segs)))))
+            (let
+                ((frame (format-input-box-frame '("(+ 1 2)") 60 #:style 'lines))
+                 (segs (segment-input-line "(+ 1 2)" #:prompt-mode 'scheme)))
+              (test-equal
+                "lines input box height is 3 for 1 line"
+                3
+                (assoc-ref frame 'height))
+              (test-equal
+                "live segment-input-line preserves text verbatim"
+                "(+ 1 2)"
+                (string-concatenate (map car segs)))))
 
 (test-group "Pluggable Overlay & TUI State Modularity"
             ;; Custom overlay protocol works without menus

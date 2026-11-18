@@ -22,45 +22,59 @@
             '())))
 
 (define (run-all-tests)
-        (let* ((runner (test-runner-simple))
-               (test-files (find-test-files "test")))
+        (let*
+            ((runner (test-runner-simple)) (test-files (find-test-files "test")))
+          (let ((m (resolve-module '(srfi srfi-64))))
+            (when (module-bound? m 'test-log-to-file) (module-set! m 'test-log-to-file #f)))
           (test-runner-current runner)
           (format #t "=== Starting badb Bootstrap Test Suite ===~%")
           (format #t "--- Stage 1: Kernel & Spec Engine Bootstrap ---~%")
           (for-each run-test-file test-files)
-          (let* ((stage1-fails (test-runner-fail-count runner))
-                 (stage1-passes (test-runner-pass-count runner)))
+          (let*
+              ((stage1-fails (test-runner-fail-count runner))
+               (stage1-passes (test-runner-pass-count runner)))
             (if (> stage1-fails 0)
               (begin
-                (format (current-error-port) "ERROR: Stage 1 kernel bootstrap failed with ~a failures!~%" stage1-fails)
+                (format (current-error-port)
+                        "ERROR: Stage 1 kernel bootstrap failed with ~a failures!~%"
+                        stage1-fails)
                 (exit 1))
               (begin
                 (format #t "~%--- Stage 2: Subsystem Geasa Contracts (Kernel Replay) ---~%")
-                (let* ((pipe (open-pipe* OPEN_READ "./scripts/verify-geasa"))
-                       (geis-passes 0)
-                       (geis-fails 0))
-                  (let loop ((line (read-line pipe)))
-                            (unless (eof-object? line)
-                              (format #t "~a~%" line)
-                              (cond
-                                ((string-contains line "* PASS:")
-                                  ;; Extract passed count if present, e.g., (summary: total=N passed=N failed=0)
-                                  (let ((m (string-contains line "passed=")))
-                                    (if m
-                                      (let* ((sub (substring line (+ m 7)))
-                                             (sp (string-index sub #\space))
-                                             (p-str (if sp (substring sub 0 sp) sub))
-                                             (p (string->number p-str)))
-                                        (set! geis-passes (+ geis-passes (or p 1))))
-                                      (set! geis-passes (+ geis-passes 1)))))
-                                ((string-contains line "* FAIL:")
-                                  (set! geis-fails (+ geis-fails 1))))
-                              (loop (read-line pipe))))
-                  (let* ((status (close-pipe pipe))
-                         (exit-code (status:exit-val status))
-                         (total-passes (+ stage1-passes geis-passes))
-                         (total-fails (+ stage1-fails geis-fails)))
-                    (format #t "~%*** Subsystem Geasa finished: ~a passed, ~a failed ***~%" geis-passes geis-fails)
+                (let*
+                    ((pipe (open-pipe* OPEN_READ "./scripts/verify-geasa"))
+                     (geis-passes 0)
+                     (geis-fails 0))
+                  (let loop
+                    ((line (read-line pipe)))
+                    (unless (eof-object? line)
+                      (format #t "~a~%" line)
+                      (cond
+                        ((string-contains line "* PASS:")
+                          ;; Extract passed count if present, e.g., (summary: total=N passed=N failed=0)
+                          (let ((m (string-contains line "passed=")))
+                            (if m
+                              (let*
+                                  ((sub (substring line (+ m 7)))
+                                   (sp (string-index sub #\space))
+                                   (p-str
+                                     (if sp
+                                       (substring sub 0 sp)
+                                       sub))
+                                   (p (string->number p-str)))
+                                (set! geis-passes (+ geis-passes (or p 1))))
+                              (set! geis-passes (+ geis-passes 1)))))
+                        ((string-contains line "* FAIL:") (set! geis-fails (+ geis-fails 1))))
+                      (loop (read-line pipe))))
+                  (let*
+                      ((status (close-pipe pipe))
+                       (exit-code (status:exit-val status))
+                       (total-passes (+ stage1-passes geis-passes))
+                       (total-fails (+ stage1-fails geis-fails)))
+                    (format #t
+                            "~%*** Subsystem Geasa finished: ~a passed, ~a failed ***~%"
+                            geis-passes
+                            geis-fails)
                     (format #t "*** # of expected passes    : ~a~%" total-passes)
                     (format #t "~%=== Test Run Complete: ~a failure(s) ===~%" total-fails)
                     (if (and (zero? exit-code) (zero? total-fails))

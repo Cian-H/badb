@@ -34,11 +34,32 @@
 (define (passing-spec-script)
         (string-append
           "(use-modules (srfi srfi-64) (json))\n"
-          "(test-begin " Q "dep" Q ")\n"
-          "(test-assert " Q "dep ok" Q " #t)\n"
-          "(test-end " Q "dep" Q ")\n"
+          "(test-runner-current (test-runner-null))\n"
+          "(test-begin "
+          Q
+          "dep"
+          Q
+          ")\n"
+          "(test-assert "
+          Q
+          "dep ok"
+          Q
+          " #t)\n"
+          "(test-end "
+          Q
+          "dep"
+          Q
+          ")\n"
           "(display (scm->json-string '((summary . ((total . 1) (passed . 1) (failed . 0)))"
-          " (verdict . " Q "pass" Q ") (seed . " Q "cli" Q ") (failures . ()))))\n"
+          " (verdict . "
+          Q
+          "pass"
+          Q
+          ") (seed . "
+          Q
+          "cli"
+          Q
+          ") (failures . ()))))\n"
           "(newline)\n"))
 
 (define %temp-dir (mkdtemp "/tmp/badb-geis-cli-test-XXXXXX"))
@@ -104,25 +125,52 @@
 
 (test-group "install"
             ;; dependency bundle: a runnable spec that passes
-            (let ((dep-dir (string-append %geis-root "/cli-dep")))
+            (let
+                ((dep-dir (string-append %geis-root "/cli-dep")))
               (mkdir dep-dir)
               (write-file! (string-append dep-dir "/spec.geis.scm") (passing-spec-script))
-              (write-manifest! dep-dir '((bundle-version . 1) (feature-id . "cli-dep")
-                                         (version . "1.0.0") (spec . "spec.geis.scm")))
-              (let* ((dep-hash (geis-bundle-hash dep-dir))
-                     (dir (string-append %geis-root "/cli-target")))
+              (write-manifest! dep-dir
+                               '((bundle-version . 1) (feature-id . "cli-dep")
+                                 (version . "1.0.0")
+                                 (spec . "spec.geis.scm")))
+              (let*
+                  ((dep-hash (geis-bundle-hash dep-dir))
+                   (dir (string-append %geis-root "/cli-target")))
                 (mkdir dir)
                 (write-file! (string-append dir "/plugin.scm")
-                             (string-append "(define-module (geasa cli-target plugin)\n"
-                                            "  #:export (answer))\n\n(define (answer) 42)\n"))
+                             (string-append
+                               "(define-module (geasa cli-target plugin)\n"
+                               "  #:export (answer))\n\n(define (answer) 42)\n"))
                 (write-file! (string-append dir "/spec.geis.scm")
-                             (string-append "(use-modules (geasa cli-target plugin) (srfi srfi-64) (json))\n"
-                                            "(test-begin " Q "target" Q ")\n"
-                                            "(test-assert " Q "answer is 42" Q " (= 42 (answer)))\n"
-                                            "(test-end " Q "target" Q ")\n"
-                                            "(display (scm->json-string '((summary . ((total . 1) (passed . 1) (failed . 0)))"
-                                            " (verdict . " Q "pass" Q ") (seed . " Q "cli" Q ") (failures . ()))))\n"
-                                            "(newline)\n"))
+                             (string-append
+                               "(use-modules (geasa cli-target plugin) (srfi srfi-64) (json))\n"
+                               "(test-runner-current (test-runner-null))\n"
+                               "(test-begin "
+                               Q
+                               "target"
+                               Q
+                               ")\n"
+                               "(test-assert "
+                               Q
+                               "answer is 42"
+                               Q
+                               " (= 42 (answer)))\n"
+                               "(test-end "
+                               Q
+                               "target"
+                               Q
+                               ")\n"
+                               "(display (scm->json-string '((summary . ((total . 1) (passed . 1) (failed . 0)))"
+                               " (verdict . "
+                               Q
+                               "pass"
+                               Q
+                               ") (seed . "
+                               Q
+                               "cli"
+                               Q
+                               ") (failures . ()))))\n"
+                               "(newline)\n"))
                 (write-manifest! dir
                                  (list (cons 'bundle-version 1)
                                        (cons 'feature-id "cli-target")
@@ -130,38 +178,43 @@
                                        (cons 'spec "spec.geis.scm")
                                        (cons 'plugin '((module . (geasa cli-target plugin)) (file . "plugin.scm")))
                                        (cons 'depends
-                                             (list (cons 'geis
-                                                         (list (cons "cli-dep"
-                                                                     (list (cons 'version "1.0.0")
-                                                                           (cons 'bundle-sha256 dep-hash)))))))))
+                                             (list
+                                               (cons 'geis
+                                                     (list
+                                                       (cons "cli-dep" (list (cons 'version "1.0.0") (cons 'bundle-sha256 dep-hash)))))))))
                 (let ((report (geis-bundle-install dir)))
                   (test-assert "install report names the feature"
                                (string= "cli-target" (assoc-ref report 'feature-id)))
-                  (test-assert "locked list has dependency first, target last"
-                               (equal? '("cli-dep" "cli-target") (assoc-ref report 'locked)))
-                  (test-assert "report carries a 64-hex bundle hash"
-                               (and (string? (assoc-ref report 'bundle-sha256))
-                                    (= 64 (string-length (assoc-ref report 'bundle-sha256)))))
+                  (test-assert
+                    "locked list has dependency first, target last"
+                    (equal? '("cli-dep" "cli-target") (assoc-ref report 'locked)))
+                  (test-assert
+                    "report carries a 64-hex bundle hash"
+                    (and (string? (assoc-ref report 'bundle-sha256))
+                         (= 64 (string-length (assoc-ref report 'bundle-sha256)))))
                   (test-assert "dependency locked under gate root"
                                (file-exists? (string-append %gate-root "/geasa/cli-dep/spec.geis.scm")))
                   (test-assert "target locked under gate root"
                                (file-exists? (string-append %gate-root "/geasa/cli-target/spec.geis.scm")))
                   (test-assert "locked plugin is read-only"
-                               (let ((perms (stat:perms
-                                              (stat (string-append %gate-root "/geasa/cli-target/plugin.scm")))))
+                               (let
+                                   ((perms
+                                      (stat:perms (stat (string-append %gate-root "/geasa/cli-target/plugin.scm")))))
                                  (= #o444 (logand perms #o777))))
-                  (test-equal "install verifies the locked target: verdict pass"
-                              "pass" (assoc-ref report 'verify-verdict))
+                  (test-equal
+                    "install verifies the locked target: verdict pass"
+                    "pass"
+                    (assoc-ref report 'verify-verdict))
                   ;; tamper the WORKING TREE plugin; the locked copy must still verify
                   (write-file! (string-append dir "/plugin.scm")
-                               (string-append "(define-module (geasa cli-target plugin)\n"
-                                              "  #:export (answer))\n\n(define (answer) 43)\n"))
+                               (string-append
+                                 "(define-module (geasa cli-target plugin)\n"
+                                 "  #:export (answer))\n\n(define (answer) 43)\n"))
                   (test-equal "locked copy used, not working tree"
                               "pass"
-                              (assoc-ref (verify-locked-geis-bundle "cli-target"
-                                                                    #:root %gate-root
-                                                                    #:timeout 30)
-                                         'verdict))))))
+                              (assoc-ref
+                                (verify-locked-geis-bundle "cli-target" #:root %gate-root #:timeout 30)
+                                'verdict))))))
 
 (test-group "install-rejects-invalid"
             (let ((dir (string-append %geis-root "/install-bad")))
