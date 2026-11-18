@@ -252,38 +252,49 @@ and outbound serializable frames."
           n))
 
 (define (server-enqueue-frame! srv msg)
-        (set-ui-server-pending-frames!
-          srv
-          (append (ui-server-pending-frames srv) (list msg)))
+        (let*
+            ((frames (append (ui-server-pending-frames srv) (list msg)))
+             (len (length frames))
+             (bounded
+               (if (> len 512)
+                 (drop frames (- len 512))
+                 frames)))
+          (set-ui-server-pending-frames! srv bounded))
         ;; Deliver to any clients attached with an outbound transport port
         (for-each
           (lambda (client-entry)
-            (let ((port (prop-ref (cdr client-entry) 'transport-port)))
+            (let
+                ((port (prop-ref (cdr client-entry) 'transport-port)))
               (when (output-port? port)
                 (catch #t
-                  (lambda () (write-ui-frame! port msg))
-                  (lambda _ #f)))))
+                  (lambda ()
+                    (write-ui-frame! port msg))
+                  (lambda _
+                    #f)))))
           (ui-server-clients srv))
         msg)
 
-(define* (ui-server-connect! srv client-id
-                             #:key (cols 80) (rows 24) (transport-port #f))
-         "Register CLIENT-ID on SRV with viewport COLS x ROWS and optional TRANSPORT-PORT."
-         (let ((cid (ensure-symbol client-id)))
-           (with-mutex (ui-server-mutex srv)
-                       (let* ((info `((cols . ,(max 1 cols))
-                                      (rows . ,(max 1 rows))
-                                      (transport-port . ,transport-port)))
-                              (others (alist-delete cid (ui-server-clients srv) eq?)))
-                         (set-ui-server-clients! srv (cons (cons cid info) others))
-                         (let ((welcome (make-ui-message 'status
-                                                         #:seq (server-next-seq! srv)
-                                                         #:source 'server
-                                                         #:payload `((client . ,cid)
-                                                                     (connected? . #t)
-                                                                     (cols . ,cols)
-                                                                     (rows . ,rows)))))
-                           (server-enqueue-frame! srv welcome))))))
+(define*
+  (ui-server-connect! srv client-id #:key (cols 80) (rows 24) (transport-port #f))
+  "Register CLIENT-ID on SRV with viewport COLS x ROWS and optional TRANSPORT-PORT."
+  (let ((cid (ensure-symbol client-id)))
+    (with-mutex (ui-server-mutex srv)
+                (let*
+                    ((existing (assq-ref (ui-server-clients srv) cid))
+                     (port (or transport-port (and existing (prop-ref existing 'transport-port))))
+                     (info `((cols . ,(max 1 cols)) (rows . ,(max 1 rows)) (transport-port . ,port)))
+                     (others (alist-delete cid (ui-server-clients srv) eq?)))
+                  (set-ui-server-clients! srv (cons (cons cid info) others))
+                  (let
+                      ((welcome
+                         (make-ui-message 'status
+                                          #:seq
+                                          (server-next-seq! srv)
+                                          #:source
+                                          'server
+                                          #:payload
+                                          `((client . ,cid) (connected? . #t) (cols . ,cols) (rows . ,rows)))))
+                    (server-enqueue-frame! srv welcome))))))
 
 (define (ui-server-disconnect! srv client-id)
         "Disconnect CLIENT-ID from SRV and emit a goodbye frame."
@@ -427,42 +438,48 @@ attached out-port if present)."
               (write-ui-frame! port msg)))
           msg))
 
-(define (ui-client-apply-frame! client msg-or-json)
-        "Apply an incoming server <ui-message> (or JSON string) to CLIENT's local
+(define
+  (ui-client-apply-frame! client msg-or-json)
+  "Apply an incoming server <ui-message> (or JSON string) to CLIENT's local
 renderable state."
-        (let ((msg (cond
-                     ((ui-message? msg-or-json) msg-or-json)
-                     ((string? msg-or-json) (decode-ui-message msg-or-json))
-                     (else #f))))
-          (when msg
-            (let ((mtype (ui-message-type msg))
-                  (payload (ui-message-payload msg)))
-              (case mtype
-                ((frame)
-                  (set-ui-client-last-frame! client payload)
-                  (when (integer? (prop-ref payload 'cols))
-                    (set-ui-client-cols! client (max 1 (prop-ref payload 'cols))))
-                  (when (integer? (prop-ref payload 'rows))
-                    (set-ui-client-rows! client (max 1 (prop-ref payload 'rows)))))
-                ((status)
-                  (set-ui-client-status! client payload)
-                  (when (prop-ref payload 'connected?)
-                    (set-ui-client-connected?! client #t)))
-                ((subagent-event)
-                  ;; Keep bounded recent subagent events (newest last, max 64)
-                  (let* ((evts (append (ui-client-subagent-events client) (list payload)))
-                         (trimmed (if (> (length evts) 64)
-                                    (drop evts (- (length evts) 64))
-                                    evts)))
-                    (set-ui-client-subagent-events! client trimmed)))
-                ((notify)
-                  (set-ui-client-notifications!
-                    client
-                    (append (ui-client-notifications client) (list payload))))
-                ((goodbye)
-                  (set-ui-client-connected?! client #f))
-                (else #f))))
-          client))
+  (let
+      ((msg
+         (cond
+           ((ui-message? msg-or-json) msg-or-json)
+           ((string? msg-or-json) (decode-ui-message msg-or-json))
+           (else #f))))
+    (when msg
+      (let
+          ((mtype (ui-message-type msg)) (payload (ui-message-payload msg)))
+        (case mtype
+          ((frame)
+            (set-ui-client-last-frame! client payload)
+            (when (integer? (prop-ref payload 'cols))
+              (set-ui-client-cols! client (max 1 (prop-ref payload 'cols))))
+            (when (integer? (prop-ref payload 'rows))
+              (set-ui-client-rows! client (max 1 (prop-ref payload 'rows)))))
+          ((status) (set-ui-client-status! client payload)
+                    (when (prop-ref payload 'connected?) (set-ui-client-connected?! client #t)))
+          ((subagent-event)
+            ;; Keep bounded recent subagent events (newest last, max 64)
+            (let*
+                ((evts (append (ui-client-subagent-events client) (list payload)))
+                 (trimmed
+                   (if (> (length evts) 64)
+                     (drop evts (- (length evts) 64))
+                     evts)))
+              (set-ui-client-subagent-events! client trimmed)))
+          ((notify)
+            (set-ui-client-notifications! client
+                                          (append (ui-client-notifications client) (list payload))))
+          ((goodbye)
+            (let ((bye-cid (prop-ref payload 'client)))
+              (when
+                  (or (not bye-cid)
+                      (equal? (ensure-string bye-cid) (symbol->string (ui-client-id client))))
+                (set-ui-client-connected?! client #f))))
+          (else #f))))
+    client))
 
 (define (ui-client-render-snapshot client)
         "Return an alist representing CLIENT's current renderable snapshot."

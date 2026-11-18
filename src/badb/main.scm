@@ -1,6 +1,6 @@
-(define-module (badb main)
+(define-module (badb main) #:use-module
+               (badb version)
                #:use-module
-               (badb version) #:use-module
                (ice-9 format)
                #:use-module
                (badb surfaces cli)
@@ -8,7 +8,11 @@
                (srfi srfi-13)
                #:autoload
                (geasa surfaces-tui plugin)
-               (run-tui spec-tool-status spec-tool-verify)
+               (run-tui spec-tool-status
+                        spec-tool-verify
+                        parse-ui-listen-spec
+                        run-ui-server!
+                        run-remote-tui-client)
                #:autoload
                (badb capabilities filetree-mcp)
                (run-filetree-mcp)
@@ -448,10 +452,60 @@
                       (loop (cdr args) from #t))
                     (else (loop (cdr args) from no-compile?)))))
 
+(define (run-tui-command args)
+        (let loop
+          ((rest args) (serve #f) (attach #f) (ssh-target #f))
+          (cond
+            ((null? rest)
+              (cond
+                (serve
+                  (let ((spec (parse-ui-listen-spec serve)))
+                    (unless spec
+                      (format (current-error-port)
+                              "Error: badb tui --serve must be stdio, unix://PATH, or tcp://HOST:PORT\n")
+                      (exit 1))
+                    (run-ui-server! #:transport
+                                    (assoc-ref spec 'transport)
+                                    #:host
+                                    (or (assoc-ref spec 'host) "127.0.0.1")
+                                    #:port
+                                    (or (assoc-ref spec 'port) 0)
+                                    #:socket-path
+                                    (assoc-ref spec 'socket-path))))
+                (attach
+                  (let ((spec (parse-ui-listen-spec attach)))
+                    (unless spec
+                      (format (current-error-port)
+                              "Error: badb tui --attach must be stdio, unix://PATH, or tcp://HOST:PORT\n")
+                      (exit 1))
+                    (run-remote-tui-client #:transport
+                                           (assoc-ref spec 'transport)
+                                           #:host
+                                           (or (assoc-ref spec 'host) "127.0.0.1")
+                                           #:port
+                                           (or (assoc-ref spec 'port) 0)
+                                           #:socket-path
+                                           (assoc-ref spec 'socket-path))))
+                (ssh-target (run-remote-tui-client #:transport 'ssh #:ssh-target ssh-target))
+                (else (run-tui))))
+            ((and (equal? (car rest) "--serve") (pair? (cdr rest)))
+              (loop (cddr rest) (cadr rest) attach ssh-target))
+            ((and (equal? (car rest) "--attach") (pair? (cdr rest)))
+              (loop (cddr rest) serve (cadr rest) ssh-target))
+            ((and (equal? (car rest) "--ssh") (pair? (cdr rest)))
+              (loop (cddr rest) serve attach (cadr rest)))
+            (else
+              (format (current-error-port) "Error: unrecognized tui option '~a'\n" (car rest))
+              (exit 1)))))
+
 (define (main args)
         (let ((options (cdr args)))
           (cond
-            ((or (null? options) (member (car options) '("tui" "-t" "--tui"))) (run-tui))
+            ((or (null? options) (member (car options) '("tui" "-t" "--tui")))
+              (run-tui-command
+                (if (null? options)
+                  '()
+                  (cdr options))))
             ((equal? (car options) "init") (run-init-command))
             ((equal? (car options) "bootstrap") (run-bootstrap-command options))
             ((equal? (car options) "ctx") (run-ctx-command options))
@@ -468,7 +522,7 @@
             (else
               (format (current-error-port)
                       "~a: unrecognized option '~a'~%"
-                      (red (current-error-port) %program-name)
+                      %program-name
                       (car options))
-              (format (current-error-port) "Try 'badb --help' for more information.~%")
+              (print-usage (current-error-port))
               (exit 1)))))

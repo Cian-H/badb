@@ -2545,6 +2545,108 @@
                   "Root"
                   (menu-title (menu-overlay-menu ov2))))))
 
+(test-group
+  "Standalone UI Server Daemon & Remote Client"
+  (test-equal "parse-ui-listen-spec parses stdio"
+              '((transport . stdio))
+              (parse-ui-listen-spec "stdio"))
+  (test-equal "parse-ui-listen-spec parses unix://"
+              '((transport . unix) (socket-path . "/tmp/badb-ui.sock"))
+              (parse-ui-listen-spec "unix:///tmp/badb-ui.sock"))
+  (test-equal "parse-ui-listen-spec parses tcp://"
+              '((transport . tcp) (host . "127.0.0.1") (port . 9100))
+              (parse-ui-listen-spec "tcp://127.0.0.1:9100"))
+  (test-equal
+    "parse-ui-listen-spec rejects invalid spec"
+    #f
+    (parse-ui-listen-spec "http://localhost"))
+  ;; TCP daemon + remote client round-trip (ephemeral port)
+  (let*
+      ((srv (make-ui-server #:initial-state '((status . "READY") (model . "test"))))
+       (_ (wire-ui-server-handlers! srv))
+       (daemon
+         (make-ui-daemon #:server srv #:transport 'tcp #:host "127.0.0.1" #:port 0))
+       (cli (make-ui-client #:id 'spec-tcp #:cols 90 #:rows 30))
+       (got-frame? #f))
+    (dynamic-wind
+      (lambda ()
+        (ui-daemon-start! daemon))
+      (lambda ()
+        (let
+            ((conn
+               (ui-client-connect-tcp! cli
+                                       "127.0.0.1"
+                                       (ui-daemon-port daemon)
+                                       #:on-frame
+                                       (lambda (_c f)
+                                         (when (eq? (ui-message-type f) 'notify) (set! got-frame? #t))))))
+          (dynamic-wind
+            (lambda ()
+              #t)
+            (lambda ()
+              (let wait-conn
+                ((i 0))
+                (when
+                    (and (< i 40) (not (ui-client-connected? cli)))
+                  (usleep 25000)
+                  (wait-conn (+ i 1))))
+              (ui-client-send-event cli 'submit '((text . "ping-over-tcp")))
+              (ui-server-route-subagent-event! srv "sub-tcp" "root" 'tool-call "ok")
+              (let wait
+                ((i 0))
+                (when
+                    (and (< i 40) (or (not got-frame?) (null? (ui-client-subagent-events cli))))
+                  (usleep 25000)
+                  (wait (+ i 1))))
+              (test-assert "remote TCP client connected" (ui-client-connected? cli))
+              (test-assert "remote TCP client received notify" got-frame?)
+              (test-assert
+                "remote TCP client received subagent event"
+                (pair? (ui-client-subagent-events cli))))
+            (lambda ()
+              (ui-remote-disconnect! conn)))))
+      (lambda ()
+        (ui-daemon-stop! daemon))))
+  ;; Unix socket daemon + remote client round-trip
+  (let*
+      ((dir (mkdtemp "/tmp/badb-ui-spec-XXXXXX"))
+       (sock-path (string-append dir "/ui.sock"))
+       (srv (make-ui-server))
+       (_ (wire-ui-server-handlers! srv))
+       (daemon (make-ui-daemon #:server srv #:transport 'unix #:socket-path sock-path))
+       (cli (make-ui-client #:id 'spec-unix #:cols 80 #:rows 24)))
+    (dynamic-wind
+      (lambda ()
+        (ui-daemon-start! daemon))
+      (lambda ()
+        (let
+            ((conn (ui-client-connect-unix! cli sock-path)))
+          (dynamic-wind
+            (lambda ()
+              #t)
+            (lambda ()
+              (ui-client-send-event cli 'command '((command . "/help")))
+              (let wait
+                ((i 0))
+                (when
+                    (and (< i 40)
+                         (or (not (ui-client-connected? cli)) (null? (ui-client-notifications cli))))
+                  (usleep 25000)
+                  (wait (+ i 1))))
+              (test-assert "remote Unix client connected" (ui-client-connected? cli))
+              (test-assert
+                "remote Unix client received command notify"
+                (pair? (ui-client-notifications cli))))
+            (lambda ()
+              (ui-remote-disconnect! conn)))))
+      (lambda ()
+        (ui-daemon-stop! daemon)
+        (catch #t
+          (lambda ()
+            (rmdir dir))
+          (lambda _
+            #f))))))
+
 (spec-end)
 
 (spec-exit)
