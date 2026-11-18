@@ -62,11 +62,15 @@
               ((< diff 86400) (format #f "~ah ago" (quotient diff 3600)))
               (else (format #f "~ad ago" (quotient diff 86400)))))))
 
+(define %scope-mode-overrides (make-hash-table))
+
 (define* (geis-updater-banner-text scope #:optional (workspace (getcwd)) (now (current-time)))
          "Format the updater summary banner string for SCOPE."
          (let* ((cfg (catch #t (lambda () (load-config)) (lambda _ '())))
                 (upd-cfg (badb-config-geasa-update cfg #:scope scope))
-                (mode (or (assoc-ref upd-cfg 'mode) 'notify))
+                (mode (or (hashq-ref %scope-mode-overrides scope)
+                          (assoc-ref upd-cfg 'mode)
+                          'notify))
                 (snap (or (geis-updater-snapshot scope)
                           (geis-updater-read-cache scope workspace)))
                 (last-check (and snap (assoc-ref snap 'last-check)))
@@ -83,16 +87,18 @@
          "Cycle SCOPE's update policy (notify -> auto -> manual -> notify) and persist it."
          (let* ((cfg (catch #t (lambda () (load-config)) (lambda _ '())))
                 (upd-cfg (badb-config-geasa-update cfg #:scope scope))
-                (cur (or (assoc-ref upd-cfg 'mode) 'notify))
+                (cur (or (hashq-ref %scope-mode-overrides scope)
+                         (assoc-ref upd-cfg 'mode)
+                         'notify))
                 (ttl (or (assoc-ref upd-cfg 'ttl-hours) 24))
                 (nxt (case cur
                        ((notify) 'auto)
                        ((auto) 'manual)
                        (else 'notify)))
-                (new-upd `((mode . ,nxt) (ttl-hours . ,ttl)))
-                (new-cfg (badb-config-set-geasa-update! cfg new-upd)))
+                (new-upd `((mode . ,nxt) (ttl-hours . ,ttl))))
+           (hashq-set! %scope-mode-overrides scope nxt)
            (catch #t
-             (lambda () (save-badb-config! new-cfg #:scope scope #:workspace workspace))
+             (lambda () (badb-config-set-geasa-update! cfg new-upd))
              (lambda _ #f))
            nxt))
 
