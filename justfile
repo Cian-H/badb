@@ -38,13 +38,13 @@ lint *args:
 pin fid:
     ./scripts/badb geis pin src/geasa/{{fid}}
 
-# Preview the next SemVer version from Conventional Commits
+# Preview the next CalVer version (YYYY.MM.DD.N) based on VERSION and UTC date
 bump-preview:
-    git cliff --bumped-version
+    @bash -c 'today=$(date -u +%Y.%m.%d); cur=$(tr -d "[:space:]" < VERSION); if [[ "$cur" == "$today".* ]]; then patch="${cur##*.}"; echo "$today.$((patch + 1))"; else echo "$today.0"; fi'
 
-# Update CHANGELOG.md for the next SemVer release
+# Update CHANGELOG.md for the next CalVer release
 changelog:
-    git cliff --bump -o CHANGELOG.md
+    git cliff --tag "v$(just bump-preview)" -o CHANGELOG.md
 
 # Configure Git to use .githooks/
 hooks:
