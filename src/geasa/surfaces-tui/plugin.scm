@@ -48,6 +48,10 @@
                #:use-module
                (geasa runtimes-geis-loader plugin)
                #:use-module
+               (geasa runtimes-geis-updater plugin)
+               #:use-module
+               (geasa surfaces-geis-updater plugin)
+               #:use-module
                (geasa runtimes-workflows plugin)
                #:use-module
                (geasa runtimes-verify plugin)
@@ -954,6 +958,17 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
                                       #:target-id
                                       (current-harness-id)))
       (startup-auto-detect-model! st)
+      (catch #t
+        (lambda ()
+          (register-geis-updater-extensions!)
+          (start-background-geasa-update-check!
+            #:workspace (getcwd)
+            #:on-complete (lambda (results)
+                            (let ((notice (geis-updater-startup-notice results)))
+                              (when notice
+                                (set-tui-status-text! st notice)
+                                (set-tui-render-dirty?! st #t))))))
+        (lambda _ #f))
       (let ((stdscr (initscr)))
         (set-tui-stdscr! st stdscr)
         (cbreak!)
