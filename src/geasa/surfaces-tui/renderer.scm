@@ -1093,6 +1093,17 @@ cannot restore the screen; initscr must run again."
                                                       ,(lambda
                                                            (title rows sel-pos box-w start-y start-x above below)
                                                          (tui-draw-popup! st title rows sel-pos box-w start-y start-x above below)))
+                                         (draw-ops! .
+                                                    ,(lambda (ops _rect)
+                                                       (for-each
+                                                         (lambda (op)
+                                                           (when (and (>= (draw-op-y op) 0)
+                                                                      (< (draw-op-y op) maxy)
+                                                                      (>= (draw-op-x op) 0)
+                                                                      (< (draw-op-x op) maxx))
+                                                             (move stdscr (draw-op-y op) (draw-op-x op))
+                                                             (addstr stdscr (draw-op-text op))))
+                                                         ops)))
                                          (register-click! .
                                                           ,(lambda (y target)
                                                              (hashq-set! (tui-click-targets st) y target))))))
