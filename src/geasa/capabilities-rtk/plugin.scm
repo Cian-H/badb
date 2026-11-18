@@ -71,24 +71,21 @@ Returns (EXIT-CODE . OUTPUT-STRING) or (#f . ERROR-MESSAGE)."
                 (let* ((p (pipe))
                        (r-port (car p))
                        (w-port (cdr p))
-                       (pid (primitive-fork)))
-                  (if (= pid 0)
-                    (begin
-                      (close-port r-port)
-                      (dup2 (port->fdes w-port) 1)
-                      (dup2 (port->fdes w-port) 2)
-                      (close-port w-port)
-                      (catch #t
-                        (lambda () (apply execlp bin bin args))
-                        (lambda _ (primitive-exit 127))))
-                    (begin
-                      (close-port w-port)
-                      (let* ((out (get-string-all r-port))
-                             (_ (close-port r-port))
-                             (st (cdr (waitpid pid)))
-                             (code (status:exit-val st))
-                             (clean (if (eof-object? out) "" (string-trim-both out))))
-                        (cons code clean))))))
+                       (null-in (open-input-file "/dev/null"))
+                       ;; posix_spawn via `spawn', not primitive-fork: forking a
+                       ;; multi-threaded Guile can deadlock the child before exec.
+                       (pid (spawn bin (cons bin args)
+                                   #:input null-in
+                                   #:output w-port
+                                   #:error w-port)))
+                  (close-port null-in)
+                  (close-port w-port)
+                  (let* ((out (get-string-all r-port))
+                         (_ (close-port r-port))
+                         (st (cdr (waitpid pid)))
+                         (code (status:exit-val st))
+                         (clean (if (eof-object? out) "" (string-trim-both out))))
+                    (cons code clean))))
               (lambda (key . err-args)
                 (cons #f (format #f "rtk subprocess error (~a): ~s" key err-args))))
             (cons #f "rtk unavailable: binary not found on PATH"))))
