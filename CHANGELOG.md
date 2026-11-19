@@ -1,6 +1,92 @@
 # Changelog
 
 All notable changes to `badb` will be documented in this file.
+## [2026.11.19.1] - 2026-11-19
+
+### Bug Fixes
+
+- *(surfaces-tui)* Remove redundant models menu entry
+- *(surfaces-tui)* Run bash tool through /usr/bin/env bash
+- *(surfaces-tui)* Clarify geis verify uses locked copy and how to re-lock
+- *(surfaces-tui)* Re-init terminal backend after external editor exits
+- *(surfaces-tui)* Ctrl+e expands latest collapsed message without selection
+- *(surfaces-tui)* Animate terminal tab spinner by including frame in title signature
+- *(surfaces-tui)* Queue steering past final answer and keep urgent steer from re-stopping the loop
+- *(runtimes-react)* Skip result offload for ctx-virtualized bash output
+- *(surfaces-tui)* Remove /models from slash autocomplete registry
+- *(surfaces-tui)* Sort %slash-commands alphabetically
+- *(surfaces-tui)* Remove redundant theme entry from top-level command menu
+- *(surfaces-tui)* Nest endpoint, provider, features, journal, and test in command tree
+- *(surfaces-tui)* Support Backspace to pop one menu level
+- *(surfaces-tui)* Restore 'slash prompt mode instead of literal / on back-to-slash
+- *(dist)* Finalize single-file guix pack wrapper, two-pass bootstrap, and persona pins
+- *(geis)* Pass load paths to guild during bundle precompile and warn on failure (ui-fpl)
+- *(dist)* Put bundled sema/guile on PATH in packed wrapper, report bootstrap failure reasons, silence dist compile warning
+- *(capabilities-rtk)* Spawn rtk via posix_spawn instead of forking a threaded Guile (ui-4q8)
+- *(geasa)* Resolve unbound vars, arity/shadowing bugs, and hot-loop allocations (ui-9t8, ui-nzn, ui-5do)
+- *(surfaces-tui)* Log catch #t failures in tools and daemon accept loop (ui-09q)
+- *(surfaces-tui)* Restore effective-demarcation-style and mode->badge-label
+- *(surfaces-geis-updater)* Persist cycled update mode across calls
+
+### CI
+
+- Add pre-push test hook and GitHub Actions commitlint workflow
+- Remove commitlint GitHub Actions workflow
+
+### Documentation
+
+- *(changelog)* Generate CHANGELOG.md with git-cliff
+- Rename readme.md and license.md to uppercase stems
+- Update README and TUI screenshot
+- *(install)* Document single-file ~/.local/bin/badb and bootstrap flow (ui-2te)
+
+### Features
+
+- *(surfaces-tui)* Support module-declared command menu paths and arbitrary-depth nesting
+- *(surfaces-tui)* Add Back navigation item to nested menus
+- *(version)* Read app version from shared VERSION file via git-cliff hook
+- *(surfaces-tui)* Attach Commands root as parent for direct slash-command menus
+- *(surfaces-tui)* Return to slash command input palette on Back from direct command menus
+- *(geis)* Decouple bundle discovery from repo cwd and add XDG user store (ui-67l)
+- *(geis)* Add per-geis precompile option and post-verify ccache (ui-92p)
+- *(geis)* Add geis-pack-base-collection and badb geis pack --all (ui-usn)
+- *(geis)* Add geis-bootstrap-base! and badb bootstrap CLI (ui-4hh)
+- *(guix)* Sync badb runtime closure and add badb-kernel package (ui-jk3)
+- *(dist)* Add single-file self-extracting executable and just install (ui-lay)
+- *(surfaces-tui)* Add standalone UI server daemon and remote SSH/socket client
+- *(geis)* Pure-Scheme CalVer comparator, manifest source schema & auto-bump on pin (ui-99j)
+- *(runtimes-geis-pkg)* Feat(runtimes-geis-pkg): add repo-cached git fetcher, lockfile, atomic verify/swap, rollback & enable/disable (ui-bek)
+- *(geis)* Add declarative geasa config sync and badb geis CLI subcommands (ui-3y0)
+- *(surfaces-widgets)* Extract widget primitives & refactor menus (ui-13v)
+- *(runtimes-geis-updater)* Add per-scope TTL-cached background geasa updater
+- *(surfaces-overlay)* Extract overlay & add modular modal shell (ui-7x8)
+- *(surfaces-geis-manager)* Add /geasa modal, extension API, and TUI tool gating
+- *(surfaces-geis-updater)* Add updater UI extensions, TUI startup check, and e2e scenario
+- *(surfaces)* Unify /geis manager, add table-widget, fix modal layout & scrolling
+- *(surfaces-tui)* Modular TUI overlays, themes, history, and /config UX
+- *(surfaces-tui)* Refactor(surfaces-tui): remove redundant components, duplicates, and dead code
+
+### Miscellaneous Tasks
+
+- Added ignores for "beads"
+- Sorted packages
+- *(calver)* Migrate repo and base geasa manifests to CalVer (ui-0uq)
+- Optimised AGENTS.md
+- Gitignore dist/ and untrack dist/badb
+
+### Refactor
+
+- *(surfaces-tui)* Drop endwin/refresh bindings left unused by editor resume fix
+- *(surfaces-tui)* Derive %slash-commands dynamically from %command-categories
+- *(surfaces-tui)* Trim low-frequency and nested commands from top-level menu
+- *(geasa)* Remove dead definitions and decompose TUI key handlers (ui-gku, ui-j2l, ui-p1v)
+- Static analysis, peval optimization, and lint cleanup pass
+
+### Testing
+
+- Disable srfi-64 root logs, rename wp* suites, and ignore dist/
+- Deduplicate suites, remove legacy E2E overlap, and strengthen thin specs
+
 ## [0.144.9] - 2026-11-16
 
 ### Documentation

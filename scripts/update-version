@@ -3,24 +3,31 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION_FILE="$ROOT_DIR/VERSION"
+CHANGELOG_FILE="$ROOT_DIR/CHANGELOG.md"
 
-if ! command -v git-cliff >/dev/null 2>&1; then
-  exit 0
-fi
-
-RAW_VERSION="$(git-cliff --bumped-version 2>/dev/null | tr -d '[:space:]')"
-NEW_VERSION="${RAW_VERSION#v}"
-
-if [ -z "$NEW_VERSION" ]; then
-  exit 0
-fi
-
+TODAY="$(date -u +%Y.%m.%d)"
 OLD_VERSION=""
 if [ -f "$VERSION_FILE" ]; then
   OLD_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
 fi
 
+if [ "$OLD_VERSION" = "$TODAY" ]; then
+  NEW_VERSION="$TODAY.1"
+elif [[ "$OLD_VERSION" =~ ^${TODAY//./\\.}\.([0-9]+)$ ]]; then
+  NEW_VERSION="$TODAY.$((BASH_REMATCH[1] + 1))"
+else
+  NEW_VERSION="$TODAY"
+fi
+
 if [ "$NEW_VERSION" != "$OLD_VERSION" ]; then
   printf '%s\n' "$NEW_VERSION" > "$VERSION_FILE"
   git -C "$ROOT_DIR" add "$VERSION_FILE"
+fi
+
+if command -v git-cliff >/dev/null 2>&1; then
+  git-cliff -c "$ROOT_DIR/cliff.toml" --tag "v$NEW_VERSION" -o "$CHANGELOG_FILE"
+  git -C "$ROOT_DIR" add "$CHANGELOG_FILE"
+elif [ -x "$ROOT_DIR/scripts/devenv" ]; then
+  "$ROOT_DIR/scripts/devenv" -- git-cliff -c "$ROOT_DIR/cliff.toml" --tag "v$NEW_VERSION" -o "$CHANGELOG_FILE"
+  git -C "$ROOT_DIR" add "$CHANGELOG_FILE"
 fi
