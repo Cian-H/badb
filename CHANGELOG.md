@@ -1,7 +1,7 @@
 # Changelog
 
 All notable changes to `badb` will be documented in this file.
-## [2026.11.19.2] - 2026-11-19
+## [2026.11.19.3] - 2026-11-19
 
 ### Bug Fixes
 
@@ -39,6 +39,7 @@ All notable changes to `badb` will be documented in this file.
 - Rename readme.md and license.md to uppercase stems
 - Update README and TUI screenshot
 - *(install)* Document single-file ~/.local/bin/badb and bootstrap flow (ui-2te)
+- Regenerate TUI screenshot
 
 ### Features
 

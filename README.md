@@ -18,7 +18,7 @@ In Celtic mythology, **Badb** (pronounced "bave", like "cave" with a "b") is a s
 
 That is how this harness works: the harness morphs into whatever shape you require, granting powerful agentic capabilities governed by verified contracts.
 
-**Status:** Alpha — ships with a pure microkernel, 45 contract-verified geasa bundles, and a full-featured interactive terminal user interface (TUI).
+**Status:** Alpha — ships with a pure microkernel, 61 contract-verified geasa bundles, and a full-featured interactive terminal user interface (TUI).
 
 ---
 
@@ -477,8 +477,8 @@ badb/
 │       ├── persona-*             # badb, base, synthesizer
 │       ├── policies-*            # guardrail, systemone-gate
 │       ├── providers-*           # model, systemone
-│       ├── runtimes-*            # context, freshness, geis-loader, loop-guard, prompt, react, react-stream, retry, rollback, synthesis, verify, workflows
-│       └── surfaces-*            # acp, spec-tools, theme, tui
+│       ├── runtimes-*            # context, freshness, geis-loader, geis-pkg, geis-updater, loop-guard, prompt, react, react-stream, retry, rollback, synthesis, verify, workflows
+│       └── surfaces-*            # acp, agent-monitor, command-palette, config-modal, context-inspector, diff-review, drawer, geis-manager, geis-updater, knowledge-browser, mcp-manager, notify, overlay, session-browser, spec-tools, theme, tui, widgets
 ├── workflows/                    # Declarative Sema workflows
 └── test/                         # Test fixtures, adversarial suites, specs & e2e tests
 ```
