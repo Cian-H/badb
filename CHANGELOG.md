@@ -1,7 +1,7 @@
 # Changelog
 
 All notable changes to `badb` will be documented in this file.
-## [2026.11.19.1] - 2026-11-19
+## [2026.11.19.2] - 2026-11-19
 
 ### Bug Fixes
 
