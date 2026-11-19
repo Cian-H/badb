@@ -1,7 +1,7 @@
 ;;; badb — Declarative contract & property spec engine (roadmap Phase 2).
 ;;;
 ;;; This module is the SPEC-AUTHORING side of the Phase 2 trust anchor:
-;;; the kernel gate (see (badb spec-gate)) locks a spec file, replays
+;;; the kernel gate (see (badb kernel geis-gate)) locks a spec file, replays
 ;;; it in a disposable subprocess, and parses the machine-readable
 ;;; diagnostics this engine emits.  The engine never decides its own
 ;;; verdict; it only reports what it observed.
@@ -575,7 +575,9 @@ had zero failures, 1 otherwise (fail-closed before any spec-end)."
 ;; check-arg (raising &assertion on violation) before delegating.
 (define-syntax define-checked-wrapper
                (syntax-rules ()
-                             ((_ (wrapper underlying) ((arg pred) ...))
-                              (define (wrapper arg ...)
-                                      (begin (check-arg pred arg 'wrapper) ...)
-                                      (underlying arg ...)))))
+                             ((_ (name underlying) ((arg pred) ...))
+                              (define (name . args)
+                                      (call-with-values (lambda () (apply values args))
+                                                        (lambda (arg ...)
+                                                          (begin (check-arg pred arg 'name) ...)
+                                                          (underlying arg ...)))))))

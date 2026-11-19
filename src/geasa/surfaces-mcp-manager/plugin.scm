@@ -59,10 +59,15 @@
 
 (define (default-list-servers scope workspace)
         (let* ((path (if (eq? scope 'project)
-                       (default-local-config-path workspace)
+                       (if workspace
+                         (string-append workspace "/.badb/config.scm")
+                         (default-local-config-path))
                        (default-global-config-path)))
                (cfg (catch #t
-                      (lambda () (if (file-exists? path) (load-badb-config path) #f))
+                      (lambda ()
+                        (if (file-exists? path)
+                          (load-config #:global-path #f #:local-path path)
+                          #f))
                       (lambda _ #f)))
                (servers (if cfg (badb-config-mcp-servers cfg) '())))
           (map (lambda (s)

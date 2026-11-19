@@ -9,6 +9,7 @@
 (use-modules (srfi srfi-11)
              (srfi srfi-64)
              (srfi srfi-1)
+             (rnrs bytevectors)
              (json)
              (web response)
              (ice-9 format)
@@ -164,8 +165,6 @@
 (test-group "task-routing-calibration"
             (let* ((total (length %calibration-cases))
                    (correct 0)
-                   (direct-cases (filter (lambda (c) (eq? (assoc-ref c 'expected) 'direct)) %calibration-cases))
-                   (geis-cases (filter (lambda (c) (eq? (assoc-ref c 'expected) 'geis)) %calibration-cases))
                    (over-triggers 0)
                    (under-triggers 0))
               (for-each
@@ -194,10 +193,9 @@
 
 (test-group "progressive-discovery-and-hydration"
             (let* ((reg (make-registry))
-                   (client #f)
-                   (reg-tools (register-builtin-tui-tools! reg #f #f #f (lambda () '())))
                    (index-output (geis-index-query))
                    (spec-index (geis-index-query #:category "spec-gate")))
+              (register-builtin-tui-tools! reg #f #f #f (lambda () '()))
 
               ;; 1. Discovery query returns concise table without schemas
               (test-assert "geis.index returns available geasa header"
@@ -224,7 +222,7 @@
                                          (not (member "spec_lock" hydrated-names)))))
 
               ;; 3. Verify JIT activation: activating spec-gate hydrates its tools
-              (let-values (((hydrated deferred)
+              (let-values (((hydrated _deferred)
                             (partition-tools-for-step
                               (collect-available-tools reg #f)
                               %default-core-tools

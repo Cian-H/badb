@@ -103,7 +103,7 @@
                    (c1 (create-checkpoint! mgr "C1" #:files '("src/main.scm"))))
 
               (call-with-output-file main-file (lambda (p) (display "edit 1\n" p)))
-              (let ((c2 (create-checkpoint! mgr "C2" #:files '("src/main.scm"))))
+              (let ((_c2 (create-checkpoint! mgr "C2" #:files '("src/main.scm"))))
                 (call-with-output-file main-file (lambda (p) (display "edit 2\n" p)))
 
                 (test-equal "checkpoint count is 2" 2 (length (list-checkpoints mgr)))

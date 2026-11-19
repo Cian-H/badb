@@ -131,9 +131,8 @@
              #:height 0.80
              #:show-detail? #t
              #:body-renderer
-             (lambda (ov state rect)
-               (let ((msg (diff-review-status-message state))
-                     (lw (max 20 (quotient (rect-width rect) 2))))
+             (lambda (ov state _rect)
+               (let ((msg (diff-review-status-message state)))
                  (vstack-widget
                    (append
                      (if (string-null? msg)

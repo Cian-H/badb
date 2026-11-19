@@ -125,9 +125,9 @@
             (test-assert "capture with no gate root degrades gracefully"
                          (begin
                            (unsetenv "BADB_GEIS_GATE_ROOT")
-                           (let ((ok? (geis-capture-pending-prompt! "x" "y")))
-                             (setenv "BADB_GEIS_GATE_ROOT" %gate-root)
-                             #t))))  ; must not throw; verdict value is unspecified
+                           (geis-capture-pending-prompt! "x" "y")
+                           (setenv "BADB_GEIS_GATE_ROOT" %gate-root)
+                           #t)))  ; must not throw; verdict value is unspecified
 
 ;;;
 ;;; 2. Bundle assembly (provenance capture)

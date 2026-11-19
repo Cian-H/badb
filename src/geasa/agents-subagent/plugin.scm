@@ -376,7 +376,7 @@ Returns '((merged? . #t/#f) (reason . reason) ...)."
                (%execute-worktree-merge repo branch target-branch sw))
              '((merged? . #f) (reason . "not-a-git-repo")))))
 
-(define (%execute-worktree-merge repo branch target-branch sw)
+(define (%execute-worktree-merge repo branch _target-branch sw)
         (let* ((msg (format #f "Merge subagent transaction branch ~a" branch))
                (res (%git repo "merge" "--no-ff" "-m" msg branch)))
           (if (car res)
@@ -893,7 +893,7 @@ return the created sessionId."
                                  #:parent-id parent-id
                                  #:bus bus))))
 
-(define (%subagent-prompt-instrumented! cli sub-id parent-id bus base-on-update prompt per-call-on-update)
+(define (%subagent-prompt-instrumented! cli sub-id parent-id bus _base-on-update prompt per-call-on-update)
         (let ((link (subagent-link-ref sub-id)))
           (when (and link (not (subagent-link-label link)) (string? prompt))
             (update-subagent-link! sub-id #:label (%truncate-label prompt 60))))

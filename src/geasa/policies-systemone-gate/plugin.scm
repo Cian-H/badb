@@ -317,6 +317,10 @@ warns (fail-open)."
 (define %synthesis-tool-names
         '("spec.synthesize" "spec_synthesize" "spec.lock" "spec_lock"))
 
+(define (format-template template args)
+        "Expand the runtime message TEMPLATE with the ~a directives in ARGS."
+        (format #f "~?" template args))
+
 (define %default-project-brief
         "badb: a Guile Scheme agentic microharness (microkernel + contract-verified geasa bundles). Users add features as bundles with executable specs; the agent can pause to synthesize a new bundle when a reusable capability is missing.")
 
@@ -707,22 +711,25 @@ embedded template, journal one row, and notify the status callback."
                         ((stop)
                           (gate-inject!
                             session
-                            (format #f %systemone-gate-stop-message confidence digest))
+                            (format-template
+                              %systemone-gate-stop-message
+                              (list confidence digest)))
                           (set-systemone-gate-cooldown-left!
                             gate
                             (systemone-gate-options-cooldown-steps opts)))
                         ((escalate)
                           (gate-inject!
                             session
-                            (format #f %systemone-gate-escalate-message confidence digest)))
+                            (format-template
+                              %systemone-gate-escalate-message
+                              (list confidence digest))))
                         (else
                           (when (eq? checkpoint 'exploration-checkpoint)
                             (gate-inject!
                               session
-                              (format #f
-                                      %systemone-gate-continue-nudge
-                                      (verdict-decision verdict)
-                                      confidence)))))
+                              (format-template
+                                %systemone-gate-continue-nudge
+                                (list (verdict-decision verdict) confidence))))))
                       (gate-journal! gate
                                      checkpoint
                                      (action->status action)

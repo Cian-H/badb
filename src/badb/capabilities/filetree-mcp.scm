@@ -12,7 +12,7 @@
 (define-module (badb capabilities filetree-mcp)
                #:use-module
                (badb version)
-               ;; DEV-DEBT [accepted-layering]: capabilities infra builds on the mcp-server geasa
+               ;; Deliberate layering: capabilities infra builds on the mcp-server geasa
                ;; plugin rather than owning the protocol itself.
                #:use-module (geasa capabilities-mcp-server plugin)
                #:use-module (ice-9 format)

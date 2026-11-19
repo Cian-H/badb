@@ -74,10 +74,17 @@
                (number? now)
                (< (- now last-check) (* ttl-hours 3600)))))
 
+(define (load-scope-config scope workspace)
+        "Load the badb configuration visible to SCOPE rooted at WORKSPACE."
+        (if (eq? scope 'project)
+          (load-config #:global-path #f
+                       #:local-path (string-append workspace "/.badb/config.scm"))
+          (load-config #:local-path #f)))
+
 (define (scope-update-policy scope workspace config-override)
         (let* ((cfg (or config-override
                         (catch #t
-                          (lambda () (load-badb-config #:workspace workspace))
+                          (lambda () (load-scope-config scope workspace))
                           (lambda _ '()))))
                (policy (cond
                          ((list? cfg)

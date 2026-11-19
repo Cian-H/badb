@@ -4,8 +4,8 @@
 ;;; `guix pack -RR' tarballs (PRoot/user-namespace relocatable packs) that
 ;;; run without a Guix daemon, root privileges, or pre-installed
 ;;; dependencies.  The pure helpers here (naming, argument parsing,
-;;; helper text) are re-exported by (test dist-lib) so test/test-dist.scm
-;;; exercises exactly what scripts/dist ships.
+;;; helper text) are what test/test-dist.scm exercises directly, so the
+;;; test covers exactly what scripts/dist ships.
 
 (define-module (badb dist)
                #:use-module

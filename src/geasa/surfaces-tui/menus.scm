@@ -8,8 +8,11 @@
                (geasa foundation-config plugin)
                #:use-module
                (geasa surfaces-theme plugin)
-               #:use-module
+               #:autoload
                (geasa surfaces-tui session)
+               (recent-session-files load-session-file
+                                     %session-filename-max-length
+                                     session-mtime-string)
                #:use-module
                (geasa surfaces-widgets plugin)
                #:use-module

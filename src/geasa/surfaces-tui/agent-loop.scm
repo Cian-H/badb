@@ -306,48 +306,101 @@ and set urgent-steer-requested?."
         "Return #t when QUEUE holds at least one queued steering string."
         (and (not (steering-has-interrupt? queue)) (> (steering-count queue) 0)))
 
+(define (%build-tui-systemone-gate st cfg reg jrn)
+        (let* ((gate-options
+                 (systemone-gate-config->options cfg
+                                                 #:warn
+                                                 (lambda (msg)
+                                                   (tui-add-sys-msg! st msg))))
+               (gate-client
+                 (and
+                   (systemone-gate-options-enabled? gate-options)
+                   (make-systemone-client
+                     #:endpoint
+                     (or (systemone-gate-options-endpoint gate-options)
+                         "https://api.typesafe.ai/v1/systemone")
+                     #:api-key
+                     (or (systemone-gate-options-api-key gate-options)
+                         (getenv "TYPESAFE_API_KEY"))
+                     #:model
+                     (systemone-gate-options-model gate-options)))))
+          (and gate-client
+               (make-systemone-gate
+                 #:options gate-options
+                 #:check (lambda (s) (systemone-gate-check gate-client s))
+                 #:journal jrn
+                 #:model (badb-config-model-name cfg)
+                 #:active-geasa
+                 (map (lambda (entry) (ensure-string (assoc-ref entry 'id)))
+                      (registry-list reg))
+                 #:on-verdict
+                 (lambda (action _verdict)
+                   (set-tui-status-text! st (format #f "SYSTEMONE: ~a" action))
+                   (tui-render! st))))))
+
+(define (%make-tui-react-hooks st max-react-iters on-command!)
+        (list
+          (cons 'on-step
+                (lambda (iter phase)
+                  (when (eq? phase 'starting)
+                    (tui-commit-react-stream-message! st)
+                    (tui-reset-react-stream-state! st))
+                  (set-tui-status-text! st
+                                        (cond
+                                          ((and (pair? phase) (eq? (car phase) 'rate-limited))
+                                            (format #f
+                                                    "RATE LIMITED (~as)..."
+                                                    (inexact->exact (ceiling (or (cdr phase) 1)))))
+                                          (max-react-iters (format #f "REACT [~a/~a]" iter max-react-iters))
+                                          (else (format #f "REACT [~a]" iter))))
+                  (when (memq phase '(tools-executed loop-detected))
+                    (let ((sess (current-react-session)))
+                      (when (react-session? sess)
+                        (set-tui-llm-history! st (react-session-messages sess))
+                        (persist-session-file! (tui-session-file st) (tui-llm-history st)))))
+                  (tui-poll-steering-input! st on-command!)
+                  (tui-request-render! st)))
+          (cons 'on-tool-call
+                (lambda (tc)
+                  (let ((t-name (prop-ref tc 'name))
+                        (t-args (prop-ref tc 'arguments)))
+                    (set-tui-status-text! st (format #f "TOOL: ~a..." t-name))
+                    (tui-add-msg! st "tool-call" (format #f "Invoking tool: ~a (~s)" t-name t-args))
+                    (tui-poll-steering-input! st on-command!)
+                    (tui-request-render! st))))
+          (cons 'on-tool-result
+                (lambda (tc res err?)
+                  (let* ((t-name (prop-ref tc 'name))
+                         (blocked? (tool-result-blocked-payload? res))
+                         (res-str (if (string? res) res (safe-json-string res)))
+                         (preview (if (> (string-length res-str) 200)
+                                    (string-append (substring res-str 0 200) "...")
+                                    res-str)))
+                    (tui-add-msg! st
+                                  "tool-result"
+                                  (cond
+                                    (blocked? (format #f "Tool ~a blocked (duplicate call): ~a" t-name preview))
+                                    (err? (format #f "Tool ~a failed: ~a" t-name preview))
+                                    (else (format #f "Tool ~a returned: ~a" t-name preview))))
+                    (tui-poll-steering-input! st on-command!)
+                    (tui-request-render! st))))
+          (cons 'on-delta
+                (lambda (delta type)
+                  (let ((sig (tui-poll-steering-input! st on-command!)))
+                    (if (memq sig '(stop urgent-steer))
+                      'stop
+                      (begin
+                        (tui-update-react-stream-message! st delta type)
+                        (tui-throttled-stream-render! st)
+                        #t)))))))
+
 (define (run-react-turn! st on-command!)
         (let*
             ((cfg (tui-cfg st)) (reg (tui-reg st))
              (jrn (tui-jrn st))
              (max-react-iters (badb-config-react-max-iterations cfg))
              (loop-guard (make-loop-guard))
-             (gate-options
-               (systemone-gate-config->options cfg
-                                               #:warn
-                                               (lambda (msg)
-                                                 (tui-add-sys-msg! st msg))))
-             (gate-client
-               (and
-                 (systemone-gate-options-enabled? gate-options)
-                 (make-systemone-client #:endpoint
-                                        (or
-                                          (systemone-gate-options-endpoint gate-options)
-                                          "https://api.typesafe.ai/v1/systemone")
-                                        #:api-key
-                                        (or (systemone-gate-options-api-key gate-options) (getenv "TYPESAFE_API_KEY"))
-                                        #:model
-                                        (systemone-gate-options-model gate-options))))
-             (gate
-               (and gate-client
-                    (make-systemone-gate #:options
-                                         gate-options
-                                         #:check
-                                         (lambda (s)
-                                           (systemone-gate-check gate-client s))
-                                         #:journal
-                                         jrn
-                                         #:model
-                                         (badb-config-model-name cfg)
-                                         #:active-geasa
-                                         (map
-                                           (lambda (entry)
-                                             (ensure-string (assoc-ref entry 'id)))
-                                           (registry-list reg))
-                                         #:on-verdict
-                                         (lambda (action _verdict)
-                                           (set-tui-status-text! st (format #f "SYSTEMONE: ~a" action))
-                                           (tui-render! st)))))
+             (gate (%build-tui-systemone-gate st cfg reg jrn))
              (session
                (make-react-session #:client
                                    (tui-client st)
@@ -379,67 +432,7 @@ and set urgent-steer-requested?."
                                            (if gate
                                              (make-systemone-gate-hooks gate)
                                              '())
-                                           (list
-                                             (cons 'on-step
-                                                   (lambda (iter phase)
-                                                     (when (eq? phase 'starting)
-                                                       (tui-commit-react-stream-message! st)
-                                                       (tui-reset-react-stream-state! st))
-                                                     (set-tui-status-text! st
-                                                                           (cond
-                                                                             ((and (pair? phase) (eq? (car phase) 'rate-limited))
-                                                                               (format #f
-                                                                                       "RATE LIMITED (~as)..."
-                                                                                       (inexact->exact (ceiling (or (cdr phase) 1)))))
-                                                                             (max-react-iters (format #f "REACT [~a/~a]" iter max-react-iters))
-                                                                             (else (format #f "REACT [~a]" iter))))
-                                                     (when
-                                                         (memq phase '(tools-executed loop-detected))
-                                                       (let ((sess (current-react-session)))
-                                                         (when (react-session? sess)
-                                                           (set-tui-llm-history! st (react-session-messages sess))
-                                                           (persist-session-file! (tui-session-file st) (tui-llm-history st)))))
-                                                     (tui-poll-steering-input! st on-command!)
-                                                     (tui-request-render! st)))
-                                             (cons 'on-tool-call
-                                                   (lambda (tc)
-                                                     (let
-                                                         ((t-name (prop-ref tc 'name)) (t-args (prop-ref tc 'arguments)))
-                                                       (set-tui-status-text! st (format #f "TOOL: ~a..." t-name))
-                                                       (tui-add-msg! st "tool-call" (format #f "Invoking tool: ~a (~s)" t-name t-args))
-                                                       (tui-poll-steering-input! st on-command!)
-                                                       (tui-request-render! st))))
-                                             (cons 'on-tool-result
-                                                   (lambda (tc res err?)
-                                                     (let*
-                                                         ((t-name (prop-ref tc 'name))
-                                                          (blocked? (tool-result-blocked-payload? res))
-                                                          (res-str
-                                                            (if (string? res)
-                                                              res
-                                                              (safe-json-string res)))
-                                                          (preview
-                                                            (if (> (string-length res-str) 140)
-                                                              (string-append (substring res-str 0 140) "...")
-                                                              res-str)))
-                                                       (tui-add-msg! st
-                                                                     "tool-result"
-                                                                     (cond
-                                                                       (blocked? (format #f "Tool ~a blocked (duplicate call): ~a" t-name preview))
-                                                                       (err? (format #f "Tool ~a failed: ~a" t-name preview))
-                                                                       (else (format #f "Tool ~a returned: ~a" t-name preview))))
-                                                       (tui-poll-steering-input! st on-command!)
-                                                       (tui-request-render! st))))
-                                             (cons 'on-delta
-                                                   (lambda (delta type)
-                                                     (let
-                                                         ((sig (tui-poll-steering-input! st on-command!)))
-                                                       (if (memq sig '(stop urgent-steer))
-                                                         'stop
-                                                         (begin
-                                                           (tui-update-react-stream-message! st delta type)
-                                                           (tui-throttled-stream-render! st)
-                                                           #t)))))))
+                                           (%make-tui-react-hooks st max-react-iters on-command!))
                                    #:compactor
                                    (tui-compactor st)
                                    #:loop-detector

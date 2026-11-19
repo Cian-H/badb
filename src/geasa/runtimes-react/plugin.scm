@@ -900,7 +900,7 @@ tool is added to hydrated tools."
 ;;; syntax transformers at the call site.
 (define %duplicate-blocked-marker "DuplicateToolCallException")
 
-(define (blocked-tool-payload name message)
+(define (blocked-tool-payload _name message)
         "Render the structured exception payload returned in the tool role
 when an execution-interception hook vetoed the call to NAME; MESSAGE is
 the hook's block reason."
@@ -1403,6 +1403,273 @@ observations for calls that never ran. Return #t when a turn was appended."
             (when mod
               (let ((fn (module-ref mod 'read-cache-clear! #f))) (when (procedure? fn) (fn)))))))
 
+(define
+  (compact-step-messages! session compactor)
+  "Compact SESSION messages when COMPACTOR says so; return the effective messages."
+  (let
+      ((raw-msgs (react-session-messages session)))
+    (if
+        (and compactor (compaction-needed? compactor raw-msgs))
+      (let
+          ((compacted (compact-messages compactor raw-msgs)))
+        (set-react-session-messages! session compacted)
+        (clear-fs-read-cache!)
+        compacted)
+      raw-msgs)))
+
+(define
+  (make-completion-delta-fn on-delta-fn stream-acc)
+  "Return a streaming delta sink accumulating into STREAM-ACC (content . thought)."
+  (lambda (payload . type-args)
+    (let
+        ((type
+           (if (pair? type-args)
+             (car type-args)
+             'content)))
+      (when (string? payload)
+        (case type
+          ((content) (set-car! stream-acc (cons payload (car stream-acc))))
+          ((thought) (set-cdr! stream-acc (cons payload (cdr stream-acc)))))))
+    (if (procedure? on-delta-fn)
+      (catch #t
+        (lambda ()
+          (apply on-delta-fn payload type-args))
+        (lambda _
+          #f))
+      #t)))
+
+(define (make-interruptible-sleep steering-q)
+        "Return a sleep procedure that aborts early on a queued interrupt."
+        (let
+            ((outer-sleeper (current-http-retry-sleeper)))
+          (lambda (seconds)
+            (if (steering-queue? steering-q)
+              (let
+                  ((total-ms (max 0 (inexact->exact (round (* 1000 seconds))))))
+                (let sleep-loop
+                  ((rem-ms total-ms))
+                  (when
+                      (and (> rem-ms 0) (not (steering-has-interrupt? steering-q)))
+                    (let ((chunk (min rem-ms 100)))
+                      (outer-sleeper (/ chunk 1000.0))
+                      (sleep-loop (- rem-ms chunk))))))
+              (outer-sleeper seconds)))))
+
+(define (make-retry-notifier step-n on-step-fn)
+        "Return an HTTP-retry notifier that reports rate limiting to on-step hooks."
+        (lambda (attempt wait-sec code kind err-msg)
+          (when (procedure? on-step-fn)
+            (catch #t
+              (lambda ()
+                (on-step-fn step-n (cons (quote rate-limited) wait-sec)))
+              (lambda _
+                #f)))))
+
+(define
+  (make-model-completion-fn client
+                            max-tokens
+                            steering-q
+                            interruptible-sleep
+                            retry-notifier
+                            completion-delta-fn)
+  "Return the core streaming completion procedure for a ReAct step."
+  (lambda*
+    (eff-msgs eff-tools #:key (temperature #f) (tool-choice #f))
+    (receive (valid? reason)
+             (validate-conversation-messages eff-msgs)
+             (unless valid? (throw 'invalid-conversation-history reason)))
+    (parameterize
+      ((current-http-retry-sleeper interruptible-sleep)
+       (current-on-http-retry retry-notifier))
+      (stream-model-completion client
+                               eff-msgs
+                               eff-tools
+                               max-tokens
+                               completion-delta-fn
+                               #:steering-queue
+                               steering-q
+                               #:temperature
+                               (or temperature 0.7)
+                               #:tool-choice
+                               tool-choice))))
+
+(define
+  (react-step-failure! session
+                       step-committed?
+                       step-content
+                       step-reasoning
+                       step-tool-calls
+                       step-pre-turns
+                       step-progress
+                       stream-acc
+                       key
+                       args)
+  "Handle a mid-step exception: commit partial work, then report 'error."
+  (let
+      ((err-msg (format #f "ReAct loop error (~a): ~s" key args))
+       (acc-content (string-concatenate (reverse (car stream-acc))))
+       (acc-reasoning (string-concatenate (reverse (cdr stream-acc)))))
+    (unless step-committed?
+      (catch #t
+        (lambda ()
+          (commit-partial-step! session
+                                (or step-content acc-content)
+                                (or step-reasoning acc-reasoning)
+                                step-tool-calls
+                                step-pre-turns
+                                (reverse (car step-progress))
+                                err-msg))
+        (lambda _
+          #f)))
+    (set-react-session-status! session 'error)
+    (values 'error err-msg)))
+
+(define
+  (commit-completed-step! session msgs pre-turns content reasoning)
+  "Commit a completed (tool-free) step; return (values 'completed content)."
+  (let
+      ((final-msg
+         (quasiquote
+           ((role . "assistant")
+            (content . (unquote (completion-turn-content content reasoning)))))))
+    (set-react-session-messages! session
+                                 (append msgs (append pre-turns (list final-msg))))
+    (set-react-session-status! session 'completed)
+    (let
+        ((on-step-fn (assoc-ref (react-session-hooks session) 'on-step)))
+      (when (procedure? on-step-fn)
+        (on-step-fn (react-session-iteration session) 'completed)))
+    (values 'completed content)))
+
+(define
+  (execute-step-tools! session
+                       msgs
+                       pre-turns
+                       tool-calls
+                       content
+                       reasoning
+                       deferred-tools
+                       step-progress)
+  "Execute the step's tool calls and commit the new turn; return (values results executed-tcs)."
+  (set-react-session-status! session 'awaiting-tool)
+  (let*
+      ((asst-msg (build-assistant-tool-turn tool-calls content reasoning))
+       (results
+         (execute-step-tools tool-calls
+                             (react-session-reg session)
+                             (react-session-mcp-mgr session)
+                             (react-session-jrn session)
+                             (react-session-mgr session)
+                             (assoc-ref (react-session-hooks session) 'guardrail)
+                             (assoc-ref (react-session-hooks session) 'on-tool-call)
+                             (assoc-ref (react-session-hooks session) 'on-tool-result)
+                             #:result-offload-dir
+                             (react-session-result-offload-dir session)
+                             #:result-offload-chars
+                             (react-session-result-offload-chars session)
+                             #:offload-hook
+                             (react-session-offload-hook session)
+                             #:deferred-tools
+                             deferred-tools
+                             #:session
+                             session
+                             #:progress-cell
+                             step-progress))
+       (tool-msgs (map cdr results))
+       (new-turn (cons asst-msg tool-msgs))
+       (executed-tcs
+         (map car
+              (filter
+                (lambda (r)
+                  (not (tool-result-blocked? r)))
+                (filter pair? results)))))
+    (set-react-session-messages! session (append msgs (append pre-turns new-turn)))
+    (values results executed-tcs)))
+
+(define
+  (resolve-step-outcome! session executed-tcs results)
+  "Run loop detection and post-turn hooks; return (values status payload)."
+  (let
+      ((hooks (react-session-hooks session))
+       (on-step-fn (assoc-ref (react-session-hooks session) 'on-step))
+       (step-n (react-session-iteration session)))
+    (let
+        ((loop-outcome
+           (detect-step-loops! session executed-tcs #:jrn (react-session-jrn session))))
+      (for-each
+        (lambda (entry)
+          (when
+              (and (pair? entry) (eq? (car entry) 'post-turn))
+            (run-isolated-hook! (cdr entry) "post-turn" session)))
+        (or hooks '()))
+      (cond
+        ((eq? loop-outcome 'halt)
+          (set-react-session-status! session 'loop-detected)
+          (when (procedure? on-step-fn) (on-step-fn step-n 'loop-detected))
+          (values 'loop-detected
+                  (format #f
+                          "identical tool calls repeated ~a+ times within the detector window"
+                          (loop-detector-halt-after (react-session-loop-detector session)))))
+        (else
+          (set-react-session-status! session 'running)
+          (when (procedure? on-step-fn) (on-step-fn step-n 'tools-executed))
+          (values 'continue results))))))
+
+(define (%react-step-execute!
+          session iter client reg mcp-mgr max-tokens compactor hooks
+          on-step-fn on-delta-fn steering-q
+          step-progress stream-acc set-step-state! mark-committed!)
+        (let*
+            ((compacted-msgs (compact-step-messages! session compactor))
+             (msgs (repair-conversation-messages compacted-msgs))
+             (outbound-msgs
+               (if (react-session-recitation? session)
+                 (append msgs
+                         (list `((role . "user") (content . ,(react-recitation-text session)))))
+                 msgs))
+             (completion-delta-fn (make-completion-delta-fn on-delta-fn stream-acc))
+             (interruptible-sleep (make-interruptible-sleep steering-q))
+             (retry-notifier (make-retry-notifier (+ iter 1) on-step-fn))
+             (base-completion
+               (make-model-completion-fn client
+                                         max-tokens
+                                         steering-q
+                                         interruptible-sleep
+                                         retry-notifier
+                                         completion-delta-fn))
+             (completion-fn
+               (or (assoc-ref hooks 'completion)
+                   (lambda (base eff-msgs eff-tools)
+                     (call-with-values
+                       (lambda ()
+                         (base eff-msgs eff-tools))
+                       (lambda (c r t)
+                         (values c r t '())))))))
+          (let-values*
+            (((tools deferred-tools)
+              (partition-tools-for-step
+                (collect-available-tools reg mcp-mgr)
+                (react-session-core-tool-names session)
+                (react-session-active-tools session)
+                (react-session-deferred-tools? session)))
+             ((content reasoning tool-calls pre-turns)
+              (completion-fn base-completion outbound-msgs tools)))
+            (set-step-state! content reasoning tool-calls pre-turns)
+            (if (null? tool-calls)
+              (begin (mark-committed!)
+                     (commit-completed-step! session msgs pre-turns content reasoning))
+              (receive (results executed-tcs)
+                       (execute-step-tools! session
+                                            msgs
+                                            pre-turns
+                                            tool-calls
+                                            content
+                                            reasoning
+                                            deferred-tools
+                                            step-progress)
+                       (mark-committed!)
+                       (resolve-step-outcome! session executed-tcs results))))))
+
 (define (react-step! session)
         "Execute a single turn of the ReAct cycle.
 Returns:
@@ -1422,15 +1689,10 @@ call (decoding constraints, re-rolls, forced reflection turns),
                            (client (react-session-client session))
                            (reg (react-session-reg session))
                            (mcp-mgr (react-session-mcp-mgr session))
-                           (jrn (react-session-jrn session))
-                           (mgr (react-session-mgr session))
                            (max-tokens (or (react-session-max-tokens session) 4096))
                            (compactor (react-session-compactor session))
                            (hooks (react-session-hooks session))
-                           (guardrail-fn (assoc-ref hooks 'guardrail))
                            (on-step-fn (assoc-ref hooks 'on-step))
-                           (on-tool-call-fn (assoc-ref hooks 'on-tool-call))
-                           (on-tool-result-fn (assoc-ref hooks 'on-tool-result))
                            (on-delta-fn (assoc-ref hooks 'on-delta))
                            (steering-q (react-session-steering-queue session)))
                         (if (and (number? max-iter) (>= iter max-iter))
@@ -1450,188 +1712,27 @@ call (decoding constraints, re-rolls, forced reflection turns),
                                  (stream-acc (cons '() '())))
                               (catch #t
                                 (lambda ()
-                                  (let*
-                                      ((raw-msgs (react-session-messages session))
-                                       (compacted-msgs
-                                         (if
-                                             (and compactor (compaction-needed? compactor raw-msgs))
-                                           (let
-                                               ((compacted (compact-messages compactor raw-msgs)))
-                                             (set-react-session-messages! session compacted)
-                                             (clear-fs-read-cache!)
-                                             compacted)
-                                           raw-msgs))
-                                       (msgs (repair-conversation-messages compacted-msgs))
-                                       (outbound-msgs
-                                         (if (react-session-recitation? session)
-                                           (append msgs
-                                                   (list `((role . "user") (content . ,(react-recitation-text session)))))
-                                           msgs))
-                                       (completion-delta-fn
-                                         (lambda (payload . type-args)
-                                           (let
-                                               ((type
-                                                  (if (pair? type-args)
-                                                    (car type-args)
-                                                    'content)))
-                                             (when (string? payload)
-                                               (case type
-                                                 ((content) (set-car! stream-acc (cons payload (car stream-acc))))
-                                                 ((thought) (set-cdr! stream-acc (cons payload (cdr stream-acc)))))))
-                                           (if (procedure? on-delta-fn)
-                                             (catch #t
-                                               (lambda ()
-                                                 (apply on-delta-fn payload type-args))
-                                               (lambda _
-                                                 #f))
-                                             #t)))
-                                       (outer-sleeper (current-http-retry-sleeper))
-                                       (interruptible-sleep
-                                         (lambda (seconds)
-                                           (if (steering-queue? steering-q)
-                                             (let
-                                                 ((total-ms (max 0 (inexact->exact (round (* 1000 seconds))))))
-                                               (let sleep-loop
-                                                 ((rem-ms total-ms))
-                                                 (when
-                                                     (and (> rem-ms 0) (not (steering-has-interrupt? steering-q)))
-                                                   (let ((chunk (min rem-ms 100)))
-                                                     (outer-sleeper (/ chunk 1000.0))
-                                                     (sleep-loop (- rem-ms chunk))))))
-                                             (outer-sleeper seconds))))
-                                       (retry-notifier
-                                         (lambda (attempt wait-sec code kind err-msg)
-                                           (when (procedure? on-step-fn)
-                                             (catch #t
-                                               (lambda ()
-                                                 (on-step-fn (+ iter 1) (cons 'rate-limited wait-sec)))
-                                               (lambda _
-                                                 #f)))))
-                                       (base-completion
-                                         (lambda*
-                                           (eff-msgs eff-tools #:key (temperature #f) (tool-choice #f))
-                                           (receive (valid? reason)
-                                                    (validate-conversation-messages eff-msgs)
-                                                    (unless valid? (throw 'invalid-conversation-history reason)))
-                                           (parameterize
-                                             ((current-http-retry-sleeper interruptible-sleep)
-                                              (current-on-http-retry retry-notifier))
-                                             (stream-model-completion client
-                                                                      eff-msgs
-                                                                      eff-tools
-                                                                      max-tokens
-                                                                      completion-delta-fn
-                                                                      #:steering-queue
-                                                                      steering-q
-                                                                      #:temperature
-                                                                      (or temperature 0.7)
-                                                                      #:tool-choice
-                                                                      tool-choice))))
-                                       (completion-fn
-                                         (or (assoc-ref hooks 'completion)
-                                             (lambda (base eff-msgs eff-tools)
-                                               (call-with-values
-                                                 (lambda ()
-                                                   (base eff-msgs eff-tools))
-                                                 (lambda (c r t)
-                                                   (values c r t '())))))))
-                                    (let-values*
-                                      (((tools deferred-tools)
-                                        (partition-tools-for-step
-                                          (collect-available-tools reg mcp-mgr)
-                                          (react-session-core-tool-names session)
-                                          (react-session-active-tools session)
-                                          (react-session-deferred-tools? session)))
-                                       ((content reasoning tool-calls pre-turns)
-                                        (completion-fn base-completion outbound-msgs tools)))
-                                      (set! step-content content)
-                                      (set! step-reasoning reasoning)
-                                      (set! step-tool-calls tool-calls)
-                                      (set! step-pre-turns pre-turns)
-                                      (if (null? tool-calls)
-                                        (let
-                                            ((final-msg
-                                               `((role . "assistant") (content . ,(completion-turn-content content reasoning)))))
-                                          (set! step-committed? #t)
-                                          (set-react-session-messages! session
-                                                                       (append msgs (append pre-turns (list final-msg))))
-                                          (set-react-session-status! session 'completed)
-                                          (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'completed))
-                                          (values 'completed content))
-                                        (begin
-                                          (set-react-session-status! session 'awaiting-tool)
-                                          (let*
-                                              ((asst-msg (build-assistant-tool-turn tool-calls content reasoning))
-                                               (results
-                                                 (execute-step-tools tool-calls
-                                                                     reg
-                                                                     mcp-mgr
-                                                                     jrn
-                                                                     mgr
-                                                                     guardrail-fn
-                                                                     on-tool-call-fn
-                                                                     on-tool-result-fn
-                                                                     #:result-offload-dir
-                                                                     (react-session-result-offload-dir session)
-                                                                     #:result-offload-chars
-                                                                     (react-session-result-offload-chars session)
-                                                                     #:offload-hook
-                                                                     (react-session-offload-hook session)
-                                                                     #:deferred-tools
-                                                                     deferred-tools
-                                                                     #:session
-                                                                     session
-                                                                     #:progress-cell
-                                                                     step-progress))
-                                               (tool-msgs (map cdr results))
-                                               (new-turn (cons asst-msg tool-msgs))
-                                               (executed-tcs
-                                                 (map car
-                                                      (filter
-                                                        (lambda (r)
-                                                          (not (tool-result-blocked? r)))
-                                                        (filter pair? results)))))
-                                            (set-react-session-messages! session (append msgs (append pre-turns new-turn)))
-                                            (set! step-committed? #t)
-                                            (let
-                                                ((loop-outcome (detect-step-loops! session executed-tcs #:jrn jrn)))
-                                              (for-each
-                                                (lambda (entry)
-                                                  (when
-                                                      (and (pair? entry) (eq? (car entry) (quote post-turn)))
-                                                    (run-isolated-hook! (cdr entry) "post-turn" session)))
-                                                (or hooks (quote ())))
-                                              (cond
-                                                ((eq? loop-outcome 'halt)
-                                                  (set-react-session-status! session 'loop-detected)
-                                                  (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'loop-detected))
-                                                  (values 'loop-detected
-                                                          (format #f
-                                                                  "identical tool calls repeated ~a+ times within the detector window"
-                                                                  (loop-detector-halt-after (react-session-loop-detector session)))))
-                                                (else
-                                                  (set-react-session-status! session 'running)
-                                                  (when (procedure? on-step-fn) (on-step-fn (+ iter 1) 'tools-executed))
-                                                  (values 'continue results))))))))))
+                                  (%react-step-execute!
+                                    session iter client reg mcp-mgr max-tokens compactor hooks
+                                    on-step-fn on-delta-fn steering-q
+                                    step-progress stream-acc
+                                    (lambda (c r tc pt)
+                                      (set! step-content c)
+                                      (set! step-reasoning r)
+                                      (set! step-tool-calls tc)
+                                      (set! step-pre-turns pt))
+                                    (lambda () (set! step-committed? #t))))
                                 (lambda (key . args)
-                                  (let
-                                      ((err-msg (format #f "ReAct loop error (~a): ~s" key args))
-                                       (acc-content (string-concatenate (reverse (car stream-acc))))
-                                       (acc-reasoning (string-concatenate (reverse (cdr stream-acc)))))
-                                    (unless step-committed?
-                                      (catch #t
-                                        (lambda ()
-                                          (commit-partial-step! session
-                                                                (or step-content acc-content)
-                                                                (or step-reasoning acc-reasoning)
-                                                                step-tool-calls
-                                                                step-pre-turns
-                                                                (reverse (car step-progress))
-                                                                err-msg))
-                                        (lambda _
-                                          #f)))
-                                    (set-react-session-status! session 'error)
-                                    (values 'error err-msg))))))))))
+                                  (react-step-failure! session
+                                                       step-committed?
+                                                       step-content
+                                                       step-reasoning
+                                                       step-tool-calls
+                                                       step-pre-turns
+                                                       step-progress
+                                                       stream-acc
+                                                       key
+                                                       args)))))))))
 
 (define (latest-assistant-content session)
         "Return the content of the most recent assistant message in SESSION, or #f."

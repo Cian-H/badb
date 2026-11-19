@@ -67,27 +67,27 @@
                                (error (format #f "Security restriction: '~a' is forbidden in sandboxed evaluation" sym)))))
                          %restricted-sandbox-symbols))
                     ;; Define call-tool inside the sandbox module
-                    (_ (feature-module-define!
-                         mod
-                         'call-tool
-                         (lambda (name . args)
-                           (let* ((arg-data (cond
-                                              ((null? args) '())
-                                              ((null? (cdr args)) (car args))
-                                              (else args)))
-                                  (name-str (if (symbol? name) (symbol->string name) name)))
-                             ;; Guardrail check
-                             (when (and guardrail (guardrail-policy? guardrail))
-                               (let ((decision (evaluate-guardrail guardrail name-str arg-data)))
-                                 (when (eq? (car decision) 'deny)
-                                   (throw 'guardrail-denied (cdr decision)))))
-                             ;; Registry tool lookup
-                             (if (and registry (registry? registry))
-                               (let ((tool-fn (registry-lookup registry name-str)))
-                                 (if (procedure? tool-fn)
-                                   (tool-fn arg-data)
-                                   (throw 'tool-not-found name-str)))
-                               (throw 'no-registry name-str))))))
+                    (_2 (feature-module-define!
+                          mod
+                          'call-tool
+                          (lambda (name . args)
+                            (let* ((arg-data (cond
+                                               ((null? args) '())
+                                               ((null? (cdr args)) (car args))
+                                               (else args)))
+                                   (name-str (if (symbol? name) (symbol->string name) name)))
+                              ;; Guardrail check
+                              (when (and guardrail (guardrail-policy? guardrail))
+                                (let ((decision (evaluate-guardrail guardrail name-str arg-data)))
+                                  (when (eq? (car decision) 'deny)
+                                    (throw 'guardrail-denied (cdr decision)))))
+                              ;; Registry tool lookup
+                              (if (and registry (registry? registry))
+                                (let ((tool-fn (registry-lookup registry name-str)))
+                                  (if (procedure? tool-fn)
+                                    (tool-fn arg-data)
+                                    (throw 'tool-not-found name-str)))
+                                (throw 'no-registry name-str))))))
                     ;; Parse the code
                     (expr (call-with-input-string code-str read)))
                ;; Execute with timeout

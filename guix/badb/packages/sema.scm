@@ -53,14 +53,16 @@
                                (string-join
                                 (map (lambda (input)
                                       (string-append (assoc-ref inputs input) "/lib"))
-                                 '("glibc" "gcc" "eudev"))
+                                 '("glibc" "gcc:lib" "eudev"))
                                 ":")))
                          (invoke "patchelf" "--set-interpreter"
                           (search-input-file inputs "lib/ld-linux-x86-64.so.2")
                           sema)
                          (invoke "patchelf" "--set-rpath" rpath sema)))))))
                  (inputs
-                   (list glibc (list gcc "lib") eudev))
+                   `(("glibc" ,glibc)
+                     ("gcc:lib" ,gcc "lib")
+                     ("eudev" ,eudev)))
                  (native-inputs
                    (list patchelf))
                  (home-page "https://sema-lang.com")

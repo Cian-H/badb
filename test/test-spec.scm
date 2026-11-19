@@ -7,7 +7,7 @@
 ;;; exception keys, clean stdout), quickcheck seed determinism and
 ;;; BADB_SPEC_SEED handling, the emitted JSON diagnostics shape, and
 ;;; the end-to-end fixture runs through the kernel spec gate
-;;; ((badb spec-gate)) — the full Phase 2 loop.
+;;; ((badb kernel geis-gate)) — the full Phase 2 loop.
 
 (define-module (test test-spec)
                #:use-module (badb spec)

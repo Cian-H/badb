@@ -7,11 +7,14 @@
 ;;; needs a substitute-enabled guix); scripts/test-e2e covers a
 ;;; smoke build behind an env guard.
 
-(define-module (test test-dist)
-               #:use-module (ice-9 match)
-               #:use-module (srfi srfi-1)
-               #:use-module (srfi srfi-64)
-               #:use-module (test dist-lib))
+(define-module (test test-dist) #:use-module
+               (ice-9 match)
+               #:use-module
+               (srfi srfi-1)
+               #:use-module
+               (srfi srfi-64)
+               #:use-module
+               (badb dist))
 
 (test-begin "dist")
 

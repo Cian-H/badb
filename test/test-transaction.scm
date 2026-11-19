@@ -1,4 +1,4 @@
-;;; test-transaction.scm — Comprehensive Test Suite for (badb transaction)
+;;; test-transaction.scm — Comprehensive Test Suite for (badb kernel transaction)
 
 (define-module (test test-transaction)
                #:use-module (srfi srfi-64)

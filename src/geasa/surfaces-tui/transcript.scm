@@ -891,7 +891,7 @@ pre-computed segments as the 4th element when non-trivial."
                   (make-block-entry label theme-role (wrap-text text content-width))
                   (list (list "spacer" ""))))))))
 
-(define* (format-collapsed-message-rows msg role content thoughts content-width #:optional (streaming? #f))
+(define* (format-collapsed-message-rows _msg role content thoughts content-width #:optional (streaming? #f))
          "Return the block rows for collapsed MSG with pre-normalized ROLE, CONTENT
 and THOUGHTS fields, followed by the trailing spacer row."
          (cond

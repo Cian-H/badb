@@ -25,11 +25,11 @@
 (define (ipc-channel-close! chan)
         (unless (ipc-channel-closed? chan)
           (%set-ipc-channel-closed?! chan #t)
-          (catch #t (lambda () (close-port (ipc-channel-in-port chan))) (lambda _ #f))
-          (catch #t (lambda () (close-port (ipc-channel-out-port chan))) (lambda _ #f))
+          (catch 'system-error (lambda () (close-port (ipc-channel-in-port chan))) (lambda _ #f))
+          (catch 'system-error (lambda () (close-port (ipc-channel-out-port chan))) (lambda _ #f))
           (let ((pid (ipc-channel-pid chan)))
             (when (and pid (integer? pid) (> pid 0))
-              (catch #t
+              (catch 'system-error
                 (lambda ()
                   (let ((reaped (waitpid pid WNOHANG)))
                     (when (and (pair? reaped) (zero? (car reaped)))
@@ -74,7 +74,7 @@
                         ((eof-object? line) line)
                         ((string-null? (string-trim-both line)) (loop))
                         (else
-                          (catch #t
+                          (catch 'json-invalid
                             (lambda () (json-string->scm line))
                             (lambda _ (loop)))))))))
 

@@ -11,8 +11,6 @@
                #:use-module
                (geasa foundation-util plugin)
                #:use-module
-               (geasa surfaces-tui editor)
-               #:use-module
                (geasa surfaces-widgets plugin)
                #:use-module
                (ice-9 format)

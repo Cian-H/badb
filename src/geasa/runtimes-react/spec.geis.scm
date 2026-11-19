@@ -154,9 +154,9 @@
                    (jrn-path "/tmp/badb-test-react-jrn.jsonl")
                    (_ (when (file-exists? jrn-path) (delete-file jrn-path)))
                    (jrn (make-journal jrn-path))
-                   (_ (registry-attach! reg "math.mul"
-                                        (lambda (x y) (* x y))
-                                        '((description . "Multiply two numbers"))))
+                   (_2 (registry-attach! reg "math.mul"
+                                         (lambda (x y) (* x y))
+                                         '((description . "Multiply two numbers"))))
                    (tool-call '((id . "c2")
                                 (name . "math_mul")
                                 (arguments . (("x" . 6) ("y" . 7))))))
@@ -1283,9 +1283,9 @@
                    (_ (registry-attach! reg "ok.tool"
                                         (lambda () "fine")
                                         '((description . "ok"))))
-                   (_ (registry-attach! reg "bad.tool"
-                                        (lambda () (error "tool explosion"))
-                                        '((description . "bad"))))
+                   (_2 (registry-attach! reg "bad.tool"
+                                         (lambda () (error "tool explosion"))
+                                         '((description . "bad"))))
                    (tcs (list (list (cons 'name "ok_tool") (cons 'id "c1"))
                               (list (cons 'name "bad_tool") (cons 'id "c2"))))
                    (cell (cons '() #f)))

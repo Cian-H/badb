@@ -6,9 +6,7 @@
 ;;; compiler-grade feedback on generated code.
 ;;;
 ;;; Design notes:
-;;;  * Zero external JSON dependency: a minimal recursive-descent JSON
-;;;    reader covers the LSP subset (objects, arrays, strings, numbers,
-;;;    booleans, null).
+;;;  * Uses Guile's (json) module for JSON-RPC serialization and parsing.
 ;;;  * A missing server binary degrades to a structured "server
 ;;;    unavailable" result instead of a crash.
 
@@ -16,6 +14,7 @@
                #:use-module (ice-9 popen)
                #:use-module (ice-9 rdelim)
                #:use-module (ice-9 textual-ports)
+               #:use-module (json)
                #:use-module (badb kernel registry)
                #:use-module (geasa foundation-util plugin)
                #:use-module (srfi srfi-1)
@@ -25,133 +24,6 @@
                           lsp-collect-diagnostics!
                           lsp-diagnostics
                           register-lsp-tools!))
-
-;; ---- JSON reader ---------------------------------------------------------
-
-(define (%json-skip-ws port)
-        (let loop ()
-                  (let ((c (peek-char port)))
-                    (if (and (char? c) (char-whitespace? c))
-                      (begin (read-char port) (loop))))))
-
-(define (%json-read port)
-        (let ((c (peek-char port)))
-          (cond
-            ((char=? c #\{) (%json-object port))
-            ((char=? c #\[) (%json-array port))
-            ((char=? c #\") (%json-string port))
-            ((char=? c #\t) (%eat 4 port) #t)
-            ((char=? c #\f) (%eat 5 port) #f)
-            ((char=? c #\n) (%eat 4 port) 'null)
-            (else (%json-number port)))))
-
-(define (%eat n port)
-        (let loop ((i 0))
-                  (if (< i n) (begin (read-char port) (loop (+ i 1))))))
-
-(define (%json-number port)
-        (let loop ((chars '()))
-                  (let ((c (peek-char port)))
-                    (if (and (char? c) (or (char-numeric? c) (memq c '(#\+ #\- #\. #\e #\E))))
-                      (begin (read-char port) (loop (cons c chars)))
-                      (string->number (list->string (reverse chars)))))))
-
-(define (%json-string port) (read-char port)
-        ; opening quote
-        (let loop
-          ((acc '()))
-          (let ((c (read-char port)))
-            (cond
-              ((or (eof-object? c) (char=? c #\")) (list->string (reverse acc)))
-              ((char=? c #\\)
-                (let ((e (read-char port)))
-                  (case e
-                    ((#\n) (loop (cons #\newline acc)))
-                    ((#\t) (loop (cons #\tab acc)))
-                    ((#\r) (loop (cons #\return acc)))
-                    ((#\b) (loop (cons #\backspace acc)))
-                    ((#\f) (loop (cons #\page acc)))
-                    (else (loop acc)))))
-              ; \" \\ \/ \uXXXX handled as-is
-              (else (loop (cons c acc)))))))
-
-(define (%json-object port) (read-char port)
-        ; {
-        (let loop
-          ((acc '()))
-          (%json-skip-ws port)
-          (if (char=? (peek-char port) #\})
-            acc
-            (let*
-                ((key (%json-string port))
-                 (_ (%json-skip-ws port))
-                 (_2 (read-char port))
-                 ; colon
-                 (val (%json-value port)))
-              (%json-skip-ws port)
-              (let ((c (peek-char port))) (if (char=? c #\,) (read-char port)))
-              (loop (cons (cons key val) acc))))))
-
-(define (%json-array port) (read-char port)
-        ; [
-        (let loop
-          ((acc '()))
-          (%json-skip-ws port)
-          (let ((c (peek-char port)))
-            (if (char=? c #\])
-              (begin (read-char port) (reverse acc))
-              (let ((val (%json-value port)))
-                (%json-skip-ws port)
-                (let ((c2 (peek-char port))) (if (char=? c2 #\,) (read-char port)))
-                (loop (cons val acc)))))))
-
-(define (%json-value port)
-        (%json-skip-ws port)
-        (%json-read port))
-
-(define (%json-parse str)
-        "Parse STR (UTF-8 JSON text) into Scheme data."
-        (%json-read (open-input-string str)))
-
-;; ---- JSON writer ---------------------------------------------------------
-
-(define (%json-quote s)
-        (call-with-output-string
-          (lambda (port)
-            (write-char #\" port)
-            (string-for-each
-              (lambda (c)
-                (case c
-                  ((#\") (display "\\\"" port))
-                  ((#\\) (display "\\\\" port))
-                  ((#\newline) (display "\\n" port))
-                  ((#\tab) (display "\\t" port))
-                  ((#\return) (display "\\r" port))
-                  (else (write-char c port))))
-              s)
-            (write-char #\" port))))
-
-(define (%json-write x)
-        (cond
-          ((string? x) (%json-quote x))
-          ((number? x) (format #f "~a" x))
-          ((eq? x #t) "true")
-          ((eq? x #f) "false")
-          ((null? x) "null")
-          ((symbol? x) (%json-quote (symbol->string x)))
-          ((pair? x)
-            (if (pair? (car x))                   ; alist → JSON object
-              (string-append "{"
-                             (string-join
-                               (map (lambda (kv)
-                                      (format #f "~a:~a"
-                                              (%json-quote (symbol->string (car kv)))
-                                              (%json-write (cdr kv))))
-                                    x)
-                               ",")
-                             "}")
-              (string-append "[" (string-join (map %json-write x) ",") "]")))
-          (else "null")))
 
 ;; ---- LSP transport -------------------------------------------------------
 
@@ -196,13 +68,18 @@
 
 (define (%lsp-request! client method params)
         (%lsp-write! client
-                     (format #f "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"~a\",\"params\":~a}"
-                             method params)))
+                     (scm->json-string
+                       `((jsonrpc . "2.0")
+                         (id . 1)
+                         (method . ,method)
+                         (params . ,params)))))
 
 (define (%lsp-notify! client method params)
         (%lsp-write! client
-                     (format #f "{\"jsonrpc\":\"2.0\",\"method\":\"~a\",\"params\":~a}"
-                             method params)))
+                     (scm->json-string
+                       `((jsonrpc . "2.0")
+                         (method . ,method)
+                         (params . ,params)))))
 
 ;; ---- client lifecycle ----------------------------------------------------
 
@@ -259,10 +136,13 @@ server closed the transport first."
 (define (%diagnostics-of body)
         (and (string? body)
              (false-if-exception
-               (let* ((obj (%json-parse body))
-                      (params (and obj (assoc-ref obj "params"))))
-                 (and params
-                      (assoc-ref params "diagnostics"))))))
+               (let* ((obj (json-string->scm body))
+                      (params (and (pair? obj) (assoc-ref obj "params")))
+                      (diags (and (pair? params) (assoc-ref params "diagnostics"))))
+                 (cond
+                   ((vector? diags) (vector->list diags))
+                   ((list? diags) diags)
+                   (else #f))))))
 
 ;; ---- public tool surface ---------------------------------------------------
 

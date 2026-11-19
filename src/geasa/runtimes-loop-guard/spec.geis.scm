@@ -396,10 +396,10 @@ SESSION with a fresh call id."
                                           (set! exec-count (+ exec-count 1))
                                           "THE CONFIG CONTENTS")
                                         '((description . "Read the config"))))
-                   (_ (registry-attach! reg
-                                        "other.tool"
-                                        (lambda () "OTHER")
-                                        '((description . "Other tool"))))
+                   (_2 (registry-attach! reg
+                                         "other.tool"
+                                         (lambda () "OTHER")
+                                         '((description . "Other tool"))))
                    (client (make-model-client #:endpoint "http://127.0.0.1:10100"
                                               #:model "looping-llm"))
                    (steering (make-steering-queue))

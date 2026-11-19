@@ -126,7 +126,7 @@ and the implementation is hot-attached to the registry."
                                          #:metadata metadata)))
            res))
 
-(define (commit-synthesized-module-cli feature-id target-path . args)
+(define (commit-synthesized-module-cli feature-id target-path . _args)
         "CLI helper invoked by external processes (e.g. Sema workflow commit phase)
 to perform a gated kernel commit. Prints JSON result and exits with 0 on
 commit or 1 on revert/error."

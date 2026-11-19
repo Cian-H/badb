@@ -529,8 +529,8 @@
                                        #:headers
                                        '((content-type application/json (charset . "utf-8"))))
                        "{\"choices\": [{\"message\": {\"content\": \"ok\"}}]}")))
-                 (%strict-call (model-complete strict "hi" #:http-poster poster))
-                 (%lenient-call (model-complete lenient "hi" #:http-poster poster)))
+                 (_strict-call (model-complete strict "hi" #:http-poster poster))
+                 (_lenient-call (model-complete lenient "hi" #:http-poster poster)))
               (test-equal "strict client request omits allow_missing_thinking" '(#t #f) seen))
             (let*
                 ((gem
@@ -923,8 +923,8 @@ data: [DONE]
             (test-assert "hung endpoint surfaces as an error within the timeout"
                          (let* ((server (socket AF_INET SOCK_STREAM 0))
                                 (_ (setsockopt server SOL_SOCKET SO_REUSEADDR 1))
-                                (_ (bind server AF_INET INADDR_LOOPBACK 0))
-                                (_ (listen server 1))
+                                (_2 (bind server AF_INET INADDR_LOOPBACK 0))
+                                (_3 (listen server 1))
                                 (port (sockaddr:port (getsockname server)))
                                 (client (make-model-client
                                           #:endpoint (format #f "http://127.0.0.1:~a/v1" port)

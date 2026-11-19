@@ -649,11 +649,11 @@ from journal JRN (and optional active registry REG)."
              (else
                (add-sys-msg! (ctx-search ctx-idx trimmed))))))
 
-(define (execute-skills-subcommand! skill-reg arg add-sys-msg! add-err-msg!)
+(define (execute-skills-subcommand! skill-reg _arg add-sys-msg! _add-err-msg!)
         "Dispatch /skills subcommand: list or inspect active skills."
         (add-sys-msg! (skill-catalog-summary skill-reg)))
 
-(define (execute-memories-subcommand! arg add-sys-msg! add-err-msg!)
+(define (execute-memories-subcommand! arg add-sys-msg! _add-err-msg!)
         "Dispatch /memories subcommand: read project memories."
         (let ((topic (if (string-null? (string-trim-both arg)) "all" (string-trim-both arg))))
           (add-sys-msg! (memory-read topic))))

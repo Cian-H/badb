@@ -100,7 +100,7 @@
         (cons (+ 1 (car (ts-node-start-point node)))
               (+ 1 (car (ts-node-end-point node)))))
 
-(define (find-named-child node field-name source)
+(define (find-named-child node field-name _source)
         (let ((child-count (ts-node-child-count node)))
           (let loop ((i 0))
                     (if (< i child-count)

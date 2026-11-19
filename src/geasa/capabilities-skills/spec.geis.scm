@@ -274,7 +274,7 @@
             (let* ((skill-reg (make-skill-registry #:roots (list %root-a)))
                    (_ (discover-skills! skill-reg))
                    (tool-reg (make-registry))
-                   (_ (register-skill-tools! tool-reg skill-reg)))
+                   (_2 (register-skill-tools! tool-reg skill-reg)))
 
               ;; Tool attachment verification
               (test-assert "skill_load is attached to registry"

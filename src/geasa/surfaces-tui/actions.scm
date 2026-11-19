@@ -787,16 +787,11 @@
             ((prev-menu (tui-active-menu st))
              (action (menu-item-action item))
              (cfg (tui-cfg st)))
-          (define*
-            (push-sub! m-or-title #:optional (items '()))
-            (tui-set-active-menu! st
-                                  (cond
-                                    ((menu? m-or-title)
-                                      (if prev-menu
-                                        (menu-push prev-menu m-or-title)
-                                        m-or-title))
-                                    (prev-menu (menu-push prev-menu m-or-title items))
-                                    (else (make-menu m-or-title items)))))
+          (define (push-sub! title items)
+                  (tui-set-active-menu! st
+                                        (if prev-menu
+                                          (menu-push prev-menu title items)
+                                          (make-menu title items))))
           (tui-clear-overlay! st)
           (cond
             ((symbol? action)
@@ -1303,6 +1298,237 @@
                                       (when (and (string? p) (file-exists? p))
                                         (catch #t (lambda () (delete-file p)) (lambda _ #f)))))))))
 
+(define (handle-edit-cmd! st arg)
+        (let*
+            ((parts (split-words arg))
+             (path (and (pair? parts) (car parts)))
+             (line-num (and (pair? parts) (pair? (cdr parts)) (string->number (cadr parts)))))
+          (if path
+            (call-with-values
+              (lambda ()
+                (open-in-external-editor path
+                                         #:line
+                                         line-num
+                                         #:suspend-tty!
+                                         (lambda ()
+                                           (tui-suspend-tty! st))
+                                         #:resume-tty!
+                                         (lambda ()
+                                           (tui-resume-tty! st))))
+              (lambda (ok? res)
+                (unless ok? (tui-add-err-msg! st (format #f "Editor error: ~a" res)))))
+            (tui-add-sys-msg! st "Usage: /edit <file> [line]"))))
+
+(define (handle-copy-cmd! st arg)
+        (let*
+            ((sub (string-downcase (string-trim-both (or arg ""))))
+             (msgs (tui-messages st))
+             (assistant-msgs
+               (filter
+                 (lambda (m)
+                   (let ((r (prop-ref m 'role ""))) (and (string? r) (string=? r "assistant"))))
+                 msgs)))
+          (cond
+            ((null? assistant-msgs)
+              (tui-add-sys-msg! st "Nothing to copy — no assistant reply yet."))
+            ((or (string=? sub "code") (string=? sub "block"))
+              (let loop
+                ((rest (reverse assistant-msgs)))
+                (if (null? rest)
+                  (tui-add-sys-msg! st "Nothing to copy — no fenced code block found.")
+                  (let
+                      ((blocks (extract-fenced-code-blocks (or (prop-ref (car rest) 'content) ""))))
+                    (if (pair? blocks)
+                      (let ((code (car (reverse blocks))))
+                        (clipboard-copy! code)
+                        (set-tui-status-text! st
+                                              (format #f "COPIED CODE (~a chars)" (string-length code)))
+                        (tui-add-sys-msg! st
+                                          (format #f "Copied code block to clipboard (~a chars)." (string-length code))))
+                      (loop (cdr rest)))))))
+            (else
+              (let*
+                  ((last-msg (car (reverse assistant-msgs)))
+                   (txt (ensure-string (or (prop-ref last-msg 'content) ""))))
+                (if (string-null? txt)
+                  (tui-add-sys-msg! st "Nothing to copy — last assistant reply is empty.")
+                  (begin (clipboard-copy! txt)
+                         (set-tui-status-text! st (format #f "COPIED (~a chars)" (string-length txt)))
+                         (tui-add-sys-msg! st
+                                           (format #f "Copied last reply to clipboard (~a chars)." (string-length txt))))))))))
+
+(define (handle-fold-cmd! st arg)
+        (let*
+            ((sub (string-downcase (string-trim-both (or arg ""))))
+             (target
+               (cond
+                 ((member sub '("collapse" "on" "all" "close")) #t)
+                 ((member sub '("expand" "off" "open" "unfold")) #f)
+                 (else 'toggle))))
+          (call-with-values
+            (lambda ()
+              (transcript-fold-all! (tui-messages st) target))
+            (lambda (next-msgs collapsed? changed)
+              (set-tui-messages! st next-msgs)
+              (row-cache-clear! (tui-row-cache st))
+              (let
+                  ((verb
+                     (if collapsed?
+                       "Folded"
+                       "Unfolded")))
+                (set-tui-status-text! st
+                                      (format #f
+                                              "~a ~a card~a"
+                                              verb
+                                              changed
+                                              (if (= changed 1)
+                                                ""
+                                                "s")))
+                (tui-add-sys-msg! st
+                                  (format #f
+                                          "~a ~a tool/thinking card~a."
+                                          verb
+                                          changed
+                                          (if (= changed 1)
+                                            ""
+                                            "s"))))))))
+
+(define (handle-find-cmd! st arg)
+        (let*
+            ((q (string-trim-both (or arg "")))
+             (ts0 (transcript-search-open (tui-transcript-search st)))
+             (ts1
+               (if (string-null? q)
+                 ts0
+                 (transcript-search-with-input-active
+                   (transcript-search-update ts0
+                                             q
+                                             (tui-messages st)
+                                             (tui-last-content-width st)
+                                             (tui-row-cache st))
+                   #f))))
+          (set-tui-transcript-search! st ts1)
+          (let
+              ((scroll
+                 (transcript-search-scroll-offset ts1
+                                                  (tui-asm-total st)
+                                                  (tui-last-view-height st))))
+            (when scroll (set-tui-scroll-offset! st scroll)))))
+
+(define
+  (handle-context-cmd! st arg add-sys! add-err! jrn reg)
+  (if (string-null? (string-trim-both (or arg "")))
+    (tui-open-context-inspector-modal! st 'budget)
+    (begin
+      (unless (tui-agent-running? st) (tui-sync-context-limit! st))
+      (execute-context-subcommand! (tui-compactor st)
+                                   (tui-llm-history st)
+                                   (tui-messages st)
+                                   (tui-ctx-idx st)
+                                   arg
+                                   add-sys!
+                                   add-err!
+                                   #:jrn
+                                   jrn
+                                   #:reg
+                                   reg))))
+
+(define (handle-usage-cmd! st arg)
+        (if (string-null? (string-trim-both (or arg "")))
+          (tui-open-context-inspector-modal! st 'usage)
+          (begin
+            (unless (tui-agent-running? st) (tui-sync-context-limit! st))
+            (tui-add-sys-msg! st
+                              (format-usage-report (tui-compactor st)
+                                                   (tui-llm-history st)
+                                                   (tui-session-prompt-tokens st)
+                                                   (tui-session-completion-tokens st)
+                                                   (tui-session-estimated-tokens st)
+                                                   (tui-session-turns st)
+                                                   #:ctx-idx
+                                                   (tui-ctx-idx st))))))
+
+(define (handle-model-cmd! st arg cfg)
+        (if (string-null? arg)
+          (tui-set-active-menu! st
+                                (make-menu "Model"
+                                           (build-live-or-recorded-model-menu-items (tui-client st) cfg (tui-cur-model st))
+                                           #:back-action
+                                           'back-to-slash))
+          (begin (set-tui-cur-model! st arg)
+                 (badb-config-set-model-name! cfg arg)
+                 (tui-refresh-client! st)
+                 (tui-try-save-config! st)
+                 (tui-add-sys-msg! st (format #f "Model switched to: ~a (saved to config)" arg)))))
+
+(define (handle-steer-cmd! st arg)
+        (call-with-values
+          (lambda ()
+            (parse-steer-argument arg))
+          (lambda (urgent? text)
+            (if (string-null? text)
+              (tui-add-sys-msg! st
+                                "Usage: /steer [--urgent|!] <message> (queued or pushed urgently)")
+              (if urgent?
+                (tui-trigger-urgent-steering! st text)
+                (tui-queue-steering! st
+                                     text
+                                     (or (tui-agent-running? st) (agent-run-active? (tui-status-text st)))))))))
+
+(define
+  (handle-image-cmd! st arg render-ncvisual-overlay! stdscr getch)
+  (let ((p (string-trim-both arg)))
+    (cond
+      ((string-null? p) (tui-add-sys-msg! st "Usage: /image <path>"))
+      ((not (file-exists? p))
+        (tui-add-err-msg! st (format #f "Image file not found: ~a" p)))
+      (else
+        (let
+            ((info
+               (and render-ncvisual-overlay!
+                    (render-ncvisual-overlay! stdscr
+                                              p
+                                              (lambda ()
+                                                (getch stdscr))))))
+          (if info
+            (tui-add-sys-msg! st
+                              (format #f
+                                      "Rendered image ~a (~a, ~ax~a cells)"
+                                      p
+                                      (or (assoc-ref info 'blitter) 'ncvisual)
+                                      (or (assoc-ref info 'cols) "?")
+                                      (or (assoc-ref info 'rows) "?")))
+            (tui-add-sys-msg! st (format-image-placeholder p))))))))
+
+(define (handle-test-cmd! st arg)
+        (begin (set-tui-status-text! st "TESTING...")
+               (tui-render! st)
+               (catch #t
+                 (lambda ()
+                   (let*
+                       ((test-cmd
+                          (if (string-null? (string-trim-both arg))
+                            "./scripts/test"
+                            (string-trim-both arg)))
+                        (res (verify-test-suite #:command test-cmd))
+                        (passed? (assoc-ref res 'passed?))
+                        (exit-code (assoc-ref res 'exit-code))
+                        (out (or (assoc-ref res 'output) "")))
+                     (if passed?
+                       (tui-add-sys-msg! st
+                                         (format #f
+                                                 "Test suite PASSED (exit ~a).\n~a"
+                                                 exit-code
+                                                 (truncate-string (string-trim-both out) 600)))
+                       (tui-add-err-msg! st
+                                         (format #f
+                                                 "Test suite FAILED (exit ~a):\n~a"
+                                                 exit-code
+                                                 (truncate-string (string-trim-both out) 600))))))
+                 (lambda (k . a)
+                   (tui-add-err-msg! st (format #f "Test error: ~a ~s" k a))))
+               (set-tui-status-text! st "READY")))
+
 (define (tui-handle-command! st cmd-pair hooks)
         "Dispatch parsed slash command CMD-PAIR on ST."
         (let*
@@ -1350,120 +1576,11 @@
                                   (if format-git-diff-output
                                     (format-git-diff-output arg)
                                     ""))))
-            ((string=? cmd "edit")
-              (let*
-                  ((parts (split-words arg))
-                   (path (and (pair? parts) (car parts)))
-                   (line-num (and (pair? parts) (pair? (cdr parts)) (string->number (cadr parts)))))
-                (if path
-                  (call-with-values
-                    (lambda ()
-                      (open-in-external-editor path
-                                               #:line
-                                               line-num
-                                               #:suspend-tty!
-                                               (lambda ()
-                                                 (tui-suspend-tty! st))
-                                               #:resume-tty!
-                                               (lambda ()
-                                                 (tui-resume-tty! st))))
-                    (lambda (ok? res)
-                      (unless ok? (tui-add-err-msg! st (format #f "Editor error: ~a" res)))))
-                  (tui-add-sys-msg! st "Usage: /edit <file> [line]"))))
+            ((string=? cmd "edit") (handle-edit-cmd! st arg))
             ((string=? cmd "guardrail") (handle-guardrail-cmd! st arg))
-            ((string=? cmd "copy")
-              (let*
-                  ((sub (string-downcase (string-trim-both (or arg ""))))
-                   (msgs (tui-messages st))
-                   (assistant-msgs
-                     (filter
-                       (lambda (m)
-                         (let ((r (prop-ref m 'role ""))) (and (string? r) (string=? r "assistant"))))
-                       msgs)))
-                (cond
-                  ((null? assistant-msgs)
-                    (tui-add-sys-msg! st "Nothing to copy — no assistant reply yet."))
-                  ((or (string=? sub "code") (string=? sub "block"))
-                    (let loop
-                      ((rest (reverse assistant-msgs)))
-                      (if (null? rest)
-                        (tui-add-sys-msg! st "Nothing to copy — no fenced code block found.")
-                        (let
-                            ((blocks (extract-fenced-code-blocks (or (prop-ref (car rest) 'content) ""))))
-                          (if (pair? blocks)
-                            (let ((code (car (reverse blocks))))
-                              (clipboard-copy! code)
-                              (set-tui-status-text! st
-                                                    (format #f "COPIED CODE (~a chars)" (string-length code)))
-                              (tui-add-sys-msg! st
-                                                (format #f "Copied code block to clipboard (~a chars)." (string-length code))))
-                            (loop (cdr rest)))))))
-                  (else
-                    (let*
-                        ((last-msg (car (reverse assistant-msgs)))
-                         (txt (ensure-string (or (prop-ref last-msg 'content) ""))))
-                      (if (string-null? txt)
-                        (tui-add-sys-msg! st "Nothing to copy — last assistant reply is empty.")
-                        (begin (clipboard-copy! txt)
-                               (set-tui-status-text! st (format #f "COPIED (~a chars)" (string-length txt)))
-                               (tui-add-sys-msg! st
-                                                 (format #f "Copied last reply to clipboard (~a chars)." (string-length txt))))))))))
-            ((string=? cmd "fold")
-              (let*
-                  ((sub (string-downcase (string-trim-both (or arg ""))))
-                   (target
-                     (cond
-                       ((member sub '("collapse" "on" "all" "close")) #t)
-                       ((member sub '("expand" "off" "open" "unfold")) #f)
-                       (else 'toggle))))
-                (call-with-values
-                  (lambda ()
-                    (transcript-fold-all! (tui-messages st) target))
-                  (lambda (next-msgs collapsed? changed)
-                    (set-tui-messages! st next-msgs)
-                    (row-cache-clear! (tui-row-cache st))
-                    (let
-                        ((verb
-                           (if collapsed?
-                             "Folded"
-                             "Unfolded")))
-                      (set-tui-status-text! st
-                                            (format #f
-                                                    "~a ~a card~a"
-                                                    verb
-                                                    changed
-                                                    (if (= changed 1)
-                                                      ""
-                                                      "s")))
-                      (tui-add-sys-msg! st
-                                        (format #f
-                                                "~a ~a tool/thinking card~a."
-                                                verb
-                                                changed
-                                                (if (= changed 1)
-                                                  ""
-                                                  "s"))))))))
-            ((string=? cmd "find")
-              (let*
-                  ((q (string-trim-both (or arg "")))
-                   (ts0 (transcript-search-open (tui-transcript-search st)))
-                   (ts1
-                     (if (string-null? q)
-                       ts0
-                       (transcript-search-with-input-active
-                         (transcript-search-update ts0
-                                                   q
-                                                   (tui-messages st)
-                                                   (tui-last-content-width st)
-                                                   (tui-row-cache st))
-                         #f))))
-                (set-tui-transcript-search! st ts1)
-                (let
-                    ((scroll
-                       (transcript-search-scroll-offset ts1
-                                                        (tui-asm-total st)
-                                                        (tui-last-view-height st))))
-                  (when scroll (set-tui-scroll-offset! st scroll)))))
+            ((string=? cmd "copy") (handle-copy-cmd! st arg))
+            ((string=? cmd "fold") (handle-fold-cmd! st arg))
+            ((string=? cmd "find") (handle-find-cmd! st arg))
             ((string=? cmd "compact") (handle-compact-cmd! st arg))
             ((string=? cmd "resume") (handle-resume-cmd! st arg))
             ((string=? cmd "checkpoint") (handle-checkpoint-cmd! st arg))
@@ -1473,21 +1590,7 @@
             ((string=? cmd "rules") (tui-add-sys-msg! st (format-rules-and-tree (getcwd))))
             ((string=? cmd "geis") (handle-geis-cmd! st arg hooks))
             ((string=? cmd "context")
-              (if (string-null? (string-trim-both (or arg "")))
-                (tui-open-context-inspector-modal! st 'budget)
-                (begin
-                  (unless (tui-agent-running? st) (tui-sync-context-limit! st))
-                  (execute-context-subcommand! (tui-compactor st)
-                                               (tui-llm-history st)
-                                               (tui-messages st)
-                                               (tui-ctx-idx st)
-                                               arg
-                                               add-sys!
-                                               add-err!
-                                               #:jrn
-                                               jrn
-                                               #:reg
-                                               reg))))
+              (handle-context-cmd! st arg add-sys! add-err! jrn reg))
             ((string=? cmd "skills")
               (if (string-null? (string-trim-both (or arg "")))
                 (tui-open-knowledge-browser-modal! st 'skills)
@@ -1496,33 +1599,9 @@
               (if (string-null? (string-trim-both (or arg "")))
                 (tui-open-knowledge-browser-modal! st 'memories)
                 (execute-memories-subcommand! arg add-sys! add-err!)))
-            ((string=? cmd "usage")
-              (if (string-null? (string-trim-both (or arg "")))
-                (tui-open-context-inspector-modal! st 'usage)
-                (begin
-                  (unless (tui-agent-running? st) (tui-sync-context-limit! st))
-                  (tui-add-sys-msg! st
-                                    (format-usage-report (tui-compactor st)
-                                                         (tui-llm-history st)
-                                                         (tui-session-prompt-tokens st)
-                                                         (tui-session-completion-tokens st)
-                                                         (tui-session-estimated-tokens st)
-                                                         (tui-session-turns st)
-                                                         #:ctx-idx
-                                                         (tui-ctx-idx st))))))
+            ((string=? cmd "usage") (handle-usage-cmd! st arg))
             ((string=? cmd "models") (handle-models-cmd! st))
-            ((string=? cmd "model")
-              (if (string-null? arg)
-                (tui-set-active-menu! st
-                                      (make-menu "Model"
-                                                 (build-live-or-recorded-model-menu-items (tui-client st) cfg (tui-cur-model st))
-                                                 #:back-action
-                                                 'back-to-slash))
-                (begin (set-tui-cur-model! st arg)
-                       (badb-config-set-model-name! cfg arg)
-                       (tui-refresh-client! st)
-                       (tui-try-save-config! st)
-                       (tui-add-sys-msg! st (format #f "Model switched to: ~a (saved to config)" arg)))))
+            ((string=? cmd "model") (handle-model-cmd! st arg cfg))
             ((string=? cmd "endpoint")
               (if (string-null? arg)
                 (tui-set-active-menu! st
@@ -1555,34 +1634,7 @@
               (if (string-null? (string-trim-both (or arg "")))
                 (tui-open-session-browser-modal! st 'checkpoints)
                 (tui-add-sys-msg! st (format-journal-recent jrn))))
-            ((string=? cmd "test")
-              (set-tui-status-text! st "TESTING...")
-              (tui-render! st)
-              (catch #t
-                (lambda ()
-                  (let*
-                      ((test-cmd
-                         (if (string-null? (string-trim-both arg))
-                           "./scripts/test"
-                           (string-trim-both arg)))
-                       (res (verify-test-suite #:command test-cmd))
-                       (passed? (assoc-ref res 'passed?))
-                       (exit-code (assoc-ref res 'exit-code))
-                       (out (or (assoc-ref res 'output) "")))
-                    (if passed?
-                      (tui-add-sys-msg! st
-                                        (format #f
-                                                "Test suite PASSED (exit ~a).\n~a"
-                                                exit-code
-                                                (truncate-string (string-trim-both out) 600)))
-                      (tui-add-err-msg! st
-                                        (format #f
-                                                "Test suite FAILED (exit ~a):\n~a"
-                                                exit-code
-                                                (truncate-string (string-trim-both out) 600))))))
-                (lambda (k . a)
-                  (tui-add-err-msg! st (format #f "Test error: ~a ~s" k a))))
-              (set-tui-status-text! st "READY"))
+            ((string=? cmd "test") (handle-test-cmd! st arg))
             ((string=? cmd "subagents")
               (if (string-null? (string-trim-both (or arg "")))
                 (tui-open-agent-monitor-modal! st)
@@ -1591,19 +1643,7 @@
               (if (tui-agent-running? st)
                 (tui-force-stop-run! st)
                 (tui-add-sys-msg! st "No agent run is currently active.")))
-            ((string=? cmd "steer")
-              (call-with-values
-                (lambda ()
-                  (parse-steer-argument arg))
-                (lambda (urgent? text)
-                  (if (string-null? text)
-                    (tui-add-sys-msg! st
-                                      "Usage: /steer [--urgent|!] <message> (queued or pushed urgently)")
-                    (if urgent?
-                      (tui-trigger-urgent-steering! st text)
-                      (tui-queue-steering! st
-                                           text
-                                           (or (tui-agent-running? st) (agent-run-active? (tui-status-text st)))))))))
+            ((string=? cmd "steer") (handle-steer-cmd! st arg))
             ((string=? cmd "interrupt")
               (tui-queue-interrupt! st
                                     (or (tui-agent-running? st) (agent-run-active? (tui-status-text st)))))
@@ -1614,28 +1654,7 @@
               (set-tui-msgsel-index! st #f))
             ((string=? cmd "dump") (handle-dump-cmd! st arg))
             ((string=? cmd "image")
-              (let ((p (string-trim-both arg)))
-                (cond
-                  ((string-null? p) (tui-add-sys-msg! st "Usage: /image <path>"))
-                  ((not (file-exists? p))
-                    (tui-add-err-msg! st (format #f "Image file not found: ~a" p)))
-                  (else
-                    (let
-                        ((info
-                           (and render-ncvisual-overlay!
-                                (render-ncvisual-overlay! stdscr
-                                                          p
-                                                          (lambda ()
-                                                            (getch stdscr))))))
-                      (if info
-                        (tui-add-sys-msg! st
-                                          (format #f
-                                                  "Rendered image ~a (~a, ~ax~a cells)"
-                                                  p
-                                                  (or (assoc-ref info 'blitter) 'ncvisual)
-                                                  (or (assoc-ref info 'cols) "?")
-                                                  (or (assoc-ref info 'rows) "?")))
-                        (tui-add-sys-msg! st (format-image-placeholder p))))))))
+              (handle-image-cmd! st arg render-ncvisual-overlay! stdscr getch))
             ((string=? cmd "quit") 'exit)
             (else
               (tui-add-err-msg! st

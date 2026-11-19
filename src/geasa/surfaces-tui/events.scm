@@ -66,24 +66,119 @@
                        ,(lambda ()
                           (tui-clear-overlay! st))))))
 
+(define (mouse-wheel-scroll! st delta)
+        "Apply mouse-wheel scroll DELTA to ST. Return #t when the offset changed."
+        (let
+            ((new (max 0 (min (tui-max-scroll-seen st) (+ (tui-scroll-offset st) delta)))))
+          (if (= new (tui-scroll-offset st))
+            #f
+            (begin (set-tui-scroll-offset! st new) #t))))
+
+(define
+  (handle-status-bar-pill-click! st x target hooks)
+  (let*
+      ((col (or x 0))
+       (hit
+         (find
+           (lambda (sp)
+             (and (>= col (car sp)) (< col (cadr sp))))
+           (cdr target))))
+    (when hit
+      (case (caddr hit)
+        ((config) (tui-open-config-modal! st))
+        ((context) (tui-open-context-inspector-modal! st 'budget))
+        ((geasa) (tui-handle-command! st '("geis" . "") hooks))
+        ((agents) (tui-open-agent-monitor-modal! st))
+        ((notifications) (tui-open-notifications-modal! st))))
+    (and hit #t)))
+
+(define (handle-quick-action-click! st y x hooks)
+        (let*
+            ((row-txt (or (hashq-ref (tui-row-texts st) y) ""))
+             (col (max 0 (- (or x 2) 2)))
+             (hit-token
+               (find
+                 (lambda (tok)
+                   (let ((p (string-contains row-txt tok)))
+                     (and p (>= col p) (< col (+ p (string-length tok))))))
+                 '("Ctrl+K Palette" "/geis" "/mcp" "/sessions" "@file"))))
+          (cond
+            ((equal? hit-token "Ctrl+K Palette") (tui-open-command-palette! st hooks))
+            ((equal? hit-token "/geis") (tui-handle-command! st '("geis" . "") hooks))
+            ((equal? hit-token "/mcp") (tui-open-mcp-modal! st))
+            ((equal? hit-token "/sessions") (tui-open-session-browser-modal! st 'sessions))
+            ((equal? hit-token "@file") (tui-apply-edit! st "@" 1)))
+          (and hit-token #t)))
+
+(define (handle-message-row-click! st y x target)
+        (let*
+            ((row-txt (hashq-ref (tui-row-texts st) y))
+             (copy-pos (and (string? row-txt) (string-contains row-txt "[copy]")))
+             (col (and (integer? x) (- x 2)))
+             (link
+               (and (string? row-txt)
+                    (integer? x)
+                    (>= x 2)
+                    (find-link-at-column row-txt (- x 2)))))
+          (if
+              (and copy-pos col (>= col copy-pos) (< col (+ copy-pos 6)))
+            (let*
+                ((msg (list-ref (tui-messages st) target))
+                 (blocks (extract-fenced-code-blocks (or (prop-ref msg 'content) ""))))
+              (when (pair? blocks)
+                (let*
+                    ((seen-headers
+                       (let hloop
+                         ((ry 0) (cnt 0))
+                         (if (> ry y)
+                           cnt
+                           (let
+                               ((rt (hashq-ref (tui-row-texts st) ry))
+                                (tg (hashq-ref (tui-click-targets st) ry)))
+                             (hloop (+ ry 1)
+                                    (if
+                                        (and (eqv? tg target) (string? rt) (string-prefix? "╭─ " rt))
+                                      (+ cnt 1)
+                                      cnt))))))
+                     (b-idx (max 0 (min (- (length blocks) 1) (- seen-headers 1))))
+                     (code (list-ref blocks b-idx)))
+                  (clipboard-copy! code)
+                  (set-tui-status-text! st
+                                        (format #f "COPIED CODE (~a chars)" (string-length code)))))
+              #t)
+            (begin
+              (when link
+                (let
+                    ((kind (assoc-ref link 'kind))
+                     (dest (assoc-ref link 'target))
+                     (line-num (assoc-ref link 'line)))
+                  (cond
+                    ((and (eq? kind 'file) (string? dest) (file-exists? dest))
+                      (open-in-external-editor dest
+                                               #:line
+                                               line-num
+                                               #:suspend-tty!
+                                               (lambda ()
+                                                 (tui-suspend-tty! st))
+                                               #:resume-tty!
+                                               (lambda ()
+                                                 (tui-resume-tty! st))))
+                    ((and (eq? kind 'url) (string? dest))
+                      (catch #t
+                        (lambda ()
+                          (let ((p (open-pipe* OPEN_READ "xdg-open" dest))) (close-pipe p)))
+                        (lambda _
+                          #f))))))
+              (set-tui-msgsel-index! st target)
+              #t))))
+
 (define (tui-handle-mouse-event! st ev hooks)
         "Handle a single decoded mouse event EV on ST. Returns #t if dirty."
         (let*
-            ((button (car ev))
-             (y (cadr ev))
-             (x (and (pair? (cddr ev)) (caddr ev))))
+            ((button (car ev)) (y (cadr ev)) (x (and (pair? (cddr ev)) (caddr ev))))
           (cond
-            ((= button 4)
-              (let
-                  ((new (min (tui-max-scroll-seen st) (+ (tui-scroll-offset st) 3))))
-                (if (= new (tui-scroll-offset st))
-                  #f
-                  (begin (set-tui-scroll-offset! st new) #t))))
-            ((= button 5)
-              (let ((new (max 0 (- (tui-scroll-offset st) 3))))
-                (if (= new (tui-scroll-offset st))
-                  #f
-                  (begin (set-tui-scroll-offset! st new) #t))))
+            ((= button 4) (mouse-wheel-scroll! st 3))
+            ((= button 5) (mouse-wheel-scroll! st -3))
             ((= button 1)
               (let
                   ((target (hashq-ref (tui-click-targets st) y)) (ov (tui-active-overlay st)))
@@ -107,87 +202,9 @@
                     (tui-clear-unseen-rows! st)
                     #t)
                   ((and (pair? target) (eq? (car target) 'status-bar-pills))
-                    (let* ((col (or x 0))
-                           (hit (find (lambda (sp)
-                                        (and (>= col (car sp)) (< col (cadr sp))))
-                                      (cdr target))))
-                      (when hit
-                        (case (caddr hit)
-                          ((config) (tui-open-config-modal! st))
-                          ((context) (tui-open-context-inspector-modal! st 'budget))
-                          ((geasa) (tui-handle-command! st '("geis" . "") hooks))
-                          ((agents) (tui-open-agent-monitor-modal! st))
-                          ((notifications) (tui-open-notifications-modal! st))))
-                      (and hit #t)))
-                  ((eq? target 'quick-action-strip)
-                    (let* ((row-txt (or (hashq-ref (tui-row-texts st) y) ""))
-                           (col (max 0 (- (or x 2) 2)))
-                           (hit-token
-                             (find (lambda (tok)
-                                     (let ((p (string-contains row-txt tok)))
-                                       (and p (>= col p) (< col (+ p (string-length tok))))))
-                                   '("Ctrl+K Palette" "/geis" "/mcp" "/sessions" "@file"))))
-                      (cond
-                        ((equal? hit-token "Ctrl+K Palette") (tui-open-command-palette! st hooks))
-                        ((equal? hit-token "/geis") (tui-handle-command! st '("geis" . "") hooks))
-                        ((equal? hit-token "/mcp") (tui-open-mcp-modal! st))
-                        ((equal? hit-token "/sessions") (tui-open-session-browser-modal! st 'sessions))
-                        ((equal? hit-token "@file") (tui-apply-edit! st "@" 1)))
-                      (and hit-token #t)))
-                  ((integer? target)
-                    (let*
-                        ((row-txt (hashq-ref (tui-row-texts st) y))
-                         (copy-pos (and (string? row-txt) (string-contains row-txt "[copy]")))
-                         (col (and (integer? x) (- x 2)))
-                         (link
-                           (and (string? row-txt)
-                                (integer? x)
-                                (>= x 2)
-                                (find-link-at-column row-txt (- x 2)))))
-                      (if (and copy-pos col (>= col copy-pos) (< col (+ copy-pos 6)))
-                        (let* ((msg (list-ref (tui-messages st) target))
-                               (blocks (extract-fenced-code-blocks (or (prop-ref msg 'content) ""))))
-                          (when (pair? blocks)
-                            (let* ((seen-headers
-                                     (let hloop ((ry 0) (cnt 0))
-                                                (if (> ry y)
-                                                  cnt
-                                                  (let ((rt (hashq-ref (tui-row-texts st) ry))
-                                                        (tg (hashq-ref (tui-click-targets st) ry)))
-                                                    (hloop (+ ry 1)
-                                                           (if (and (eqv? tg target)
-                                                                    (string? rt)
-                                                                    (string-prefix? "╭─ " rt))
-                                                             (+ cnt 1)
-                                                             cnt))))))
-                                   (b-idx (max 0 (min (- (length blocks) 1) (- seen-headers 1))))
-                                   (code (list-ref blocks b-idx)))
-                              (clipboard-copy! code)
-                              (set-tui-status-text! st (format #f "COPIED CODE (~a chars)" (string-length code)))))
-                          #t)
-                        (begin
-                          (when link
-                            (let
-                                ((kind (assoc-ref link 'kind))
-                                 (dest (assoc-ref link 'target))
-                                 (line-num (assoc-ref link 'line)))
-                              (cond
-                                ((and (eq? kind 'file) (string? dest) (file-exists? dest))
-                                  (open-in-external-editor dest
-                                                           #:line
-                                                           line-num
-                                                           #:suspend-tty!
-                                                           (lambda () (tui-suspend-tty! st))
-                                                           #:resume-tty!
-                                                           (lambda () (tui-resume-tty! st))))
-                                ((and (eq? kind 'url) (string? dest))
-                                  (catch #t
-                                    (lambda ()
-                                      (let ((p (open-pipe* OPEN_READ "xdg-open" dest))) (close-pipe p)))
-                                    (lambda _
-                                      #f))))))
-                          (set-tui-msgsel-index! st target)
-                          #t))))
+                    (handle-status-bar-pill-click! st x target hooks))
+                  ((eq? target 'quick-action-strip) (handle-quick-action-click! st y x hooks))
+                  ((integer? target) (handle-message-row-click! st y x target))
                   (else
                     (if (tui-msgsel-index st)
                       (begin (set-tui-msgsel-index! st #f) #t)
@@ -358,18 +375,7 @@
                       'render
                       'continue))))))
 
-(define
-  (handle-idle-enter! st ch input-pending? drain-input-burst! hooks)
-  (let
-      ((burst (tui-collect-enter-burst ch input-pending? drain-input-burst!))
-       (beep ((tui-nref st) 'beep))
-       (on-cmd!
-         (lambda (pair)
-           (tui-handle-command! st pair hooks))))
-    (if burst
-      (begin (tui-insert-burst! st burst) 'render)
-      (if
-          (selector-active? (tui-input-buffer st) (tui-prompt-mode st))
+(define (handle-enter-selector! st hooks)
         (let
             ((matches
                (deduplicate-slash-commands (matching-slash-commands (tui-input-buffer st)))))
@@ -415,77 +421,107 @@
                            ((res (tui-handle-command! st (cons chosen "") hooks)))
                          (if (eq? res 'exit)
                            'done
-                           'render)))))))
-        (let
-            ((trimmed (string-trim-both (tui-input-buffer st)))
-             (cur-mode (tui-prompt-mode st)))
-          (set-tui-input-buffer! st "")
-          (set-tui-cursor-pos! st 0)
-          (set-tui-selector-index! st 0)
-          (when (eq? cur-mode 'slash) (set-tui-prompt-mode! st 'chat))
-          (cond
-            ((string-null? trimmed) 'render)
-            ((eq? cur-mode 'shell)
-              (tui-record-history! st (if (string-prefix? "!" trimmed) trimmed (string-append "!" trimmed)) 'shell)
-              (tui-add-cmd-msg! st trimmed)
-              (tui-execute-shell! st trimmed)
-              'render)
-            ((eq? cur-mode 'scheme)
-              (tui-record-history! st trimmed 'scheme)
-              (tui-add-scm-msg! st trimmed)
-              (tui-execute-scheme! st trimmed)
-              'render)
-            (else
+                           'render))))))))
+
+(define
+  (handle-enter-submit! st on-cmd! beep hooks)
+  (let
+      ((trimmed (string-trim-both (tui-input-buffer st)))
+       (cur-mode (tui-prompt-mode st)))
+    (set-tui-input-buffer! st "")
+    (set-tui-cursor-pos! st 0)
+    (set-tui-selector-index! st 0)
+    (when (eq? cur-mode 'slash) (set-tui-prompt-mode! st 'chat))
+    (cond
+      ((string-null? trimmed) 'render)
+      ((eq? cur-mode 'shell)
+        (tui-record-history! st
+                             (if (string-prefix? "!" trimmed)
+                               trimmed
+                               (string-append "!" trimmed))
+                             'shell)
+        (tui-add-cmd-msg! st trimmed)
+        (tui-execute-shell! st trimmed)
+        'render)
+      ((eq? cur-mode 'scheme)
+        (tui-record-history! st trimmed 'scheme)
+        (tui-add-scm-msg! st trimmed)
+        (tui-execute-scheme! st trimmed)
+        'render)
+      (else
+        (let*
+            ((canonical (prompt-mode-submit-text cur-mode trimmed))
+             (action (classify-input canonical)))
+          (case (car action)
+            ((slash)
               (let*
-                  ((canonical (prompt-mode-submit-text cur-mode trimmed))
-                   (action (classify-input canonical)))
-                (case (car action)
-                  ((slash)
-                    (let* ((scmd (cadr action))
-                           (sarg (caddr action))
-                           (hist-str (if (string-null? (string-trim-both sarg))
-                                       (string-append "/" scmd)
-                                       (string-append "/" scmd " " sarg))))
-                      (tui-record-history! st hist-str 'slash)
-                      (let ((res (catch #t
-                                   (lambda () (tui-handle-command! st (cons scmd sarg) hooks))
-                                   (lambda (k . args)
-                                     (tui-add-err-msg! st (format #f "Command error (~a): ~s" k args))
-                                     'render))))
-                        (if (eq? res 'exit)
-                          'done
-                          'render))))
-                  ((shell)
-                    (let ((shell-cmd (cdr action)))
-                      (tui-record-history! st (if (string-prefix? "!" shell-cmd) shell-cmd (string-append "!" shell-cmd)) 'shell)
-                      (tui-add-cmd-msg! st shell-cmd)
-                      (tui-execute-shell! st shell-cmd)
-                      'render))
-                  ((scheme)
-                    (let ((code-str (cdr action)))
-                      (tui-record-history! st code-str 'scheme)
-                      (tui-add-scm-msg! st code-str)
-                      (tui-execute-scheme! st code-str)
-                      'render))
-                  ((chat)
-                    (let ((delivered (expand-macros (cdr action))))
-                      (tui-record-history! st delivered 'chat)
-                      (tui-add-user-msg! st delivered)
-                      (set-tui-current-run-id! st (+ (tui-current-run-id st) 1))
-                      (set-tui-force-stop-requested?! st #f)
-                      (set-tui-urgent-steer-requested?! st #f)
-                      (set-tui-agent-thread! st
-                                             (call-with-new-thread
-                                               (lambda ()
-                                                 (catch #t
-                                                   (lambda ()
-                                                     (tui-execute-chat-stream! st delivered on-cmd!)
-                                                     (beep))
-                                                   (lambda (key . args)
-                                                     (tui-add-err-msg! st (format #f "Chat error (~a): ~s" key args))
-                                                     (set-tui-status-text! st "READY")
-                                                     (tui-render! st))))))
-                      'render)))))))))))
+                  ((scmd (cadr action)) (sarg (caddr action))
+                   (hist-str
+                     (if (string-null? (string-trim-both sarg))
+                       (string-append "/" scmd)
+                       (string-append "/" scmd " " sarg))))
+                (tui-record-history! st hist-str 'slash)
+                (let
+                    ((res
+                       (catch #t
+                         (lambda ()
+                           (tui-handle-command! st (cons scmd sarg) hooks))
+                         (lambda (k . args)
+                           (tui-add-err-msg! st (format #f "Command error (~a): ~s" k args))
+                           'render))))
+                  (if (eq? res 'exit)
+                    'done
+                    'render))))
+            ((shell)
+              (let ((shell-cmd (cdr action)))
+                (tui-record-history! st
+                                     (if (string-prefix? "!" shell-cmd)
+                                       shell-cmd
+                                       (string-append "!" shell-cmd))
+                                     'shell)
+                (tui-add-cmd-msg! st shell-cmd)
+                (tui-execute-shell! st shell-cmd)
+                'render))
+            ((scheme)
+              (let ((code-str (cdr action)))
+                (tui-record-history! st code-str 'scheme)
+                (tui-add-scm-msg! st code-str)
+                (tui-execute-scheme! st code-str)
+                'render))
+            ((chat)
+              (let ((delivered (expand-macros (cdr action))))
+                (tui-record-history! st delivered 'chat)
+                (tui-add-user-msg! st delivered)
+                (set-tui-current-run-id! st (+ (tui-current-run-id st) 1))
+                (set-tui-force-stop-requested?! st #f)
+                (set-tui-urgent-steer-requested?! st #f)
+                (set-tui-agent-thread! st
+                                       (call-with-new-thread
+                                         (lambda ()
+                                           (catch #t
+                                             (lambda ()
+                                               (tui-execute-chat-stream! st delivered on-cmd!)
+                                               (beep))
+                                             (lambda (key . args)
+                                               (tui-add-err-msg! st (format #f "Chat error (~a): ~s" key args))
+                                               (set-tui-status-text! st "READY")
+                                               (tui-render! st))))))
+                'render))))))))
+
+(define
+  (handle-idle-enter! st ch input-pending? drain-input-burst! hooks)
+  (let
+      ((burst (tui-collect-enter-burst ch input-pending? drain-input-burst!))
+       (beep ((tui-nref st) 'beep))
+       (on-cmd!
+         (lambda (pair)
+           (tui-handle-command! st pair hooks))))
+    (if burst
+      (begin (tui-insert-burst! st burst) 'render)
+      (if
+          (selector-active? (tui-input-buffer st) (tui-prompt-mode st))
+        (handle-enter-selector! st hooks)
+        (handle-enter-submit! st on-cmd! beep hooks)))))
 
 (define (handle-idle-external-editor! st)
         "Open external editor for the current input buffer on ST."
@@ -714,6 +750,221 @@
               'render)
             (else #f))))
 
+(define (handle-idle-overlay-key! st ch ov hooks)
+        (begin
+          (let*
+              ((stk (tui-overlay-stack st))
+               (stk-top (overlay-stack-top-modal stk))
+               (ctx (make-overlay-key-ctx st hooks)))
+            (if (eq? ov stk-top)
+              (let
+                  ((res
+                     (catch #t
+                       (lambda ()
+                         (overlay-stack-handle-key stk ch ctx))
+                       (lambda (k . args)
+                         (tui-add-err-msg! st (format #f "Overlay key error (~a): ~s" k args))
+                         'handled))))
+                (when (and (eq? res 'pass) (eqv? ch 121))
+                  (let ((data (overlay-data ov)))
+                    (when data (clipboard-copy! (format #f "~a" data)))))
+                (when (eq? (tui-active-overlay st) ov)
+                  (set-tui-active-overlay! st (overlay-stack-top-modal stk))))
+              (let ((res ((overlay-on-key ov) ov ch ctx)))
+                (when (eq? res 'close) (tui-clear-overlay! st)))))
+          'render))
+
+(define (handle-idle-banner-step! st)
+        (if (tui-banner-anim-done? st)
+          'render
+          (begin (usleep 25000)
+                 (if (tui-advance-startup-banner! st)
+                   'render
+                   'continue))))
+
+(define
+  (handle-idle-history-search-key! st
+                                   ch
+                                   hs
+                                   KEY_UP
+                                   KEY_DOWN
+                                   KEY_ENTER
+                                   KEY_BACKSPACE)
+  (begin
+    (let
+        ((norm-ch
+           (cond
+             ((eqv? ch KEY_DOWN) 'up)
+             ((eqv? ch KEY_UP) 'down)
+             ((eqv? ch KEY_ENTER) 10)
+             ((eqv? ch KEY_BACKSPACE) 'backspace)
+             (else ch))))
+      (call-with-values
+        (lambda ()
+          (history-search-handle-key hs (tui-input-history st) norm-ch))
+        (lambda (action new-st res-buf res-pos)
+          (set-tui-history-search! st new-st)
+          (case action
+            ((accept)
+              (if
+                  (and (string? res-buf) (string-prefix? "/" res-buf))
+                (let ((body (substring res-buf 1)))
+                  (set-tui-prompt-mode! st 'slash)
+                  (set-tui-input-buffer! st body)
+                  (set-tui-cursor-pos! st (string-length body)))
+                (begin (set-tui-input-buffer! st res-buf) (set-tui-cursor-pos! st res-pos)))
+              (tui-clamp-selector-index! st))
+            ((cancel) (set-tui-input-buffer! st res-buf)
+                      (set-tui-cursor-pos! st res-pos)
+                      (tui-clamp-selector-index! st))))))
+    'render))
+
+(define (handle-idle-undo-pop! st)
+        (begin
+          (let ((snap (editor-undo-pop! st)))
+            (when snap
+              (set-tui-input-buffer! st (car snap))
+              (set-tui-cursor-pos! st (cdr snap))
+              (tui-clamp-selector-index! st)))
+          'render))
+
+(define (handle-idle-backspace! st)
+        (begin
+          (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
+          (call-with-values
+            (lambda ()
+              (prompt-mode-on-backspace (tui-prompt-mode st)
+                                        (tui-input-buffer st)
+                                        (tui-cursor-pos st)))
+            (lambda (nm nb np)
+              (set-tui-prompt-mode! st nm)
+              (set-tui-input-buffer! st nb)
+              (set-tui-cursor-pos! st np)
+              (tui-clamp-selector-index! st)))
+          'render))
+
+(define (handle-idle-msgsel-prev! st)
+        (begin
+          (unless (null? (tui-messages st))
+            (set-tui-msgsel-index! st
+                                   (if (integer? (tui-msgsel-index st))
+                                     (max 0 (- (tui-msgsel-index st) 1))
+                                     (- (length (tui-messages st)) 1))))
+          'render))
+
+(define (handle-idle-msgsel-next! st)
+        (begin
+          (when
+              (and (integer? (tui-msgsel-index st)) (pair? (tui-messages st)))
+            (set-tui-msgsel-index! st
+                                   (min (- (length (tui-messages st)) 1) (+ (tui-msgsel-index st) 1))))
+          'render))
+
+(define (handle-idle-end-key! st)
+        (begin
+          (if
+              (and (> (tui-scroll-offset st) 0)
+                   (or (string-null? (tui-input-buffer st))
+                       (= (tui-cursor-pos st) (string-length (tui-input-buffer st)))))
+            (begin (set-tui-scroll-offset! st 0) (tui-clear-unseen-rows! st))
+            (set-tui-cursor-pos! st (string-length (tui-input-buffer st))))
+          'render))
+
+(define (handle-idle-fold-all! st)
+        (begin
+          (if
+              (and (integer? (tui-msgsel-index st))
+                   (pair? (tui-messages st))
+                   (< (tui-msgsel-index st) (length (tui-messages st))))
+            (tui-toggle-selected-collapse! st)
+            (call-with-values
+              (lambda ()
+                (transcript-fold-all! (tui-messages st) 'toggle))
+              (lambda (next-msgs collapsed? changed)
+                (set-tui-messages! st next-msgs)
+                (row-cache-clear! (tui-row-cache st))
+                (set-tui-status-text! st
+                                      (format #f
+                                              "~a ~a card~a"
+                                              (if collapsed?
+                                                "Folded"
+                                                "Unfolded")
+                                              changed
+                                              (if (= changed 1)
+                                                ""
+                                                "s"))))))
+          'render))
+
+(define (handle-idle-expand-latest! st)
+        (begin
+          (if
+              (and (integer? (tui-msgsel-index st))
+                   (pair? (tui-messages st))
+                   (< (tui-msgsel-index st) (length (tui-messages st))))
+            (tui-toggle-selected-collapse! st)
+            (unless (tui-expand-latest-collapsed! st)
+              (set-tui-cursor-pos! st (string-length (tui-input-buffer st)))))
+          'render))
+
+(define (handle-idle-delete-key! st)
+        (begin
+          (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
+          (call-with-values
+            (lambda ()
+              (delete-at (tui-input-buffer st) (tui-cursor-pos st)))
+            (lambda (nb np)
+              (tui-apply-edit! st nb np)))
+          (tui-clamp-selector-index! st)
+          'render))
+
+(define
+  (handle-idle-insert-input! st ch input-pending? drain-input-burst!)
+  (begin
+    (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
+    (let
+        ((burst
+           (if (input-pending?)
+             (cons ch (drain-input-burst!))
+             (list ch))))
+      (if (> (length burst) 1)
+        (tui-insert-burst! st burst)
+        (let ((c (integer->char ch)))
+          (call-with-values
+            (lambda ()
+              (prompt-mode-on-char (tui-prompt-mode st)
+                                   (tui-input-buffer st)
+                                   (tui-cursor-pos st)
+                                   c))
+            (lambda (nm nb np _absorbed?)
+              (set-tui-prompt-mode! st nm)
+              (set-tui-input-buffer! st nb)
+              (set-tui-cursor-pos! st np)
+              (tui-clamp-selector-index! st))))))
+    'render))
+
+(define (handle-idle-kill! st killer)
+        "Kill from point with editor op KILLER, pushing undo state first."
+        (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
+        (call-with-values
+          (lambda ()
+            (killer (tui-input-buffer st) (tui-cursor-pos st)))
+          (lambda (nb np)
+            (tui-apply-edit! st nb np)
+            (tui-clamp-selector-index! st)))
+        'render)
+
+(define
+  (handle-idle-page-scroll! st stdscr getmaxy delta)
+  "Scroll transcript by DELTA half-pages; return 'render or 'continue."
+  (let
+      ((new
+         (max 0
+              (min (tui-max-scroll-seen st)
+                   (+ (tui-scroll-offset st) (* delta (max 1 (quotient (- (getmaxy stdscr) 6) 2))))))))
+    (if (= new (tui-scroll-offset st))
+      'continue
+      (begin (set-tui-scroll-offset! st new) 'render))))
+
 (define
   (handle-idle-key! st ch input-pending? drain-input-burst! hooks)
   "Handle key CH while idle. Returns 'render, 'continue, or 'done."
@@ -741,93 +992,31 @@
         (or (not ch) (eqv? ch -1) (eqv? ch KEY_UP) (eqv? ch KEY_DOWN))
       (history-reset-nav (tui-input-history st)))
     (cond
-      ((or (not ch) (eqv? ch -1))
-        (if (tui-banner-anim-done? st)
-          'render
-          (begin (usleep 25000)
-                 (if (tui-advance-startup-banner! st)
-                   'render
-                   'continue))))
+      ((or (not ch) (eqv? ch -1)) (handle-idle-banner-step! st))
       ((and ov (not (or (eqv? ch 3) (eqv? ch 4))))
-        (let* ((stk (tui-overlay-stack st))
-               (stk-top (overlay-stack-top-modal stk))
-               (ctx (make-overlay-key-ctx st hooks)))
-          (if (eq? ov stk-top)
-            (let ((res (catch #t
-                         (lambda () (overlay-stack-handle-key stk ch ctx))
-                         (lambda (k . args)
-                           (tui-add-err-msg! st (format #f "Overlay key error (~a): ~s" k args))
-                           'handled))))
-              (when (and (eq? res 'pass) (eqv? ch 121))
-                (let ((data (overlay-data ov)))
-                  (when data
-                    (clipboard-copy! (format #f "~a" data)))))
-              (when (eq? (tui-active-overlay st) ov)
-                (set-tui-active-overlay! st (overlay-stack-top-modal stk))))
-            (let ((res ((overlay-on-key ov) ov ch ctx)))
-              (when (eq? res 'close) (tui-clear-overlay! st)))))
-        'render)
-      ((eqv? ch 11)
-        (tui-open-command-palette! st hooks)
-        'render)
+        (handle-idle-overlay-key! st ch ov hooks))
+      ((eqv? ch 11) (tui-open-command-palette! st hooks) 'render)
       ((and (history-search-active? hs) (not (or (eqv? ch 3) (eqv? ch 4))))
-        (let ((norm-ch (cond
-                         ((eqv? ch KEY_DOWN) 'up)
-                         ((eqv? ch KEY_UP) 'down)
-                         ((eqv? ch KEY_ENTER) 10)
-                         ((eqv? ch KEY_BACKSPACE) 'backspace)
-                         (else ch))))
-          (call-with-values
-            (lambda ()
-              (history-search-handle-key hs (tui-input-history st) norm-ch))
-            (lambda (action new-st res-buf res-pos)
-              (set-tui-history-search! st new-st)
-              (case action
-                ((accept)
-                  (if (and (string? res-buf) (string-prefix? "/" res-buf))
-                    (let ((body (substring res-buf 1)))
-                      (set-tui-prompt-mode! st 'slash)
-                      (set-tui-input-buffer! st body)
-                      (set-tui-cursor-pos! st (string-length body)))
-                    (begin
-                      (set-tui-input-buffer! st res-buf)
-                      (set-tui-cursor-pos! st res-pos)))
-                  (tui-clamp-selector-index! st))
-                ((cancel)
-                  (set-tui-input-buffer! st res-buf)
-                  (set-tui-cursor-pos! st res-pos)
-                  (tui-clamp-selector-index! st))))))
-        'render)
-      ((and (transcript-search-active? (tui-transcript-search st))
-            (not (or (eqv? ch 3) (eqv? ch 4)))
-            (handle-transcript-search-key! st ch KEY_ENTER KEY_BACKSPACE))
-        => identity)
+        (handle-idle-history-search-key! st
+                                         ch
+                                         hs
+                                         KEY_UP
+                                         KEY_DOWN
+                                         KEY_ENTER
+                                         KEY_BACKSPACE))
+      ((and
+         (transcript-search-active? (tui-transcript-search st))
+         (not (or (eqv? ch 3) (eqv? ch 4)))
+         (handle-transcript-search-key! st ch KEY_ENTER KEY_BACKSPACE))
+        =>
+        identity)
       ((eqv? ch 6)
-        (set-tui-transcript-search! st (transcript-search-open (tui-transcript-search st)))
+        (set-tui-transcript-search! st
+                                    (transcript-search-open (tui-transcript-search st)))
         'render)
-      ((or (eqv? ch 26) (eqv? ch 31))
-        (let ((snap (editor-undo-pop! st)))
-          (when snap
-            (set-tui-input-buffer! st (car snap))
-            (set-tui-cursor-pos! st (cdr snap))
-            (tui-clamp-selector-index! st)))
-        'render)
-      ((eqv? ch 21)
-        (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
-        (call-with-values
-          (lambda () (kill-to-line-start (tui-input-buffer st) (tui-cursor-pos st)))
-          (lambda (nb np)
-            (tui-apply-edit! st nb np)
-            (tui-clamp-selector-index! st)))
-        'render)
-      ((eqv? ch 23)
-        (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
-        (call-with-values
-          (lambda () (kill-word-backward (tui-input-buffer st) (tui-cursor-pos st)))
-          (lambda (nb np)
-            (tui-apply-edit! st nb np)
-            (tui-clamp-selector-index! st)))
-        'render)
+      ((or (eqv? ch 26) (eqv? ch 31)) (handle-idle-undo-pop! st))
+      ((eqv? ch 21) (handle-idle-kill! st kill-to-line-start))
+      ((eqv? ch 23) (handle-idle-kill! st kill-word-backward))
       ((eqv? ch 18)
         (set-tui-history-search! st
                                  (history-search-open (tui-input-history st)
@@ -842,46 +1031,11 @@
       ((eqv? ch KEY_UP) (handle-idle-up-down! st -1))
       ((eqv? ch KEY_DOWN) (handle-idle-up-down! st 1))
       ((or (eqv? ch KEY_BACKSPACE) (eqv? ch 127) (eqv? ch 8))
-        (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
-        (call-with-values
-          (lambda ()
-            (prompt-mode-on-backspace (tui-prompt-mode st)
-                                      (tui-input-buffer st)
-                                      (tui-cursor-pos st)))
-          (lambda (nm nb np)
-            (set-tui-prompt-mode! st nm)
-            (set-tui-input-buffer! st nb)
-            (set-tui-cursor-pos! st np)
-            (tui-clamp-selector-index! st)))
-        'render)
-      ((eqv? ch KEY_PPAGE)
-        (let
-            ((new
-               (min (tui-max-scroll-seen st)
-                    (+ (tui-scroll-offset st) (max 1 (quotient (- (getmaxy stdscr) 6) 2))))))
-          (if (= new (tui-scroll-offset st))
-            'continue
-            (begin (set-tui-scroll-offset! st new) 'render))))
-      ((eqv? ch KEY_NPAGE)
-        (let
-            ((new
-               (max 0 (- (tui-scroll-offset st) (max 1 (quotient (- (getmaxy stdscr) 6) 2))))))
-          (if (= new (tui-scroll-offset st))
-            'continue
-            (begin (set-tui-scroll-offset! st new) 'render))))
-      ((eqv? ch (tui-ctrl-up-key st))
-        (unless (null? (tui-messages st))
-          (set-tui-msgsel-index! st
-                                 (if (integer? (tui-msgsel-index st))
-                                   (max 0 (- (tui-msgsel-index st) 1))
-                                   (- (length (tui-messages st)) 1))))
-        'render)
-      ((eqv? ch (tui-ctrl-down-key st))
-        (when
-            (and (integer? (tui-msgsel-index st)) (pair? (tui-messages st)))
-          (set-tui-msgsel-index! st
-                                 (min (- (length (tui-messages st)) 1) (+ (tui-msgsel-index st) 1))))
-        'render)
+        (handle-idle-backspace! st))
+      ((eqv? ch KEY_PPAGE) (handle-idle-page-scroll! st stdscr getmaxy 1))
+      ((eqv? ch KEY_NPAGE) (handle-idle-page-scroll! st stdscr getmaxy -1))
+      ((eqv? ch (tui-ctrl-up-key st)) (handle-idle-msgsel-prev! st))
+      ((eqv? ch (tui-ctrl-down-key st)) (handle-idle-msgsel-next! st))
       ((eqv? ch KEY_LEFT)
         (set-tui-cursor-pos! st
                              (clamp-cursor (- (tui-cursor-pos st) 1) (tui-input-buffer st)))
@@ -891,74 +1045,14 @@
                              (clamp-cursor (+ (tui-cursor-pos st) 1) (tui-input-buffer st)))
         'render)
       ((or (eqv? ch KEY_HOME) (eqv? ch 1)) (set-tui-cursor-pos! st 0) 'render)
-      ((eqv? ch KEY_END)
-        (if (and (> (tui-scroll-offset st) 0)
-                 (or (string-null? (tui-input-buffer st))
-                     (= (tui-cursor-pos st) (string-length (tui-input-buffer st)))))
-          (begin
-            (set-tui-scroll-offset! st 0)
-            (tui-clear-unseen-rows! st))
-          (set-tui-cursor-pos! st (string-length (tui-input-buffer st))))
-        'render)
-      ((eqv? ch 15)
-        (if (and (integer? (tui-msgsel-index st))
-                 (pair? (tui-messages st))
-                 (< (tui-msgsel-index st) (length (tui-messages st))))
-          (tui-toggle-selected-collapse! st)
-          (call-with-values
-            (lambda () (transcript-fold-all! (tui-messages st) 'toggle))
-            (lambda (next-msgs collapsed? changed)
-              (set-tui-messages! st next-msgs)
-              (row-cache-clear! (tui-row-cache st))
-              (set-tui-status-text!
-                st
-                (format #f "~a ~a card~a"
-                        (if collapsed? "Folded" "Unfolded")
-                        changed
-                        (if (= changed 1) "" "s"))))))
-        'render)
-      ((eqv? ch 5)
-        (if
-            (and (integer? (tui-msgsel-index st))
-                 (pair? (tui-messages st))
-                 (< (tui-msgsel-index st) (length (tui-messages st))))
-          (tui-toggle-selected-collapse! st)
-          (unless (tui-expand-latest-collapsed! st)
-            (set-tui-cursor-pos! st (string-length (tui-input-buffer st)))))
-        'render)
-      ((eqv? ch KEY_DC)
-        (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
-        (call-with-values
-          (lambda ()
-            (delete-at (tui-input-buffer st) (tui-cursor-pos st)))
-          (lambda (nb np)
-            (tui-apply-edit! st nb np)))
-        (tui-clamp-selector-index! st)
-        'render)
+      ((eqv? ch KEY_END) (handle-idle-end-key! st))
+      ((eqv? ch 15) (handle-idle-fold-all! st))
+      ((eqv? ch 5) (handle-idle-expand-latest! st))
+      ((eqv? ch KEY_DC) (handle-idle-delete-key! st))
       ((or (eqv? ch 3) (eqv? ch 4)) 'done)
       ((eqv? ch KEY_RESIZE) 'render)
       ((and (integer? ch) (>= ch 32))
-        (editor-undo-push! st (tui-input-buffer st) (tui-cursor-pos st))
-        (let
-            ((burst
-               (if (input-pending?)
-                 (cons ch (drain-input-burst!))
-                 (list ch))))
-          (if (> (length burst) 1)
-            (tui-insert-burst! st burst)
-            (let ((c (integer->char ch)))
-              (call-with-values
-                (lambda ()
-                  (prompt-mode-on-char (tui-prompt-mode st)
-                                       (tui-input-buffer st)
-                                       (tui-cursor-pos st)
-                                       c))
-                (lambda (nm nb np _absorbed?)
-                  (set-tui-prompt-mode! st nm)
-                  (set-tui-input-buffer! st nb)
-                  (set-tui-cursor-pos! st np)
-                  (tui-clamp-selector-index! st))))))
-        'render)
+        (handle-idle-insert-input! st ch input-pending? drain-input-burst!))
       (else 'render))))
 
 (define

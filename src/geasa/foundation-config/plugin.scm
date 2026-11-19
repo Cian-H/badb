@@ -371,16 +371,6 @@ which would break badb-config-get-provider on them."
           (or (assq-ref provs name-sym) (assoc-ref provs name-str))))
 
 
-;; ---------------------------------------------------------------------------
-;; Provider-kind reader
-;; ---------------------------------------------------------------------------
-(define (badb-config-provider-kind config name)
-        "Return the *kind* of the provider preset named NAME in CONFIG.
-Defaults to \"chat\" when the provider has no *kind* field or is not found."
-        (let
-            ((prov (badb-config-get-provider config name)))
-          (or (and prov (get-prop prov 'kind #f)) "chat")))
-
 (define (badb-config-chat-providers config)
         "Return only the \"chat\"-kind provider presets from CONFIG.
 Providers without an explicit *kind* field are treated as \"chat\"."

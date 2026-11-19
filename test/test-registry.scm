@@ -1,4 +1,4 @@
-;;; test-registry.scm — Test suite for (badb registry)
+;;; test-registry.scm — Test suite for (badb kernel registry)
 
 (define-module (test test-registry)
                #:use-module (srfi srfi-64)

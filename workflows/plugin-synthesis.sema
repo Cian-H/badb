@@ -89,7 +89,7 @@ root GEIS-ROOT on the load path) and extract structured JSON diagnostics."
     (cond
       ((file/exists? default-locked-path) default-locked-path)
       ((and spec-path (file/exists? spec-path))
-       (let* ((lock-cmd (format "guile --no-auto-compile -L src -L . -c '(use-modules (badb spec-gate)) (lock-spec ~s ~s)'"
+       (let* ((lock-cmd (format "guile --no-auto-compile -L src -L . -c '(use-modules (badb kernel geis-gate)) (lock-spec ~s ~s)'"
                                 spec-path feature-id))
               (lock-res (shell lock-cmd)))
          (if (= 0 (:exit-code lock-res))

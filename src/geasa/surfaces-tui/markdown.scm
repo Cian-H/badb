@@ -538,6 +538,19 @@ Returns a list of plain lines on success, or #f if mdflow is unavailable or fail
           ((string-prefix? "~~~" trimmed) (cons "~~~" (string-trim-both (substring trimmed 3))))
           (else #f)))
 
+(define (%md-flush-para blocks para-acc)
+        (if (null? para-acc)
+          blocks
+          (cons (list 'paragraph (reverse para-acc)) blocks)))
+
+(define (%md-flush-quote blocks quote-acc)
+        (if (null? quote-acc)
+          blocks
+          (cons (list 'blockquote (reverse quote-acc)) blocks)))
+
+(define (%md-flush-all blocks para-acc quote-acc)
+        (%md-flush-quote (%md-flush-para blocks para-acc) quote-acc))
+
 (define (parse-markdown-blocks text)
         "Parse Markdown TEXT into a list of typed block descriptors:
   (heading level title)
@@ -547,8 +560,7 @@ Returns a list of plain lines on success, or #f if mdflow is unavailable or fail
   (hr)
   (paragraph lines)
   (blank)"
-        (let
-            ((raw-lines (string-split (or text "") #\newline)))
+        (let ((raw-lines (string-split (or text "") #\newline)))
           (let loop
             ((lines raw-lines) (blocks '())
              (para-acc '())
@@ -556,25 +568,12 @@ Returns a list of plain lines on success, or #f if mdflow is unavailable or fail
              (in-fence #f)
              (fence-lang "")
              (fence-lines '()))
-            (define (flush-para b)
-                    (if (null? para-acc)
-                      b
-                      (cons (list 'paragraph (reverse para-acc)) b)))
-            (define (flush-quote b)
-                    (if (null? quote-acc)
-                      b
-                      (cons (list 'blockquote (reverse quote-acc)) b)))
-            (define (flush-all b) (set! b (flush-para b))
-                    (set! para-acc '())
-                    (set! b (flush-quote b))
-                    (set! quote-acc '())
-                    b)
             (if (null? lines)
               (let
                   ((b
                      (if in-fence
                        (cons (list 'code-block fence-lang (reverse fence-lines)) blocks)
-                       (flush-all blocks))))
+                       (%md-flush-all blocks para-acc quote-acc))))
                 (reverse b))
               (let*
                   ((line (car lines)) (trimmed (string-trim-both line)))
@@ -588,39 +587,38 @@ Returns a list of plain lines on success, or #f if mdflow is unavailable or fail
                     (cond
                       (fence
                         (let*
-                            ((b (flush-all blocks)) (lang-str (cdr fence))
+                            ((b (%md-flush-all blocks para-acc quote-acc))
+                             (lang-str (cdr fence))
                              (sp (string-index lang-str #\space)))
                           (loop (cdr lines) b '() '() (car fence)
                                 (if sp
                                   (substring lang-str 0 sp)
                                   lang-str) '())))
                       ((string-null? trimmed)
-                        (let ((b (flush-all blocks)))
+                        (let ((b (%md-flush-all blocks para-acc quote-acc)))
                           (loop (cdr lines)
                                 (if (and (pair? b) (eq? (caar b) 'blank))
                                   b
                                   (cons (list 'blank) b)) '() '() #f
                                 "" '())))
                       ((regexp-exec %hr-rx line)
-                        (let ((b (flush-all blocks)))
+                        (let ((b (%md-flush-all blocks para-acc quote-acc)))
                           (loop (cdr lines) (cons (list 'hr) b) '() '() #f "" '())))
                       ((regexp-exec %heading-rx trimmed) =>
                                                          (lambda (m)
                                                            (let
-                                                               ((b (flush-all blocks))
+                                                               ((b (%md-flush-all blocks para-acc quote-acc))
                                                                 (lvl (string-length (match:substring m 1)))
                                                                 (title (string-trim-both (match:substring m 2))))
                                                              (loop (cdr lines) (cons (list 'heading lvl title) b) '() '() #f "" '()))))
                       ((regexp-exec %blockquote-rx line) =>
                                                          (lambda (m)
-                                                           (let ((b (flush-para blocks)))
-                                                             (set! para-acc '())
-                                                             (set! quote-acc (cons (match:substring m 1) quote-acc))
-                                                             (loop (cdr lines) b '() quote-acc #f "" '()))))
+                                                           (let ((b (%md-flush-para blocks para-acc)))
+                                                             (loop (cdr lines) b '() (cons (match:substring m 1) quote-acc) #f "" '()))))
                       ((regexp-exec %unordered-list-rx line) =>
                                                              (lambda (m)
                                                                (let
-                                                                   ((b (flush-all blocks))
+                                                                   ((b (%md-flush-all blocks para-acc quote-acc))
                                                                     (indent (string-length (match:substring m 1)))
                                                                     (body (match:substring m 3)))
                                                                  (loop (cdr lines) (cons (list 'list-item indent 'bullet body) b) '() '() #f ""
@@ -628,15 +626,14 @@ Returns a list of plain lines on success, or #f if mdflow is unavailable or fail
                       ((regexp-exec %ordered-list-rx line) =>
                                                            (lambda (m)
                                                              (let
-                                                                 ((b (flush-all blocks))
+                                                                 ((b (%md-flush-all blocks para-acc quote-acc))
                                                                   (indent (string-length (match:substring m 1)))
                                                                   (marker (match:substring m 2))
                                                                   (body (match:substring m 3)))
                                                                (loop (cdr lines) (cons (list 'list-item indent marker body) b) '() '() #f ""
                                                                      '()))))
                       (else
-                        (let ((b (flush-quote blocks)))
-                          (set! quote-acc '())
+                        (let ((b (%md-flush-quote blocks quote-acc)))
                           (loop (cdr lines) b (cons line para-acc) '() #f "" '())))))))))))
 
 (define (count-run str pos ch)
@@ -660,13 +657,12 @@ Returns a list of plain lines on success, or #f if mdflow is unavailable or fail
                         (else idx))))))
 
 (define (find-closing-delim str start delim)
-        (let ((dlen (string-length delim)))
-          (let loop ((i start))
-                    (let ((idx (string-contains str delim i)))
-                      (cond
-                        ((not idx) #f)
-                        ((= idx start) (loop (+ idx 1)))
-                        (else idx))))))
+        (let loop ((i start))
+                  (let ((idx (string-contains str delim i)))
+                    (cond
+                      ((not idx) #f)
+                      ((= idx start) (loop (+ idx 1)))
+                      (else idx)))))
 
 (define (parse-md-link str pos)
         "If STR at POS starts a Markdown link [label](target), return (values label target end-pos); else (values #f #f #f)."
@@ -1003,70 +999,74 @@ C0/DEL) from STR so untrusted strings cannot break out of OSC 0/2/8 sequences."
 (define (extract-clickable-links text)
         "Extract Markdown links, bare HTTP/file URLs, and file paths from TEXT.
 Returns a list of link alists sorted by start column."
-        (let ((s (or text ""))
-              (acc '()))
-          ;; 1. Markdown [label](target)
-          (let loop ((pos 0))
-                    (let ((m (regexp-exec %md-link-rx s pos)))
-                      (when m
-                        (let* ((start (match:start m 0))
-                               (end (match:end m 0))
-                               (label (match:substring m 1))
-                               (raw-target (string-trim-both (match:substring m 2)))
-                               (kind (if (or (string-prefix-ci? "http://" raw-target)
-                                             (string-prefix-ci? "https://" raw-target)
-                                             (string-prefix-ci? "file://" raw-target))
-                                       'url
-                                       'file)))
-                          (call-with-values
-                            (lambda () (parse-line-suffix raw-target))
-                            (lambda (target line-no)
-                              (set! acc (cons `((label . ,label)
-                                                (target . ,target)
-                                                (kind . ,kind)
-                                                (start . ,start)
-                                                (end . ,end)
-                                                (line . ,line-no))
-                                              acc))))
-                          (loop end)))))
-          ;; 2. Bare URLs
-          (let loop ((pos 0))
-                    (let ((m (regexp-exec %url-rx s pos)))
-                      (when m
-                        (let* ((start (match:start m 1))
-                               (raw-url (match:substring m 1))
-                               (url (trim-url-punctuation raw-url))
-                               (end (+ start (string-length url))))
-                          (unless (overlaps-existing? start end acc)
-                            (set! acc (cons `((label . ,url)
-                                              (target . ,url)
-                                              (kind . url)
-                                              (start . ,start)
-                                              (end . ,end)
-                                              (line . #f))
-                                            acc)))
-                          (loop (max end (+ pos 1)))))))
-          ;; 3. File paths
-          (let loop ((pos 0))
-                    (let ((m (regexp-exec %file-path-rx s pos)))
-                      (when m
-                        (let* ((start (match:start m 2))
-                               (path-part (match:substring m 2))
-                               (line-str (match:substring m 6))
-                               (line-no (and line-str (string->number line-str)))
-                               (end (if line-str (match:end m 5) (match:end m 2))))
-                          (unless (overlaps-existing? start end acc)
-                            (set! acc (cons `((label . ,(if line-str
-                                                          (string-append path-part ":" line-str)
-                                                          path-part))
-                                              (target . ,path-part)
-                                              (kind . file)
-                                              (start . ,start)
-                                              (end . ,end)
-                                              (line . ,line-no))
-                                            acc)))
-                          (loop (max (match:end m 0) (+ pos 1)))))))
-          (sort acc (lambda (a b) (< (assoc-ref a 'start) (assoc-ref b 'start))))))
+        (let* ((s (or text ""))
+               (acc1
+                 (let loop ((pos 0) (acc '()))
+                           (let ((m (regexp-exec %md-link-rx s pos)))
+                             (if m
+                               (let* ((start (match:start m 0))
+                                      (end (match:end m 0))
+                                      (label (match:substring m 1))
+                                      (raw-target (string-trim-both (match:substring m 2)))
+                                      (kind (if (or (string-prefix-ci? "http://" raw-target)
+                                                    (string-prefix-ci? "https://" raw-target)
+                                                    (string-prefix-ci? "file://" raw-target))
+                                              'url
+                                              'file)))
+                                 (call-with-values
+                                   (lambda () (parse-line-suffix raw-target))
+                                   (lambda (target line-no)
+                                     (loop end
+                                           (cons `((label . ,label)
+                                                   (target . ,target)
+                                                   (kind . ,kind)
+                                                   (start . ,start)
+                                                   (end . ,end)
+                                                   (line . ,line-no))
+                                                 acc)))))
+                               acc))))
+               (acc2
+                 (let loop ((pos 0) (acc acc1))
+                           (let ((m (regexp-exec %url-rx s pos)))
+                             (if m
+                               (let* ((start (match:start m 1))
+                                      (raw-url (match:substring m 1))
+                                      (url (trim-url-punctuation raw-url))
+                                      (end (+ start (string-length url)))
+                                      (next-acc (if (overlaps-existing? start end acc)
+                                                  acc
+                                                  (cons `((label . ,url)
+                                                          (target . ,url)
+                                                          (kind . url)
+                                                          (start . ,start)
+                                                          (end . ,end)
+                                                          (line . #f))
+                                                        acc))))
+                                 (loop (max end (+ pos 1)) next-acc))
+                               acc))))
+               (acc3
+                 (let loop ((pos 0) (acc acc2))
+                           (let ((m (regexp-exec %file-path-rx s pos)))
+                             (if m
+                               (let* ((start (match:start m 2))
+                                      (path-part (match:substring m 2))
+                                      (line-str (match:substring m 6))
+                                      (line-no (and line-str (string->number line-str)))
+                                      (end (if line-str (match:end m 5) (match:end m 2)))
+                                      (next-acc (if (overlaps-existing? start end acc)
+                                                  acc
+                                                  (cons `((label . ,(if line-str
+                                                                      (string-append path-part ":" line-str)
+                                                                      path-part))
+                                                          (target . ,path-part)
+                                                          (kind . file)
+                                                          (start . ,start)
+                                                          (end . ,end)
+                                                          (line . ,line-no))
+                                                        acc))))
+                                 (loop (max (match:end m 0) (+ pos 1)) next-acc))
+                               acc)))))
+          (sort acc3 (lambda (a b) (< (assoc-ref a 'start) (assoc-ref b 'start))))))
 
 (define (find-link-at-column text col)
         "Return the clickable link alist covering column COL in TEXT, or #f."

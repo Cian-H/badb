@@ -24,7 +24,6 @@
               (kernel-mkdir-p parent))
             (catch 'system-error (lambda () (mkdir dir))
                                  (lambda args (unless (file-exists? dir) (apply throw args)))))))
-(define mkdir-p kernel-mkdir-p)
 
 (define (kernel-ensure-parent-directory! file-path)
         (when (string? file-path)

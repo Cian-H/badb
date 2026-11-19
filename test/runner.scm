@@ -10,8 +10,8 @@
         (format #t "Running test file: ~a~%" filename)
         (primitive-load filename))
 
-;; DEV-DEBT [coverage-gap]: only test/test-*.scm run here; the adversarial-*.scm
-;; challenger suites are standalone and must be run by hand.
+;; The adversarial-*.scm suites are not included here; run them via
+;; scripts/test-adversarial.
 (define (find-test-files dir)
         (let ((files (scandir dir
                               (lambda (name)

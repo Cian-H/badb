@@ -93,12 +93,12 @@
                    (_ (coordinator-register!
                         coord "first"
                         (lambda (m) (set! order (cons 'first order)) 'r1)))
-                   (_ (coordinator-register!
-                        coord "broken"
-                        (lambda (m) (set! order (cons 'broken order)) (error "nope"))))
-                   (_ (coordinator-register!
-                        coord "last"
-                        (lambda (m) (set! order (cons 'last order)) 'r3)))
+                   (_2 (coordinator-register!
+                         coord "broken"
+                         (lambda (m) (set! order (cons 'broken order)) (error "nope"))))
+                   (_3 (coordinator-register!
+                         coord "last"
+                         (lambda (m) (set! order (cons 'last order)) 'r3)))
                    (results (coordinator-broadcast coord 'ping)))
               (test-equal "every participant ran, in order"
                           '(last broken first) order)
@@ -132,10 +132,10 @@
                    (calls '())
                    (_ (coordinator-register!
                         coord "a" (lambda (m) (set! calls (cons 'a calls)) (error "a fails"))))
-                   (_ (coordinator-register!
-                        coord "b" (lambda (m) (set! calls (cons 'b calls)) 'from-b)))
-                   (_ (coordinator-register!
-                        coord "c" (lambda (m) (set! calls (cons 'c calls)) 'from-c))))
+                   (_2 (coordinator-register!
+                         coord "b" (lambda (m) (set! calls (cons 'b calls)) 'from-b)))
+                   (_3 (coordinator-register!
+                         coord "c" (lambda (m) (set! calls (cons 'c calls)) 'from-c))))
               (test-equal "first success wins"
                           'from-b (coordinator-first-success coord 'task))
               (test-equal "participants after the winner never ran"
@@ -159,9 +159,9 @@
                    (_ (coordinator-register!
                         coord "upcase"
                         (lambda (m) (string-upcase m))))
-                   (_ (coordinator-register!
-                        coord "reverse"
-                        (lambda (m) (string-reverse m)))))
+                   (_2 (coordinator-register!
+                         coord "reverse"
+                         (lambda (m) (string-reverse m)))))
               (test-equal "pipeline chains handler outputs"
                           "LLORT" (coordinator-pipeline coord '("upcase" "reverse") "troll"))
               (test-equal "single-stage pipeline"
@@ -174,8 +174,8 @@
 
             (let* ((coord (make-coordinator))
                    (_ (coordinator-register! coord "ok1" (lambda (m) (string-append m "-1"))))
-                   (_ (coordinator-register!
-                        coord "bad" (lambda (m) (throw 'stage-boom "exploded")))))
+                   (_2 (coordinator-register!
+                         coord "bad" (lambda (m) (throw 'stage-boom "exploded")))))
               (test-equal "stage failure carries the stage id and original key"
                           '("bad" stage-boom)
                           (catch 'coordination-pipeline-error

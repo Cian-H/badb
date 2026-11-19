@@ -154,10 +154,10 @@
             ;; --- 1.5 Diverse tool return types ---
             (test-assert "tool-returns-diverse-types"
                          (let* ((reg (make-registry))
-                                (_ (registry-attach! reg "ret_vec" (lambda () #(1 2 3)) '((description . "vector"))))
-                                (_ (registry-attach! reg "ret_bool" (lambda () #t) '((description . "bool"))))
-                                (_ (registry-attach! reg "ret_num" (lambda () 42.5) '((description . "num"))))
-                                (_ (registry-attach! reg "ret_null" (lambda () '()) '((description . "null")))))
+                                (_1 (registry-attach! reg "ret_vec" (lambda () #(1 2 3)) '((description . "vector"))))
+                                (_2 (registry-attach! reg "ret_bool" (lambda () #t) '((description . "bool"))))
+                                (_3 (registry-attach! reg "ret_num" (lambda () 42.5) '((description . "num"))))
+                                (_4 (registry-attach! reg "ret_null" (lambda () '()) '((description . "null")))))
                            (and
                              (call-with-values (lambda () (execute-tool-call '((name . "ret_vec") (arguments . ())) reg #f))
                                                (lambda (res err?) (and (not err?) (vector? res))))
@@ -475,9 +475,9 @@
                 ;; --- 3.4 Multi-Stage Nested Checkpoints Time-Travel ---
                 (test-assert "multi-stage-nested-checkpoints-time-travel"
                              (let* ((chkpt-a (create-checkpoint! mgr "State A" #:files '("alpha.txt")))
-                                    (_ (call-with-output-file f1 (lambda (p) (display "Alpha v2\n" p))))
+                                    (_1 (call-with-output-file f1 (lambda (p) (display "Alpha v2\n" p))))
                                     (chkpt-b (create-checkpoint! mgr "State B" #:files '("alpha.txt")))
-                                    (_ (call-with-output-file f1 (lambda (p) (display "Alpha v3\n" p))))
+                                    (_2 (call-with-output-file f1 (lambda (p) (display "Alpha v3\n" p))))
                                     (chkpt-c (create-checkpoint! mgr "State C" #:files '("alpha.txt"))))
                                (rollback-to-checkpoint! mgr (checkpoint-id chkpt-b))
                                (let ((v-b (call-with-input-file f1 read-line)))

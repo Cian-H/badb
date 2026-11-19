@@ -265,7 +265,7 @@
                          (sym-def (read-symbol-from-file file-path "compute-25"))
                          (new-sym-def "(define (compute-25 x y)\n  (+ x y 42))")
                          (edit-res (replace-symbol-in-file file-path "compute-25" new-sym-def))
-                         (_ (system* "rm" "-rf" tmp-dir))
+                         (_cleanup (system* "rm" "-rf" tmp-dir))
 
                          ;; Baseline 4-turn wire messages:
                          (b-turn-1 (list `((role . "system") (content . ,sys-full))

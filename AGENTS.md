@@ -89,9 +89,8 @@ schema, kernel limits, test inventory):
 
 - `test`, `verify-geasa`, and `badb` re-run themselves through
   `./scripts/devenv` when Guix dependencies are missing.
-- **Gap:** `test/adversarial-*.scm` are **not** run by any script
-  (`DEV-DEBT [coverage-gap]` in `test/runner.scm`). If you change code they
-  cover, say they weren't run, or run by hand and report what you ran.
+- Adversarial suites: run `./scripts/test-adversarial` (they are not run by
+  `test/runner.scm` — `test/runner.scm` only covers `test/test-*.scm`).
 - **There is no CI.** Checks are local only: the pre-commit hook
   (`.githooks/pre-commit` → `prek` → `format-scheme` on staged `.scm`, so commit
   can re-format, re-pin, and re-stage) and `.config/wt.toml` (pre-merge runs

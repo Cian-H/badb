@@ -208,7 +208,7 @@ Returns list of ((section start-line end-line text) ...)."
                            (reverse new-res)
                            (loop next-offset new-res)))))))
 
-(define (chunk-markdown source-id text)
+(define (chunk-markdown _source-id text)
         "Chunk markdown TEXT by headers (#, ##, ###) into a list of chunk specs:
 ((section start-line end-line text) ...)"
         (let* ((lines (string-split text #\newline))

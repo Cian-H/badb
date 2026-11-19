@@ -361,7 +361,7 @@ recover the information without re-invoking the tool."
 (define %guard-note-text
         "\n\n[badb loop-guard: a later attempt to repeat this exact call was blocked as a duplicate and pruned from this conversation. The output above is still current. Use a different tool, pass different arguments, or answer from this result.]")
 
-(define (guard-reflect-prompt guard)
+(define (guard-reflect-prompt _guard)
         "The injected prompt of the single forced tool-less reflection
 turn. Deliberately generic: re-naming the looping tool inside the
 message would boost its token activation."
@@ -613,7 +613,7 @@ model turn), and apply turn-level rejection sampling."
 ;;;
 ;;; Mechanism 3: interception
 ;;;
-(define (guard-intercept guard tc session)
+(define (guard-intercept guard tc _session)
         "Intercept hook ((FN TC SESSION) -> block message | (cached . result) | #f).
 A call is vetoed when its canonical signature was already executed earlier in
 the current epoch, its tool name classifies as idempotent, and the attempted

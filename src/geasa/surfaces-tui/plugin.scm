@@ -664,6 +664,23 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
             (lambda _
               #f))))
 
+(define (%ensure-notcurses-available!)
+        (unless
+            (catch #t
+              (lambda ()
+                (false-if-exception (resolve-interface '(notcurses compat curses)))
+                #t)
+              (lambda _
+                #f))
+          (format (current-error-port)
+                  "Error: (notcurses compat curses) notcurses backend is not available.~%~
+               Please run badb within the Guix dev environment:~%~
+                 ./scripts/devenv -- ./scripts/badb~%")
+          (exit 1)))
+
+(define (%opt-nref mod sym default)
+        (or (catch #t (lambda () (module-ref mod sym)) (lambda _ #f)) default))
+
 (define*
   (run-tui #:key
            (endpoint #f)
@@ -673,25 +690,12 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
            (config #f)
            (clean? #f))
   "Launch the interactive badb curses TUI."
-  (unless
-      (catch #t
-        (lambda ()
-          (false-if-exception (resolve-interface '(notcurses compat curses)))
-          #t)
-        (lambda _
-          #f))
-    (format (current-error-port)
-            "Error: (notcurses compat curses) notcurses backend is not available.~%~
-               Please run badb within the Guix dev environment:~%~
-                 ./scripts/devenv -- ./scripts/badb~%")
-    (exit 1))
+  (%ensure-notcurses-available!)
   (parameterize
     ((current-warning-port (%make-void-port "w")))
     (let*
         ((ncurses-mod (resolve-module '(notcurses compat curses)))
-         (nref
-           (lambda (s)
-             (module-ref ncurses-mod s)))
+         (nref (lambda (s) (module-ref ncurses-mod s)))
          (initscr (nref 'initscr))
          (cbreak! (nref 'cbreak!))
          (noecho! (nref 'noecho!))
@@ -701,38 +705,13 @@ when running in a live notcurses session. Returns #t if displayed, #f otherwise.
          (key-defined (nref 'key-defined))
          (define-key (nref 'define-key))
          (drain-mouse-events (nref 'drain-mouse-events))
-         (input-pending?
-           (or
-             (catch #t
-               (lambda ()
-                 (nref 'input-pending?))
-               (lambda _
-                 #f))
-             (lambda _
-               #f)))
-         (drain-input-burst!
-           (or
-             (catch #t
-               (lambda ()
-                 (nref 'drain-input-burst!))
-               (lambda _
-                 #f))
-             (lambda ()
-               '())))
+         (input-pending? (%opt-nref ncurses-mod 'input-pending? (lambda _ #f)))
+         (drain-input-burst! (%opt-nref ncurses-mod 'drain-input-burst! (lambda () '())))
          (KEY_FIND (nref 'KEY_FIND))
          (KEY_OPEN (nref 'KEY_OPEN))
          (nodelay-proc
-           (or
-             (catch #t
-               (lambda ()
-                 (nref 'nodelay!))
-               (lambda _
-                 #f))
-             (catch #t
-               (lambda ()
-                 (nref 'nodelay))
-               (lambda _
-                 #f))))
+           (or (%opt-nref ncurses-mod 'nodelay! #f)
+               (%opt-nref ncurses-mod 'nodelay #f)))
          (cfg (or config (load-config)))
          (ui-theme
            (let ((configured (badb-config-ui-theme cfg)))

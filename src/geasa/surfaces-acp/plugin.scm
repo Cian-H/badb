@@ -440,16 +440,15 @@ or 'ask, and NOTIFIER receives every session/update notification."
                                       ((a (car args))
                                        (has-cmd?
                                          (or (assoc "command" a) (assoc 'command a) (assoc "cmd" a) (assoc 'cmd a))))
-                                    (apply orig
-                                           (list
-                                             (if has-cmd?
-                                               (%acp-rewrite-alist-key a
-                                                                       '("command" command "cmd" cmd)
-                                                                       (lambda (c)
-                                                                         (if (string? c)
-                                                                           (string-append prefix c)
-                                                                           c)))
-                                               a))))
+                                    (orig
+                                      (if has-cmd?
+                                        (%acp-rewrite-alist-key a
+                                                                '("command" command "cmd" cmd)
+                                                                (lambda (c)
+                                                                  (if (string? c)
+                                                                    (string-append prefix c)
+                                                                    c)))
+                                        a)))
                                   (apply orig
                                          (if (and (pair? args) (string? (car args)))
                                            (cons (string-append prefix (car args)) (cdr args))
